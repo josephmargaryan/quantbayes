@@ -72,6 +72,8 @@ ChronosForge's stochastic models can predict stock prices with high accuracy. Be
 
 ![Actual vs. Predicted Stock Prices](images/stock_price_forecasting.png)
 
+We Provide summaries and visualizations to evaluate and interpret model performance effectively.
+![Model performance across folds](images/model_performance.png)
 ---
 
 ### **4. Brownian Motion, Heston Models and Jump Diffusion**
