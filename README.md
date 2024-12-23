@@ -1,12 +1,12 @@
 # ChronosForge
 
-ChronosForge is a comprehensive library bridging time-series forecasting, probabilistic modeling, and cutting-edge machine learning techniques. Inspired by the Greek god of time, **Chronos**, this library symbolizes precision, inevitability, and the exploration of truth through data.
+ChronosForge is a comprehensive library bridging time-series forecasting, probabilistic modeling, and cutting-edge machine-learning techniques. Inspired by the Greek god of time, **Chronos**, this library symbolizes precision, inevitability, and the exploration of truth through data.
 
 ---
 
 ## 🌌 Philosophical Inspiration
 
-In Greek mythology, Chronos embodies time and its infinite nature. This library reflects that spirit by crafting tools that transcend time—forecasting the future, analyzing the present, and uncovering the hidden patterns of the past. Whether you're solving stochastic equations, creating neural transport models, or designing probabilistic machine learning algorithms, **ChronosForge** equips you with the tools to forge solutions in the ever-flowing river of time.
+In Greek mythology, Chronos embodies time and its infinite nature. This library reflects that spirit by crafting tools that transcend time—forecasting the future, analyzing the present, and uncovering the hidden patterns of the past. Whether solving stochastic equations, creating neural transport models, or designing probabilistic machine learning algorithms, **ChronosForge** equips you with the tools to forge solutions in the ever-flowing river of time.
 
 ---
 
@@ -24,16 +24,13 @@ ChronosForge includes a variety of modules and algorithms spanning multiple disc
 - **Gaussian Processes (GP)**: Flexible models for uncertainty quantification.
 - **Variational Inference (VI)**: Scalable Bayesian inference techniques.
 - **Markov Models (HMM, DMM)**: For sequential data analysis.
-- **Monte Carlo Methods**: Importance sampling, MCMC, and more.
+- **Monte Carlo Methods**: No U-turn sampler to estimate the posterior distribution![CodeCogsEqn](https://github.com/user-attachments/assets/e6ca9fe8-3f34-4359-8936-459e4b0382f8)
+
 
 ### **Optimization and Theoretical Bounds**
 - **Constrained Lagrangian Optimization**: Solve constrained optimization problems.
 ![CodeCogsEqn](https://github.com/user-attachments/assets/f38dd6cf-7fc1-4ffe-89b7-54a6d8ba44ae)
-- **Stein Variational Gradient Descent**: Advanced Bayesian optimization.
 
-  \[
-  ![CodeCogsEqn](https://github.com/user-attachments/assets/1c6a9784-b9f4-462c-b5b0-c364dfa16a6b)
-  \]
 - **Theoretical Bounds**: Analyze generalization using PAC-Bayes, VC dimensions, and Hoeffding inequalities.
 
 ### **Deep Learning Applications**
@@ -44,11 +41,11 @@ ChronosForge includes a variety of modules and algorithms spanning multiple disc
 ### **FFT Circulant Applications**
 The **FFT Circulant Modules** in ChronosForge bring groundbreaking efficiency to matrix operations, reducing the time complexity from \(O(n^2)\) to \(O(n \log n)\). These modules excel in:
 - Capturing periodicity in features for improved modeling accuracy.
-- Efficiently handling large-scale matrix multiplications in probabilistic and time-series models.
+- Efficiently handling large-scale matrix multiplications in probabilistic and time-series models, where the features express periodicity.
 
-\[
+
 ![CodeCogsEqn](https://github.com/user-attachments/assets/07c0c15d-5027-4899-8732-4e56a309542c)
-\]
+
 
 ![FFT Circulant Example](images/fft_circulant_example.png)
 
