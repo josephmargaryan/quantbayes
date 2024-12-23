@@ -28,12 +28,11 @@ ChronosForge includes a variety of modules and algorithms spanning multiple disc
 
 ### **Optimization and Theoretical Bounds**
 - **Constrained Lagrangian Optimization**: Solve constrained optimization problems.
-  \[
-  \mathcal{L}(x, \lambda) = f(x) + \lambda \cdot g(x)
-  \]
+![CodeCogsEqn](https://github.com/user-attachments/assets/f38dd6cf-7fc1-4ffe-89b7-54a6d8ba44ae)
 - **Stein Variational Gradient Descent**: Advanced Bayesian optimization.
+
   \[
-  \phi(x) \propto -\nabla_x \log p(x)
+  ![CodeCogsEqn](https://github.com/user-attachments/assets/1c6a9784-b9f4-462c-b5b0-c364dfa16a6b)
   \]
 - **Theoretical Bounds**: Analyze generalization using PAC-Bayes, VC dimensions, and Hoeffding inequalities.
 
@@ -48,7 +47,7 @@ The **FFT Circulant Modules** in ChronosForge bring groundbreaking efficiency to
 - Efficiently handling large-scale matrix multiplications in probabilistic and time-series models.
 
 \[
-\text{For circulant matrix } C, \text{ let } Cx = \mathcal{F}^{-1}(\mathcal{F}(c) \odot \mathcal{F}(x))
+![CodeCogsEqn](https://github.com/user-attachments/assets/07c0c15d-5027-4899-8732-4e56a309542c)
 \]
 
 ![FFT Circulant Example](images/fft_circulant_example.png)
@@ -85,9 +84,9 @@ ChronosForge incorporates advanced stochastic models to simulate and analyze fin
 
 #### **Brownian Motion**
 Brownian motion forms the backbone of stochastic processes in finance, modeling the random behavior of stock prices:
-\[
-S_t = S_0 e^{(\mu - \frac{1}{2}\sigma^2)t + \sigma W_t}
-\]
+
+![CodeCogsEqn](https://github.com/user-attachments/assets/19ba8d69-d7c0-47e9-b9b6-c0a9b799bd68)
+
 where:
 - \(S_t\): Stock price at time \(t\).
 - \(\mu\): Drift (average return).
@@ -96,12 +95,7 @@ where:
 
 #### **Heston Model**
 The Heston model extends Brownian motion by introducing stochastic volatility:
-\[
-\begin{aligned}
-dS_t & = \mu S_t dt + \sqrt{v_t} S_t dW_t, \\
-dv_t & = \kappa(\theta - v_t) dt + \xi \sqrt{v_t} dZ_t
-\end{aligned}
-\]
+![CodeCogsEqn](https://github.com/user-attachments/assets/cb49ab9e-5946-46e8-8581-5aff76025242)
 where:
 - \(v_t\): Variance (stochastic volatility).
 - \(\kappa\): Mean-reversion rate.
@@ -112,7 +106,7 @@ where:
 #### **Jump Diffusion**
 Jump diffusion adds discrete jumps to Brownian motion, modeling sudden market movements:
 \[
-dS_t = S_t (\mu dt + \sigma dW_t + J_t)
+![CodeCogsEqn](https://github.com/user-attachments/assets/309650d1-a11d-4139-b3c0-6f5b2c58a9a3)
 \]
 where:
 - \(J_t = \sum_{i=1}^{N_t} Y_i\), with \(N_t\) being a Poisson process and \(Y_i\) jump sizes.
