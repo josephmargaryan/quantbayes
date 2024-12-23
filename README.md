@@ -42,7 +42,7 @@ ChronosForge includes a variety of modules and algorithms spanning multiple disc
 The **FFT Circulant Modules** ChronosForge features comprehensive modules that leverage the properties of circulant matrices and the Fast Fourier Transform (FFT) to enable efficient matrix-vector multiplication, significantly reducing the number of weights in neural networks.
 The eigenvectors of a circulant matrix depend only on the size of the matrix, not on the elements of the matrix. Furthermore, these eigenvectors are the columns of the FFT matrix. The eigenvalues depend on the matrix entries, but the eigenvectors do not.
 Each element of the FFT matrix represents a complex exponential corresponding to a rotation in the frequency domain. As a result, this technique is highly effective in scenarios where the features exhibit periodicity.
-![FFT for efficient Vector-Matrix Multiplication](images/fft_viz.png)
+![FFT for efficient Vector-Matrix Multiplication](images/FFT_viz.png)
 
 ---
 
