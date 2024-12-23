@@ -1,0 +1,18 @@
+{
+  "query": {
+    "type": "terminal",
+    "service": "attribute",
+    "parameters": {
+      "attribute": "rcsb_polymer_entity.polymer_length",
+      "operator": "between",
+      "value": [110, 140]
+    }
+  },
+  "return_type": "entry",
+  "request_options": {
+    "paginate": {
+      "start": 0,
+      "rows": 10000
+    }
+  }
+}

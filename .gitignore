@@ -1,0 +1,101 @@
+# Compiled source code
+*.class
+*.pyc
+*.pyo
+*.o
+*.out
+*.so
+
+# Virtual environments
+venv/
+.env/
+.venv/
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+*.swp
+*.swo
+*.bak
+*.orig
+
+# Secrets and sensitive files
+*.env
+*.key
+*.pem
+*.crt
+*.secret
+*.token
+*.json # Adjust if you want some JSON files tracked
+
+# Data files
+*.csv
+*.tsv
+*.dat
+*.db
+*.sqlite
+*.sqlite3
+
+# Package manager files
+node_modules/
+package-lock.json
+yarn.lock
+npm-debug.log
+
+# IDE and editor settings
+.vscode/
+.idea/
+*.iml
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Coverage reports
+coverage/
+*.lcov
+.nyc_output/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+*.whl
+
+# Temporary files and cache
+__pycache__/
+*.cache
+*.stackdump
+*.pid
+*.seed
+*.h5
+*.hdf5
+
+# Backup files
+*.bak
+*.old
+*.swp
+*.swo
+*.tmp
+
+# Python packaging
+*.egg
+*.egg-info/
+.eggs/
+
+# Compressed files
+*.zip
+*.tar.gz
+*.rar
+*.7z
+
+# Git-specific files
+.git/
+!.gitignore
+
