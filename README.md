@@ -56,10 +56,8 @@ Each element of the FFT matrix represents a complex exponential corresponding to
 ### **Bayesian Inference**
 Bayesian Neural Networks (BNNs) integrate the power of neural networks with Bayesian principles to model uncertainty effectively. ChronosForge offers a robust set of tools for Bayesian Inference, enabling precise posterior estimation in various applications.
 
-  - **No U-Turn Sampler:** An adaptive Hamiltonian Monte Carlo method for efficient sampling.$$
-\frac{\mathrm{d} q}{\mathrm{~d} t}=+\frac{\partial H}{\partial p}, \quad
-\frac{\mathrm{~d} p}{\mathrm{~d} t}=-\frac{\partial H}{\partial q}
-$$
+  - **No U-Turn Sampler:** An adaptive Hamiltonian Monte Carlo method for efficient sampling. [\frac{\mathrm{d} q}{\mathrm{~d} t}=+\frac{\partial H}{\partial p}, \quad
+\frac{\mathrm{~d} p}{\mathrm{~d} t}=-\frac{\partial H}{\partial q}](https://latex.codecogs.com/svg.image?\frac{\mathrm{d}q}{\mathrm{~d}t}=&plus;\frac{\partial&space;H}{\partial&space;p},\quad\frac{\mathrm{~d}p}{\mathrm{~d}t}=-\frac{\partial&space;H}{\partial&space;q})
   - **Stochastic Variational Inference:** Scalable inference for high-dimensional data using gradient-based optimization. ![CodeCogsEqn](https://github.com/user-attachments/assets/fb77ef27-1de5-4aa7-9cdc-fbef2a5807fe)
 
   - **Stein Variational Inference:** Non-parametric inference using particle-based methods to approximate the posterior. Stein Variational Inference, using Stein Variational Gradient Descent (SVGD), can be expressed as an update rule for particles![CodeCogsEqn](https://github.com/user-attachments/assets/0bee736a-f537-4f21-a120-ab1b9f79233d)
