@@ -39,7 +39,7 @@ ChronosForge includes a variety of modules and algorithms spanning multiple disc
 - **Reinforcement Learning**: Optimize decision-making in dynamic environments.
 
 ### **FFT Circulant Applications**
-The **FFT Circulant Modules** ChronoForge includes comprehensive modules for utilizing the properties of Circulant matrices with Fast Fourier Transform (FFT) for efficient Matrix-Vector Multiplication while reducing the number of weights in neural networks.
+The **FFT Circulant Modules** ChronosForge features comprehensive modules that leverage the properties of circulant matrices and the Fast Fourier Transform (FFT) to enable efficient matrix-vector multiplication, significantly reducing the number of weights in neural networks.
 ![CodeCogsEqn](https://github.com/user-attachments/assets/20b050c3-0207-4f0b-aed3-2f52ab55dc61)
 The eigenvectors of a circulant matrix depend only on the size of the matrix, not on the elements of the matrix. Furthermore, these eigenvectors are the columns of the FFT matrix. The eigenvalues depend on the matrix entries, but the eigenvectors do not.
 ![CodeCogsEqn](https://github.com/user-attachments/assets/07c0c15d-5027-4899-8732-4e56a309542c)
@@ -82,29 +82,13 @@ Brownian motion forms the backbone of stochastic processes in finance, modeling 
 
 ![CodeCogsEqn](https://github.com/user-attachments/assets/19ba8d69-d7c0-47e9-b9b6-c0a9b799bd68)
 
-where:
-- \(S_t\): Stock price at time \(t\).
-- \(\mu\): Drift (average return).
-- \(\sigma\): Volatility.
-- \(W_t\): Wiener process (standard Brownian motion).
 
-#### **Heston Model**
-The Heston model extends Brownian motion by introducing stochastic volatility:
-![CodeCogsEqn](https://github.com/user-attachments/assets/cb49ab9e-5946-46e8-8581-5aff76025242)
-where:
-- \(v_t\): Variance (stochastic volatility).
-- \(\kappa\): Mean-reversion rate.
-- \(\theta\): Long-term variance.
-- \(\xi\): Volatility of variance.
-- \(W_t\), \(Z_t\): Correlated Wiener processes.
 
 #### **Jump Diffusion**
 Jump diffusion adds discrete jumps to Brownian motion, modeling sudden market movements:
 \[
 ![CodeCogsEqn](https://github.com/user-attachments/assets/309650d1-a11d-4139-b3c0-6f5b2c58a9a3)
 \]
-where:
-- \(J_t = \sum_{i=1}^{N_t} Y_i\), with \(N_t\) being a Poisson process and \(Y_i\) jump sizes.
 
 > **Visualization**:
 
