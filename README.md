@@ -45,9 +45,28 @@ The eigenvectors of a circulant matrix depend only on the size of the matrix, no
 ![CodeCogsEqn](https://github.com/user-attachments/assets/07c0c15d-5027-4899-8732-4e56a309542c)
 Each element of the FFT matrix represents a complex exponential corresponding to a rotation in the frequency domain. As a result, this technique is highly effective in scenarios where the features exhibit periodicity.
 
+
+
 ![FFT Circulant Example](images/fft_circulant_example.png)
 
 ![FFT Efficienty](images/FFT_viz.png)
+
+---
+
+### **Bayesian Inference**
+Bayesian Neural Networks (BNNs) integrate the power of neural networks with Bayesian principles to model uncertainty effectively. ChronosForge offers a robust set of tools for Bayesian Inference, enabling precise posterior estimation in various applications.
+
+  - **No U-Turn Sampler:** An adaptive Hamiltonian Monte Carlo method for efficient sampling. ![CodeCogsEqn](https://github.com/user-attachments/assets/3cc4b74c-029a-4efd-aacb-0f1e559015c0)
+
+  - **Stochastic Variational Inference:** Scalable inference for high-dimensional data using gradient-based optimization. ![CodeCogsEqn](https://github.com/user-attachments/assets/fb77ef27-1de5-4aa7-9cdc-fbef2a5807fe)
+
+  - **Stein Variational Inference:** Non-parametric inference using particle-based methods to approximate the posterior. Stein Variational Inference, using Stein Variational Gradient Descent (SVGD), can be expressed as an update rule for particles![CodeCogsEqn](https://github.com/user-attachments/assets/0bee736a-f537-4f21-a120-ab1b9f79233d)
+ where![CodeCogsEqn](https://github.com/user-attachments/assets/131da725-5b95-4179-ae15-d76d1f4d2643)
+ is the functional gradient that minimizes the KL divergence, given by:![CodeCogsEqn](https://github.com/user-attachments/assets/6b047692-da16-49ed-94aa-3fb4dd03a478)
+
+These methods collectively aim to provide accurate approximations of posterior distributions, supporting probabilistic reasoning and decision-making. ![CodeCogsEqn](https://github.com/user-attachments/assets/31e3b9f0-aec2-4051-92aa-40a891997d9f)
+![BNN for Regression](images/bnn_regression.png)
+![3D Scatter Plot of Sentiments](images/decision_boundary.png)
 
 ---
 
