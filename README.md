@@ -39,17 +39,15 @@ ChronosForge includes a variety of modules and algorithms spanning multiple disc
 - **Reinforcement Learning**: Optimize decision-making in dynamic environments.
 
 ### **FFT Circulant Applications**
-The **FFT Circulant Modules** in ChronosForge bring groundbreaking efficiency to matrix operations, reducing the time complexity from \(O(n^2)\) to \(O(n \log n)\). These modules excel in:
-- Capturing periodicity in features for improved modeling accuracy.
-- Efficiently handling large-scale matrix multiplications in probabilistic and time-series models, where the features express periodicity.
-
-
+The **FFT Circulant Modules** ChronoForge includes comprehensive modules for utilizing the properties of Circulant matrices with Fast Fourier Transform (FFT) for efficient Matrix-Vector Multiplication while reducing the number of weights in neural networks.
+![CodeCogsEqn](https://github.com/user-attachments/assets/20b050c3-0207-4f0b-aed3-2f52ab55dc61)
+The eigenvectors of a circulant matrix depend only on the size of the matrix, not on the elements of the matrix. Furthermore, these eigenvectors are the columns of the FFT matrix. The eigenvalues depend on the matrix entries, but the eigenvectors do not.
 ![CodeCogsEqn](https://github.com/user-attachments/assets/07c0c15d-5027-4899-8732-4e56a309542c)
-
+Each element of the FFT matrix represents a complex exponential corresponding to a rotation in the frequency domain. As a result, this technique is highly effective in scenarios where the features exhibit periodicity.
 
 ![FFT Circulant Example](images/fft_circulant_example.png)
 
-> **Figure**: Comparison of \(O(n^2)\) vs \(O(n \log n)\) matrix multiplications, highlighting the power of FFT Circulant techniques.
+![FFT Efficienty](images/FFT_viz.png)
 
 ---
 
