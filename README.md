@@ -24,12 +24,12 @@ ChronosForge includes a variety of modules and algorithms spanning multiple disc
 - **Gaussian Processes (GP)**: Flexible models for uncertainty quantification.
 - **Variational Inference (VI)**: Scalable Bayesian inference techniques.
 - **Markov Models (HMM, DMM)**: For sequential data analysis.
-- **Monte Carlo Methods**: No U-turn sampler to estimate the posterior distribution![CodeCogsEqn](https://github.com/user-attachments/assets/e6ca9fe8-3f34-4359-8936-459e4b0382f8)
+- **Monte Carlo Methods**: No U-turn sampler to estimate the posterior distribution
 
 
 ### **Optimization and Theoretical Bounds**
 - **Constrained Lagrangian Optimization**: Solve constrained optimization problems.
-![CodeCogsEqn](https://github.com/user-attachments/assets/f38dd6cf-7fc1-4ffe-89b7-54a6d8ba44ae)
+
 
 - **Theoretical Bounds**: Analyze generalization using PAC-Bayes, VC dimensions, and Hoeffding inequalities.
 
@@ -40,31 +40,20 @@ ChronosForge includes a variety of modules and algorithms spanning multiple disc
 
 ### **FFT Circulant Applications**
 The **FFT Circulant Modules** ChronosForge features comprehensive modules that leverage the properties of circulant matrices and the Fast Fourier Transform (FFT) to enable efficient matrix-vector multiplication, significantly reducing the number of weights in neural networks.
-![CodeCogsEqn](https://github.com/user-attachments/assets/20b050c3-0207-4f0b-aed3-2f52ab55dc61)
 The eigenvectors of a circulant matrix depend only on the size of the matrix, not on the elements of the matrix. Furthermore, these eigenvectors are the columns of the FFT matrix. The eigenvalues depend on the matrix entries, but the eigenvectors do not.
-![CodeCogsEqn](https://github.com/user-attachments/assets/07c0c15d-5027-4899-8732-4e56a309542c)
 Each element of the FFT matrix represents a complex exponential corresponding to a rotation in the frequency domain. As a result, this technique is highly effective in scenarios where the features exhibit periodicity.
-
-
-
-![FFT Circulant Example](images/fft_circulant_example.png)
-
-![FFT Efficienty](images/FFT_viz.png)
 
 ---
 
 ### **Bayesian Inference**
 Bayesian Neural Networks (BNNs) integrate the power of neural networks with Bayesian principles to model uncertainty effectively. ChronosForge offers a robust set of tools for Bayesian Inference, enabling precise posterior estimation in various applications.
 
-  - **No U-Turn Sampler:** An adaptive Hamiltonian Monte Carlo method for efficient sampling. [\frac{\mathrm{d} q}{\mathrm{~d} t}=+\frac{\partial H}{\partial p}, \quad
-\frac{\mathrm{~d} p}{\mathrm{~d} t}=-\frac{\partial H}{\partial q}](https://latex.codecogs.com/svg.image?\frac{\mathrm{d}q}{\mathrm{~d}t}=&plus;\frac{\partial&space;H}{\partial&space;p},\quad\frac{\mathrm{~d}p}{\mathrm{~d}t}=-\frac{\partial&space;H}{\partial&space;q})
-  - **Stochastic Variational Inference:** Scalable inference for high-dimensional data using gradient-based optimization. ![CodeCogsEqn](https://github.com/user-attachments/assets/fb77ef27-1de5-4aa7-9cdc-fbef2a5807fe)
+  - **No U-Turn Sampler:** An adaptive Hamiltonian Monte Carlo method for efficient sampling. 
+  - **Stochastic Variational Inference:** Scalable inference for high-dimensional data using gradient-based optimization. 
 
-  - **Stein Variational Inference:** Non-parametric inference using particle-based methods to approximate the posterior. Stein Variational Inference, using Stein Variational Gradient Descent (SVGD), can be expressed as an update rule for particles![CodeCogsEqn](https://github.com/user-attachments/assets/0bee736a-f537-4f21-a120-ab1b9f79233d)
- where![CodeCogsEqn](https://github.com/user-attachments/assets/131da725-5b95-4179-ae15-d76d1f4d2643)
- is the functional gradient that minimizes the KL divergence, given by:![CodeCogsEqn](https://github.com/user-attachments/assets/6b047692-da16-49ed-94aa-3fb4dd03a478)
+  - **Stein Variational Inference:** Non-parametric inference using particle-based methods to approximate the posterior. 
 
-These methods collectively aim to provide accurate approximations of posterior distributions, supporting probabilistic reasoning and decision-making. [![CodeCogsEqn](https://github.com/user-attachments/assets/befc806b-7b50-4bc1-a04b-f4fbb5fbea7a)](https://latex.codecogs.com/svg.image?P(y%5E%7B*%7D%7Cx%5E%7B*%7D,%5Cmathcal%7BD%7D)%5Cint%20P(y%5E%7B*%7D%7Cx%5E%7B*%7D,%5Cmathbf%7Bw%7D)P(%5Cmathbf%7Bw%7D%7C%5Cmathcal%7BD%7D)d%5Cmathbf%7Bw%7D)
+These methods collectively aim to provide accurate approximations of posterior distributions, supporting probabilistic reasoning and decision-making.
 
 ![BNN for Regression](images/bnn_regression.png)
 ![3D Scatter Plot of Sentiments](images/decision_boundary.png)
