@@ -64,7 +64,7 @@ Bayesian Neural Networks (BNNs) integrate the power of neural networks with Baye
  where![CodeCogsEqn](https://github.com/user-attachments/assets/131da725-5b95-4179-ae15-d76d1f4d2643)
  is the functional gradient that minimizes the KL divergence, given by:![CodeCogsEqn](https://github.com/user-attachments/assets/6b047692-da16-49ed-94aa-3fb4dd03a478)
 
-These methods collectively aim to provide accurate approximations of posterior distributions, supporting probabilistic reasoning and decision-making. ![CodeCogsEqn](https://github.com/user-attachments/assets/befc806b-7b50-4bc1-a04b-f4fbb5fbea7a)
+These methods collectively aim to provide accurate approximations of posterior distributions, supporting probabilistic reasoning and decision-making. [![CodeCogsEqn](https://github.com/user-attachments/assets/befc806b-7b50-4bc1-a04b-f4fbb5fbea7a)](https://latex.codecogs.com/svg.image?P(y%5E%7B*%7D%7Cx%5E%7B*%7D,%5Cmathcal%7BD%7D)%5Cint%20P(y%5E%7B*%7D%7Cx%5E%7B*%7D,%5Cmathbf%7Bw%7D)P(%5Cmathbf%7Bw%7D%7C%5Cmathcal%7BD%7D)d%5Cmathbf%7Bw%7D)
 
 ![BNN for Regression](images/bnn_regression.png)
 ![3D Scatter Plot of Sentiments](images/decision_boundary.png)
