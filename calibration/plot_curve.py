@@ -1,7 +1,39 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.calibration import calibration_curve
-from sklearn.metrics import brier_score_loss
+from sklearn.metrics import roc_curve, auc
+
+def plot_roc_curve(y_true, y_scores, title="ROC Curve"):
+    """
+    Plot an ROC curve for binary classification.
+
+    Parameters:
+    - y_true: array-like of shape (n_samples,)
+        True binary labels (0 or 1).
+    - y_scores: array-like of shape (n_samples,)
+        Target scores, which can be probabilities or confidence values.
+    - title: str
+        Title for the plot (default: "ROC Curve").
+
+    Returns:
+    - None. Displays the plot.
+    """
+    # Calculate false positive rate, true positive rate, and thresholds
+    fpr, tpr, thresholds = roc_curve(y_true, y_scores)
+    
+    # Calculate AUC (Area Under the Curve)
+    roc_auc = auc(fpr, tpr)
+    
+    # Plot the ROC curve
+    plt.figure(figsize=(8, 6))
+    plt.plot(fpr, tpr, color='blue', lw=2, label=f'ROC Curve (AUC = {roc_auc:.2f})')
+    plt.plot([0, 1], [0, 1], color='gray', linestyle='--', lw=1)  # Diagonal line
+    plt.xlabel('False Positive Rate (FPR)')
+    plt.ylabel('True Positive Rate (TPR)')
+    plt.title(title)
+    plt.legend(loc="lower right")
+    plt.grid(alpha=0.3)
+    plt.show()
 
 
 def plot_calibration_curve(y_true, y_prob, num_bins=10, plot_type="binary"):
