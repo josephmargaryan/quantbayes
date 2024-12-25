@@ -205,8 +205,8 @@ def generate_synthetic_stock_data(num_stocks=10, num_days=500, seed=42):
 
 
 if __name__ == "__main__":
-    from sklearn.ensemble import RandomForestRegressor
-    from sklearn.linear_model import LinearRegression
+    from catboost import CatBoostRegressor
+    from lightgbm import LGBMRegressor
     from xgboost import XGBRegressor
 
     synthetic_data = generate_synthetic_stock_data(num_stocks=10, num_days=500)
@@ -236,8 +236,8 @@ if __name__ == "__main__":
 
     # Define models
     models = {
-        "RandomForest": RandomForestRegressor(),
-        "LinearRegression": LinearRegression(),
+        "CatBoostRegressor": CatBoostRegressor(silent=True),
+        "LGBMRegressor": LGBMRegressor(),
         "XGBoost": XGBRegressor(),
     }
 

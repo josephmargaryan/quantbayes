@@ -45,6 +45,7 @@ class JumpDiffusionModel:
 
         return prices
 
+
 def plot_simulated_prices(prices, steps):
     plt.figure(figsize=(10, 6))
     plt.plot(prices[:, :50])  # Plot the first 50 paths
@@ -55,8 +56,13 @@ def plot_simulated_prices(prices, steps):
     # Add LaTeX formula to the plot
     formula = r"$dS_t = S_t (\mu dt + \sigma dW_t + J_t), \ J_t = \sum_{i=1}^{N_t} Y_i$"
     plt.text(
-        0.02, 0.95, formula, transform=plt.gca().transAxes,
-        fontsize=12, verticalalignment="top", bbox=dict(boxstyle="round", alpha=0.1)
+        0.02,
+        0.95,
+        formula,
+        transform=plt.gca().transAxes,
+        fontsize=12,
+        verticalalignment="top",
+        bbox=dict(boxstyle="round", alpha=0.1),
     )
 
     plt.grid()

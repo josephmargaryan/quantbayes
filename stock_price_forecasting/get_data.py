@@ -147,7 +147,7 @@ class StockData:
 
 if __name__ == "__main__":
     # Initialize StockData
-    stock_data = StockData(ticker="AAPL", start_date="2023-01-01", interval="1h")
+    stock_data = StockData(ticker="AAPL", start_date="2024-11-01", interval="1h")
 
     # Get ML-ready data
     X, y = stock_data.get_ml_ready_data()

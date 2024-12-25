@@ -22,6 +22,8 @@ for company in unique_companies:
 stock_data_combined = pd.concat(company_stock_data.values(), ignore_index=True)
 
 merged_data = pd.merge(sentiment_data, stock_data_combined, on="Company", how="inner")
-
+merged_data = merged_data[
+    ["Company", "predictions", "Close", "Volatility", "RSI"]
+].rename(columns={"predictions": "predicted_labels"})
 merged_data.to_csv("merged_data.csv", index=False)
 print("Merged data saved to 'merged_data.csv'")

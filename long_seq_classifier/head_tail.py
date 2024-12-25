@@ -56,19 +56,15 @@ class HeadTailDatasetInference(Dataset):
     def __getitem__(self, index):
         sentence = self.data.iloc[index]["Sentence"]
 
-        # Tokenize the sentence
         tokens = self.tokenizer(sentence, add_special_tokens=False, truncation=False)[
             "input_ids"
         ]
 
-        # Handle long sequences by keeping the head and tail tokens
         if len(tokens) > self.max_length - 2:
             tokens = tokens[: self.head_tokens] + tokens[-self.tail_tokens :]
 
-        # Add special tokens
         tokens = [self.tokenizer.cls_token_id] + tokens + [self.tokenizer.sep_token_id]
 
-        # Create attention mask
         attention_mask = [1] * len(tokens)
         while len(tokens) < self.max_length:
             tokens.append(self.tokenizer.pad_token_id)
@@ -109,26 +105,21 @@ def extract_hidden_states(model, dataloader, device, has_labels=True):
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
 
-            # Forward pass to get outputs
             outputs = model(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
                 output_hidden_states=True,
             )
 
-            # Extract CLS embeddings
-            hidden_states = outputs.hidden_states[-1][:, 0, :]  # CLS token embeddings
+            hidden_states = outputs.hidden_states[-1][:, 0, :]
             all_embeddings.append(hidden_states.cpu())
 
-            # Extract logits
             logits = outputs.logits
             all_logits.append(logits.cpu())
 
-            # Compute predictions
             predictions = torch.argmax(logits, dim=1)
             all_predictions.append(predictions.cpu())
 
-            # Extract labels if present
             if has_labels:
                 labels = batch["labels"].to(device)
                 all_labels.append(labels.cpu())
@@ -162,10 +153,10 @@ if __name__ == "__main__":
     ### For inference without labels
     """    
     tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
-    model = AutoModelForSequenceClassification.from_pretrained("bert-base-uncased", num_labels=len(label_encoder.classes_))
+    model = AutoModelForSequenceClassification.from_pretrained("bert-base-uncased", num_labels=3)
     model.to(device)
     dataset = HeadTailDatasetInference(df, tokenizer, max_length=510, head_tokens=127, tail_tokens=387)
     dataloader = DataLoader(dataset, batch_size=16, shuffle=False)
 
-    embeddings, logits, predictions, _ = extract_hidden_states(model, dataloader, device, has_labels=False)
+    embeddings, logits, predictions, labels = extract_hidden_states(model, dataloader, device, has_labels=False)
     """

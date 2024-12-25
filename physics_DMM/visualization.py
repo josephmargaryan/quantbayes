@@ -110,3 +110,58 @@ def visualize_predictions(dmm, data_loader, device, num_examples=1, num_samples=
         plt.legend()
         plt.tight_layout()
         plt.show()
+
+
+import matplotlib.pyplot as plt
+import numpy as np
+
+
+def visualize_full_predictions(dmm, data, device):
+    """
+    Visualize predictions and uncertainty for the entire dataset.
+
+    Args:
+        dmm: Trained DMM model.
+        data: Entire dataset as a Pandas DataFrame.
+        device: Torch device.
+    """
+    dmm.eval()
+    ground_truth = data["Close"].values  # Target variable
+    features = data.drop(columns=["Close"]).values  # Input features
+
+    # Convert to Torch tensor
+    features_tensor = (
+        torch.tensor(features, dtype=torch.float32).unsqueeze(0).to(device)
+    )
+
+    with torch.no_grad():
+        # Get predictions from the guide
+        loc, scale = dmm.guide_rnn(features_tensor)
+        loc = loc.squeeze(0).cpu().numpy()  # Predicted means
+        scale = scale.squeeze(0).cpu().numpy()  # Predicted standard deviations
+
+    # Plot ground truth, predictions, and uncertainty bounds
+    time_steps = np.arange(len(ground_truth))
+    plt.figure(figsize=(15, 8))
+
+    # Ground truth
+    plt.plot(time_steps, ground_truth, label="Ground Truth", color="blue")
+
+    # Predictions
+    plt.plot(time_steps, loc[:, 0], label="Predictions (Mean)", color="orange")
+
+    # Uncertainty bounds (±2 stddev)
+    plt.fill_between(
+        time_steps,
+        loc[:, 0] - 2 * scale[:, 0],
+        loc[:, 0] + 2 * scale[:, 0],
+        color="orange",
+        alpha=0.3,
+        label="Uncertainty (±2 stddev)",
+    )
+
+    plt.xlabel("Time Step")
+    plt.ylabel("Close Price")
+    plt.title("Predictions, Ground Truth, and Uncertainty")
+    plt.legend()
+    plt.show()

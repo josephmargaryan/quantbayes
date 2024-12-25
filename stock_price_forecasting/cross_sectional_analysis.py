@@ -88,7 +88,9 @@ if __name__ == "__main__":
         stock = yf.Ticker(ticker)
         data[ticker] = stock.history(start="2020-01-01", interval="1d")["Close"]
 
-    # Cross-Sectional Analysis
+    print(data.dtypes)
+    print(data.head())
+
     analysis = CrossSectionalAnalysis(data)
     analysis.preprocess_data()
     analysis.apply_pca(n_components=2)
