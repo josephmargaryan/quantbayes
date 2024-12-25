@@ -1,5 +1,5 @@
 from numpyro.contrib.einstein import SteinVI, RBFKernel, MixtureGuidePredictive
-import jax 
+import jax
 import jax.numpy as jnp
 from jax import random
 from numpyro.optim import Adam, Adagrad
@@ -25,13 +25,7 @@ def train_regressor(bnn_model, X_train, y_train, num_steps=1000):
     )
 
     rng_key = random.PRNGKey(0)
-    stein_result = stein.run(
-        rng_key,
-        num_steps,
-        X_train,
-        y_train,
-        progress_bar=True
-    )
+    stein_result = stein.run(rng_key, num_steps, X_train, y_train, progress_bar=True)
 
     return stein, stein_result
 
@@ -54,16 +48,10 @@ def train_multiclass(bnn_model, X_train, y_train, num_classes, num_steps=1000):
 
     rng_key = random.PRNGKey(0)
     stein_result = stein.run(
-        rng_key,
-        num_steps,
-        X_train,
-        y_train,
-        num_classes=num_classes,
-        progress_bar=True
+        rng_key, num_steps, X_train, y_train, num_classes=num_classes, progress_bar=True
     )
 
     return stein, stein_result
-
 
 
 def train_binary(bnn_model, X_train, y_train, num_steps=1000):
@@ -83,13 +71,7 @@ def train_binary(bnn_model, X_train, y_train, num_steps=1000):
     )
 
     rng_key = random.PRNGKey(0)
-    stein_result = stein.run(
-        rng_key,
-        num_steps,
-        X_train,
-        y_train,
-        progress_bar=True
-    )
+    stein_result = stein.run(rng_key, num_steps, X_train, y_train, progress_bar=True)
 
     return stein, stein_result
 
@@ -103,7 +85,7 @@ def predict_regressor(stein, bnn_model, stein_result, X_test):
         stein.guide,
         params=stein.get_params(stein_result.state),
         num_samples=100,
-        guide_sites=stein.guide_sites
+        guide_sites=stein.guide_sites,
     )
 
     rng_key = random.PRNGKey(1)
@@ -111,10 +93,12 @@ def predict_regressor(stein, bnn_model, stein_result, X_test):
 
     return predictions
 
+
 def predict_multiclass(stein, bnn_model, stein_result, X_test, num_classes=3):
     """
     Generate predictions for multiclass classification using a trained Bayesian Neural Network.
     """
+
     def bnn_model_multiclass(X, y=None):
         return bnn_model(X, y=y, num_classes=num_classes)
 
@@ -129,10 +113,9 @@ def predict_multiclass(stein, bnn_model, stein_result, X_test, num_classes=3):
     rng_key = random.PRNGKey(1)
     pred_samples = predictive(rng_key, X_test)
 
-    probs_samples = pred_samples["probs"]  
-    
-    return probs_samples
+    probs_samples = pred_samples["probs"]
 
+    return probs_samples
 
 
 def predict_binary(stein, bnn_model, stein_result, X_test):
@@ -144,15 +127,13 @@ def predict_binary(stein, bnn_model, stein_result, X_test):
         bnn_model,
         stein.guide,
         params=stein.get_params(stein_result.state),
-        num_samples=100,  
+        num_samples=100,
         guide_sites=stein.guide_sites,
     )
 
     rng_key = random.PRNGKey(1)
     pred_samples = predictive(rng_key, X_test)["obs"]
     return pred_samples
-
-
 
 
 def visualize_regression(
@@ -223,7 +204,10 @@ def visualize_regression(
     plt.grid(alpha=0.4)
     plt.show()
 
-def visualize_binary(model, X, y, stein, stein_results, resolution=100, features=(0, 1)):
+
+def visualize_binary(
+    model, X, y, stein, stein_results, resolution=100, features=(0, 1)
+):
     """
     Plot decision boundaries with uncertainty for binary classification, selecting specific features for visualization.
     Parameters:
@@ -244,7 +228,9 @@ def visualize_binary(model, X, y, stein, stein_results, resolution=100, features
     y_min, y_max = X_selected[:, 1].min() - 1, X_selected[:, 1].max() + 1
 
     # Generate grid of points
-    xx, yy = np.meshgrid(np.linspace(x_min, x_max, resolution), np.linspace(y_min, y_max, resolution))
+    xx, yy = np.meshgrid(
+        np.linspace(x_min, x_max, resolution), np.linspace(y_min, y_max, resolution)
+    )
     grid_points = jnp.array(np.c_[xx.ravel(), yy.ravel()])
 
     # Extend grid_points back to original dimensionality
@@ -253,7 +239,9 @@ def visualize_binary(model, X, y, stein, stein_results, resolution=100, features
     grid_points_full = grid_points_full.at[:, feature_2].set(grid_points[:, 1])
 
     # Get predicted probabilities and uncertainties
-    pred_samples = predict_binary(stein, model, stein_results, grid_points_full)  # Shape: (num_samples, num_points)
+    pred_samples = predict_binary(
+        stein, model, stein_results, grid_points_full
+    )  # Shape: (num_samples, num_points)
     mean_probs = pred_samples.mean(axis=0)  # Shape: (num_points,)
     uncertainty = pred_samples.std(axis=0)  # Standard deviation as uncertainty metric
 
@@ -271,14 +259,20 @@ def visualize_binary(model, X, y, stein, stein_results, resolution=100, features
     plt.colorbar(label="Uncertainty (Standard Deviation)")
 
     # Scatter actual data points
-    plt.scatter(X_selected[:, 0], X_selected[:, 1], c=y, edgecolor="k", cmap=plt.cm.RdYlBu)
-    plt.title(f"Binary Decision Boundaries with Uncertainty (Features {features[0]} and {features[1]})")
+    plt.scatter(
+        X_selected[:, 0], X_selected[:, 1], c=y, edgecolor="k", cmap=plt.cm.RdYlBu
+    )
+    plt.title(
+        f"Binary Decision Boundaries with Uncertainty (Features {features[0]} and {features[1]})"
+    )
     plt.xlabel(f"Feature {feature_1 + 1}")
     plt.ylabel(f"Feature {feature_2 + 1}")
     plt.show()
 
 
-def visualize_multiclass(model, X, y, stein, stein_results, num_classes=3, resolution=100, features=(0, 1)):
+def visualize_multiclass(
+    model, X, y, stein, stein_results, num_classes=3, resolution=100, features=(0, 1)
+):
     """
     Plot decision boundaries with uncertainty for multiclass classification, selecting specific features for visualization.
     Parameters:
@@ -300,7 +294,9 @@ def visualize_multiclass(model, X, y, stein, stein_results, num_classes=3, resol
     y_min, y_max = X_selected[:, 1].min() - 1, X_selected[:, 1].max() + 1
 
     # Generate grid of points
-    xx, yy = np.meshgrid(np.linspace(x_min, x_max, resolution), np.linspace(y_min, y_max, resolution))
+    xx, yy = np.meshgrid(
+        np.linspace(x_min, x_max, resolution), np.linspace(y_min, y_max, resolution)
+    )
     grid_points = jnp.array(np.c_[xx.ravel(), yy.ravel()])
 
     # Extend grid_points back to original dimensionality
@@ -309,9 +305,13 @@ def visualize_multiclass(model, X, y, stein, stein_results, num_classes=3, resol
     grid_points_full = grid_points_full.at[:, feature_2].set(grid_points[:, 1])
 
     # Get predicted probabilities and uncertainties
-    pred_samples = predict_multiclass(stein, model, stein_results, grid_points_full, num_classes)
+    pred_samples = predict_multiclass(
+        stein, model, stein_results, grid_points_full, num_classes
+    )
     mean_probs = pred_samples.mean(axis=0)  # Average probabilities across particles
-    uncertainty = -jnp.sum(mean_probs * jnp.log(mean_probs + 1e-9), axis=1)  # Entropy as uncertainty metric
+    uncertainty = -jnp.sum(
+        mean_probs * jnp.log(mean_probs + 1e-9), axis=1
+    )  # Entropy as uncertainty metric
 
     # Reshape for plotting
     mean_class = jnp.argmax(mean_probs, axis=1).reshape(xx.shape)
@@ -327,8 +327,12 @@ def visualize_multiclass(model, X, y, stein, stein_results, num_classes=3, resol
     plt.colorbar(label="Uncertainty (Entropy)")
 
     # Scatter actual points
-    plt.scatter(X_selected[:, 0], X_selected[:, 1], c=y, edgecolor="k", cmap=plt.cm.RdYlBu)
-    plt.title(f"Multiclass Decision Boundaries with Uncertainty (Features {features[0]} and {features[1]})")
+    plt.scatter(
+        X_selected[:, 0], X_selected[:, 1], c=y, edgecolor="k", cmap=plt.cm.RdYlBu
+    )
+    plt.title(
+        f"Multiclass Decision Boundaries with Uncertainty (Features {features[0]} and {features[1]})"
+    )
     plt.xlabel(f"Feature {feature_1 + 1}")
     plt.ylabel(f"Feature {feature_2 + 1}")
     plt.show()

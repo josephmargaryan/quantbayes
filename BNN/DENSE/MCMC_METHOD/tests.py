@@ -102,6 +102,7 @@ def test_binary():
         grid_resolution=200,
     )
 
+
 def test_multiclass():
     rng_key = random.key(2)
     df = generate_multiclass_classification_data()

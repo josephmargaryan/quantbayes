@@ -4,7 +4,7 @@ from sklearn.datasets import make_classification
 from sklearn.datasets import make_blobs
 
 
-def generate_simple_regression_data(n_samples = 1000, n_features = 3, random_seed=None):
+def generate_simple_regression_data(n_samples=1000, n_features=3, random_seed=None):
     """
     Generate simple, predictable synthetic data with features and target.
 

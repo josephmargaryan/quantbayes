@@ -16,7 +16,7 @@ from utils import (
     predict_regressor,
     visualize_regression,
     visualize_binary,
-    visualize_multiclass
+    visualize_multiclass,
 )
 from sklearn.metrics import root_mean_squared_error, accuracy_score, log_loss
 import numpy as np
@@ -55,7 +55,9 @@ def test_binary():
     df = generate_binary_classification_data()
     X, y = df.drop(columns=["target"], axis=1), df["target"]
     X, y = jnp.array(X), jnp.array(y)
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=34)
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=34
+    )
 
     stein, stein_results = train_binary(binary_model, X_train, y_train, 1000)
 
@@ -68,20 +70,33 @@ def test_binary():
     visualize_binary(binary_model, X_test, y_test, stein, stein_results, 100, (2, 3))
 
 
-
-
 def test_multiclass():
     df = generate_multiclass_classification_data()
     X, y = df.drop(columns=["target"], axis=1), df["target"]
     X, y = jnp.array(X), jnp.array(y)
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=24)
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=24
+    )
     num_classes = len(jnp.unique(y_train))
-    stein, stein_results = train_multiclass(multiclass_model, X_train, y_train, num_classes)
-    pred_samples = predict_multiclass(stein, multiclass_model, stein_results, X_test, num_classes)
+    stein, stein_results = train_multiclass(
+        multiclass_model, X_train, y_train, num_classes
+    )
+    pred_samples = predict_multiclass(
+        stein, multiclass_model, stein_results, X_test, num_classes
+    )
     mean_predictions = pred_samples.mean(axis=0)
     loss = log_loss(np.array(y_test), np.array(mean_predictions))
     print(f"Loss: {loss}")
-    visualize_multiclass(multiclass_model, X_test, y_test, stein, stein_results, num_classes=X_train.shape[1], resolution=100, features=(0, 1))
+    visualize_multiclass(
+        multiclass_model,
+        X_test,
+        y_test,
+        stein,
+        stein_results,
+        num_classes=X_train.shape[1],
+        resolution=100,
+        features=(0, 1),
+    )
 
 
 if __name__ == "__main__":

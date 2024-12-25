@@ -11,15 +11,12 @@ def regression_model(X, y=None):
     """
     input_size = X.shape[1]
 
-    # Priors for circulant matrix and bias
     first_row = numpyro.sample("first_row", dist.Normal(0, 1).expand([input_size]))
     bias_circulant = numpyro.sample("bias_circulant", dist.Normal(0, 1))
 
-    # Circulant layer
     hidden = circulant_matrix_multiply(first_row, X) + bias_circulant
     hidden = jax.nn.relu(hidden)
 
-    # Output layer
     weights_out = numpyro.sample(
         "weights_out", dist.Normal(0, 1).expand([input_size, 1])
     )
@@ -27,7 +24,6 @@ def regression_model(X, y=None):
 
     predictions = jnp.matmul(hidden, weights_out).squeeze() + bias_out
 
-    # Likelihood
     sigma = numpyro.sample("sigma", dist.Exponential(1.0))
     numpyro.sample("obs", dist.Normal(predictions, sigma), obs=y)
 
@@ -72,5 +68,5 @@ def multiclass_model(X, y=None, n_classes=3):
     bias_out = numpyro.sample("bias_out", dist.Normal(0, 1).expand([n_classes]))
 
     logits = jnp.matmul(hidden, weights_out) + bias_out
-    numpyro.deterministic("logits", logits) 
+    numpyro.deterministic("logits", logits)
     numpyro.sample("obs", dist.Categorical(logits=logits), obs=y)

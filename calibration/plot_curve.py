@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 from sklearn.calibration import calibration_curve
 from sklearn.metrics import roc_curve, auc
 
+
 def plot_roc_curve(y_true, y_scores, title="ROC Curve"):
     """
     Plot an ROC curve for binary classification.
@@ -20,16 +21,16 @@ def plot_roc_curve(y_true, y_scores, title="ROC Curve"):
     """
     # Calculate false positive rate, true positive rate, and thresholds
     fpr, tpr, thresholds = roc_curve(y_true, y_scores)
-    
+
     # Calculate AUC (Area Under the Curve)
     roc_auc = auc(fpr, tpr)
-    
+
     # Plot the ROC curve
     plt.figure(figsize=(8, 6))
-    plt.plot(fpr, tpr, color='blue', lw=2, label=f'ROC Curve (AUC = {roc_auc:.2f})')
-    plt.plot([0, 1], [0, 1], color='gray', linestyle='--', lw=1)  # Diagonal line
-    plt.xlabel('False Positive Rate (FPR)')
-    plt.ylabel('True Positive Rate (TPR)')
+    plt.plot(fpr, tpr, color="blue", lw=2, label=f"ROC Curve (AUC = {roc_auc:.2f})")
+    plt.plot([0, 1], [0, 1], color="gray", linestyle="--", lw=1)  # Diagonal line
+    plt.xlabel("False Positive Rate (FPR)")
+    plt.ylabel("True Positive Rate (TPR)")
     plt.title(title)
     plt.legend(loc="lower right")
     plt.grid(alpha=0.3)

@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 from jax import random
 from matplotlib.colors import ListedColormap
 
+
 def run_inference(model, rng_key, X, y, num_samples=1000, num_warmup=500):
     """
     Run MCMC using NUTS.
@@ -16,7 +17,6 @@ def run_inference(model, rng_key, X, y, num_samples=1000, num_warmup=500):
     mcmc.run(rng_key, X=X, y=y)
     mcmc.print_summary()
     return mcmc
-
 
 
 def predict_binary(mcmc, X_test, model):
@@ -38,11 +38,9 @@ def predict_binary(mcmc, X_test, model):
 
     preds = predictive(rng_key=random.PRNGKey(0), X=X_test)
 
-    predictions = preds["logits"]  
+    predictions = preds["logits"]
 
     return predictions
-
-
 
 
 def predict_regressor(mcmc, X_test, model):
@@ -58,17 +56,13 @@ def predict_regressor(mcmc, X_test, model):
     - predictions: A 2D array of shape (num_samples, len(X_test)), where each row corresponds
       to predictions for the test set from one posterior sample.
     """
-    # Extract posterior samples
     posterior_samples = mcmc.get_samples()
 
-    # Create a predictive object using the model and posterior samples
     predictive = numpyro.infer.Predictive(model, posterior_samples)
 
-    # Generate predictions (mean values for regression)
     preds = predictive(rng_key=random.PRNGKey(0), X=X_test)
 
-    # Extract the mean predictions from the model
-    predictions = preds["mean"]  # Shape: (num_samples, len(X_test))
+    predictions = preds["mean"]
 
     return predictions
 
@@ -93,14 +87,13 @@ def predict_multiclass(mcmc, X_test, model, n_classes):
 
     preds = predictive(rng_key=random.PRNGKey(0), X=X_test)
 
-    predictions = preds["logits"]  
+    predictions = preds["logits"]
 
     if predictions.shape[-1] != n_classes:
         raise ValueError(
             f"Mismatch in number of classes: probabilities has {predictions.shape[-1]} classes, expected {n_classes}."
         )
     return predictions
-
 
 
 def visualize_regression(
@@ -120,19 +113,18 @@ def visualize_regression(
     Returns:
         None. Displays the plot.
     """
-    X_test = np.array(X_test)  # Convert to NumPy for easier handling
+    X_test = np.array(X_test)
     y_test = np.array(y_test)
     mean_preds = np.array(mean_preds)
     lower_bound = np.array(lower_bound)
     upper_bound = np.array(upper_bound)
 
-    # Handle feature selection logic
     if (
         X_test.shape[1] == 1
         or feature_index is None
         or not (0 <= feature_index < X_test.shape[1])
     ):
-        feature_index = 0  # Default to the only feature if invalid index is provided
+        feature_index = 0
 
     feature = X_test[:, feature_index]
 

@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 from jax import random
 from matplotlib.colors import ListedColormap
 
+
 def run_inference(model, rng_key, X, y, num_samples=1000, num_warmup=500):
     """
     Run MCMC using NUTS.
@@ -24,6 +25,7 @@ def predict_regression(mcmc, X_test, model):
     preds = predictive(rng_key=jax.random.PRNGKey(1), X=X_test)
     return preds["obs"]
 
+
 def predict_binary(mcmc, X_test, model):
     """
     Predict probabilities for a binary classification model.
@@ -39,8 +41,9 @@ def predict_binary(mcmc, X_test, model):
     posterior_samples = mcmc.get_samples()
     predictive = Predictive(model, posterior_samples)
     preds = predictive(rng_key=jax.random.PRNGKey(1), X=X_test)
-    predictions = preds["obs"]  
+    predictions = preds["obs"]
     return predictions
+
 
 def predict_multiclass(mcmc, X_test, model, n_classes=None):
     """
@@ -59,12 +62,12 @@ def predict_multiclass(mcmc, X_test, model, n_classes=None):
     predictive = Predictive(model, posterior_samples)
     preds = predictive(rng_key=jax.random.PRNGKey(1), X=X_test)
     predictions = preds["logits"]  # Extract logits
-    
+
     if n_classes is not None and predictions.shape[-1] != n_classes:
         raise ValueError(
             f"Mismatch in number of classes: logits have {predictions.shape[-1]} classes, expected {n_classes}."
         )
-    
+
     return predictions
 
 

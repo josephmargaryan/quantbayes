@@ -6,7 +6,7 @@ from utils import (
     visualize_multiclass,
     predict_binary,
     predict_multiclass,
-    predict_regression
+    predict_regression,
 )
 from fake_data_generator import (
     generate_simple_regression_data,
@@ -135,7 +135,7 @@ def test_multiclass():
 
 
 if __name__ == "__main__":
-    """    
+    """
     print("Testing Binary")
     test_binary()
     print("Testing Regressor")

@@ -57,5 +57,5 @@ def multiclass_model(X, y=None, n_classes=3):
     )
     bias_out = numpyro.sample("bias_out", dist.Normal(0, 1).expand([n_classes]))
     logits = jnp.matmul(hidden, weights_out) + bias_out
-    numpyro.deterministic("logits", logits) 
+    numpyro.deterministic("logits", logits)
     numpyro.sample("obs", dist.Categorical(logits=logits), obs=y)

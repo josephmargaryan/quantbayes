@@ -5,8 +5,9 @@ from numpyro import deterministic, plate, sample, set_platform, subsample
 from numpyro.distributions import Normal, Gamma, Categorical, Bernoulli
 import numpyro.distributions as dist
 import numpyro
-from fft_matrix import circulant_matrix_multiply 
+from fft_matrix import circulant_matrix_multiply
 from jax import nn
+
 
 def regression_model(X, y=None):
     """
@@ -30,7 +31,9 @@ def regression_model(X, y=None):
         hidden = jax.nn.relu(hidden)
         hidden_list.append(hidden)
 
-    hidden = jnp.stack(hidden_list, axis=0)  # Shape: (num_particles, batch_size, hidden_dim)
+    hidden = jnp.stack(
+        hidden_list, axis=0
+    )  # Shape: (num_particles, batch_size, hidden_dim)
 
     # Output layer
     weights_out = numpyro.sample(
@@ -39,7 +42,9 @@ def regression_model(X, y=None):
     bias_out = numpyro.sample("bias_out", dist.Normal(0, 1).expand([num_particles]))
 
     # Predictions for each particle
-    predictions = jnp.einsum("pbi,pio->pbo", hidden, weights_out).squeeze(-1) + bias_out[:, None]
+    predictions = (
+        jnp.einsum("pbi,pio->pbo", hidden, weights_out).squeeze(-1) + bias_out[:, None]
+    )
 
     # Combine particle predictions (mean across particles for simplicity)
     mean_predictions = jnp.mean(predictions, axis=0)
@@ -47,7 +52,6 @@ def regression_model(X, y=None):
     # Likelihood
     sigma = numpyro.sample("sigma", dist.Exponential(1.0))
     numpyro.sample("obs", dist.Normal(mean_predictions, sigma), obs=y)
-
 
 
 def multiclass_model(X, y=None, num_classes=3):
@@ -72,11 +76,14 @@ def multiclass_model(X, y=None, num_classes=3):
         hidden = jax.nn.relu(hidden)
         hidden_list.append(hidden)
 
-    hidden = jnp.stack(hidden_list, axis=0)  # Shape: (num_particles, batch_size, hidden_dim)
+    hidden = jnp.stack(
+        hidden_list, axis=0
+    )  # Shape: (num_particles, batch_size, hidden_dim)
 
     # Output layer
     weights_out = numpyro.sample(
-        "weights_out", dist.Normal(0, 1).expand([num_particles, input_size, num_classes])
+        "weights_out",
+        dist.Normal(0, 1).expand([num_particles, input_size, num_classes]),
     )
     bias_out = numpyro.sample(
         "bias_out", dist.Normal(0, 1).expand([num_particles, num_classes])
@@ -118,23 +125,20 @@ def binary_model(X, y=None):
         hidden = jax.nn.relu(hidden)
         hidden_list.append(hidden)
 
-    hidden = jnp.stack(hidden_list, axis=0)  # Shape: (num_particles, batch_size, hidden_dim)
+    hidden = jnp.stack(hidden_list, axis=0)
 
-    # Output layer
     weights_out = numpyro.sample(
         "weights_out", dist.Normal(0, 1).expand([num_particles, input_size, 1])
     )
     bias_out = numpyro.sample("bias_out", dist.Normal(0, 1).expand([num_particles]))
 
-    # Predictions for each particle
-    logits = jnp.einsum("pbi,pio->pbo", hidden, weights_out).squeeze(-1) + bias_out[:, None]
+    logits = (
+        jnp.einsum("pbi,pio->pbo", hidden, weights_out).squeeze(-1) + bias_out[:, None]
+    )
 
-    # Combine particle logits (mean across particles for simplicity)
     mean_logits = jnp.mean(logits, axis=0)
 
-    # Sigmoid activation for binary classification
     probs = jax.nn.sigmoid(mean_logits)
 
-    # Likelihood
     numpyro.deterministic("probs", probs)
     numpyro.sample("obs", dist.Bernoulli(probs=probs), obs=y)
