@@ -7,11 +7,11 @@ import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap
 
 
-def run_inference(model, rng_key, X, y, num_samples=1000, num_warmup=500):
+def run_inference(model, rng_key, X, y, num_samples=1000, num_warmup=500, init_strategy=None):
     """
     Run MCMC using NUTS.
     """
-    kernel = NUTS(model)
+    kernel = NUTS(model, init_strategy=init_strategy)
     mcmc = MCMC(kernel, num_warmup=num_warmup, num_samples=num_samples)
     mcmc.run(rng_key, X=X, y=y)
     mcmc.print_summary()
