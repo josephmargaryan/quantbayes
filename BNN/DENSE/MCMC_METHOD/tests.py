@@ -116,13 +116,11 @@ def test_multiclass():
     )
 
     mcmc = run_inference(multiclass_model, rng_key, X_train, y_train, 1000, 500)
-    samples = mcmc.get_samples()
-    predictions = predict_multiclass(mcmc, X_test, multiclass_model, 3)
+    predictions = predict_multiclass(mcmc, X_test, multiclass_model)
     mean_preds = predictions.mean(axis=0)
     probabilities = jax.nn.softmax(mean_preds, axis=-1)
     std_preds = predictions.std(axis=0)
-    lower_bound = mean_preds - 1.96 * std_preds
-    upper_bound = mean_preds + 1.96 * std_preds
+
     loss = log_loss(np.array(y_test), np.array(probabilities))
     print(f"Loss: {loss}")
 
