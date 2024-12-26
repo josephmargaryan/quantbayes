@@ -61,7 +61,6 @@ def inference(svi, params, X_test, hidden_dim=10, sample_from="y", num_classes=N
     Generate predictions using the trained SVI model.
     """
     predictive_args = {"hidden_dim": hidden_dim}
-    # Only add num_classes if the model needs it
     if num_classes is not None and "num_classes" in svi.model.__code__.co_varnames:
         predictive_args["num_classes"] = num_classes
 

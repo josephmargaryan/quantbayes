@@ -128,7 +128,6 @@ def visualize_regression(
 
     feature = X_test[:, feature_index]
 
-    # Sort the data for proper visualization
     sorted_indices = np.argsort(feature)
     feature = feature[sorted_indices]
     y_test = y_test[sorted_indices]
@@ -136,7 +135,6 @@ def visualize_regression(
     lower_bound = lower_bound[sorted_indices]
     upper_bound = upper_bound[sorted_indices]
 
-    # Plot
     plt.figure(figsize=(10, 6))
     plt.scatter(feature, y_test, color="blue", alpha=0.6, label="True Targets")
     plt.plot(

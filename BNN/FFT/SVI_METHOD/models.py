@@ -44,9 +44,7 @@ def binary_model(X, y=None):
         "weights_out", dist.Normal(0, 1).expand([hidden.shape[1], 1])
     )
     bias_out = numpyro.sample("bias_out", dist.Normal(0, 1))
-
     logits = jnp.matmul(hidden, weights_out).squeeze() + bias_out
-
     numpyro.sample("obs", dist.Bernoulli(logits=logits), obs=y)
 
 
