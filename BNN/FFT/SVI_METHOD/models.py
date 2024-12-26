@@ -48,7 +48,7 @@ def binary_model(X, y=None):
     numpyro.sample("obs", dist.Bernoulli(logits=logits), obs=y)
 
 
-def multiclass_model(X, y=None, n_classes=3):
+def multiclass_model(X, y=None, num_classes=3):
     """
     Bayesian Neural Network with Circulant Matrix Layer for Multiclass Classification.
     """
@@ -61,9 +61,9 @@ def multiclass_model(X, y=None, n_classes=3):
     hidden = jax.nn.relu(hidden)
 
     weights_out = numpyro.sample(
-        "weights_out", dist.Normal(0, 1).expand([hidden.shape[1], n_classes])
+        "weights_out", dist.Normal(0, 1).expand([hidden.shape[1], num_classes])
     )
-    bias_out = numpyro.sample("bias_out", dist.Normal(0, 1).expand([n_classes]))
+    bias_out = numpyro.sample("bias_out", dist.Normal(0, 1).expand([num_classes]))
 
     logits = jnp.matmul(hidden, weights_out) + bias_out
     numpyro.deterministic("logits", logits)

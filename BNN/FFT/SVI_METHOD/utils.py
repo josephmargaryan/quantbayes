@@ -24,8 +24,8 @@ def train(
 
     rng_key = random.PRNGKey(0)
     init_args = {}
-    if num_classes is not None and "n_classes" in bnn_model.__code__.co_varnames:
-        init_args["n_classes"] = num_classes
+    if num_classes is not None and "num_classes" in bnn_model.__code__.co_varnames:
+        init_args["num_classes"] = num_classes
 
     svi_state = svi.init(rng_key, X_train, y_train, **init_args)
 
@@ -33,8 +33,8 @@ def train(
 
     for step in range(num_steps):
         update_args = {}
-        if num_classes is not None and "n_classes" in bnn_model.__code__.co_varnames:
-            update_args["n_classes"] = num_classes
+        if num_classes is not None and "num_classes" in bnn_model.__code__.co_varnames:
+            update_args["num_classes"] = num_classes
 
         svi_state, loss = svi.update(svi_state, X_train, y_train, **update_args)
 
@@ -54,8 +54,8 @@ def inference(svi, params, X_test, sample_from="y", num_classes=None):
     Generate predictions using the trained SVI model.
     """
     predictive_args = {}
-    if num_classes is not None and "n_classes" in svi.model.__code__.co_varnames:
-        predictive_args["n_classes"] = num_classes
+    if num_classes is not None and "num_classes" in svi.model.__code__.co_varnames:
+        predictive_args["num_classes"] = num_classes
 
     predictive = Predictive(svi.model, guide=svi.guide, params=params, num_samples=100)
     rng_key = random.PRNGKey(1)
