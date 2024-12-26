@@ -30,12 +30,14 @@ def train_regressor(bnn_model, X_train, y_train, num_steps=1000):
     return stein, stein_result
 
 
-def train_multiclass(bnn_model, X_train, y_train, num_classes, num_steps=1000):
+def train_multiclass(bnn_model, X_train, y_train, num_classes, num_steps=1000, init_strategy=None):
     """
     Train a Bayesian Neural Network for multiclass classification using SteinVI.
     """
-    guide = AutoNormal(bnn_model)
-
+    if init_strategy:
+        guide = AutoNormal(bnn_model, init_loc_fn=init_strategy)
+    else:
+        guide = AutoNormal(bnn_model)
     stein = SteinVI(
         model=bnn_model,
         guide=guide,

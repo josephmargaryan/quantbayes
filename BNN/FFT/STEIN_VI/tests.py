@@ -92,7 +92,7 @@ def test_multiclass():
         y_test,
         stein,
         stein_results,
-        num_classes=X_train.shape[1],
+        num_classes=len(jnp.unique(y)),
         resolution=100,
         features=(0, 1),
     )
