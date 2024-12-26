@@ -1,13 +1,13 @@
 from setuptools import setup, find_packages
 
 setup(
-    name="ChronosForge",  # Package name
-    version="0.1.0",  # Version
+    name="ChronosForge",  
+    version="0.1.0",  
     description="A library for probabilistic and Bayesian machine learning models",
     author="Joseph Margaryan",
-    author_email="your-email@example.com",
-    url="https://github.com/josephmargaryan/ChronosForge",  # GitHub URL
-    packages=find_packages(),  # Automatically find all subpackages
+    author_email="josephmargaryan@gmail.com",
+    url="https://github.com/josephmargaryan/ChronosForge",  
+    packages=find_packages(),  
     install_requires=[
         "numpy",
         "jax",
@@ -17,5 +17,5 @@ setup(
         "pyro-ppl",
         "pandas",
     ],
-    python_requires=">=3.7",  # Python version compatibility
+    python_requires=">=3.7", 
 )
