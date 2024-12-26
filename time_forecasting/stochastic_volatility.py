@@ -11,10 +11,9 @@ from numpyro.infer.hmc import hmc
 from numpyro.infer.util import initialize_model
 from numpyro.util import fori_collect
 
-matplotlib.use("Agg")  # For non-interactive backends
+matplotlib.use("Agg")  
 
 
-# Function to generate synthetic data
 def generate_synthetic_data(num_steps=1000, seed=42):
     rng_key = random.PRNGKey(seed)
 
@@ -22,15 +21,12 @@ def generate_synthetic_data(num_steps=1000, seed=42):
     true_sigma = 0.05  # Volatility of the Gaussian Random Walk
     true_nu = 5.0  # Degrees of freedom for Student-t distribution
 
-    # Generate latent volatility (Gaussian Random Walk)
     s = jnp.zeros(num_steps)
     for t in range(1, num_steps):
         s = s.at[t].set(s[t - 1] + random.normal(rng_key, shape=()) * true_sigma)
 
-    # Generate returns (Student-t distributed with scale=exp(s))
     returns = jnp.exp(s) * random.t(rng_key, df=true_nu, shape=(num_steps,))
 
-    # Use numerical indices as placeholders for dates
     time_steps = jnp.arange(num_steps)
 
     return time_steps, returns, s
