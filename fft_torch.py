@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 
+
 class FFTCirculantLayer(nn.Module):
     def __init__(self, n):
         super(FFTCirculantLayer, self).__init__()

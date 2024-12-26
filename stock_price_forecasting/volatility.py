@@ -32,11 +32,11 @@ def plot_high_low_range(data, ticker):
 
 
 if __name__ == "__main__":
-    ticker = "AAPL"  
+    ticker = "AAPL"
     start_date = "2023-01-01"
 
     data = fetch_data(ticker, start_date)
     data = calculate_high_low_range(data)
-    print(data.head())  
+    print(data.head())
 
     plot_high_low_range(data, ticker)

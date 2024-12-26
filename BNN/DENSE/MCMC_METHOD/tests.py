@@ -1,5 +1,9 @@
-from models import regression_model, binary_model, multiclass_model
-from utils import (
+from BNN.DENSE.MCMC_METHOD.models import (
+    regression_model,
+    binary_model,
+    multiclass_model,
+)
+from BNN.DENSE.MCMC_METHOD.utils import (
     run_inference,
     visualize_regression,
     predict_binary,
@@ -8,14 +12,13 @@ from utils import (
     visualize_binary,
     visualize_multiclass,
 )
-from fake_data import (
+from BNN.DENSE.MCMC_METHOD.fake_data import (
     generate_simple_regression_data,
     generate_binary_classification_data,
     generate_multiclass_classification_data,
 )
 from sklearn.model_selection import train_test_split
 import numpy as np
-import pandas as pd
 import jax.numpy as jnp
 from jax import random
 from sklearn.metrics import (

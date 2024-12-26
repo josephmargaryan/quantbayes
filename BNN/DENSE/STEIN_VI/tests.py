@@ -1,5 +1,5 @@
-from models import regression_model, binary_model, multiclass_model
-from fake_data import (
+from BNN.DENSE.STEIN_VI.models import regression_model, binary_model, multiclass_model
+from BNN.DENSE.STEIN_VI.fake_data import (
     generate_simple_regression_data,
     generate_binary_classification_data,
     generate_multiclass_classification_data,
@@ -7,7 +7,7 @@ from fake_data import (
 from jax import random
 import jax.numpy as jnp
 from sklearn.model_selection import train_test_split
-from utils import (
+from BNN.DENSE.STEIN_VI.utils import (
     train_binary,
     train_multiclass,
     train_regressor,
@@ -20,7 +20,6 @@ from utils import (
 )
 from sklearn.metrics import root_mean_squared_error, accuracy_score, log_loss
 import numpy as np
-import jax
 
 
 def test_regression():
@@ -100,10 +99,9 @@ def test_multiclass():
 
 
 if __name__ == "__main__":
-    """
     print("Testing Binary")
     test_binary()
     print("Testing Regressor")
     test_regression()
-    print("Testing Multiclass")"""
+    print("Testing Multiclass")
     test_multiclass()

@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="ChronosForge",  # Package name
-    version="0.1.0",      # Version
+    version="0.1.0",  # Version
     description="A library for probabilistic and Bayesian machine learning models",
     author="Joseph Margaryan",
     author_email="your-email@example.com",
@@ -15,8 +15,7 @@ setup(
         "torch",
         "matplotlib",
         "pyro-ppl",
-        "pandas"
-    ],  
+        "pandas",
+    ],
     python_requires=">=3.7",  # Python version compatibility
 )
-

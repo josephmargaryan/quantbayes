@@ -1,12 +1,8 @@
 import jax
 import jax.numpy as jnp
-from numpyro import sample, deterministic
-from numpyro import deterministic, plate, sample, set_platform, subsample
-from numpyro.distributions import Normal, Gamma, Categorical, Bernoulli
 import numpyro.distributions as dist
 import numpyro
-from fft_matrix import circulant_matrix_multiply
-from jax import nn
+from BNN.FFT.STEIN_VI.fft_matrix import circulant_matrix_multiply
 
 
 def regression_model(X, y=None):

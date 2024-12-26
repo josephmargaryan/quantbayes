@@ -1,13 +1,13 @@
 import numpy as np
 import jax.numpy as jnp
 import jax
-from fake_data import (
+from BNN.DENSE.SVI_METHOD.fake_data import (
     generate_simple_regression_data,
     generate_binary_classification_data,
     generate_multiclass_classification_data,
 )
 from sklearn.model_selection import train_test_split
-from utils import (
+from BNN.DENSE.SVI_METHOD.utils import (
     inference,
     train,
     visualize_regression,
@@ -16,7 +16,7 @@ from utils import (
 )
 from sklearn.metrics import log_loss, accuracy_score, mean_absolute_error
 import matplotlib.pyplot as plt
-from models import regression_model, binary_model, multiclass_model
+from BNN.DENSE.SVI_METHOD.models import regression_model, binary_model, multiclass_model
 
 
 def test_binary():

@@ -2,7 +2,7 @@ import numpyro
 import jax
 import jax.numpy as jnp
 import numpyro.distributions as dist
-from .fft_matrix import circulant_matrix_multiply
+from BNN.FFT.MCMC_METHOD.fft_matrix import circulant_matrix_multiply
 
 
 def regression_model(X, y=None):

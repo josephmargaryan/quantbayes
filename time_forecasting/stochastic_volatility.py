@@ -11,7 +11,7 @@ from numpyro.infer.hmc import hmc
 from numpyro.infer.util import initialize_model
 from numpyro.util import fori_collect
 
-matplotlib.use("Agg")  
+matplotlib.use("Agg")
 
 
 def generate_synthetic_data(num_steps=1000, seed=42):

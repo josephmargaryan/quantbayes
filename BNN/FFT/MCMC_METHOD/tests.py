@@ -1,5 +1,5 @@
-from models import regression_model, binary_model, multiclass_model
-from utils import (
+from BNN.FFT.MCMC_METHOD.models import regression_model, binary_model, multiclass_model
+from BNN.FFT.MCMC_METHOD.utils import (
     run_inference,
     visualize_regression,
     visualize_binary,
@@ -8,7 +8,7 @@ from utils import (
     predict_multiclass,
     predict_regression,
 )
-from fake_data_generator import (
+from BNN.FFT.MCMC_METHOD.fake_data_generator import (
     generate_simple_regression_data,
     generate_binary_classification_data,
     generate_multiclass_classification_data,
@@ -17,7 +17,7 @@ from sklearn.model_selection import train_test_split
 import numpy as np
 import pandas as pd
 import jax.numpy as jnp
-from jax import random, vmap
+from jax import random
 from sklearn.metrics import (
     root_mean_squared_error,
     mean_absolute_error,
@@ -113,13 +113,10 @@ def test_multiclass():
     )
 
     mcmc = run_inference(multiclass_model, rng_key, X_train, y_train, 1000, 500)
-    samples = mcmc.get_samples()
     predictions = predict_multiclass(mcmc, X_test, multiclass_model)
     predictions = jax.nn.softmax(predictions, axis=-1)
     mean_preds = predictions.mean(axis=0)
     std_preds = predictions.std(axis=0)
-    lower_bound = mean_preds - 1.96 * std_preds
-    upper_bound = mean_preds + 1.96 * std_preds
     loss = log_loss(np.array(y_test), np.array(mean_preds))
     print(f"Loss: {loss}")
 
@@ -135,10 +132,9 @@ def test_multiclass():
 
 
 if __name__ == "__main__":
-    """
     print("Testing Binary")
     test_binary()
     print("Testing Regressor")
     test_regression()
-    print("Testing Multiclass")"""
+    print("Testing Multiclass")
     test_multiclass()

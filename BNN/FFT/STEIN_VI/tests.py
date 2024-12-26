@@ -1,5 +1,5 @@
-from models import regression_model, binary_model, multiclass_model
-from fake_data_generator import (
+from BNN.FFT.STEIN_VI.models import regression_model, binary_model, multiclass_model
+from BNN.FFT.STEIN_VI.fake_data_generator import (
     generate_simple_regression_data,
     generate_binary_classification_data,
     generate_multiclass_classification_data,
@@ -7,7 +7,7 @@ from fake_data_generator import (
 from jax import random
 import jax.numpy as jnp
 from sklearn.model_selection import train_test_split
-from utils import (
+from BNN.FFT.STEIN_VI.utils import (
     train_binary,
     train_multiclass,
     train_regressor,
@@ -20,7 +20,6 @@ from utils import (
 )
 from sklearn.metrics import root_mean_squared_error, accuracy_score, log_loss
 import numpy as np
-import jax
 
 
 def test_regression():
