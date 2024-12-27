@@ -58,12 +58,17 @@ def test_multiclass():
         X_train, y_train, multiclass_model, 100, len(jnp.unique(y)), 10, True
     )
     predictions = predict_multiclass(
-        svi, params, X_test, hidden_dim=10, sample_from="logits", num_classes=3
+        svi,
+        params,
+        X_test,
+        hidden_dim=10,
+        sample_from="logits",
+        num_classes=len(jnp.unique(y)),
     )
     mean_predictions = predictions.mean(axis=0)
     probabilities = jax.nn.softmax(mean_predictions, axis=1)
     loss = log_loss(np.array(y_test), np.array(probabilities))
-    class_preds = jnp.argmax(probabilities, axis=1)
+    class_preds = jnp.argmax(probabilities, axis=-1)
     accuracy = accuracy_score(np.array(y_test), np.array(class_preds))
     print(f"Loss: {loss}")
     print(f"Accuracy for Multiclass: {accuracy}")

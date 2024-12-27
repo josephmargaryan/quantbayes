@@ -56,15 +56,33 @@ def multiclass_model(X, y=None, num_classes=3):
 
     first_row = numpyro.sample("first_row", dist.Normal(0, 1).expand([input_size]))
     bias_circulant = numpyro.sample("bias_circulant", dist.Normal(0, 1))
-
     hidden = circulant_matrix_multiply(first_row, X) + bias_circulant
     hidden = jax.nn.relu(hidden)
-
     weights_out = numpyro.sample(
         "weights_out", dist.Normal(0, 1).expand([hidden.shape[1], num_classes])
     )
     bias_out = numpyro.sample("bias_out", dist.Normal(0, 1).expand([num_classes]))
+    logits = jnp.matmul(hidden, weights_out) + bias_out
+    numpyro.deterministic("logits", logits)
+    numpyro.sample("obs", dist.Categorical(logits=logits), obs=y)
 
+
+def multiclass_model2(X, y=None, num_classes=3):
+    """
+    Bayesian Neural Network with Circulant Matrix Layer for Multiclass Classification.
+    """
+    input_size = X.shape[1]
+
+    first_row = numpyro.sample("first_row", dist.Normal(0, 1).expand([input_size]))
+    bias_circulant = numpyro.sample(
+        "bias_circulant", dist.Normal(0, 1).expand([X.shape[1]])
+    )
+    hidden = circulant_matrix_multiply(first_row, X) + bias_circulant
+    hidden = jax.nn.relu(hidden)
+    weights_out = numpyro.sample(
+        "weights_out", dist.Normal(0, 1).expand([hidden.shape[1], num_classes])
+    )
+    bias_out = numpyro.sample("bias_out", dist.Normal(0, 1).expand([num_classes]))
     logits = jnp.matmul(hidden, weights_out) + bias_out
     numpyro.deterministic("logits", logits)
     numpyro.sample("obs", dist.Categorical(logits=logits), obs=y)

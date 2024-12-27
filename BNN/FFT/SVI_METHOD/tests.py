@@ -58,7 +58,7 @@ def test_multiclass():
         X_train,
         y_train,
         multiclass_model,
-        num_steps=100,
+        num_steps=1000,
         num_classes=len(jnp.unique(y)),
         track_loss=True,
     )
@@ -114,9 +114,10 @@ def test_regression():
 
 
 if __name__ == "__main__":
+    """
     print("Testing Binary")
     test_binary()
     print("Testing Regressor")
     test_regression()
-    print("Testing Multiclass")
+    print("Testing Multiclass")"""
     test_multiclass()
