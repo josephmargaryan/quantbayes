@@ -8,8 +8,12 @@ from BNN.DENSE.SVI_METHOD.fake_data import (
 )
 from sklearn.model_selection import train_test_split
 from BNN.DENSE.SVI_METHOD.utils import (
-    inference,
-    train,
+    train_regressor,
+    train_multiclass,
+    train_binary,
+    predict_binary,
+    predict_multiclass,
+    predict_regressor,
     visualize_regression,
     visualize_binary,
     visualize_multiclass,
@@ -26,28 +30,15 @@ def test_binary():
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=24
     )
-    svi, params, loss_progression = train(
-        X_train,
-        y_train,
-        binary_model,
-        hidden_dim=10,
-        num_steps=1000,
-        num_classes=None,
-        track_loss=True,
+    svi, params, loss_progression = train_binary(
+        X_train, y_train, binary_model, 100, 10, True
     )
-    predictions = inference(
-        svi, params, X_test, hidden_dim=10, sample_from="y", num_classes=False
-    )
+    predictions = predict_binary(svi, params, X_test, hidden_dim=10, sample_from="y")
     mean_predictions = predictions.mean(axis=0)
-    uncertainty = predictions.std(axis=0)
-    lower_bound = mean_predictions - 1.96 * uncertainty
-    upper_bound = mean_predictions + 1.96 * uncertainty
     binary_preds = (mean_predictions > 0.5).astype(int)
     accuracy = accuracy_score(np.array(y_test), np.array(binary_preds))
     print(f"Accuracy for binary: {accuracy}")
-    visualize_binary(
-        X_test, y_test, mean_predictions, uncertainty, svi, params, (0, 1), 100
-    )
+    visualize_binary(X_test, y_test, svi, params, (0, 1), 100)
     plt.figure(figsize=(5, 5))
     plt.plot(range(1, len(loss_progression) + 1), loss_progression)
     plt.xlabel("Steps")
@@ -63,31 +54,20 @@ def test_multiclass():
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=24
     )
-    svi, params, loss_progression = train(
-        X_train,
-        y_train,
-        multiclass_model,
-        hidden_dim=10,
-        num_steps=1000,
-        num_classes=3,
-        track_loss=True,
+    svi, params, loss_progression = train_multiclass(
+        X_train, y_train, multiclass_model, 100, len(jnp.unique(y)), 10, True
     )
-    predictions = inference(
+    predictions = predict_multiclass(
         svi, params, X_test, hidden_dim=10, sample_from="logits", num_classes=3
     )
     mean_predictions = predictions.mean(axis=0)
-    uncertainty = predictions.std(axis=0)
-    lower_bound = mean_predictions - 1.96 * uncertainty
-    upper_bound = mean_predictions + 1.96 * uncertainty
     probabilities = jax.nn.softmax(mean_predictions, axis=1)
     loss = log_loss(np.array(y_test), np.array(probabilities))
     class_preds = jnp.argmax(probabilities, axis=1)
     accuracy = accuracy_score(np.array(y_test), np.array(class_preds))
     print(f"Loss: {loss}")
     print(f"Accuracy for Multiclass: {accuracy}")
-    visualize_multiclass(
-        X_test, y_test, mean_predictions, uncertainty, svi, params, 3, (0, 1), 100
-    )
+    visualize_multiclass(X_test, y_test, svi, params, len(jnp.unique(y)), (0, 1), 100)
     plt.figure(figsize=(5, 5))
     plt.plot(range(1, len(loss_progression) + 1), loss_progression)
     plt.xlabel("Steps")
@@ -103,25 +83,17 @@ def test_regression():
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=24
     )
-    svi, params, loss_progression = train(
-        X_train,
-        y_train,
-        regression_model,
-        hidden_dim=10,
-        num_steps=1000,
-        num_classes=None,
-        track_loss=True,
+    svi, params, loss_progression = train_regressor(
+        X_train, y_train, regression_model, 100, 10, True
     )
-    predictions = inference(
-        svi, params, X_test, hidden_dim=10, sample_from="y", num_classes=False
-    )
+    predictions = predict_regressor(svi, params, X_test, 10, "y")
     mean_predictions = predictions.mean(axis=0)
     uncertainty = predictions.std(axis=0)
     lower_bound = mean_predictions - 1.96 * uncertainty
     upper_bound = mean_predictions + 1.96 * uncertainty
     MAE = mean_absolute_error(np.array(y_test), np.array(mean_predictions))
     print(f"MAE for regressor: {MAE}")
-    visualize_regression(X_test, y_test, mean_predictions, lower_bound, upper_bound)
+    visualize_regression(X_test, y_test, svi, params, 0)
     plt.figure(figsize=(5, 5))
     plt.plot(range(1, len(loss_progression) + 1), loss_progression)
     plt.xlabel("Steps")

@@ -30,7 +30,9 @@ def train_regressor(bnn_model, X_train, y_train, num_steps=1000):
     return stein, stein_result
 
 
-def train_multiclass(bnn_model, X_train, y_train, num_classes, num_steps=1000, init_strategy=None):
+def train_multiclass(
+    bnn_model, X_train, y_train, num_classes, num_steps=1000, init_strategy=None
+):
     """
     Train a Bayesian Neural Network for multiclass classification using SteinVI.
     """

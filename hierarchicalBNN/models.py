@@ -38,6 +38,7 @@ def BNNBinary(X, y=None, hidden_dim=16):
 
     hidden = jax.nn.relu(jnp.dot(X, w1) + b1)
     logits = numpyro.deterministic("logits", jnp.dot(hidden, w2) + b2)
+    logits = jnp.clip(logits, a_min=-10, a_max=10)
 
     numpyro.sample("y", dist.Bernoulli(logits=logits.squeeze()), obs=y)
 
@@ -58,5 +59,6 @@ def BNNMultiClass(X, y=None, hidden_dim=16, n_classes=3):
 
     hidden = jax.nn.relu(jnp.dot(X, w1) + b1)
     logits = numpyro.deterministic("logits", jnp.dot(hidden, w2) + b2)
+    logits = jnp.clip(logits, a_min=-10, a_max=10)
 
     numpyro.sample("y", dist.Categorical(logits=logits), obs=y)
