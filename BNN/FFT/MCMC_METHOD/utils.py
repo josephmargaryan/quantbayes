@@ -23,7 +23,7 @@ def run_inference(
     return mcmc
 
 
-def predict_regression(mcmc, X_test, model):
+def predict_regressor(mcmc, X_test, model):
     posterior_samples = mcmc.get_samples()
     predictive = Predictive(model, posterior_samples)
     preds = predictive(rng_key=jax.random.PRNGKey(1), X=X_test)

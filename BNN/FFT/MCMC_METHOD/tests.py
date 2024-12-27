@@ -6,7 +6,7 @@ from BNN.FFT.MCMC_METHOD.utils import (
     visualize_multiclass,
     predict_binary,
     predict_multiclass,
-    predict_regression,
+    predict_regressor,
 )
 from BNN.FFT.MCMC_METHOD.fake_data_generator import (
     generate_simple_regression_data,
@@ -51,8 +51,7 @@ def test_regression():
         regression_model, rng_key, X_train, y_train, num_samples=1000, num_warmup=500
     )
 
-    samples = mcmc.get_samples()
-    predictions = predict_regression(mcmc, X_test, regression_model)
+    predictions = predict_regressor(mcmc, X_test, regression_model)
 
     mean_preds = predictions.mean(axis=0)
     std_preds = predictions.std(axis=0)
