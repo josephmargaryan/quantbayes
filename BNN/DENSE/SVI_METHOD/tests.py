@@ -33,8 +33,11 @@ def test_binary():
     svi, params, loss_progression = train_binary(
         X_train, y_train, binary_model, 100, 10, True
     )
-    predictions = predict_binary(svi, params, X_test, hidden_dim=10, sample_from="y")
+    predictions = predict_binary(
+        svi, params, X_test, hidden_dim=10, sample_from="logits"
+    )
     mean_predictions = predictions.mean(axis=0)
+    mean_predictions = jax.nn.sigmoid(mean_predictions)
     binary_preds = (mean_predictions > 0.5).astype(int)
     accuracy = accuracy_score(np.array(y_test), np.array(binary_preds))
     print(f"Accuracy for binary: {accuracy}")
@@ -91,7 +94,7 @@ def test_regression():
     svi, params, loss_progression = train_regressor(
         X_train, y_train, regression_model, 100, 10, True
     )
-    predictions = predict_regressor(svi, params, X_test, 10, "y")
+    predictions = predict_regressor(svi, params, X_test, 10)
     mean_predictions = predictions.mean(axis=0)
     uncertainty = predictions.std(axis=0)
     lower_bound = mean_predictions - 1.96 * uncertainty

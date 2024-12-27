@@ -80,11 +80,10 @@ def test_binary():
         binary_model, rng_key, X_train, y_train, num_samples=1000, num_warmup=500
     )
 
-    predictions = predict_binary(mcmc, X_test, binary_model)
+    predictions = predict_binary(mcmc, X_test, binary_model, sample_from="logits")
     mean_preds = predictions.mean(axis=0)
+    mean_preds = jax.nn.sigmoid(mean_preds)
     std_preds = predictions.std(axis=0)
-    lower_bound = mean_preds - 1.96 * std_preds
-    upper_bound = mean_preds + 1.96 * std_preds
     binary_preds = np.array((mean_preds >= 0.5).astype(int))
     y_preds = np.array(y_test)
     accuracy = accuracy_score(y_preds, binary_preds)
@@ -113,7 +112,9 @@ def test_multiclass():
     )
 
     mcmc = run_inference(multiclass_model, rng_key, X_train, y_train, 1000, 500)
-    predictions = predict_multiclass(mcmc, X_test, multiclass_model)
+    predictions = predict_multiclass(
+        mcmc, X_test, multiclass_model, sample_from="logits"
+    )
     predictions = jax.nn.softmax(predictions, axis=-1)
     mean_preds = predictions.mean(axis=0)
     std_preds = predictions.std(axis=0)

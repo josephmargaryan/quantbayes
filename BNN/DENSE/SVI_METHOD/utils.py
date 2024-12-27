@@ -122,7 +122,7 @@ def train_regressor(
     return svi, params
 
 
-def predict_binary(svi, params, X_test, hidden_dim=10, sample_from="y"):
+def predict_binary(svi, params, X_test, hidden_dim=10, sample_from="obs"):
     """
     Generate predictions for binary classification using the trained SVI model.
     """
@@ -133,7 +133,7 @@ def predict_binary(svi, params, X_test, hidden_dim=10, sample_from="y"):
 
 
 def predict_multiclass(
-    svi, params, X_test, hidden_dim=10, num_classes=None, sample_from="y"
+    svi, params, X_test, hidden_dim=10, num_classes=None, sample_from="obs"
 ):
     """
     Generate predictions for multiclass classification using the trained SVI model.
@@ -146,14 +146,14 @@ def predict_multiclass(
     return pred_samples[sample_from]
 
 
-def predict_regressor(svi, params, X_test, hidden_dim=10, sample_from="y"):
+def predict_regressor(svi, params, X_test, hidden_dim=10):
     """
     Generate predictions for regression using the trained SVI model.
     """
     predictive = Predictive(svi.model, guide=svi.guide, params=params, num_samples=100)
     rng_key = random.PRNGKey(1)
     pred_samples = predictive(rng_key, X=X_test, hidden_dim=hidden_dim)
-    return pred_samples[sample_from]
+    return pred_samples["obs"]
 
 
 def visualize_regression(X_test, y_test, svi, params, feature_index=0):
@@ -230,7 +230,10 @@ def visualize_binary(X, y, svi, params, features=(0, 1), resolution=100):
     grid_points_full = grid_points_full.at[:, feature_1].set(grid_points[:, 0])
     grid_points_full = grid_points_full.at[:, feature_2].set(grid_points[:, 1])
 
-    grid_predictions = predict_binary(svi, params, grid_points_full)
+    grid_predictions = predict_binary(
+        svi, params, grid_points_full, sample_from="logits"
+    )
+    grid_predictions = jax.nn.sigmoid(grid_predictions)
     grid_mean_predictions = grid_predictions.mean(axis=0).reshape(xx.shape)
     grid_uncertainty = grid_predictions.std(axis=0).reshape(xx.shape)
 
@@ -284,7 +287,7 @@ def visualize_multiclass(
     grid_points_full = grid_points_full.at[:, feature_1].set(grid_points[:, 0])
     grid_points_full = grid_points_full.at[:, feature_2].set(grid_points[:, 1])
     grid_predictions = predict_multiclass(
-        svi, params, grid_points_full, num_classes=num_classes
+        svi, params, grid_points_full, num_classes=num_classes, sample_from="logits"
     )
 
     grid_mean_predictions = jax.nn.softmax(grid_predictions.mean(axis=0), axis=-1)

@@ -54,8 +54,6 @@ def test_regression():
         regression_model, rng_key, X_train, y_train, num_samples=1000, num_warmup=500
     )
 
-    samples = mcmc.get_samples()
-
     predictions = predict_regressor(mcmc, X_test, regression_model)
 
     mean_preds = predictions.mean(axis=0)
@@ -84,7 +82,7 @@ def test_binary():
         binary_model, rng_key, X_train, y_train, num_samples=1000, num_warmup=500
     )
 
-    predictions = predict_binary(mcmc, X_test, binary_model)
+    predictions = predict_binary(mcmc, X_test, binary_model, sample_from="logits")
     mean_preds = predictions.mean(axis=0)
     probabilities = jax.nn.sigmoid(mean_preds)
     std_preds = predictions.std(axis=0)
@@ -116,7 +114,9 @@ def test_multiclass():
     )
 
     mcmc = run_inference(multiclass_model, rng_key, X_train, y_train, 1000, 500)
-    predictions = predict_multiclass(mcmc, X_test, multiclass_model)
+    predictions = predict_multiclass(
+        mcmc, X_test, multiclass_model, sample_from="logits"
+    )
     mean_preds = predictions.mean(axis=0)
     probabilities = jax.nn.softmax(mean_preds, axis=-1)
     std_preds = predictions.std(axis=0)
@@ -136,9 +136,11 @@ def test_multiclass():
 
 
 if __name__ == "__main__":
+    """
     print("Testing Binary")
     test_binary()
     print("Testing Regressor")
     test_regression()
-    print("Testing Multiclass")
+    print("Testing Multiclass")"""
+    test_binary()
     test_multiclass()

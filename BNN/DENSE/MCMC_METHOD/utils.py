@@ -5,6 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from jax import random
 from matplotlib.colors import ListedColormap
+import jax
 
 
 def run_inference(
@@ -23,7 +24,7 @@ def run_inference(
     return mcmc
 
 
-def predict_binary(mcmc, X_test, model):
+def predict_binary(mcmc, X_test, model, sample_from="y"):
     """
     Generate predictions for binary classification using posterior samples from MCMC.
 
@@ -42,7 +43,7 @@ def predict_binary(mcmc, X_test, model):
 
     preds = predictive(rng_key=random.PRNGKey(0), X=X_test)
 
-    predictions = preds["logits"]
+    predictions = preds[sample_from]
 
     return predictions
 
@@ -71,7 +72,7 @@ def predict_regressor(mcmc, X_test, model):
     return predictions
 
 
-def predict_multiclass(mcmc, X_test, model):
+def predict_multiclass(mcmc, X_test, model, sample_from="obs"):
     """
     Generate predictions for multiclass classification with explicit number of classes.
 
@@ -88,7 +89,7 @@ def predict_multiclass(mcmc, X_test, model):
     posterior_samples = mcmc.get_samples()
     predictive = numpyro.infer.Predictive(model, posterior_samples)
     preds = predictive(rng_key=random.PRNGKey(0), X=X_test)
-    predictions = preds["logits"]
+    predictions = preds[sample_from]
 
     return predictions
 
@@ -200,7 +201,10 @@ def visualize_binary(
         if i not in feature_indices:
             X_for_grid[:, i] = X[:, i].mean()
 
-    grid_preds = predict(mcmc, jnp.array(X_for_grid), binary_model)
+    grid_preds = predict(
+        mcmc, jnp.array(X_for_grid), binary_model, sample_from="logits"
+    )
+    grid_preds = jax.nn.sigmoid(grid_preds)
     grid_mean = grid_preds.mean(axis=0).reshape(xx.shape)
     grid_uncertainty = grid_preds.var(axis=0).reshape(xx.shape)
 
@@ -285,9 +289,10 @@ def visualize_multiclass(
     for i in range(X.shape[1]):
         if i not in feature_indices:
             X_for_grid[:, i] = X[:, i].mean()
-
-    grid_preds = predict(mcmc, jnp.array(X_for_grid), multiclass_model)
-
+    grid_preds = predict(
+        mcmc, jnp.array(X_for_grid), multiclass_model, sample_from="logits"
+    )
+    grid_preds = jax.nn.softmax(grid_preds, axis=-1)
     grid_mean = grid_preds.mean(axis=0).reshape(
         grid_resolution, grid_resolution, n_classes
     )

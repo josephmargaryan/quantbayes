@@ -30,7 +30,7 @@ def predict_regression(mcmc, X_test, model):
     return preds["obs"]
 
 
-def predict_binary(mcmc, X_test, model):
+def predict_binary(mcmc, X_test, model, sample_from="obs"):
     """
     Predict probabilities for a binary classification model.
 
@@ -45,11 +45,11 @@ def predict_binary(mcmc, X_test, model):
     posterior_samples = mcmc.get_samples()
     predictive = Predictive(model, posterior_samples)
     preds = predictive(rng_key=jax.random.PRNGKey(1), X=X_test)
-    predictions = preds["obs"]
+    predictions = preds[sample_from]
     return predictions
 
 
-def predict_multiclass(mcmc, X_test, model, n_classes=None):
+def predict_multiclass(mcmc, X_test, model, n_classes=None, sample_from="obs"):
     """
     Predict probabilities for a multiclass classification model.
 
@@ -65,12 +65,7 @@ def predict_multiclass(mcmc, X_test, model, n_classes=None):
     posterior_samples = mcmc.get_samples()
     predictive = Predictive(model, posterior_samples)
     preds = predictive(rng_key=jax.random.PRNGKey(1), X=X_test)
-    predictions = preds["logits"]  # Extract logits
-
-    if n_classes is not None and predictions.shape[-1] != n_classes:
-        raise ValueError(
-            f"Mismatch in number of classes: logits have {predictions.shape[-1]} classes, expected {n_classes}."
-        )
+    predictions = preds[sample_from]
 
     return predictions
 
@@ -92,23 +87,21 @@ def visualize_regression(
     Returns:
         None. Displays the plot.
     """
-    X_test = np.array(X_test)  # Convert to NumPy for easier handling
+    X_test = np.array(X_test)
     y_test = np.array(y_test)
     mean_preds = np.array(mean_preds)
     lower_bound = np.array(lower_bound)
     upper_bound = np.array(upper_bound)
 
-    # Handle feature selection logic
     if (
         X_test.shape[1] == 1
         or feature_index is None
         or not (0 <= feature_index < X_test.shape[1])
     ):
-        feature_index = 0  # Default to the only feature if invalid index is provided
+        feature_index = 0
 
     feature = X_test[:, feature_index]
 
-    # Sort the data for proper visualization
     sorted_indices = np.argsort(feature)
     feature = feature[sorted_indices]
     y_test = y_test[sorted_indices]
@@ -116,7 +109,6 @@ def visualize_regression(
     lower_bound = lower_bound[sorted_indices]
     upper_bound = upper_bound[sorted_indices]
 
-    # Plot
     plt.figure(figsize=(10, 6))
     plt.scatter(feature, y_test, color="blue", alpha=0.6, label="True Targets")
     plt.plot(
@@ -167,11 +159,9 @@ def visualize_binary(
     X = np.array(X)
     y = np.array(y)
 
-    # Extract the features to plot
     feature1_idx, feature2_idx = feature_indices
     feature1, feature2 = X[:, feature1_idx], X[:, feature2_idx]
 
-    # Create a grid of points for the selected features
     x_min, x_max = feature1.min() - 1, feature1.max() + 1
     y_min, y_max = feature2.min() - 1, feature2.max() + 1
     xx, yy = np.meshgrid(
@@ -180,7 +170,6 @@ def visualize_binary(
     )
     grid = np.c_[xx.ravel(), yy.ravel()]
 
-    # Create input for prediction by setting other features to their mean
     X_for_grid = np.zeros((grid.shape[0], X.shape[1]))
     X_for_grid[:, feature1_idx] = grid[:, 0]
     X_for_grid[:, feature2_idx] = grid[:, 1]
@@ -188,17 +177,17 @@ def visualize_binary(
         if i not in feature_indices:
             X_for_grid[:, i] = X[:, i].mean()
 
-    # Predict probabilities for the grid
-    grid_preds = predict(mcmc, jnp.array(X_for_grid), binary_model)
+    grid_preds = predict(
+        mcmc, jnp.array(X_for_grid), binary_model, sample_from="logits"
+    )
+    grid_preds = jax.nn.sigmoid(grid_preds)
     grid_mean = grid_preds.mean(axis=0).reshape(xx.shape)
     grid_uncertainty = grid_preds.var(axis=0).reshape(xx.shape)
 
-    # Plot decision boundary with uncertainty
     plt.figure(figsize=(10, 6))
     plt.contourf(xx, yy, grid_mean, levels=20, cmap="RdBu", alpha=0.8, vmin=0, vmax=1)
     plt.colorbar(label="Predicted Probability (Mean)")
 
-    # Overlay uncertainty as brightness effect
     plt.imshow(
         grid_uncertainty,
         extent=(x_min, x_max, y_min, y_max),
@@ -208,10 +197,8 @@ def visualize_binary(
         aspect="auto",
     )
 
-    # Plot decision boundary
     plt.contour(xx, yy, grid_mean, levels=[0.5], colors="black", linestyles="--")
 
-    # Scatter plot for true labels
     plt.scatter(
         feature1[y == 0],
         feature2[y == 0],
@@ -261,14 +248,9 @@ def visualize_multiclass(
     X = np.array(X)
     y = np.array(y)
 
-    # Automatically infer n_classes from the target labels
     n_classes = len(np.unique(y))
-
-    # Extract the features to plot
     feature1_idx, feature2_idx = feature_indices
     feature1, feature2 = X[:, feature1_idx], X[:, feature2_idx]
-
-    # Create a grid of points for the selected features
     x_min, x_max = feature1.min() - 1, feature1.max() + 1
     y_min, y_max = feature2.min() - 1, feature2.max() + 1
     xx, yy = np.meshgrid(
@@ -276,8 +258,6 @@ def visualize_multiclass(
         np.linspace(y_min, y_max, grid_resolution),
     )
     grid = np.c_[xx.ravel(), yy.ravel()]
-
-    # Create input for prediction by setting other features to their mean
     X_for_grid = np.zeros((grid.shape[0], X.shape[1]))
     X_for_grid[:, feature1_idx] = grid[:, 0]
     X_for_grid[:, feature2_idx] = grid[:, 1]
@@ -285,18 +265,20 @@ def visualize_multiclass(
         if i not in feature_indices:
             X_for_grid[:, i] = X[:, i].mean()
 
-    # Predict probabilities for the grid
     grid_preds = predict(
-        mcmc, jnp.array(X_for_grid), multiclass_model, n_classes=n_classes
+        mcmc,
+        jnp.array(X_for_grid),
+        multiclass_model,
+        n_classes=n_classes,
+        sample_from="logits",
     )
+    grid_preds = jax.nn.softmax(grid_preds, axis=-1)
 
-    # Ensure consistency in the number of classes
     if grid_preds.shape[-1] != n_classes:
         raise ValueError(
             f"Mismatch in number of classes: grid_preds has {grid_preds.shape[-1]} classes, expected {n_classes}."
         )
 
-    # Reshape grid_preds to match grid resolution
     grid_mean = grid_preds.mean(axis=0).reshape(
         grid_resolution, grid_resolution, n_classes
     )
@@ -304,11 +286,9 @@ def visualize_multiclass(
         grid_resolution, grid_resolution, n_classes
     )
 
-    # Plot decision boundaries and uncertainties for each class
     plt.figure(figsize=(10, 6))
     cmap = ListedColormap(plt.cm.tab10.colors[:n_classes])
 
-    # Plot predicted class regions
     predicted_classes = grid_mean.argmax(axis=2)
     plt.contourf(
         xx,
@@ -320,7 +300,6 @@ def visualize_multiclass(
     )
     plt.colorbar(ticks=np.arange(n_classes), label="Predicted Class")
 
-    # Overlay uncertainty for each class as brightness effect
     for class_idx in range(n_classes):
         plt.imshow(
             grid_uncertainty[:, :, class_idx],
@@ -331,7 +310,6 @@ def visualize_multiclass(
             aspect="auto",
         )
 
-    # Scatter plot for true labels
     for class_idx in range(n_classes):
         plt.scatter(
             feature1[y == class_idx],

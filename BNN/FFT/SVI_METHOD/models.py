@@ -12,13 +12,15 @@ def regression_model(X, y=None):
     input_size = X.shape[1]
 
     first_row = numpyro.sample("first_row", dist.Normal(0, 1).expand([input_size]))
-    bias_circulant = numpyro.sample("bias_circulant", dist.Normal(0, 1))
+    bias_circulant = numpyro.sample(
+        "bias_circulant", dist.Normal(0, 1).expand([input_size])
+    )
 
     hidden = circulant_matrix_multiply(first_row, X) + bias_circulant
     hidden = jax.nn.relu(hidden)
 
     weights_out = numpyro.sample(
-        "weights_out", dist.Normal(0, 1).expand([input_size, 1])
+        "weights_out", dist.Normal(0, 1).expand([hidden.shape[1], 1])
     )
     bias_out = numpyro.sample("bias_out", dist.Normal(0, 1))
 
@@ -35,7 +37,9 @@ def binary_model(X, y=None):
     input_size = X.shape[1]
 
     first_row = numpyro.sample("first_row", dist.Normal(0, 1).expand([input_size]))
-    bias_circulant = numpyro.sample("bias_circulant", dist.Normal(0, 1))
+    bias_circulant = numpyro.sample(
+        "bias_circulant", dist.Normal(0, 1).expand([input_size])
+    )
 
     hidden = circulant_matrix_multiply(first_row, X) + bias_circulant
     hidden = jax.nn.relu(hidden)
@@ -45,6 +49,8 @@ def binary_model(X, y=None):
     )
     bias_out = numpyro.sample("bias_out", dist.Normal(0, 1))
     logits = jnp.matmul(hidden, weights_out).squeeze() + bias_out
+    logits = jnp.clip(logits, a_min=-10, a_max=10)
+    numpyro.deterministic("logits", logits)
     numpyro.sample("obs", dist.Bernoulli(logits=logits), obs=y)
 
 
@@ -55,27 +61,8 @@ def multiclass_model(X, y=None, num_classes=3):
     input_size = X.shape[1]
 
     first_row = numpyro.sample("first_row", dist.Normal(0, 1).expand([input_size]))
-    bias_circulant = numpyro.sample("bias_circulant", dist.Normal(0, 1))
-    hidden = circulant_matrix_multiply(first_row, X) + bias_circulant
-    hidden = jax.nn.relu(hidden)
-    weights_out = numpyro.sample(
-        "weights_out", dist.Normal(0, 1).expand([hidden.shape[1], num_classes])
-    )
-    bias_out = numpyro.sample("bias_out", dist.Normal(0, 1).expand([num_classes]))
-    logits = jnp.matmul(hidden, weights_out) + bias_out
-    numpyro.deterministic("logits", logits)
-    numpyro.sample("obs", dist.Categorical(logits=logits), obs=y)
-
-
-def multiclass_model2(X, y=None, num_classes=3):
-    """
-    Bayesian Neural Network with Circulant Matrix Layer for Multiclass Classification.
-    """
-    input_size = X.shape[1]
-
-    first_row = numpyro.sample("first_row", dist.Normal(0, 1).expand([input_size]))
     bias_circulant = numpyro.sample(
-        "bias_circulant", dist.Normal(0, 1).expand([X.shape[1]])
+        "bias_circulant", dist.Normal(0, 1).expand([input_size])
     )
     hidden = circulant_matrix_multiply(first_row, X) + bias_circulant
     hidden = jax.nn.relu(hidden)
@@ -84,5 +71,6 @@ def multiclass_model2(X, y=None, num_classes=3):
     )
     bias_out = numpyro.sample("bias_out", dist.Normal(0, 1).expand([num_classes]))
     logits = jnp.matmul(hidden, weights_out) + bias_out
+    logits = jnp.clip(logits, a_min=-10, a_max=10)
     numpyro.deterministic("logits", logits)
     numpyro.sample("obs", dist.Categorical(logits=logits), obs=y)

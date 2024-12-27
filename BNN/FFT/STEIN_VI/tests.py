@@ -20,6 +20,7 @@ from BNN.FFT.STEIN_VI.utils import (
 )
 from sklearn.metrics import root_mean_squared_error, accuracy_score, log_loss
 import numpy as np
+import jax
 
 
 def test_regression():
@@ -60,9 +61,11 @@ def test_binary():
 
     stein, stein_results = train_binary(binary_model, X_train, y_train, 1000)
 
-    pred_samples = predict_binary(stein, binary_model, stein_results, X_test)
+    pred_samples = predict_binary(
+        stein, binary_model, stein_results, X_test, sample_from="logits"
+    )
     mean_predictions = pred_samples.mean(axis=0)
-    uncertainty = pred_samples.std(axis=0)
+    mean_predictions = jax.nn.sigmoid(mean_predictions)
     binary_predictions = (mean_predictions > 0.5).astype(int)
     accuracy = accuracy_score(np.array(y_test), np.array(binary_predictions))
     print(f"Accuracy: {accuracy}")
@@ -78,13 +81,19 @@ def test_multiclass():
     )
     num_classes = len(jnp.unique(y_train))
     stein, stein_results = train_multiclass(
-        multiclass_model, X_train, y_train, num_classes
+        multiclass_model, X_train, y_train, num_classes, 100
     )
     pred_samples = predict_multiclass(
-        stein, multiclass_model, stein_results, X_test, num_classes
+        stein,
+        multiclass_model,
+        stein_results,
+        X_test,
+        num_classes,
+        sample_from="logits",
     )
     mean_predictions = pred_samples.mean(axis=0)
-    loss = log_loss(np.array(y_test), np.array(mean_predictions))
+    probabilities = jax.nn.softmax(mean_predictions, axis=-1)
+    loss = log_loss(np.array(y_test), np.array(probabilities))
     print(f"Loss: {loss}")
     visualize_multiclass(
         multiclass_model,

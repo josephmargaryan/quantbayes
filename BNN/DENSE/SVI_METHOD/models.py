@@ -20,7 +20,7 @@ def regression_model(X, y=None, hidden_dim=10):
     mean = numpyro.deterministic("mean", jnp.dot(hidden, w_out).squeeze() + b_out)
 
     sigma = numpyro.sample("sigma", dist.Exponential(1.0))
-    numpyro.sample("y", dist.Normal(mean, sigma), obs=y)
+    numpyro.sample("obs", dist.Normal(mean, sigma), obs=y)
 
 
 def binary_model(X, y=None, hidden_dim=10):
@@ -35,8 +35,11 @@ def binary_model(X, y=None, hidden_dim=10):
     b_out = numpyro.sample("b_out", dist.Normal(0, 1).expand([1]))
 
     hidden = jax.nn.relu(jnp.dot(X, w_hidden) + b_hidden)
-    logits = numpyro.deterministic("logits", jnp.dot(hidden, w_out).squeeze() + b_out)
-    numpyro.sample("y", dist.Bernoulli(logits=logits), obs=y)
+    logits = jnp.dot(hidden, w_out).squeeze() + b_out
+    logits = jnp.dot(hidden, w_out).squeeze() + b_out
+    logits = jnp.clip(logits, a_min=-10, a_max=10)
+    numpyro.deterministic("logits", logits)
+    numpyro.sample("obs", dist.Bernoulli(logits=logits), obs=y)
 
 
 def multiclass_model(X, y=None, hidden_dim=10, num_classes=3):
@@ -51,5 +54,7 @@ def multiclass_model(X, y=None, hidden_dim=10, num_classes=3):
     b_out = numpyro.sample("b_out", dist.Normal(0, 1).expand([num_classes]))
 
     hidden = jax.nn.relu(jnp.dot(X, w_hidden) + b_hidden)
-    logits = numpyro.deterministic("logits", jnp.dot(hidden, w_out) + b_out)
-    numpyro.sample("y", dist.Categorical(logits=logits), obs=y)
+    logits = jnp.dot(hidden, w_out) + b_out
+    logits = jnp.clip(logits, a_min=-10, a_max=10)
+    numpyro.deterministic("logits", logits)
+    numpyro.sample("obs", dist.Categorical(logits=logits), obs=y)

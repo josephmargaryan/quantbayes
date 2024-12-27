@@ -16,7 +16,7 @@ def regression_model(X, y=None):
         "first_row", dist.Normal(0, 1).expand([num_particles, input_size])
     )
     bias_circulant = numpyro.sample(
-        "bias_circulant", dist.Normal(0, 1).expand([num_particles])
+        "bias_circulant", dist.Normal(0, 1).expand([num_particles, input_size])
     )
 
     hidden_list = []
@@ -28,7 +28,7 @@ def regression_model(X, y=None):
     hidden = jnp.stack(hidden_list, axis=0)
 
     weights_out = numpyro.sample(
-        "weights_out", dist.Normal(0, 1).expand([num_particles, input_size, 1])
+        "weights_out", dist.Normal(0, 1).expand([num_particles, hidden.shape[2], 1])
     )
     bias_out = numpyro.sample("bias_out", dist.Normal(0, 1).expand([num_particles]))
 
@@ -52,7 +52,7 @@ def multiclass_model(X, y=None, num_classes=3):
         "first_row", dist.Normal(0, 1).expand([num_particles, input_size])
     )
     bias_circulant = numpyro.sample(
-        "bias_circulant", dist.Normal(0, 1).expand([num_particles])
+        "bias_circulant", dist.Normal(0, 1).expand([num_particles, input_size])
     )
 
     hidden_list = []
@@ -65,17 +65,17 @@ def multiclass_model(X, y=None, num_classes=3):
 
     weights_out = numpyro.sample(
         "weights_out",
-        dist.Normal(0, 1).expand([num_particles, input_size, num_classes]),
+        dist.Normal(0, 1).expand([num_particles, hidden.shape[2], num_classes]),
     )
     bias_out = numpyro.sample(
         "bias_out", dist.Normal(0, 1).expand([num_particles, num_classes])
     )
 
     logits = jnp.einsum("pbi,pio->pbo", hidden, weights_out) + bias_out[:, None, :]
-    mean_logits = jnp.mean(logits, axis=0)
-    probs = jax.nn.softmax(mean_logits, axis=-1)
-    numpyro.deterministic("probs", probs)
-    numpyro.sample("obs", dist.Categorical(probs=probs), obs=y)
+    logits = jnp.mean(logits, axis=0)
+    logits = jnp.clip(logits, a_min=-10, a_max=10)
+    numpyro.deterministic("logits", logits)
+    numpyro.sample("obs", dist.Categorical(logits=logits), obs=y)
 
 
 def binary_model(X, y=None):
@@ -89,7 +89,7 @@ def binary_model(X, y=None):
         "first_row", dist.Normal(0, 1).expand([num_particles, input_size])
     )
     bias_circulant = numpyro.sample(
-        "bias_circulant", dist.Normal(0, 1).expand([num_particles])
+        "bias_circulant", dist.Normal(0, 1).expand([num_particles, input_size])
     )
 
     hidden_list = []
@@ -101,15 +101,15 @@ def binary_model(X, y=None):
     hidden = jnp.stack(hidden_list, axis=0)
 
     weights_out = numpyro.sample(
-        "weights_out", dist.Normal(0, 1).expand([num_particles, input_size, 1])
+        "weights_out", dist.Normal(0, 1).expand([num_particles, hidden.shape[2], 1])
     )
     bias_out = numpyro.sample("bias_out", dist.Normal(0, 1).expand([num_particles]))
 
     logits = (
         jnp.einsum("pbi,pio->pbo", hidden, weights_out).squeeze(-1) + bias_out[:, None]
-    )
+    )  # Logits for each particle
+    logits = jnp.mean(logits, axis=0)
 
-    mean_logits = jnp.mean(logits, axis=0)
-    probs = jax.nn.sigmoid(mean_logits)
-    numpyro.deterministic("probs", probs)
-    numpyro.sample("obs", dist.Bernoulli(probs=probs), obs=y)
+    logits = jnp.clip(logits, a_min=-10, a_max=10)
+    numpyro.deterministic("logits", logits)
+    numpyro.sample("obs", dist.Bernoulli(logits=logits), obs=y)

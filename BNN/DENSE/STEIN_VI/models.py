@@ -78,10 +78,10 @@ def binary_model(X, y=None):
 
     mean_logits = jnp.mean(logits, axis=0)
 
-    probs = jax.nn.sigmoid(mean_logits)
+    logits = jnp.clip(mean_logits, a_min=-10, a_max=10)
 
-    numpyro.deterministic("probs", probs)
-    numpyro.sample("obs", dist.Bernoulli(probs=probs), obs=y)
+    numpyro.deterministic("logits", logits)
+    numpyro.sample("obs", dist.Bernoulli(logits=logits), obs=y)
 
 
 def multiclass_model(X, y=None, num_classes=3):
@@ -117,6 +117,6 @@ def multiclass_model(X, y=None, num_classes=3):
 
     logits = jnp.einsum("pbi,pio->pbo", hidden, weights_out) + bias_out[:, None, :]
     mean_logits = jnp.mean(logits, axis=0)
-    probs = jax.nn.softmax(mean_logits, axis=-1)
-    numpyro.deterministic("probs", probs)
-    numpyro.sample("obs", dist.Categorical(probs=probs), obs=y)
+    logits = jnp.clip(mean_logits, a_min=-10, a_max=10)
+    numpyro.deterministic("logits", logits)
+    numpyro.sample("obs", dist.Categorical(logits=logits), obs=y)

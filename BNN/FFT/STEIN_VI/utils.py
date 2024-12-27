@@ -98,7 +98,9 @@ def predict_regressor(stein, bnn_model, stein_result, X_test):
     return predictions
 
 
-def predict_multiclass(stein, bnn_model, stein_result, X_test, num_classes=3):
+def predict_multiclass(
+    stein, bnn_model, stein_result, X_test, num_classes=3, sample_from="obs"
+):
     """
     Generate predictions for multiclass classification using a trained Bayesian Neural Network.
     """
@@ -117,12 +119,12 @@ def predict_multiclass(stein, bnn_model, stein_result, X_test, num_classes=3):
     rng_key = random.PRNGKey(1)
     pred_samples = predictive(rng_key, X_test)
 
-    probs_samples = pred_samples["probs"]
+    probs_samples = pred_samples[sample_from]
 
     return probs_samples
 
 
-def predict_binary(stein, bnn_model, stein_result, X_test):
+def predict_binary(stein, bnn_model, stein_result, X_test, sample_from="obs"):
     """
     Generate predictions for binary classification using a trained Bayesian Neural Network.
     """
@@ -136,7 +138,7 @@ def predict_binary(stein, bnn_model, stein_result, X_test):
     )
 
     rng_key = random.PRNGKey(1)
-    pred_samples = predictive(rng_key, X_test)["obs"]
+    pred_samples = predictive(rng_key, X_test)[sample_from]
     return pred_samples
 
 
@@ -157,23 +159,20 @@ def visualize_regression(
     Returns:
         None. Displays the plot.
     """
-    X_test = np.array(X_test)  # Convert to NumPy for easier handling
+    X_test = np.array(X_test)
     y_test = np.array(y_test)
     mean_preds = np.array(mean_preds)
     lower_bound = np.array(lower_bound)
     upper_bound = np.array(upper_bound)
 
-    # Handle feature selection logic
     if (
         X_test.shape[1] == 1
         or feature_index is None
         or not (0 <= feature_index < X_test.shape[1])
     ):
-        feature_index = 0  # Default to the only feature if invalid index is provided
+        feature_index = 0
 
     feature = X_test[:, feature_index]
-
-    # Sort the data for proper visualization
     sorted_indices = np.argsort(feature)
     feature = feature[sorted_indices]
     y_test = y_test[sorted_indices]
@@ -181,7 +180,6 @@ def visualize_regression(
     lower_bound = lower_bound[sorted_indices]
     upper_bound = upper_bound[sorted_indices]
 
-    # Plot
     plt.figure(figsize=(10, 6))
     plt.scatter(feature, y_test, color="blue", alpha=0.6, label="True Targets")
     plt.plot(
@@ -223,46 +221,36 @@ def visualize_binary(
         resolution: Grid resolution for visualization.
         features: Tuple of indices specifying which two features to visualize (e.g., (0, 1)).
     """
-    # Select the specified features
     feature_1, feature_2 = features
     X_selected = X[:, [feature_1, feature_2]]
 
-    # Define grid limits
     x_min, x_max = X_selected[:, 0].min() - 1, X_selected[:, 0].max() + 1
     y_min, y_max = X_selected[:, 1].min() - 1, X_selected[:, 1].max() + 1
 
-    # Generate grid of points
     xx, yy = np.meshgrid(
         np.linspace(x_min, x_max, resolution), np.linspace(y_min, y_max, resolution)
     )
     grid_points = jnp.array(np.c_[xx.ravel(), yy.ravel()])
-
-    # Extend grid_points back to original dimensionality
     grid_points_full = jnp.zeros((grid_points.shape[0], X.shape[1]))
     grid_points_full = grid_points_full.at[:, feature_1].set(grid_points[:, 0])
     grid_points_full = grid_points_full.at[:, feature_2].set(grid_points[:, 1])
 
-    # Get predicted probabilities and uncertainties
     pred_samples = predict_binary(
-        stein, model, stein_results, grid_points_full
-    )  # Shape: (num_samples, num_points)
-    mean_probs = pred_samples.mean(axis=0)  # Shape: (num_points,)
-    uncertainty = pred_samples.std(axis=0)  # Standard deviation as uncertainty metric
-
-    # Reshape for plotting
+        stein, model, stein_results, grid_points_full, sample_from="logits"
+    )
+    pred_samples = jax.nn.sigmoid(pred_samples)
+    mean_probs = pred_samples.mean(axis=0)
+    uncertainty = pred_samples.std(axis=0)
     mean_probs = mean_probs.reshape(xx.shape)
     uncertainty = uncertainty.reshape(xx.shape)
 
-    # Plot decision boundary
     plt.figure(figsize=(12, 8))
     plt.contourf(xx, yy, mean_probs, levels=100, cmap=plt.cm.RdYlBu, alpha=0.8)
     plt.colorbar(label="Predicted Probability (Class 1)")
 
-    # Overlay uncertainty
     plt.contourf(xx, yy, uncertainty, levels=20, cmap="gray", alpha=0.4)
     plt.colorbar(label="Uncertainty (Standard Deviation)")
 
-    # Scatter actual data points
     plt.scatter(
         X_selected[:, 0], X_selected[:, 1], c=y, edgecolor="k", cmap=plt.cm.RdYlBu
     )
@@ -289,48 +277,39 @@ def visualize_multiclass(
         resolution: Grid resolution for visualization.
         features: Tuple of indices specifying which two features to visualize (e.g., (0, 1)).
     """
-    # Select the specified features
     feature_1, feature_2 = features
     X_selected = X[:, [feature_1, feature_2]]
-
-    # Define grid limits
     x_min, x_max = X_selected[:, 0].min() - 1, X_selected[:, 0].max() + 1
     y_min, y_max = X_selected[:, 1].min() - 1, X_selected[:, 1].max() + 1
 
-    # Generate grid of points
     xx, yy = np.meshgrid(
         np.linspace(x_min, x_max, resolution), np.linspace(y_min, y_max, resolution)
     )
     grid_points = jnp.array(np.c_[xx.ravel(), yy.ravel()])
 
-    # Extend grid_points back to original dimensionality
     grid_points_full = jnp.zeros((grid_points.shape[0], X.shape[1]))
     grid_points_full = grid_points_full.at[:, feature_1].set(grid_points[:, 0])
     grid_points_full = grid_points_full.at[:, feature_2].set(grid_points[:, 1])
 
-    # Get predicted probabilities and uncertainties
     pred_samples = predict_multiclass(
-        stein, model, stein_results, grid_points_full, num_classes
+        stein, model, stein_results, grid_points_full, num_classes, sample_from="logits"
     )
-    mean_probs = pred_samples.mean(axis=0)  # Average probabilities across particles
+    mean_probs = pred_samples.mean(axis=0)
+    probabilities = jax.nn.softmax(mean_probs, axis=-1)
     uncertainty = -jnp.sum(
-        mean_probs * jnp.log(mean_probs + 1e-9), axis=1
+        probabilities * jnp.log(probabilities + 1e-9), axis=1
     )  # Entropy as uncertainty metric
 
-    # Reshape for plotting
-    mean_class = jnp.argmax(mean_probs, axis=1).reshape(xx.shape)
+    mean_class = jnp.argmax(probabilities, axis=1).reshape(xx.shape)
     uncertainty = uncertainty.reshape(xx.shape)
 
-    # Plot decision boundaries
     plt.figure(figsize=(12, 8))
     plt.contourf(xx, yy, mean_class, alpha=0.6, cmap=plt.cm.RdYlBu)
     plt.colorbar(label="Predicted Class")
 
-    # Overlay uncertainty
     plt.contourf(xx, yy, uncertainty, alpha=0.3, cmap="gray", levels=15)
     plt.colorbar(label="Uncertainty (Entropy)")
 
-    # Scatter actual points
     plt.scatter(
         X_selected[:, 0], X_selected[:, 1], c=y, edgecolor="k", cmap=plt.cm.RdYlBu
     )

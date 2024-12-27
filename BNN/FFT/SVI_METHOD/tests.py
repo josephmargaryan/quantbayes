@@ -33,8 +33,9 @@ def test_binary():
     svi, params, loss_progression = train_binary(
         X_train, y_train, binary_model, num_steps=100, track_loss=True
     )
-    predictions = predict_binary(svi, params, X_test, sample_from="obs")
+    predictions = predict_binary(svi, params, X_test, sample_from="logits")
     mean_predictions = predictions.mean(axis=0)
+    mean_predictions = jax.nn.sigmoid(mean_predictions)
     binary_preds = (mean_predictions > 0.5).astype(int)
     accuracy = accuracy_score(np.array(y_test), np.array(binary_preds))
     print(f"Accuracy for binary: {accuracy}")
@@ -58,7 +59,7 @@ def test_multiclass():
         X_train,
         y_train,
         multiclass_model,
-        num_steps=1000,
+        num_steps=2500,
         num_classes=len(jnp.unique(y)),
         track_loss=True,
     )
@@ -94,7 +95,7 @@ def test_regression():
         X_train, y_train, regression_model, num_steps=100, track_loss=True
     )
 
-    predictions = predict_regressor(svi, params, X_test, sample_from="obs")
+    predictions = predict_regressor(svi, params, X_test)
     mean_predictions = predictions.mean(axis=0)
     uncertainty = predictions.std(axis=0)
     lower_bound = mean_predictions - 1.96 * uncertainty
@@ -118,6 +119,6 @@ if __name__ == "__main__":
     print("Testing Binary")
     test_binary()
     print("Testing Regressor")
-    test_regression()
-    print("Testing Multiclass")"""
-    test_multiclass()
+    test_regression()"""
+    print("Testing Multiclass")
+    test_binary()
