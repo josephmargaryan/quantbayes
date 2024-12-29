@@ -49,7 +49,7 @@ def predict_binary(mcmc, X_test, model, sample_from="obs"):
     return predictions
 
 
-def predict_multiclass(mcmc, X_test, model, n_classes=None, sample_from="obs"):
+def predict_multiclass(mcmc, X_test, model, sample_from="obs"):
     """
     Predict probabilities for a multiclass classification model.
 
@@ -269,7 +269,6 @@ def visualize_multiclass(
         mcmc,
         jnp.array(X_for_grid),
         multiclass_model,
-        n_classes=n_classes,
         sample_from="logits",
     )
     grid_preds = jax.nn.softmax(grid_preds, axis=-1)

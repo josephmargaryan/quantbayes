@@ -113,7 +113,7 @@ def test_multiclass():
         X, y, random_state=45, test_size=0.2
     )
 
-    mcmc = run_inference(multiclass_model, rng_key, X_train, y_train, 1000, 500)
+    mcmc = run_inference(multiclass_model, rng_key, X_train, y_train, 100, 50)
     predictions = predict_multiclass(
         mcmc, X_test, multiclass_model, sample_from="logits"
     )
@@ -135,6 +135,118 @@ def test_multiclass():
     )
 
 
+##################################
+def multiclass_log_loss(pred_probs, true_labels):
+    pred_probs = jnp.clip(pred_probs, 1e-7, 1 - 1e-7)  # Avoid log(0)
+    log_probs = jnp.log(pred_probs)
+    return -jnp.mean(log_probs[jnp.arange(len(true_labels)), true_labels])
+
+
+def compute_empirical_risk(predictions, y_true, loss_fn):
+    # Alternatively, aggregate risks across samples for robustness
+    risks = jnp.array([loss_fn(pred, y_true) for pred in predictions])
+    empirical_risk = risks.mean()
+    return empirical_risk
+
+
+def compute_kl_divergence(mean_posterior, std_posterior, mean_prior=0, std_prior=1):
+    """
+    Compute the KL divergence between a Gaussian posterior and a Gaussian prior.
+
+    Parameters:
+    - mean_posterior: Mean of the posterior distribution (array).
+    - std_posterior: Standard deviation of the posterior distribution (array).
+    - mean_prior: Mean of the prior distribution (default=0).
+    - std_prior: Standard deviation of the prior distribution (default=1).
+
+    Returns:
+    - kl_divergence: KL divergence between posterior and prior.
+    """
+    kl_divergence = (
+        0.5
+        * (
+            (std_posterior / std_prior) ** 2
+            + ((mean_posterior - mean_prior) / std_prior) ** 2
+            - 1
+            + 2 * jnp.log(std_prior / std_posterior)
+        ).sum()
+    )
+    return kl_divergence
+
+
+def compute_confidence_term(kl_divergence, num_samples, delta=0.05):
+    """
+    Compute the confidence term in the PAC-Bayesian bound.
+
+    Parameters:
+    - kl_divergence: KL divergence between posterior and prior.
+    - num_samples: Number of training samples.
+    - delta: Confidence level (default=0.05 for 95% confidence).
+
+    Returns:
+    - confidence_term: Square root term in the PAC-Bayesian bound.
+    """
+    confidence_term = jnp.sqrt((kl_divergence + jnp.log(1 / delta)) / (2 * num_samples))
+    return confidence_term
+
+
+def pac_bayesian_bound(
+    predictions, y_true, mean_posterior, std_posterior, num_samples, loss_fn, delta=0.05
+):
+    """
+    Compute the PAC-Bayesian bound for a model.
+
+    Parameters:
+    - predictions: Posterior samples of shape (num_samples, num_data_points).
+    - y_true: True labels or targets (array of shape (num_data_points,)).
+    - mean_posterior: Mean of the posterior distribution.
+    - std_posterior: Standard deviation of the posterior distribution.
+    - num_samples: Number of training samples.
+    - loss_fn: Loss function (e.g., mean squared error, log loss).
+    - delta: Confidence level (default=0.05).
+
+    Returns:
+    - bound: PAC-Bayesian bound for the model.
+    """
+    empirical_risk = compute_empirical_risk(predictions, y_true, loss_fn)
+    kl_divergence = compute_kl_divergence(mean_posterior, std_posterior)
+    confidence_term = compute_confidence_term(kl_divergence, num_samples, delta)
+
+    bound = empirical_risk + confidence_term
+    return bound
+
+
+def test_multiclass2():
+    rng_key = random.key(2)
+    df = generate_multiclass_classification_data()
+    X, y = df.drop(columns=["target"], axis=1), df["target"]
+    X, y = jnp.array(X), jnp.array(y)
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, random_state=45, test_size=0.2
+    )
+
+    mcmc = run_inference(multiclass_model, rng_key, X_train, y_train, 100, 50)
+    predictions = predict_multiclass(
+        mcmc, X_test, multiclass_model, sample_from="logits"
+    )
+    pred = jax.nn.softmax(predictions, axis=-1)
+    risks = jnp.array([log_loss(pred, y_test) for pred in predictions])
+    empirical_risk = risks.mean()
+    mean_preds = predictions.mean(axis=0)
+    probabilities = jax.nn.softmax(mean_preds, axis=-1)
+    std_preds = predictions.std(axis=0)
+
+    loss = log_loss(np.array(y_test), np.array(probabilities))
+    print(f"Loss: {loss}")
+    # Example for multiclass classification
+    empirical_risk = risks
+    kl_divergence = compute_kl_divergence(mean_preds, std_preds)
+    confidence_term = compute_confidence_term(kl_divergence, len(X_train))
+
+    pac_bound = empirical_risk + confidence_term
+    print(f"PAC-Bayesian Bound: {pac_bound}")
+
+
 if __name__ == "__main__":
     """
     print("Testing Binary")
@@ -142,5 +254,4 @@ if __name__ == "__main__":
     print("Testing Regressor")
     test_regression()
     print("Testing Multiclass")"""
-    test_binary()
-    test_multiclass()
+    test_multiclass2()

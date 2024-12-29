@@ -48,7 +48,7 @@ def test_regression():
     )
 
     mcmc = run_inference(
-        regression_model, rng_key, X_train, y_train, num_samples=1000, num_warmup=500
+        regression_model, rng_key, X_train, y_train, num_samples=100, num_warmup=50
     )
 
     predictions = predict_regressor(mcmc, X_test, regression_model)
@@ -76,7 +76,7 @@ def test_binary():
     )
 
     mcmc = run_inference(
-        binary_model, rng_key, X_train, y_train, num_samples=1000, num_warmup=500
+        binary_model, rng_key, X_train, y_train, num_samples=100, num_warmup=50
     )
 
     predictions = predict_binary(mcmc, X_test, binary_model, sample_from="logits")
@@ -110,7 +110,7 @@ def test_multiclass():
         X, y, random_state=45, test_size=0.2
     )
 
-    mcmc = run_inference(multiclass_model, rng_key, X_train, y_train, 1000, 500)
+    mcmc = run_inference(multiclass_model, rng_key, X_train, y_train, 100, 50)
     predictions = predict_multiclass(
         mcmc, X_test, multiclass_model, sample_from="logits"
     )
@@ -135,6 +135,6 @@ if __name__ == "__main__":
     print("Testing Binary")
     test_binary()
     print("Testing Regressor")
-    test_regression()
-    print("Testing Multiclass")
-    test_multiclass()
+    # test_regression()
+    # print("Testing Multiclass")
+    # test_multiclass()

@@ -1,4 +1,5 @@
 import numpy as np
+import jax
 import matplotlib.pyplot as plt
 from sklearn.calibration import calibration_curve
 from sklearn.metrics import roc_curve, auc
@@ -164,22 +165,182 @@ def expected_calibration_error(y_true, y_prob, num_bins=10):
     return ece
 
 
-# Example usage:
-"""y_true_binary = np.array([0, 1, 0, 1, 1])
-y_prob_binary = np.array([0.1, 0.9, 0.2, 0.8, 0.7])
-plot_calibration_curve(y_true_binary, y_prob_binary, plot_type="binary")
-ece_binary = expected_calibration_error(y_true_binary, y_prob_binary)
-print(f"ECE (Binary): {ece_binary}")"""
+def compute_entropy_multiclass(probs):
+    """Compute entropy for a multiclass probability distribution."""
+    return -np.sum(probs * np.log(probs + 1e-10), axis=-1)
 
 
-"""y_true_multiclass = np.array([0, 1, 2, 1, 0])
-y_prob_multiclass = np.array([
-    [0.7, 0.2, 0.1],
-    [0.1, 0.8, 0.1],
-    [0.2, 0.1, 0.7],
-    [0.1, 0.6, 0.3],
-    [0.8, 0.1, 0.1]
-])
-plot_calibration_curve(y_true_multiclass, y_prob_multiclass, plot_type="multiclass")
-ece_multiclass = expected_calibration_error(y_true_multiclass, y_prob_multiclass)
-print(f"ECE (Multiclass): {ece_multiclass}")"""
+def compute_mutual_information_multiclass(probs):
+    """
+    Compute mutual information (MI) for multiclass classification.
+
+    Args:
+        probs: Array of shape (num_samples, num_test_points, num_classes) containing probabilities.
+
+    Returns:
+        MI: Mutual information for each test point.
+        Predictive entropy for each test point.
+    """
+    mean_probs = probs.mean(axis=0)  # Mean probabilities (point estimate)
+    predictive_entropy = compute_entropy_multiclass(mean_probs)  # Predictive entropy
+
+    sample_entropies = compute_entropy_multiclass(probs)  # Per-sample entropies
+    expected_entropy = np.mean(sample_entropies, axis=0)  # Mean entropy over samples
+
+    MI = predictive_entropy - expected_entropy
+    return MI, predictive_entropy
+
+
+def compute_entropy_binary(probs):
+    """Compute entropy for binary classification."""
+    return -probs * np.log(probs + 1e-10) - (1 - probs) * np.log(1 - probs + 1e-10)
+
+
+def compute_mutual_information_binary(probs):
+    """
+    Compute mutual information (MI) for binary classification.
+
+    Args:
+        logits: Array of shape (num_samples, num_test_points) containing logits.
+
+    Returns:
+        MI: Mutual information for each test point.
+    """
+
+    mean_probs = probs.mean(axis=0)  # Mean probabilities (point estimate)
+
+    predictive_entropy = compute_entropy_binary(mean_probs)  # Predictive entropy
+    sample_entropies = compute_entropy_binary(probs)  # Per-sample entropies
+    expected_entropy = sample_entropies.mean(axis=0)  # Mean entropy over samples
+
+    MI = predictive_entropy - expected_entropy
+    return MI, predictive_entropy
+
+
+def compute_mutual_information_regression(samples):
+    """
+    Compute mutual information for regression tasks.
+
+    Args:
+        samples: Array of shape (num_samples, num_test_points) containing predictive samples.
+
+    Returns:
+        MI: Mutual information for each test point.
+        Predictive entropy for each test point.
+    """
+    mean_predictions = samples.mean(axis=0)  # Mean predictions
+    variance_predictions = samples.var(axis=0)  # Variance of predictions
+
+    predictive_entropy = 0.5 * np.log(
+        2 * np.pi * np.e * variance_predictions + 1e-10
+    )  # Predictive entropy
+
+    # Expected entropy assumes per-sample variance
+    sample_variances = samples.var(axis=0)
+    expected_entropy = 0.5 * np.log(2 * np.pi * np.e * sample_variances + 1e-10)
+
+    MI = predictive_entropy - expected_entropy
+    return MI, predictive_entropy
+
+
+def compute_entropy_regression(samples):
+    """
+    Compute predictive entropy for regression tasks.
+
+    Args:
+        samples: Array of shape (num_samples, num_test_points) containing predictive samples.
+
+    Returns:
+        Predictive entropy for each test point.
+    """
+    # Variance of the posterior predictive distribution
+    variance_predictions = samples.var(axis=0)
+
+    # Predictive entropy formula for Gaussian distributions
+    predictive_entropy = 0.5 * np.log(2 * np.pi * np.e * variance_predictions + 1e-10)
+
+    return predictive_entropy
+
+
+def visualize_entropy_and_mi(MI, predictive_entropy, task_type="binary"):
+    """
+    Visualize Mutual Information (MI) and Predictive Entropy for a single model or case.
+
+    Args:
+        MI: Array of mutual information values for test samples.
+        predictive_entropy: Array of predictive entropy values for test samples.
+        task_type: Type of the task - "binary", "multiclass", or "regression".
+    """
+    num_samples = len(MI)
+    x_axis = np.arange(num_samples)
+
+    plt.figure(figsize=(12, 6))
+
+    plt.scatter(
+        x_axis, MI, label="Mutual Information (MI)", alpha=0.7, marker="o", color="blue"
+    )
+    plt.scatter(
+        x_axis,
+        predictive_entropy,
+        label="Predictive Entropy",
+        alpha=0.7,
+        marker="x",
+        color="orange",
+    )
+
+    plt.title(
+        f"Mutual Information and Predictive Entropy ({task_type.capitalize()} Task)",
+        fontsize=16,
+    )
+    plt.xlabel("Test Sample Index", fontsize=14)
+    plt.ylabel("Value", fontsize=14)
+    plt.legend(fontsize=12)
+    plt.grid(alpha=0.4)
+
+    plt.show()
+
+
+def visualize_entropy_and_mi_with_average(
+    MI, predictive_entropy, avg_entropy, task_type="multiclass"
+):
+    """
+    Visualize Mutual Information (MI), Predictive Entropy, and Average Entropy for a single model or case.
+
+    Args:
+        MI: Array of mutual information values for test samples.
+        predictive_entropy: Array of predictive entropy values for test samples.
+        avg_entropy: Array of average entropy values for test samples.
+        task_type: Type of the task - "binary", "multiclass", or "regression".
+    """
+    num_samples = len(MI)
+    x_axis = np.arange(num_samples)
+
+    plt.figure(figsize=(12, 6))
+
+    plt.scatter(
+        x_axis, MI, label="Mutual Information (MI)", alpha=0.7, marker="o", color="blue"
+    )
+    plt.scatter(
+        x_axis,
+        predictive_entropy,
+        label="Predictive Entropy",
+        alpha=0.7,
+        marker="x",
+        color="orange",
+    )
+    plt.scatter(
+        x_axis,
+        avg_entropy,
+        label="Average Entropy (Aleatoric)",
+        alpha=0.7,
+        marker="s",
+        color="green",
+    )
+
+    plt.title(f"Uncertainty Analysis ({task_type.capitalize()} Task)", fontsize=16)
+    plt.xlabel("Test Sample Index", fontsize=14)
+    plt.ylabel("Value", fontsize=14)
+    plt.legend(fontsize=12)
+    plt.grid(alpha=0.4)
+
+    plt.show()
