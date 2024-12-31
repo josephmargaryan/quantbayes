@@ -1,4 +1,4 @@
-from BNN.DENSE.STEIN_VI.models import regression_model, binary_model, multiclass_model
+from BNN.DENSE.STEIN_VI.models import regression_model, binary_model, multiclass_model, hierarchical_multiclass, hierarchical_binary, hierarchical_regressor
 from BNN.DENSE.STEIN_VI.fake_data import (
     generate_simple_regression_data,
     generate_binary_classification_data,
@@ -40,8 +40,8 @@ def test_regression():
         X, y, random_state=24, test_size=0.2
     )
 
-    stein, stein_result = train_regressor(regression_model, X_train, y_train, 1000)
-    predictions = predict_regressor(stein, regression_model, stein_result, X_test)
+    stein, stein_result = train_regressor(hierarchical_regressor, X_train, y_train, 1000)
+    predictions = predict_regressor(stein, hierarchical_regressor, stein_result, X_test)
     mean_preds = predictions.mean(axis=0)
     std_preds = predictions.std(axis=0)
     lower_bound = mean_preds - 1.96 * std_preds
@@ -52,6 +52,7 @@ def test_regression():
 
 
 def test_binary():
+    from BNN.model_calibration import plot_calibration_curve, plot_roc_curve
     df = generate_binary_classification_data()
     X, y = df.drop(columns=["target"], axis=1), df["target"]
     X, y = jnp.array(X), jnp.array(y)
@@ -59,17 +60,18 @@ def test_binary():
         X, y, test_size=0.2, random_state=34
     )
 
-    stein, stein_results = train_binary(binary_model, X_train, y_train, 1000)
+    stein, stein_results = train_binary(hierarchical_binary, X_train, y_train, 2000)
 
     pred_samples = predict_binary(
-        stein, binary_model, stein_results, X_test, sample_from="logits"
+        stein, hierarchical_binary, stein_results, X_test, sample_from="logits"
     )
-    mean_predictions = pred_samples.mean(axis=0)
-    mean_predictions = jax.nn.sigmoid(mean_predictions)
-    binary_predictions = (mean_predictions > 0.5).astype(int)
-    accuracy = accuracy_score(np.array(y_test), np.array(binary_predictions))
-    print(f"Accuracy: {accuracy}")
+    probs = jax.nn.sigmoid(pred_samples)
+    mean_predictions = probs.mean(axis=0)
+    loss = log_loss(np.array(y_test), np.array(mean_predictions))
+    print(f"Loss: {loss}")
     visualize_binary(binary_model, X_test, y_test, stein, stein_results, 100, (2, 3))
+    plot_roc_curve(np.array(y_test), np.array(mean_predictions))
+    plot_calibration_curve(np.array(y_test), np.array(mean_predictions))
 
 
 def test_multiclass():
@@ -81,11 +83,11 @@ def test_multiclass():
     )
     num_classes = len(jnp.unique(y_train))
     stein, stein_results = train_multiclass(
-        multiclass_model, X_train, y_train, num_classes
+        hierarchical_multiclass, X_train, y_train, num_classes
     )
     pred_samples = predict_multiclass(
         stein,
-        multiclass_model,
+        hierarchical_multiclass,
         stein_results,
         X_test,
         num_classes,
@@ -110,7 +112,8 @@ def test_multiclass():
 if __name__ == "__main__":
     print("Testing Binary")
     test_binary()
+    """    
     print("Testing Regressor")
     test_regression()
     print("Testing Multiclass")
-    test_multiclass()
+    test_multiclass()"""

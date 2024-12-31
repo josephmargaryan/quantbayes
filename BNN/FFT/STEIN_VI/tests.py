@@ -1,4 +1,4 @@
-from BNN.FFT.STEIN_VI.models import regression_model, binary_model, multiclass_model
+from BNN.FFT.STEIN_VI.models import regression_model, binary_model, multiclass_model, hierarchical_multiclass, hierarchical_binary, hierarchical_regressor
 from BNN.FFT.STEIN_VI.fake_data_generator import (
     generate_simple_regression_data,
     generate_binary_classification_data,
@@ -40,8 +40,8 @@ def test_regression():
         X, y, random_state=24, test_size=0.2
     )
 
-    stein, stein_result = train_regressor(regression_model, X_train, y_train, 1000)
-    predictions = predict_regressor(stein, regression_model, stein_result, X_test)
+    stein, stein_result = train_regressor(hierarchical_regressor, X_train, y_train, 1000)
+    predictions = predict_regressor(stein, hierarchical_regressor, stein_result, X_test)
     mean_preds = predictions.mean(axis=0)
     std_preds = predictions.std(axis=0)
     lower_bound = mean_preds - 1.96 * std_preds
@@ -59,10 +59,10 @@ def test_binary():
         X, y, test_size=0.2, random_state=34
     )
 
-    stein, stein_results = train_binary(binary_model, X_train, y_train, 1000)
+    stein, stein_results = train_binary(hierarchical_binary, X_train, y_train, 2000)
 
     pred_samples = predict_binary(
-        stein, binary_model, stein_results, X_test, sample_from="logits"
+        stein, hierarchical_binary, stein_results, X_test, sample_from="logits"
     )
     mean_predictions = pred_samples.mean(axis=0)
     mean_predictions = jax.nn.sigmoid(mean_predictions)
@@ -81,11 +81,11 @@ def test_multiclass():
     )
     num_classes = len(jnp.unique(y_train))
     stein, stein_results = train_multiclass(
-        multiclass_model, X_train, y_train, num_classes, 100
+        hierarchical_multiclass, X_train, y_train, num_classes, 100
     )
     pred_samples = predict_multiclass(
         stein,
-        multiclass_model,
+        hierarchical_multiclass,
         stein_results,
         X_test,
         num_classes,
@@ -110,7 +110,8 @@ def test_multiclass():
 if __name__ == "__main__":
     print("Testing Binary")
     test_binary()
+    """    
     print("Testing Regressor")
     test_regression()
     print("Testing Multiclass")
-    test_multiclass()
+    test_multiclass()"""

@@ -153,7 +153,7 @@ def predict_regressor(svi, params, X_test, hidden_dim=10):
     predictive = Predictive(svi.model, guide=svi.guide, params=params, num_samples=100)
     rng_key = random.PRNGKey(1)
     pred_samples = predictive(rng_key, X=X_test, hidden_dim=hidden_dim)
-    return pred_samples["obs"]
+    return pred_samples["y"]
 
 
 def visualize_regression(X_test, y_test, svi, params, feature_index=0):

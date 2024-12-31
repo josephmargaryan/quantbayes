@@ -1,4 +1,4 @@
-from BNN.FFT.MCMC_METHOD.models import regression_model, binary_model, multiclass_model
+from BNN.FFT.MCMC_METHOD.models import regression_model, binary_model, multiclass_model, hierarchical_regressor, hierarchical_binary, hierarchical_multiclass
 from BNN.FFT.MCMC_METHOD.utils import (
     run_inference,
     visualize_regression,
@@ -48,10 +48,10 @@ def test_regression():
     )
 
     mcmc = run_inference(
-        regression_model, rng_key, X_train, y_train, num_samples=100, num_warmup=50
+        hierarchical_regressor, rng_key, X_train, y_train, num_samples=100, num_warmup=50
     )
 
-    predictions = predict_regressor(mcmc, X_test, regression_model)
+    predictions = predict_regressor(mcmc, X_test, hierarchical_regressor)
 
     mean_preds = predictions.mean(axis=0)
     std_preds = predictions.std(axis=0)
@@ -76,10 +76,10 @@ def test_binary():
     )
 
     mcmc = run_inference(
-        binary_model, rng_key, X_train, y_train, num_samples=100, num_warmup=50
+        hierarchical_binary, rng_key, X_train, y_train, num_samples=100, num_warmup=50
     )
 
-    predictions = predict_binary(mcmc, X_test, binary_model, sample_from="logits")
+    predictions = predict_binary(mcmc, X_test, hierarchical_binary, sample_from="logits")
     mean_preds = predictions.mean(axis=0)
     mean_preds = jax.nn.sigmoid(mean_preds)
     std_preds = predictions.std(axis=0)
@@ -110,9 +110,9 @@ def test_multiclass():
         X, y, random_state=45, test_size=0.2
     )
 
-    mcmc = run_inference(multiclass_model, rng_key, X_train, y_train, 100, 50)
+    mcmc = run_inference(hierarchical_multiclass, rng_key, X_train, y_train, 100, 50)
     predictions = predict_multiclass(
-        mcmc, X_test, multiclass_model, sample_from="logits"
+        mcmc, X_test, hierarchical_multiclass, sample_from="logits"
     )
     predictions = jax.nn.softmax(predictions, axis=-1)
     mean_preds = predictions.mean(axis=0)
@@ -135,6 +135,6 @@ if __name__ == "__main__":
     print("Testing Binary")
     test_binary()
     print("Testing Regressor")
-    # test_regression()
-    # print("Testing Multiclass")
-    # test_multiclass()
+    test_regression()
+    print("Testing Multiclass")
+    test_multiclass()

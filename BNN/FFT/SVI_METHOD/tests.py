@@ -20,7 +20,7 @@ from BNN.FFT.SVI_METHOD.utils import (
 )
 from sklearn.metrics import log_loss, accuracy_score, mean_absolute_error
 import matplotlib.pyplot as plt
-from BNN.FFT.SVI_METHOD.models import regression_model, binary_model, multiclass_model
+from BNN.FFT.SVI_METHOD.models import regression_model, binary_model, multiclass_model, hierarchical_multiclass, hierarchical_binary, hierarchical_regressor
 
 
 def test_binary():
@@ -31,7 +31,7 @@ def test_binary():
         X, y, test_size=0.2, random_state=24
     )
     svi, params, loss_progression = train_binary(
-        X_train, y_train, binary_model, num_steps=100, track_loss=True
+        X_train, y_train, hierarchical_binary, num_steps=2000, track_loss=True
     )
     predictions = predict_binary(svi, params, X_test, sample_from="logits")
     mean_predictions = predictions.mean(axis=0)
@@ -58,8 +58,8 @@ def test_multiclass():
     svi, params, loss_progression = train_multiclass(
         X_train,
         y_train,
-        multiclass_model,
-        num_steps=2500,
+        hierarchical_multiclass,
+        num_steps=100,
         num_classes=len(jnp.unique(y)),
         track_loss=True,
     )
@@ -92,7 +92,7 @@ def test_regression():
     )
 
     svi, params, loss_progression = train_regressor(
-        X_train, y_train, regression_model, num_steps=100, track_loss=True
+        X_train, y_train, hierarchical_regressor, num_steps=100, track_loss=True
     )
 
     predictions = predict_regressor(svi, params, X_test)
@@ -115,10 +115,10 @@ def test_regression():
 
 
 if __name__ == "__main__":
-    """
+    """    
     print("Testing Binary")
     test_binary()
     print("Testing Regressor")
-    test_regression()"""
-    print("Testing Multiclass")
+    test_regression()
+    print("Testing Multiclass")"""
     test_binary()

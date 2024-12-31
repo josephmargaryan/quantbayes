@@ -20,7 +20,7 @@ from BNN.DENSE.SVI_METHOD.utils import (
 )
 from sklearn.metrics import log_loss, accuracy_score, mean_absolute_error
 import matplotlib.pyplot as plt
-from BNN.DENSE.SVI_METHOD.models import regression_model, binary_model, multiclass_model
+from BNN.DENSE.SVI_METHOD.models import regression_model, binary_model, multiclass_model, hierarchical_binary, hierarchical_multiclass, hierarchical_regressor
 
 
 def test_binary():
@@ -31,7 +31,7 @@ def test_binary():
         X, y, test_size=0.2, random_state=24
     )
     svi, params, loss_progression = train_binary(
-        X_train, y_train, binary_model, 100, 10, True
+        X_train, y_train, hierarchical_binary, 100, 10, True
     )
     predictions = predict_binary(
         svi, params, X_test, hidden_dim=10, sample_from="logits"
@@ -58,7 +58,7 @@ def test_multiclass():
         X, y, test_size=0.2, random_state=24
     )
     svi, params, loss_progression = train_multiclass(
-        X_train, y_train, multiclass_model, 100, len(jnp.unique(y)), 10, True
+        X_train, y_train, hierarchical_multiclass, 100, len(jnp.unique(y)), 10, True
     )
     predictions = predict_multiclass(
         svi,
@@ -92,7 +92,7 @@ def test_regression():
         X, y, test_size=0.2, random_state=24
     )
     svi, params, loss_progression = train_regressor(
-        X_train, y_train, regression_model, 100, 10, True
+        X_train, y_train, hierarchical_regressor, 100, 10, True
     )
     predictions = predict_regressor(svi, params, X_test, 10)
     mean_predictions = predictions.mean(axis=0)

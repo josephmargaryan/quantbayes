@@ -2,7 +2,7 @@ from numpyro.contrib.einstein import SteinVI, RBFKernel, MixtureGuidePredictive
 import jax
 import jax.numpy as jnp
 from jax import random
-from numpyro.optim import Adam, Adagrad
+from numpyro.optim import Adam, Adagrad, SGD
 from numpyro.infer.autoguide import AutoNormal
 import matplotlib.pyplot as plt
 import numpy as np
@@ -63,7 +63,7 @@ def train_binary(bnn_model, X_train, y_train, num_steps=1000):
     stein = SteinVI(
         model=bnn_model,
         guide=guide,
-        optim=Adagrad(0.5),
+        optim=Adagrad(0.1),
         kernel_fn=RBFKernel(),
         repulsion_temperature=1.0,
         num_stein_particles=5,
