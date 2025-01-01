@@ -8,7 +8,7 @@ class BayesianGeneralizationBounds:
         Parameters:
         - num_samples: Number of training samples.
         - delta: Confidence level (default=0.05 for 95% confidence).
-        - model_type: Type of model ("gaussian" or "hierarchical").
+        - model_type: Type of model ("gaussian").
         """
         self.num_samples = num_samples
         self.delta = delta
@@ -47,95 +47,66 @@ class BayesianGeneralizationBounds:
                 (std_posterior / std_prior) ** 2
                 + ((mean_posterior - mean_prior) / std_prior) ** 2
                 - 1
-                + 2 * jnp.log(std_prior / (std_posterior + 1e-8))
+                + 2 * jnp.log(std_prior / std_posterior)
             ).sum()
         )
         return kl_divergence
 
-    @staticmethod
-    def compute_kl_divergence_hierarchical(
-        mean_posterior,
-        std_posterior,
-        mean_prior=0,
-        std_prior=1,
-        alpha_prior=1.0,
-        beta_prior=0.1,
-    ):
-        std_posterior = jnp.clip(std_posterior, 1e-6, None)
-        std_prior = jnp.clip(std_prior, 1e-6, None)
-        kl_weights = (
-            0.5
-            * (
-                (std_posterior / std_prior) ** 2
-                + ((mean_posterior - mean_prior) / std_prior) ** 2
-                - 1
-                + 2 * jnp.log(std_prior / std_posterior)
-            ).sum()
-        )
-        return kl_weights
-
-    def extract_posteriors(self, posterior_samples):
+    def extract_posteriors(self, posterior_samples, layer_names):
         """
-        Extract posterior mean and standard deviation for weights, biases, and precision
-        (if hierarchical priors are used).
+        Extract posterior mean and standard deviation for specified layers.
+
+        Parameters:
+        - posterior_samples: Dictionary containing posterior samples.
+        - layer_names: List of layer names to extract (e.g., ["w_hidden", "b_hidden", "w_out", "b_out"]).
+
+        Returns:
+        - mean_posterior: Concatenated means of specified layers.
+        - std_posterior: Concatenated standard deviations of specified layers.
         """
-        w1_mean = posterior_samples["w_hidden"].mean(axis=0)
-        w1_std = posterior_samples["w_hidden"].std(axis=0)
+        means, stds = [], []
+        for layer in layer_names:
+            if layer in posterior_samples:
+                means.append(posterior_samples[layer].mean(axis=0).flatten())
+                stds.append(posterior_samples[layer].std(axis=0).flatten())
+            else:
+                raise ValueError(f"Layer '{layer}' not found in posterior samples.")
 
-        b1_mean = posterior_samples["b_hidden"].mean(axis=0)
-        b1_std = posterior_samples["b_hidden"].std(axis=0)
+        mean_posterior = jnp.concatenate(means)
+        std_posterior = jnp.concatenate(stds)
 
-        w2_mean = posterior_samples["w_out"].mean(axis=0)
-        w2_std = posterior_samples["w_out"].std(axis=0)
-
-        b2_mean = posterior_samples["b_out"].mean(axis=0)
-        b2_std = posterior_samples["b_out"].std(axis=0)
-
-        mean_posterior = jnp.concatenate(
-            [w1_mean.flatten(), b1_mean, w2_mean.flatten(), b2_mean]
-        )
-        std_posterior = jnp.concatenate(
-            [w1_std.flatten(), b1_std, w2_std.flatten(), b2_std]
-        )
-
-        if self.model_type == "hierarchical" and "precision" in posterior_samples:
-            # Hierarchical model includes precision
-            prec_mean = posterior_samples["precision"].mean()
-            prec_std = posterior_samples["precision"].std()
-        else:
-            # Gaussian model does not include precision
-            prec_mean = None
-            prec_std = None
-
-        return mean_posterior, std_posterior, prec_mean, prec_std
+        return mean_posterior, std_posterior
 
     def compute_confidence_term(self, kl_divergence):
         return jnp.sqrt((kl_divergence + jnp.log(1 / self.delta)) / (2 * self.num_samples))
 
-    def pac_bayesian_bound(self, predictions, y_true, posterior_samples, prior_mean, prior_std, loss_fn):
+    def pac_bayesian_bound(self, predictions, y_true, posterior_samples, prior_mean, prior_std, loss_fn, layer_names):
         """
-        Compute the PAC-Bayesian bound for Gaussian or hierarchical models.
+        Compute the PAC-Bayesian bound.
+
+        Parameters:
+        - predictions: Predictions from the model.
+        - y_true: True labels.
+        - posterior_samples: Dictionary containing posterior samples.
+        - prior_mean: Prior mean.
+        - prior_std: Prior standard deviation.
+        - loss_fn: Loss function to use.
+        - layer_names: List of layer names to extract.
+
+        Returns:
+        - PAC-Bayesian bound.
         """
         empirical_risk = self.compute_empirical_risk(predictions, y_true, loss_fn)
 
-        mean_posterior, std_posterior, prec_mean, prec_std = self.extract_posteriors(
-            posterior_samples
-        )
+        mean_posterior, std_posterior = self.extract_posteriors(posterior_samples, layer_names)
 
-        if self.model_type == "hierarchical":
-            kl_divergence = self.compute_kl_divergence_hierarchical(
-                mean_posterior, std_posterior, prior_mean, prior_std, 
-                prec_mean, prec_std
-            )
-        else:  # Gaussian prior
-            kl_divergence = self.compute_kl_divergence(
-                mean_posterior, std_posterior, prior_mean, prior_std
-            )
+        kl_divergence = self.compute_kl_divergence(
+            mean_posterior, std_posterior, prior_mean, prior_std
+        )
 
         confidence_term = self.compute_confidence_term(kl_divergence)
 
         return empirical_risk + confidence_term
-
 
     def mutual_information_bound(
         self, predictions, y_true, posterior_samples, prior_mean, prior_std, loss_fn
@@ -162,6 +133,10 @@ class BayesianGeneralizationBounds:
         confidence_term = self.compute_confidence_term(mutual_information)
 
         return empirical_risk + confidence_term
+    
+# Example usage:
+# layer_names = ["w_hidden", "b_hidden", "w_out", "b_out"]
+############## Under construction #################
 
 class SVIBayesianGeneralizationBounds(BayesianGeneralizationBounds):
     def extract_posteriors(self, svi, params):
