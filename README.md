@@ -43,7 +43,9 @@ To evaluate the generalization capabilities of Bayesian Neural Networks (BNNs), 
    where $`\ell`$ is the task-specific loss function, and $`(x_i, y_i)`$ are the data points.
 
 2. **KL Divergence**: Measures the complexity of the posterior \(Q\) relative to the prior \(P\):
-<img src="https://latex.codecogs.com/svg.image?\hat{L}(Q)=\frac{1}{N}\sum_{i=1}^{N}\mathbb{E}_{h\sim&space;Q}\left[\ell(h(x_i),y_i)\right]," title="\hat{L}(Q)=\frac{1}{N}\sum_{i=1}^{N}\mathbb{E}_{h\sim Q}\left[\ell(h(x_i),y_i)\right]," />
+```math
+\hat{L}(Q) = \frac{1}{N} \sum_{i=1}^{N} \mathbb{E}_{h \sim Q} \left[ \ell(h(x_i), y_i) \right],
+```
    where $`\mu_j, \sigma_j`$ are the posterior mean and standard deviation, and $`\mu_{\text{prior}}, \sigma_{\text{prior}}`$ are the prior parameters.
 
 3. **PAC-Bayesian Bound**: Combines empirical risk and complexity:
