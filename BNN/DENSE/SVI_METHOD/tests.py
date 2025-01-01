@@ -20,7 +20,14 @@ from BNN.DENSE.SVI_METHOD.utils import (
 )
 from sklearn.metrics import log_loss, accuracy_score, mean_absolute_error
 import matplotlib.pyplot as plt
-from BNN.DENSE.SVI_METHOD.models import regression_model, binary_model, multiclass_model, hierarchical_binary, hierarchical_multiclass, hierarchical_regressor
+from BNN.DENSE.SVI_METHOD.models import (
+    regression_model,
+    binary_model,
+    multiclass_model,
+    hierarchical_binary,
+    hierarchical_multiclass,
+    hierarchical_regressor,
+)
 
 
 def test_binary():

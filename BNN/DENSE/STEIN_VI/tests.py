@@ -1,4 +1,11 @@
-from BNN.DENSE.STEIN_VI.models import regression_model, binary_model, multiclass_model, hierarchical_multiclass, hierarchical_binary, hierarchical_regressor
+from BNN.DENSE.STEIN_VI.models import (
+    regression_model,
+    binary_model,
+    multiclass_model,
+    hierarchical_multiclass,
+    hierarchical_binary,
+    hierarchical_regressor,
+)
 from BNN.DENSE.STEIN_VI.fake_data import (
     generate_simple_regression_data,
     generate_binary_classification_data,
@@ -40,7 +47,9 @@ def test_regression():
         X, y, random_state=24, test_size=0.2
     )
 
-    stein, stein_result = train_regressor(hierarchical_regressor, X_train, y_train, 1000)
+    stein, stein_result = train_regressor(
+        hierarchical_regressor, X_train, y_train, 1000
+    )
     predictions = predict_regressor(stein, hierarchical_regressor, stein_result, X_test)
     mean_preds = predictions.mean(axis=0)
     std_preds = predictions.std(axis=0)
@@ -53,6 +62,7 @@ def test_regression():
 
 def test_binary():
     from BNN.model_calibration import plot_calibration_curve, plot_roc_curve
+
     df = generate_binary_classification_data()
     X, y = df.drop(columns=["target"], axis=1), df["target"]
     X, y = jnp.array(X), jnp.array(y)

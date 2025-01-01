@@ -114,6 +114,7 @@ def binary_model(X, y=None):
     numpyro.deterministic("logits", logits)
     numpyro.sample("obs", dist.Bernoulli(logits=logits), obs=y)
 
+
 def hierarchical_regressor(X, y=None):
     """
     Bayesian Regression Model with Circulant Matrix Layer, inspired by SVGD.
@@ -123,10 +124,12 @@ def hierarchical_regressor(X, y=None):
     num_particles = 10
 
     first_row = numpyro.sample(
-        "first_row", dist.Normal(0, 1 / jnp.sqrt(prec)).expand([num_particles, input_size])
+        "first_row",
+        dist.Normal(0, 1 / jnp.sqrt(prec)).expand([num_particles, input_size]),
     )
     bias_circulant = numpyro.sample(
-        "bias_circulant", dist.Normal(0, 1 / jnp.sqrt(prec)).expand([num_particles, input_size])
+        "bias_circulant",
+        dist.Normal(0, 1 / jnp.sqrt(prec)).expand([num_particles, input_size]),
     )
 
     hidden_list = []
@@ -138,9 +141,12 @@ def hierarchical_regressor(X, y=None):
     hidden = jnp.stack(hidden_list, axis=0)
 
     weights_out = numpyro.sample(
-        "weights_out", dist.Normal(0, 1 / jnp.sqrt(prec)).expand([num_particles, hidden.shape[2], 1])
+        "weights_out",
+        dist.Normal(0, 1 / jnp.sqrt(prec)).expand([num_particles, hidden.shape[2], 1]),
     )
-    bias_out = numpyro.sample("bias_out", dist.Normal(0, 1 / jnp.sqrt(prec)).expand([num_particles]))
+    bias_out = numpyro.sample(
+        "bias_out", dist.Normal(0, 1 / jnp.sqrt(prec)).expand([num_particles])
+    )
 
     predictions = (
         jnp.einsum("pbi,pio->pbo", hidden, weights_out).squeeze(-1) + bias_out[:, None]
@@ -149,6 +155,7 @@ def hierarchical_regressor(X, y=None):
     mean_predictions = jnp.mean(predictions, axis=0)
     sigma = numpyro.sample("sigma", dist.Exponential(1.0))
     numpyro.sample("obs", dist.Normal(mean_predictions, sigma), obs=y)
+
 
 def hierarchical_multiclass(X, y=None, num_classes=3):
     """
@@ -159,10 +166,12 @@ def hierarchical_multiclass(X, y=None, num_classes=3):
     num_particles = 10
 
     first_row = numpyro.sample(
-        "first_row", dist.Normal(0, 1 / jnp.sqrt(prec)).expand([num_particles, input_size])
+        "first_row",
+        dist.Normal(0, 1 / jnp.sqrt(prec)).expand([num_particles, input_size]),
     )
     bias_circulant = numpyro.sample(
-        "bias_circulant", dist.Normal(0, 1 / jnp.sqrt(prec)).expand([num_particles, input_size])
+        "bias_circulant",
+        dist.Normal(0, 1 / jnp.sqrt(prec)).expand([num_particles, input_size]),
     )
 
     hidden_list = []
@@ -178,7 +187,8 @@ def hierarchical_multiclass(X, y=None, num_classes=3):
         dist.Normal(0, 1).expand([num_particles, hidden.shape[2], num_classes]),
     )
     bias_out = numpyro.sample(
-        "bias_out", dist.Normal(0, 1 / jnp.sqrt(prec)).expand([num_particles, num_classes])
+        "bias_out",
+        dist.Normal(0, 1 / jnp.sqrt(prec)).expand([num_particles, num_classes]),
     )
 
     logits = jnp.einsum("pbi,pio->pbo", hidden, weights_out) + bias_out[:, None, :]
@@ -186,6 +196,7 @@ def hierarchical_multiclass(X, y=None, num_classes=3):
     logits = jnp.clip(logits, a_min=-10, a_max=10)
     numpyro.deterministic("logits", logits)
     numpyro.sample("obs", dist.Categorical(logits=logits), obs=y)
+
 
 def hierarchical_binary(X, y=None):
     """
@@ -196,10 +207,12 @@ def hierarchical_binary(X, y=None):
     num_particles = 10
 
     first_row = numpyro.sample(
-        "first_row", dist.Normal(0, 1 / jnp.sqrt(prec)).expand([num_particles, input_size])
+        "first_row",
+        dist.Normal(0, 1 / jnp.sqrt(prec)).expand([num_particles, input_size]),
     )
     bias_circulant = numpyro.sample(
-        "bias_circulant", dist.Normal(0, 1 / jnp.sqrt(prec)).expand([num_particles, input_size])
+        "bias_circulant",
+        dist.Normal(0, 1 / jnp.sqrt(prec)).expand([num_particles, input_size]),
     )
 
     hidden_list = []
@@ -211,9 +224,12 @@ def hierarchical_binary(X, y=None):
     hidden = jnp.stack(hidden_list, axis=0)
 
     weights_out = numpyro.sample(
-        "weights_out", dist.Normal(0, 1 / jnp.sqrt(prec)).expand([num_particles, hidden.shape[2], 1])
+        "weights_out",
+        dist.Normal(0, 1 / jnp.sqrt(prec)).expand([num_particles, hidden.shape[2], 1]),
     )
-    bias_out = numpyro.sample("bias_out", dist.Normal(0, 1 / jnp.sqrt(prec)).expand([num_particles]))
+    bias_out = numpyro.sample(
+        "bias_out", dist.Normal(0, 1 / jnp.sqrt(prec)).expand([num_particles])
+    )
 
     logits = (
         jnp.einsum("pbi,pio->pbo", hidden, weights_out).squeeze(-1) + bias_out[:, None]

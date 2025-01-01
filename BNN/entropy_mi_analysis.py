@@ -67,7 +67,9 @@ class EntropyAndMutualInformation:
                 2 * np.pi * np.e * probs_or_samples.var(axis=0) + 1e-10
             )
         else:
-            raise ValueError("Unsupported task type. Choose from 'binary', 'multiclass', or 'regression'.")
+            raise ValueError(
+                "Unsupported task type. Choose from 'binary', 'multiclass', or 'regression'."
+            )
 
         MI = predictive_entropy - expected_entropy
         return MI, predictive_entropy
@@ -86,7 +88,12 @@ class EntropyAndMutualInformation:
         plt.figure(figsize=(12, 6))
 
         plt.scatter(
-            x_axis, MI, label="Mutual Information (MI)", alpha=0.7, marker="o", color="blue"
+            x_axis,
+            MI,
+            label="Mutual Information (MI)",
+            alpha=0.7,
+            marker="o",
+            color="blue",
         )
         plt.scatter(
             x_axis,

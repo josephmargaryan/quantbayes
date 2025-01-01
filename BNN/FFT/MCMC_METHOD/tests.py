@@ -1,4 +1,11 @@
-from BNN.FFT.MCMC_METHOD.models import regression_model, binary_model, multiclass_model, hierarchical_regressor, hierarchical_binary, hierarchical_multiclass
+from BNN.FFT.MCMC_METHOD.models import (
+    regression_model,
+    binary_model,
+    multiclass_model,
+    hierarchical_regressor,
+    hierarchical_binary,
+    hierarchical_multiclass,
+)
 from BNN.FFT.MCMC_METHOD.utils import (
     run_inference,
     visualize_regression,
@@ -48,7 +55,12 @@ def test_regression():
     )
 
     mcmc = run_inference(
-        hierarchical_regressor, rng_key, X_train, y_train, num_samples=100, num_warmup=50
+        hierarchical_regressor,
+        rng_key,
+        X_train,
+        y_train,
+        num_samples=100,
+        num_warmup=50,
     )
 
     predictions = predict_regressor(mcmc, X_test, hierarchical_regressor)
@@ -79,7 +91,9 @@ def test_binary():
         hierarchical_binary, rng_key, X_train, y_train, num_samples=100, num_warmup=50
     )
 
-    predictions = predict_binary(mcmc, X_test, hierarchical_binary, sample_from="logits")
+    predictions = predict_binary(
+        mcmc, X_test, hierarchical_binary, sample_from="logits"
+    )
     mean_preds = predictions.mean(axis=0)
     mean_preds = jax.nn.sigmoid(mean_preds)
     std_preds = predictions.std(axis=0)

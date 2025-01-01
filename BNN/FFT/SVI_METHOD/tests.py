@@ -20,7 +20,14 @@ from BNN.FFT.SVI_METHOD.utils import (
 )
 from sklearn.metrics import log_loss, accuracy_score, mean_absolute_error
 import matplotlib.pyplot as plt
-from BNN.FFT.SVI_METHOD.models import regression_model, binary_model, multiclass_model, hierarchical_multiclass, hierarchical_binary, hierarchical_regressor
+from BNN.FFT.SVI_METHOD.models import (
+    regression_model,
+    binary_model,
+    multiclass_model,
+    hierarchical_multiclass,
+    hierarchical_binary,
+    hierarchical_regressor,
+)
 
 
 def test_binary():
@@ -115,7 +122,7 @@ def test_regression():
 
 
 if __name__ == "__main__":
-    """    
+    """
     print("Testing Binary")
     test_binary()
     print("Testing Regressor")

@@ -4,7 +4,7 @@ from BNN.DENSE.MCMC_METHOD.models import (
     multiclass_model,
     hierarchical_binary,
     hierarchical_multiclass,
-    hierarchical_regressor
+    hierarchical_regressor,
 )
 from BNN.DENSE.MCMC_METHOD.utils import (
     run_inference,
@@ -54,7 +54,12 @@ def test_regression():
     )
 
     mcmc = run_inference(
-        hierarchical_regressor, rng_key, X_train, y_train, num_samples=1000, num_warmup=500
+        hierarchical_regressor,
+        rng_key,
+        X_train,
+        y_train,
+        num_samples=1000,
+        num_warmup=500,
     )
 
     predictions = predict_regressor(mcmc, X_test, hierarchical_regressor)
@@ -85,7 +90,9 @@ def test_binary():
         hierarchical_binary, rng_key, X_train, y_train, num_samples=1000, num_warmup=500
     )
 
-    predictions = predict_binary(mcmc, X_test, hierarchical_binary, sample_from="logits")
+    predictions = predict_binary(
+        mcmc, X_test, hierarchical_binary, sample_from="logits"
+    )
     mean_preds = predictions.mean(axis=0)
     probabilities = jax.nn.sigmoid(mean_preds)
     std_preds = predictions.std(axis=0)
@@ -136,7 +143,6 @@ def test_multiclass():
         feature_indices=(0, 1),  # Features to visualize
         grid_resolution=200,  # Resolution for decision boundary
     )
-
 
 
 if __name__ == "__main__":

@@ -1,18 +1,18 @@
 import jax.numpy as jnp
+import jax
+
 
 class BayesianGeneralizationBounds:
-    def __init__(self, num_samples, delta=0.05, model_type="gaussian"):
+    def __init__(self, num_samples, delta=0.05):
         """
         Initialize the Bayesian Generalization Bounds class.
 
         Parameters:
         - num_samples: Number of training samples.
         - delta: Confidence level (default=0.05 for 95% confidence).
-        - model_type: Type of model ("gaussian").
         """
         self.num_samples = num_samples
         self.delta = delta
-        self.model_type = model_type
 
     @staticmethod
     def multiclass_log_loss(pred_probs, true_labels):
@@ -58,7 +58,7 @@ class BayesianGeneralizationBounds:
 
         Parameters:
         - posterior_samples: Dictionary containing posterior samples.
-        - layer_names: List of layer names to extract (e.g., ["w_hidden", "b_hidden", "w_out", "b_out"]).
+        - layer_names: List of layer names to extract.
 
         Returns:
         - mean_posterior: Concatenated means of specified layers.
@@ -67,25 +67,44 @@ class BayesianGeneralizationBounds:
         means, stds = [], []
         for layer in layer_names:
             if layer in posterior_samples:
-                means.append(posterior_samples[layer].mean(axis=0).flatten())
-                stds.append(posterior_samples[layer].std(axis=0).flatten())
+                param_value = posterior_samples[layer]
+                if param_value.ndim >= 2:  # For weights or 2D+ structures
+                    means.append(param_value.mean(axis=0).flatten())
+                    stds.append(param_value.std(axis=0).flatten())
+                elif param_value.ndim == 1:  # For biases or 1D structures
+                    means.append(param_value.mean().reshape(-1))
+                    stds.append(param_value.std().reshape(-1))
+                else:
+                    raise ValueError(
+                        f"Unsupported parameter shape: {param_value.shape}"
+                    )
             else:
                 raise ValueError(f"Layer '{layer}' not found in posterior samples.")
 
-        mean_posterior = jnp.concatenate(means)
-        std_posterior = jnp.concatenate(stds)
-
+        mean_posterior = jnp.concatenate(means) if means else jnp.array([])
+        std_posterior = jnp.concatenate(stds) if stds else jnp.array([])
         return mean_posterior, std_posterior
 
     def compute_confidence_term(self, kl_divergence):
-        return jnp.sqrt((kl_divergence + jnp.log(1 / self.delta)) / (2 * self.num_samples))
+        return jnp.sqrt(
+            (kl_divergence + jnp.log(1 / self.delta)) / (2 * self.num_samples)
+        )
 
-    def pac_bayesian_bound(self, predictions, y_true, posterior_samples, prior_mean, prior_std, loss_fn, layer_names):
+    def pac_bayesian_bound(
+        self,
+        predictions,
+        y_true,
+        posterior_samples,
+        prior_mean,
+        prior_std,
+        loss_fn,
+        layer_names,
+    ):
         """
         Compute the PAC-Bayesian bound.
 
         Parameters:
-        - predictions: Predictions from the model.
+        - predictions: Predictions as probabilities from the model.
         - y_true: True labels.
         - posterior_samples: Dictionary containing posterior samples.
         - prior_mean: Prior mean.
@@ -98,7 +117,9 @@ class BayesianGeneralizationBounds:
         """
         empirical_risk = self.compute_empirical_risk(predictions, y_true, loss_fn)
 
-        mean_posterior, std_posterior = self.extract_posteriors(posterior_samples, layer_names)
+        mean_posterior, std_posterior = self.extract_posteriors(
+            posterior_samples, layer_names
+        )
 
         kl_divergence = self.compute_kl_divergence(
             mean_posterior, std_posterior, prior_mean, prior_std
@@ -109,79 +130,86 @@ class BayesianGeneralizationBounds:
         return empirical_risk + confidence_term
 
     def mutual_information_bound(
-        self, predictions, y_true, posterior_samples, prior_mean, prior_std, loss_fn
+        self, posterior_samples, layer_names, prior_mean=0, prior_std=1
     ):
         """
-        Compute the Mutual Information bound for Gaussian or hierarchical models.
-        """
-        empirical_risk = self.compute_empirical_risk(predictions, y_true, loss_fn)
+        Compute the mutual information bound.
 
-        mean_posterior, std_posterior, prec_mean, prec_std = self.extract_posteriors(
-            posterior_samples
+        Parameters:
+        - posterior_samples: Dictionary containing posterior samples.
+        - layer_names: List of layer names to extract.
+        - prior_mean: Prior mean.
+        - prior_std: Prior standard deviation.
+
+        Returns:
+        - Mutual information bound.
+        """
+        mean_posterior, std_posterior = self.extract_posteriors(
+            posterior_samples, layer_names
         )
 
-        if self.model_type == "hierarchical":
-            mutual_information = self.compute_kl_divergence_hierarchical(
-                mean_posterior, std_posterior, prior_mean, prior_std, 
-                prec_mean, prec_std
-            )
-        else:  # Gaussian prior
-            mutual_information = self.compute_kl_divergence(
-                mean_posterior, std_posterior, prior_mean, prior_std
-            )
+        kl_divergence = self.compute_kl_divergence(
+            mean_posterior, std_posterior, prior_mean, prior_std
+        )
 
-        confidence_term = self.compute_confidence_term(mutual_information)
+        mutual_info = kl_divergence / self.num_samples
 
-        return empirical_risk + confidence_term
-    
+        return mutual_info
+
+
 # Example usage:
 # layer_names = ["w_hidden", "b_hidden", "w_out", "b_out"]
 ############## Under construction #################
 
-class SVIBayesianGeneralizationBounds(BayesianGeneralizationBounds):
-    def extract_posteriors(self, svi, params):
-        guide = svi.guide
-        posterior_means = {
-            name: params[f"{name}_{guide.prefix}_loc"] for name in guide._init_locs
-        }
-        posterior_stds = {
-            name: params[f"{name}_{guide.prefix}_scale"] for name in guide._init_locs
-        }
 
-        mean_posterior = jnp.concatenate([v.flatten() for v in posterior_means.values()])
-        std_posterior = jnp.concatenate([v.flatten() for v in posterior_stds.values()])
+# For SVI
+def transform_params(params, num_samples=100, rng_key=jax.random.PRNGKey(0)):
+    """
+    Transform SVI params into posterior samples grouped by layer.
 
-        if "precision" in guide._init_locs:
-            prec_mean = posterior_means["precision"]
-            prec_std = posterior_stds["precision"]
+    Parameters:
+    - params: Dictionary of variational parameters (keys ending with '_auto_loc' and '_auto_scale').
+    - num_samples: Number of samples to generate.
+    - rng_key: JAX random key.
+
+    Returns:
+    - posterior_samples: Dictionary containing posterior samples for each layer.
+    """
+    posterior_samples = {}
+    for key in params.keys():
+        if key.endswith("_auto_loc"):
+            # Extract the base layer name (without '_auto_loc' or '_auto_scale')
+            base_name = key.replace("_auto_loc", "")
+
+            # Extract mean and stddev
+            mean = params[key]
+            stddev = params[f"{base_name}_auto_scale"]
+
+            # Generate samples from the posterior
+            samples = (
+                jax.random.normal(rng_key, shape=(num_samples,) + mean.shape) * stddev
+                + mean
+            )
+            posterior_samples[base_name] = samples
+
+    return posterior_samples
+
+
+def transform_params_stein(stein_result):
+    """
+    Transform SteinVI results into posterior samples grouped by layer.
+
+    Parameters:
+    - stein_result: A SteinVI result object containing particles.
+
+    Returns:
+    - posterior_samples: Dictionary containing particles for each layer.
+    """
+    posterior_samples = {}
+    for layer_name, param_value in stein_result.params.items():
+        # Check if param_value is a valid particle representation
+        if param_value.ndim >= 2:  # Ensure at least (num_particles, ...)
+            posterior_samples[layer_name] = param_value
         else:
-            prec_mean = None
-            prec_std = None
-
-        return mean_posterior, std_posterior, prec_mean, prec_std
-
-class SteinVIBayesianGeneralizationBounds(BayesianGeneralizationBounds):
-    def extract_posteriors(self, particles):
-        posterior_means = {}
-        posterior_stds = {}
-        prec_mean, prec_std = None, None
-
-        for key in particles:
-            if key.endswith("_auto_loc"):
-                param_name = key.replace("_auto_loc", "")
-                mean = particles[key]
-                std_key = f"{param_name}_auto_scale"
-                std = particles[std_key] if std_key in particles else None
-
-                posterior_means[param_name] = mean
-                if std is not None:
-                    posterior_stds[param_name] = std
-
-        mean_posterior = jnp.concatenate([v.flatten() for v in posterior_means.values()])
-        std_posterior = jnp.concatenate([v.flatten() for v in posterior_stds.values()])
-
-        if "precision_auto_loc" in particles and "precision_auto_scale" in particles:
-            prec_mean = particles["precision_auto_loc"]
-            prec_std = particles["precision_auto_scale"]
-
-        return mean_posterior, std_posterior, prec_mean, prec_std
+            print(f"Skipping parameter '{layer_name}' with shape {param_value.shape}")
+    return posterior_samples
