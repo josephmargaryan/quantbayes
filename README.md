@@ -31,7 +31,38 @@ ChronosForge includes a variety of modules and algorithms spanning multiple disc
 - **Constrained Lagrangian Optimization**: Solve constrained optimization problems.
 
 
-- **Theoretical Bounds**: Analyze generalization using PAC-Bayes, VC dimensions, and Hoeffding inequalities.
+- **Theoretical Bounds**: Analyze generalization using PAC-Bayes-Bounds and Mutual-Information-Bounds.
+#### **PAC-Bayesian Bound**
+
+To evaluate the generalization capabilities of Bayesian Neural Networks (BNNs), we compute the PAC-Bayesian bound:
+
+1. **Empirical Risk**: The average loss across posterior samples:
+   ```math
+   \hat{L}(Q) = \frac{1}{N} \sum_{i=1}^{N} \mathbb{E}_{h \sim Q} \left[ \ell(h(x_i), y_i) \right],
+   ```
+   where $`\ell`$ is the task-specific loss function, and $`(x_i, y_i)`$ are the data points.
+
+2. **KL Divergence**: Measures the complexity of the posterior \(Q\) relative to the prior \(P\):
+   ```math
+   D_{KL}(Q \| P) = \frac{1}{2} \sum_{j} \left[ \left( \frac{\sigma_j}{\sigma_{\text{prior}}} \right)^2 + \left( \frac{\mu_j - \mu_{\text{prior}}}{\sigma_{\text{prior}}} \right)^2 - 1 + 2 \ln\left( \frac{\sigma_{\text{prior}}}{\sigma_j} \right) \right],
+   ```
+   where $`\mu_j, \sigma_j`$ are the posterior mean and standard deviation, and $`\mu_{\text{prior}}, \sigma_{\text{prior}}`$ are the prior parameters.
+
+3. **PAC-Bayesian Bound**: Combines empirical risk and complexity:
+   ```math
+   L(Q) \leq \hat{L}(Q) + \sqrt{\frac{D_{KL}(Q \| P) + \ln(1 / \delta)}{2n}},
+   ```
+   where $`L(Q)`$ is the true risk, $`\delta`$ is the confidence level, and $`n`$ is the number of training samples.
+
+#### **Mutual Information Bound**
+
+The mutual information bound quantifies the information gained from the data:
+
+1. **Mutual Information**: Computed as the KL divergence per training sample:
+   ```math
+   \text{Mutual Information} = \frac{1}{n} D_{KL}(Q \| P),
+   ```
+   Providing a measure of model complexity relative to the training data size.
 
 ### **Deep Learning Applications**
 - **Long Sequence Classification**: Handle document-level tasks with transformers and hierarchical models.
@@ -92,15 +123,25 @@ ChronosForge incorporates advanced stochastic models to simulate and analyze fin
 #### **Brownian Motion**
 Brownian motion forms the backbone of stochastic processes in finance, modeling the random behavior of stock prices:
 
-![CodeCogsEqn](https://github.com/user-attachments/assets/19ba8d69-d7c0-47e9-b9b6-c0a9b799bd68)
-
+```math
+S(t) = S(0) \exp\left(\left(\mu - \frac{\sigma^2}{2}\right)t + \sigma W(t)\right)
+```
+Where:
+- $`S(t)`$: Stock price at time t
+- $`S(0)`$: Initial stock price
+- $`\mu`$: Drift term (average return rate)
+- $`\sigma`$: Volatility (standard deviation of stock returns)
+- $`W(t)`$: Standard Brownian motion
 
 
 #### **Jump Diffusion**
 Jump diffusion adds discrete jumps to Brownian motion, modeling sudden market movements:
-\[
-![CodeCogsEqn](https://github.com/user-attachments/assets/309650d1-a11d-4139-b3c0-6f5b2c58a9a3)
-\]
+```math
+S(t) = S(0) \exp\left(\left(\mu - \frac{\sigma^2}{2}\right)t + \sigma W(t) + \sum_{i=1}^{N(t)} J_i\right)
+```
+Where:
+- $`J_i`$ : The jump size of the \( i \)-th jump
+- $`N(t)`$: A Poisson process representing the number of jumps up to time $`t`$
 
 > **Visualization**:
 
@@ -111,16 +152,37 @@ Jump diffusion adds discrete jumps to Brownian motion, modeling sudden market mo
 ## 📁 Directory Structure
 
 ```
-ChronosForge/
-├── time_forecasting/         # Modules for forecasting and time-series analysis
-├── probabilistic_ml/         # Probabilistic and Bayesian methods
-├── optimization/             # Optimization algorithms and theoretical bounds
-├── inference/                # MCMC, variational inference, and related topics
-├── neural_models/            # LSTMs, Transformers, and TCN implementations
-├── structural_bioinformatics # Bioinformatics-focused tools
-├── data_utils/               # Data preprocessing and augmentation tools
-├── README.md                 # Library overview
-└── requirements.txt          # Python dependencies
+|-BNN
+   |---DENSE
+   |-----MCMC_METHOD
+   |-----STEIN_VI
+   |-----SVI_METHOD
+   |---FFT
+   |-----MCMC_METHOD
+   |-----STEIN_VI
+   |-----SVI_METHOD
+   |-constrained_lagrangian
+   |-deep_markov_model
+   |-fft_circulant_DMM
+   |-gaussian_process
+   |-gmm_project
+   |-hidden_markov_model
+   |-hilbert_space
+   |-images
+   |-long_seq_classifier
+   |-neural_transport
+   |-news_data_scraping
+   |-ordinary_differential_equations
+   |-physics_DMM
+   |-predator_prey
+   |-similarity_tools
+   |-stock_price_forecasting
+   |-structural_bioinformatics
+   |---data
+   |---exercises
+   |-theoretical_bounds
+   |-time_forecasting
+   |-var2_project
 ```
 
 ---
@@ -131,27 +193,6 @@ ChronosForge/
 git clone https://github.com/your-username/chronosforge.git
 cd chronosforge
 pip install -r requirements.txt
-```
-
----
-
-## 🔥 Quick Start
-
-Here's an example of using ChronosForge for time-series forecasting with a transformer model:
-
-```python
-from chronosforge.time_forecasting.transformer import TimeSeriesTransformer
-from chronosforge.utils.data_loader import load_time_series
-
-# Load time-series data
-data = load_time_series("path/to/dataset.csv")
-
-# Initialize and train the transformer model
-model = TimeSeriesTransformer(input_dim=10, hidden_dim=128, num_heads=4)
-model.train(data, epochs=50, learning_rate=1e-4)
-
-# Make predictions
-predictions = model.predict(data.test)
 ```
 
 ---
