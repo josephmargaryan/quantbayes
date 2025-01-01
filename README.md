@@ -37,9 +37,9 @@ ChronosForge includes a variety of modules and algorithms spanning multiple disc
 To evaluate the generalization capabilities of Bayesian Neural Networks (BNNs), we compute the PAC-Bayesian bound:
 
 1. **Empirical Risk**: The average loss across posterior samples:
-   ```math
+```math
    \hat{L}(Q) = \frac{1}{N} \sum_{i=1}^{N} \mathbb{E}_{h \sim Q} \left[ \ell(h(x_i), y_i) \right],
-   ```
+```
    where $`\ell`$ is the task-specific loss function, and $`(x_i, y_i)`$ are the data points.
 
 2. **KL Divergence**: Measures the complexity of the posterior \(Q\) relative to the prior \(P\):
@@ -49,9 +49,9 @@ To evaluate the generalization capabilities of Bayesian Neural Networks (BNNs), 
    where $`\mu_j, \sigma_j`$ are the posterior mean and standard deviation, and $`\mu_{\text{prior}}, \sigma_{\text{prior}}`$ are the prior parameters.
 
 3. **PAC-Bayesian Bound**: Combines empirical risk and complexity:
-   ```math
-   L(Q) \leq \hat{L}(Q) + \sqrt{\frac{D_{KL}(Q \| P) + \ln(1 / \delta)}{2n}},
-   ```
+```math
+L(Q) \leq \hat{L}(Q) + \sqrt{\frac{D_{KL}(Q \| P) + \ln(1 / \delta)}{2n}},
+```
    where $`L(Q)`$ is the true risk, $`\delta`$ is the confidence level, and $`n`$ is the number of training samples.
 
 #### **Mutual Information Bound**
@@ -59,9 +59,9 @@ To evaluate the generalization capabilities of Bayesian Neural Networks (BNNs), 
 The mutual information bound quantifies the information gained from the data:
 
 1. **Mutual Information**: Computed as the KL divergence per training sample:
-   ```math
-   \text{Mutual Information} = \frac{1}{n} D_{KL}(Q \| P),
-   ```
+```math
+\text{Mutual Information} = \frac{1}{n} D_{KL}(Q \| P),
+```
    Providing a measure of model complexity relative to the training data size.
 
 ### **Deep Learning Applications**
