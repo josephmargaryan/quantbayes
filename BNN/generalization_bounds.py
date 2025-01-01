@@ -47,7 +47,7 @@ class BayesianGeneralizationBounds:
                 (std_posterior / std_prior) ** 2
                 + ((mean_posterior - mean_prior) / std_prior) ** 2
                 - 1
-                + 2 * jnp.log(std_prior / std_posterior)
+                + 2 * jnp.log(std_prior / (std_posterior + 1e-8))
             ).sum()
         )
         return kl_divergence
