@@ -209,9 +209,9 @@ We welcome contributions! To get started:
 
 ---
 
-## 📝 License
+## Licensing Options
+This project is licensed under the GPL v3. For proprietary licensing options, contact [your email].
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ---
 
