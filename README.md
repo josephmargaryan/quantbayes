@@ -210,7 +210,7 @@ We welcome contributions! To get started:
 ---
 
 ## Licensing Options
-This project is licensed under the GPL v3. For proprietary licensing options, contact [your email].
+This project is licensed under the GPL v3. For proprietary licensing options, contact josephmargaryan@gmail.com.
 
 
 ---
