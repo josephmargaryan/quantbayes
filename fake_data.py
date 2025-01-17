@@ -2,11 +2,13 @@ import pandas as pd
 import numpy as np
 from sklearn.datasets import make_classification
 from sklearn.datasets import make_blobs
+import jax
+import jax.numpy as jnp
 
 
-def generate_simple_regression_data(n_samples, n_features, random_seed=None):
+def generate_regression_data(n_samples=1000, n_features=1, random_seed=None):
     """
-    Generate simple, predictable synthetic data with features and target.
+    Generate synthetic sinusoidal data with slight stochasticity.
 
     Args:
         n_samples (int): Number of samples (rows).
@@ -14,30 +16,29 @@ def generate_simple_regression_data(n_samples, n_features, random_seed=None):
         random_seed (int): Random seed for reproducibility.
 
     Returns:
-        pd.DataFrame: DataFrame containing features (X) and closing prices (y).
+        pd.DataFrame: DataFrame containing features (X) and target (y).
     """
     if random_seed is not None:
         np.random.seed(random_seed)
 
     # Time index
-    t = np.arange(n_samples)
+    t = np.linspace(0, 2 * np.pi * 10, n_samples)  # Covers multiple cycles
 
-    # Generate features (X) as simple trends + noise
+    # Generate features (X) as sinusoidal waves with slight noise
     X = {}
     for i in range(n_features):
-        trend = 0.05 * (i + 1) * t  # Linear trend
-        seasonal = 5 * np.sin(2 * np.pi * t / 50)  # Sinusoidal pattern
-        noise = np.random.normal(scale=0.5, size=n_samples)  # Small noise
-        X[f"feature_{i+1}"] = trend + seasonal + noise
+        freq = 0.1 * (i + 1)  # Slight frequency variation for each feature
+        phase = np.random.uniform(0, 2 * np.pi)  # Random phase shift
+        amplitude = 1 + 0.5 * i  # Gradual increase in amplitude
+        noise = np.random.normal(scale=0.1, size=n_samples)  # Slight noise
+
+        X[f"feature_{i+1}"] = amplitude * np.sin(freq * t + phase) + noise
 
     # Generate target (y) as a weighted combination of features
-    weights = np.linspace(
-        1, n_features, n_features
-    )  # Higher weights for later features
-    target = sum(weights[i] * X[f"feature_{i+1}"] for i in range(n_features))
+    target = sum((i + 1) * X[f"feature_{i+1}"] for i in range(n_features))
     target = target / n_features + np.random.normal(
-        scale=2.0, size=n_samples
-    )  # Add small noise
+        scale=0.2, size=n_samples
+    )  # Slight noise added to target
 
     # Combine features and target into a DataFrame
     df = pd.DataFrame(X)
@@ -114,3 +115,54 @@ def generate_multiclass_classification_data(
     df["target"] = y
 
     return df
+
+
+def create_synthetic_time_series(
+    n_samples=1000, seq_len=10, num_features=1, train_split=0.8
+):
+    """
+    Create synthetic time series data.
+
+    Parameters:
+    n_samples: Total number of time points
+    seq_len: Number of timesteps in a sequence
+    num_features: Number of features
+    train_split: Fraction of data used for training
+
+    Returns:
+    X_train, X_val, y_train, y_val
+    """
+    # Time variable
+    t = jnp.linspace(0, 10, n_samples)
+
+    # Random key
+    key = jax.random.PRNGKey(0)
+
+    # Create a simple sine wave with added noise as target
+    key, noise_key = jax.random.split(key)
+    y = jnp.sin(t) + 0.1 * jax.random.normal(noise_key, t.shape)
+
+    # Features: Add some noise to the sine wave for feature inputs
+    sequences = []
+    for _ in range(num_features):
+        key, feature_key = jax.random.split(key)
+        feature = y + 0.1 * jax.random.normal(feature_key, y.shape)
+        sequences.append(feature)
+    X = jnp.stack(sequences, axis=-1)
+
+    # Reshape into sequences
+    sequences_X = []
+    sequences_y = []
+    for i in range(n_samples - seq_len):
+        sequences_X.append(X[i : i + seq_len])
+        sequences_y.append(y[i + seq_len])
+
+    sequences_X = jnp.array(sequences_X)
+    sequences_y = jnp.array(sequences_y)
+
+    # Split into train and validation sets
+    split_idx = int(train_split * len(sequences_X))
+    X_train, X_val = sequences_X[:split_idx], sequences_X[split_idx:]
+    y_train, y_val = sequences_y[:split_idx], sequences_y[split_idx:]
+
+    return X_train, X_val, y_train, y_val
