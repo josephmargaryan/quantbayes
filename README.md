@@ -1,216 +1,164 @@
-# ChronosForge
 
-ChronosForge is a comprehensive library bridging time-series forecasting, probabilistic modeling, and cutting-edge machine-learning techniques. Inspired by the Greek god of time, **Chronos**, this library symbolizes precision, inevitability, and the exploration of truth through data.
+# QuantBayes
 
----
+Welcome to **QuantBayes**, an advanced machine learning library designed to empower researchers, data scientists, and developers to build, train, and evaluate sophisticated probabilistic and deterministic models. This library integrates Bayesian machine learning, stochastic processes, and deep learning under a unified framework, providing modular tools for cutting-edge research and practical applications.
 
-## 🌌 Philosophical Inspiration
+## Features
 
-In Greek mythology, Chronos embodies time and its infinite nature. This library reflects that spirit by crafting tools that transcend time—forecasting the future, analyzing the present, and uncovering the hidden patterns of the past. Whether solving stochastic equations, creating neural transport models, or designing probabilistic machine learning algorithms, **ChronosForge** equips you with the tools to forge solutions in the ever-flowing river of time.
+-   **Modular Design:** Inspired by PyTorch's `torch.nn`, QuantBayes offers highly modular components such as `Linear`, `Conv2d`, `TransformerEncoder`, and more, allowing users to define custom architectures with ease.
+    
+-   **Probabilistic Inference:** Support for Bayesian inference methods, including:
+    
+    -   NUTS (No-U-Turn Sampler)
+        
+    -   SVI (Stochastic Variational Inference)
+        
+    -   SteinVI (Stein Variational Inference)
+        
+-   **FFT-Accelerated Models:** Specialized FFT-based layers for efficient computation in Bayesian machine learning.
+    
+-   **Automated Pipelines:** Prebuilt AutoML classes for classification, regression, and binary tasks, enabling end-to-end training and evaluation.
+    
+-   **Stochastic Differential Equations:** Implementations and tools for solving SDEs, including applications in generative adversarial networks (GANs).
+    
+-   **Quantitative Finance Tools:** Models like stochastic volatility and ensemble methods for time series forecasting and financial analysis.
+    
+-   **Visualization and Analysis:** Built-in utilities for calibration, uncertainty quantification, and PAC-Bayesian bound analysis.
+    
 
----
+## Installation
 
-## 🚀 Features
+QuantBayes can be cloned and in the future installed using pip:
+`git clone https://github.com/josephmargaryan/quantbayes.git`
+## Getting Started
 
-ChronosForge includes a variety of modules and algorithms spanning multiple disciplines:
+### Example: Building a Custom Bayesian Neural Network
 
-### **Time Forecasting**
-- **ARCH**: Analyze volatility and financial time series.
-- **LSTM, Transformers**: Deep learning models for sequence prediction.
-- **Stochastic Volatility Models**: Predict uncertainty in financial markets.
-- **Causal Discovery**: Uncover causal relationships in time-series data.
+    import jax
+    import jax.numpy as jnp
+    from quantbayes.nn import Linear, BaseModel, FFTLinear
+    
+    class CustomBNN(BaseModel):
+        def __init__(self, input_dim):
+            super().__init__(task_type="regression", method="nuts")
+            self.linear1 = FFTLinear(input_dim, name="fft layer")
+            self.linear2 = Linear(input_dim, 1, name="layer2")
+    
+        def forward(self, x):
+            x = jax.nn.tanh(self.linear1(x))
+            return self.linear2(x)
+    
+    
+          
+    # Initialize train, predict and visualize performance
+    key = jax.random.PRNGKey(0)
+    model = CustomBNN(input_dim=X.shape[1])
+    model.compile()
+    model.fit(X, y, key, num_warmups=500, num_samples=1000, num_chains=1)
+    preds = model.predict(X_test, key) # Full posterior preds (logits)
+    model.visualize(X, y, feature_index=0) 
+    
+    ### Get Pac-Bayes Bound
+    from bnn.utils import BayesianAnalysis
+    bound = BayesianAnalysis(len(X_train), delta=0.05, task_type="regression", inference_type="mcmc", posterior_samples=model.get_samples,
+    )
+    bound.compute_pac_bayesian_bound(preds, y)
 
-### **Probabilistic Machine Learning**
-- **Gaussian Processes (GP)**: Flexible models for uncertainty quantification.
-- **Variational Inference (VI)**: Scalable Bayesian inference techniques.
-- **Markov Models (HMM, DMM)**: For sequential data analysis.
-- **Monte Carlo Methods**: No U-turn sampler to estimate the posterior distribution
+
+### Example: Using Prebuilt AutoML Models
+
+    from quantbayes.bnn import DenseBinaryiSteinVI
+    
+    # Initialize a prebuilt model for binary classification
+    model = DenseBinaryiSteinVI(num_particles=10, model_type="deep", hidden_size=3, num_steps=100)
+    
+    # Train and predict
+    model.fit(X_train, y_train, key)
+    preds = model.predict(X_test, key)
+    model.visualize(X=X_test, y=y_test, resolution=100, features=(0, 1))
 
 
-### **Optimization and Theoretical Bounds**
-- **Constrained Lagrangian Optimization**: Solve constrained optimization problems.
+## Components
 
+### Core Modules
 
-- **Theoretical Bounds**: Analyze generalization using PAC-Bayes-Bounds and Mutual-Information-Bounds.
-#### **PAC-Bayesian Bound**
+-   `nn`: Includes foundational building blocks such as `Linear`, `Conv2d`, `TransformerEncoder`, and more.
+    
+-   `bnn`: Provides AutoML classes for Bayesian neural networks with different inference techniques.
+    
+-   `sde`: Tools for solving stochastic differential equations, including GANs and differential equation solvers.
+    
+-   `forecast`: Models and utilities for time series forecasting, including preprocessor modules.
+    
+-   `utils`: Helper functions for entropy calculations, PAC-Bayesian bounds, and data visualization.
+### Highlights
 
+-   **Bayesian Neural Networks:** Fine-tuned pipelines for uncertainty estimation and robust predictions.
+    
+-   **FFT Layers:** Efficient, frequency-domain computations for fast and scalable modeling.
+    
+-   **Visualization Tools:** Calibration plots, uncertainty visualization, and more to evaluate models effectively.
+
+### Pac Analysis Bound 
 To evaluate the generalization capabilities of Bayesian Neural Networks (BNNs), we compute the PAC-Bayesian bound:
 
+  
+
 1. **Empirical Risk**: The average loss across posterior samples:
-```math
-   \hat{L}(Q) = \frac{1}{N} \sum_{i=1}^{N} \mathbb{E}_{h \sim Q} \left[ \ell(h(x_i), y_i) \right],
-```
-   where $`\ell`$ is the task-specific loss function, and $`(x_i, y_i)`$ are the data points.
+
+$$
+\hat{L}(Q) = \frac{1}{N} \sum_{i=1}^{N} \mathbb{E}_{h \sim Q} \left[ \ell(h(x_i), y_i) \right],
+$$
+
+where $\ell$ is the task-specific loss function, and $(x_i, y_i)$ are the data points.
 
 2. **KL Divergence**: Measures the complexity of the posterior \(Q\) relative to the prior \(P\):
-```math
+
+
+$$
 \hat{L}(Q) = \frac{1}{N} \sum_{i=1}^{N} \mathbb{E}_{h \sim Q} \left[ \ell(h(x_i), y_i) \right],
-```
-   where $`\mu_j, \sigma_j`$ are the posterior mean and standard deviation, and $`\mu_{\text{prior}}, \sigma_{\text{prior}}`$ are the prior parameters.
+$$
+
+where $\mu_j, \sigma_j$ are the posterior mean and standard deviation, and $\mu_{\text{prior}}, \sigma_{\text{prior}}$ are the prior parameters.
+
+  
 
 3. **PAC-Bayesian Bound**: Combines empirical risk and complexity:
-```math
-L(Q) \leq \hat{L}(Q) + \sqrt{\frac{D_{KL}(Q \| P) + \ln(1 / \delta)}{2n}},
-```
-   where $`L(Q)`$ is the true risk, $`\delta`$ is the confidence level, and $`n`$ is the number of training samples.
-
-#### **Mutual Information Bound**
-
-The mutual information bound quantifies the information gained from the data:
-
-1. **Mutual Information**: Computed as the KL divergence per training sample:
-```math
-\text{Mutual Information} = \frac{1}{n} D_{KL}(Q \| P),
-```
-   Providing a measure of model complexity relative to the training data size.
-
-### **Deep Learning Applications**
-- **Long Sequence Classification**: Handle document-level tasks with transformers and hierarchical models.
-- **Temporal Fusion Transformer (TFT)**: Integrate time-dependent and contextual data.
-- **Reinforcement Learning**: Optimize decision-making in dynamic environments.
-
-### **FFT Circulant Applications**
-The **FFT Circulant Modules** ChronosForge features comprehensive modules that leverage the properties of circulant matrices and the Fast Fourier Transform (FFT) to enable efficient matrix-vector multiplication, significantly reducing the number of weights in neural networks.
-The eigenvectors of a circulant matrix depend only on the size of the matrix, not on the elements of the matrix. Furthermore, these eigenvectors are the columns of the FFT matrix. The eigenvalues depend on the matrix entries, but the eigenvectors do not.
-Each element of the FFT matrix represents a complex exponential corresponding to a rotation in the frequency domain. As a result, this technique is highly effective in scenarios where the features exhibit periodicity.
-![FFT for efficient Vector-Matrix Multiplication](images/FFT_viz.png)
-
----
-
-### **Bayesian Inference**
-Bayesian Neural Networks (BNNs) integrate the power of neural networks with Bayesian principles to model uncertainty effectively. ChronosForge offers a robust set of tools for Bayesian Inference, enabling precise posterior estimation in various applications.
-
-  - **No U-Turn Sampler:** An adaptive Hamiltonian Monte Carlo method for efficient sampling. 
-  - **Stochastic Variational Inference:** Scalable inference for high-dimensional data using gradient-based optimization. 
-
-  - **Stein Variational Inference:** Non-parametric inference using particle-based methods to approximate the posterior. 
-
-These methods collectively aim to provide accurate approximations of posterior distributions, supporting probabilistic reasoning and decision-making.
-
-![BNN for Regression](images/bnn_regression.png)
-![3D Scatter Plot of Sentiments](images/decision_boundary.png)
-
----
-
-## 📊 Visualizing the Power of ChronosForge
-
-### **1. Time-Series Sentiment Analysis**
-ChronosForge provides sentiment analysis tools to evaluate market trends. Below is a 3D scatter plot of predicted sentiments for different companies.
-
-![3D Scatter Plot of Sentiments](images/3d_scatter_plot_sentiments.png)
-
----
-
-### **2. Word Clouds for Sentiment Classes**
-ChronosForge visualizes sentiment-driven keywords for better interpretability. Here’s a word cloud generated for **Sentiment Class 1**.
-
-![Word Cloud for Sentiment Class 1](images/word_cloud_sentiment_1.png)
-
----
-
-### **3. Stock Price Forecasting**
-ChronosForge's stochastic models can predict stock prices with high accuracy. Below is a comparison of **actual** vs. **predicted** stock prices for Novo Nordisk using ensemble techniques.
-
-![Actual vs. Predicted Stock Prices](images/stock_price_forecasting.png)
-
-We Provide summaries and visualizations to evaluate and interpret model performance effectively.
-![Model performance across folds](images/mp.png)
----
-
-### **4. Brownian Motion, Heston Models and Jump Diffusion**
-ChronosForge incorporates advanced stochastic models to simulate and analyze financial markets with greater realism:
-
-#### **Brownian Motion**
-Brownian motion forms the backbone of stochastic processes in finance, modeling the random behavior of stock prices:
-
-```math
-S(t) = S(0) \exp\left(\left(\mu - \frac{\sigma^2}{2}\right)t + \sigma W(t)\right)
-```
-Where:
-- $`S(t)`$: Stock price at time t
-- $`S(0)`$: Initial stock price
-- $`\mu`$: Drift term (average return rate)
-- $`\sigma`$: Volatility (standard deviation of stock returns)
-- $`W(t)`$: Standard Brownian motion
 
 
-#### **Jump Diffusion**
-Jump diffusion adds discrete jumps to Brownian motion, modeling sudden market movements:
-```math
-S(t) = S(0) \exp\left(\left(\mu - \frac{\sigma^2}{2}\right)t + \sigma W(t) + \sum_{i=1}^{N(t)} J_i\right)
-```
-Where:
-- $`J_i`$ : The jump size of the \( i \)-th jump
-- $`N(t)`$: A Poisson process representing the number of jumps up to time $`t`$
+$$
+L(Q) \leq \hat{L}(Q) + \sqrt{\frac{D_{KL}(Q \| P) + \ln(1 / \delta)}{2n}}
+$$
 
-> **Visualization**:
+where $L(Q)$ is the true risk, $\delta$ is the confidence level, and $n$ is the number of training samples.
 
-![Jump Diffusion Simulation](images/jump_diffusion_simulation.png)
+## Why QuantBayes?
 
----
+QuantBayes stands out for its:
 
-## 📁 Directory Structure
+-   **Breadth and Depth:** Combining Bayesian, stochastic, and deep learning techniques in one library.
+    
+-   **Modularity:** Flexible components for custom architectures or quick-start prebuilt pipelines.
+    
+-   **Efficiency:** Optimized with FFT and probabilistic methods for cutting-edge performance.
+    
 
-```
-|-BNN
-   |---DENSE
-   |-----MCMC_METHOD
-   |-----STEIN_VI
-   |-----SVI_METHOD
-   |---FFT
-   |-----MCMC_METHOD
-   |-----STEIN_VI
-   |-----SVI_METHOD
-   |-constrained_lagrangian
-   |-deep_markov_model
-   |-fft_circulant_DMM
-   |-gaussian_process
-   |-gmm_project
-   |-hidden_markov_model
-   |-hilbert_space
-   |-images
-   |-long_seq_classifier
-   |-neural_transport
-   |-news_data_scraping
-   |-ordinary_differential_equations
-   |-physics_DMM
-   |-predator_prey
-   |-similarity_tools
-   |-stock_price_forecasting
-   |-structural_bioinformatics
-   |---data
-   |---exercises
-   |-theoretical_bounds
-   |-time_forecasting
-   |-var2_project
-```
+## Contributing
 
----
+We welcome contributions from the community! Feel free to:
 
-## 🛠️ Installation
+-   Report bugs or request features via [GitHub Issues](https://github.com/josephmargaryan/quantbayes/issues).
+    
+-   Submit pull requests to enhance the library.
+    
 
-```bash
-git clone https://github.com/your-username/chronosforge.git
-cd chronosforge
-pip install -r requirements.txt
-```
-
----
-
-## 🧪 Contributing
-
-We welcome contributions! To get started:
-
-1. Fork this repository.
-2. Create a new branch: `git checkout -b feature-name`.
-3. Commit your changes: `git commit -m 'Add some feature'`.
-4. Push to the branch: `git push origin feature-name`.
-5. Submit a pull request.
-
----
-
-## Licensing Options
+## License
 This project is licensed under the GPL v3. For proprietary licensing options, contact josephmargaryan@gmail.com.
+
+## Acknowledgments
+
+QuantBayes began as a project to advance Bayesian machine learning for academia and industry, combining rigorous research with practical tools. Special thanks to the bioinformatics and machine learning communities for their inspiration and support.
+
 
 
 ---
