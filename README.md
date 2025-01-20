@@ -28,7 +28,7 @@ Welcome to **QuantBayes**, an advanced machine learning library designed to empo
 
 ## Installation
 
-QuantBayes can be cloned and in the future installed using pip:
+QuantBayes can be cloned and, in the future,e installed using pip:
 `git clone https://github.com/josephmargaryan/quantbayes.git`
 ## Getting Started
 
@@ -159,10 +159,3 @@ This project is licensed under the GPL v3. For proprietary licensing options, co
 
 QuantBayes began as a project to advance Bayesian machine learning for academia and industry, combining rigorous research with practical tools. Special thanks to the bioinformatics and machine learning communities for their inspiration and support.
 
-
-
----
-
-## ❤️ Acknowledgments
-
-Special thanks to the developers and researchers who inspired this project. ChronosForge aims to provide tools for modern research and practical applications in the vast field of machine learning and probabilistic inference.
