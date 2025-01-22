@@ -276,9 +276,6 @@ class TimeSeriesPreprocessor:
         Create sequences of length seq_length with the next forecast_horizon step as target.
         Typically used for supervised learning in time-series.
         """
-        self.logger.info(
-            f"Creating sequences with seq_length={seq_length} and forecast_horizon={forecast_horizon}."
-        )
         sequences_X = []
         sequences_y = []
         for i in range(len(X) - seq_length - forecast_horizon + 1):
@@ -288,7 +285,7 @@ class TimeSeriesPreprocessor:
             if seq_y is not None:
                 sequences_y.append(seq_y)
 
-            self.logger.info(
+        self.logger.info(
             f"Generated {len(sequences_X)} sequences for features and targets."
         )
 
