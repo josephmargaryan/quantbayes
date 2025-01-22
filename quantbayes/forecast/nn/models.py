@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from forecast.nn.base import MonteCarloMixin, BaseModel
+from quantbayes.forecast.nn.base import MonteCarloMixin, BaseModel
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
