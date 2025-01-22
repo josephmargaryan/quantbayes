@@ -1,15 +1,13 @@
+import logging
 import numpy as np
-import pandas as pd
 from sklearn.model_selection import TimeSeriesSplit
 from sklearn.metrics import mean_squared_error
 import matplotlib.pyplot as plt
-import logging
 from tqdm import tqdm
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
-
 
 def safe_slice(data, indices):
     """
@@ -28,7 +26,6 @@ def safe_slice(data, indices):
         return data.iloc[indices]
     else:
         raise TypeError(f"Unsupported data type: {type(data)}")
-
 
 class EnsembleModel:
     def __init__(self, models, n_splits=5):
@@ -161,12 +158,13 @@ class EnsembleModel:
         print(f"  Mean: {np.mean(self.results['ensemble_rmse']):.4f}")
         print(f"  Std Dev: {np.std(self.results['ensemble_rmse']):.4f}")
 
-    def inference(self, X_new):
+    def inference(self, X_new, weights=None):
         """
         Make predictions on new data using the trained ensemble model.
 
         Args:
             X_new (pd.DataFrame, np.ndarray, or list): New feature matrix for prediction.
+            weights (list or np.ndarray): Weights for each model during prediction.
 
         Returns:
             np.array: Ensemble predictions for the new data.
@@ -176,6 +174,12 @@ class EnsembleModel:
                 "No models trained. Please train the ensemble before inference."
             )
 
+        if weights is None:
+            weights = np.ones(len(self.models)) / len(self.models)  # Equal weights by default
+
+        if len(weights) != len(self.models):
+            raise ValueError("Length of weights must match the number of models.")
+
         predictions = []
 
         for model_name, model in self.models.items():
@@ -183,6 +187,8 @@ class EnsembleModel:
             y_pred = model.predict(X_new)
             predictions.append(y_pred)
 
-        # Compute ensemble predictions (mean of individual model predictions)
-        ensemble_pred = np.mean(predictions, axis=0)
+        # Compute weighted ensemble predictions
+        predictions = np.array(predictions)  # Shape: (num_models, num_samples)
+        ensemble_pred = np.average(predictions, axis=0, weights=weights)  # Weighted average
+
         return ensemble_pred
