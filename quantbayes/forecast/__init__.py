@@ -1,4 +1,5 @@
 from .preprocessing import TimeSeriesPreprocessor
+from .visualizer import Viz_preds
 from .nn import (
     MambaStateSpaceModel,
     MultivariateLSTM_SDE,
@@ -22,4 +23,5 @@ __all__ = [
     "Visualizer",
     "MonteCarloMixin",
     "TimeSeriesTrainer",
+    "Viz_preds"
 ]
