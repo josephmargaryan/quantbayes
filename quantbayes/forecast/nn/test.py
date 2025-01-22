@@ -1,12 +1,12 @@
 import torch
 import numpy as np
 from torch.utils.data import DataLoader, TensorDataset
-from forecast.nn.base import (
+from quantbayes.forecast.nn.base import (
     TimeSeriesTrainer,
     Visualizer,
 )
-from forecast.nn.models import *
-from fake_data import create_synthetic_time_series
+from quantbayes.forecast.nn.models import *
+from quantbayes.fake_data import create_synthetic_time_series
 
 
 X_train, X_val, y_train, y_val = create_synthetic_time_series()
@@ -28,7 +28,7 @@ train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
 val_loader = DataLoader(val_dataset, batch_size=32)
 
 # Instantiate model
-model = TransformerTimeSeriesModel(1, 32, 4, 2, 1)
+model = Wavelength(1)
 trainer = TimeSeriesTrainer(model)
 trainer.compile(
     optimizer=torch.optim.Adam(model.parameters(), lr=1e-3),

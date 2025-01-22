@@ -88,3 +88,15 @@ class Viz_preds:
             plt.legend()
             plt.grid(True)
             plt.show()
+
+if __name__ == "__main__":
+    results = pd.DataFrame({"mean":np.arange(0, 100), "uncertainty":np.arage(0, 100)})
+    test = pd.DataFrame({"mean":np.arange(0, 100), "uncertainty":np.arage(0, 100)})
+    Viz_preds.visualize_unseen_data(
+    test_df=test,  # your test DataFrame
+    predictions=results["mean"],
+    uncertainties=results["uncertainty"],
+    datetime_col="date",  # Replace with your actual datetime column name
+    title="Test Predictions with Uncertainty (Static)",
+    interactive=True,  # Static Matplotlib plot
+)

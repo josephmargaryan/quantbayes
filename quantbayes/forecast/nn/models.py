@@ -1,4 +1,6 @@
 import torch
+import torch.nn.functional as F
+import numpy as np
 import torch.nn as nn
 from quantbayes.forecast.nn.base import MonteCarloMixin, BaseModel
 
@@ -223,3 +225,36 @@ class TransformerTimeSeriesModel(BaseModel, MonteCarloMixin):
         x = self.embedding(x) + self.positional_encoding[:, :seq_len, :].to(x.device)
         x = self.transformer_encoder(x)
         return self.fc(x[:, -1, :])
+
+class Wavelength(BaseModel, MonteCarloMixin):
+    def __init__(self, num_features):
+        super(Wavelength, self).__init__()
+        # Define wavelength-inspired layers
+        self.conv1 = nn.Conv1d(in_channels=num_features, out_channels=64, kernel_size=3, padding=1)
+        self.relu1 = nn.ReLU()
+        self.dropout1 = nn.Dropout(0.2)
+        
+        self.conv2 = nn.Conv1d(in_channels=64, out_channels=64, kernel_size=3, padding=1)
+        self.relu2 = nn.ReLU()
+        self.dropout2 = nn.Dropout(0.2)
+        
+        self.lstm = nn.LSTM(input_size=64, hidden_size=50, batch_first=True)
+        self.fc = nn.Linear(50, 1)
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    def forward(self, x):
+        # Permute input for Conv1d
+        x = x.permute(0, 2, 1)  # (batch, channels, sequence_length)
+        x = self.conv1(x)
+        x = self.relu1(x)
+        x = self.dropout1(x)
+        
+        x = self.conv2(x)
+        x = self.relu2(x)
+        x = self.dropout2(x)
+        
+        # Permute back for LSTM
+        x = x.permute(0, 2, 1)  # (batch, sequence_length, features)
+        x, _ = self.lstm(x)
+        x = self.fc(x[:, -1, :])  # Use the last time step output
+        return x
