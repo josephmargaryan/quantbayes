@@ -34,27 +34,22 @@ __all__ = [
     "FFTBinarySVI",
     "FFTBinaryMCMC",
     "FFTBinarySteinVI",
-
     # fft.multiclass_classification
     "FFTMultiClassSVI",
     "FFTMultiClassMCMC",
     "FFTMultiClassSteinVI",
-
     # fft.regression
     "FFTRegressionSVI",
     "FFTRegressionMCMC",
     "FFTRegressionSteinVI",
-
     # dense.binary_classification
     "DenseBinarySVI",
     "DenseBinaryMCMC",
     "DenseBinarySteinVI",
-
     # dense.multiclass_classification
     "DenseMultiClassSVI",
     "DenseMultiClassMCMC",
     "DenseMultiClassSteinVI",
-
     # dense.regression
     "DenseRegressionSVI",
     "DenseRegressionMCMC",

@@ -313,6 +313,48 @@ class TimeSeriesPreprocessor:
 
         return transformed_df
 
+    def prepare_for_prediction(
+        self,
+        df: pd.DataFrame,
+        add_temporal: bool = True,
+        add_fourier: bool = False,
+        fourier_period: int = 365,
+        return_dataloader: bool = False,
+        batch_size: int = 32,
+        shuffle: bool = False,
+    ):
+        """
+        Prepare the test dataset for prediction by transforming it and creating sequences.
+        Returns either numpy arrays or a PyTorch DataLoader.
+        """
+        # Transform the test data
+        transformed_df = self.transform(
+            df,
+            add_temporal=add_temporal,
+            add_fourier=add_fourier,
+            fourier_period=fourier_period,
+        )
+
+        # Create sequences
+        X_test = self._create_sequences(
+            transformed_df[self.feature_columns_after_encoding].values,
+            None,  # No target column for test data
+            self.seq_length,
+            self.forecast_horizon,
+        )[
+            0
+        ]  # Only X, as y is None
+
+        if not return_dataloader:
+            return X_test
+        else:
+            # Create PyTorch TensorDataset
+            test_dataset = TensorDataset(torch.tensor(X_test, dtype=torch.float32))
+            test_loader = DataLoader(
+                test_dataset, batch_size=batch_size, shuffle=shuffle
+            )
+            return test_loader
+
     def split_data(
         self, df: pd.DataFrame, train_size: float = 0.8
     ) -> Tuple[pd.DataFrame, pd.DataFrame]:

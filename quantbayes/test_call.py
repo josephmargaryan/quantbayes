@@ -11,8 +11,6 @@ from quantbayes import bnn
 from fake_data import *
 
 
-
-
 class Test(bnn.Module):
     def __init__(self):
         super().__init__(method="steinvi", task_type="regression")

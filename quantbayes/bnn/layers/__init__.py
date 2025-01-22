@@ -15,6 +15,6 @@ __all__ = [
     "FFTParticleLinear",
     "Conv1d",
     "Conv2d",
-    "SelfAttention"
+    "SelfAttention",
     # You can list other classes or functions from layers.py as needed
 ]
