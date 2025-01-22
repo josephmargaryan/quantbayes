@@ -9,7 +9,7 @@ import torch
 
 from typing import Optional, List, Tuple, Union
 from datetime import datetime
-
+import logging
 
 class TimeSeriesPreprocessor:
     def __init__(
@@ -56,22 +56,34 @@ class TimeSeriesPreprocessor:
         self.fitted_encoders = {}
         self.feature_columns_after_encoding = None
 
+        self.logger = logging.getLogger(__name__)
+        logging.basicConfig(
+            format="%(asctime)s - %(levelname)s - %(message)s", level=logging.INFO
+        )
+
     def _encode_categorical(self, df: pd.DataFrame, fit: bool = False) -> pd.DataFrame:
         """
         One-hot encodes categorical columns. If fit=True, fit the OneHotEncoders.
         Otherwise, uses existing fitted encoders.
         """
         for cat_col in self.categorical_cols:
+            original_unique_values = df[cat_col].nunique()
             if fit:
                 encoder = OneHotEncoder(sparse_output=False, handle_unknown="ignore")
                 reshaped = df[[cat_col]].astype(str).values
                 encoded_data = encoder.fit_transform(reshaped)
                 self.fitted_encoders[cat_col] = encoder
+                self.logger.info(
+                    f"Fitted encoder for column '{cat_col}' with {original_unique_values} unique values."
+                )
             else:
                 encoder = self.fitted_encoders[cat_col]
                 reshaped = df[[cat_col]].astype(str).values
                 encoded_data = encoder.transform(reshaped)
 
+            self.logger.debug(
+                f"One-hot encoding applied to column '{cat_col}', resulting in {encoded_data.shape[1]} new columns."
+            )
             # Create column names for the encoded data
             encoder_col_names = [
                 f"{cat_col}__{cat_class}"
@@ -91,6 +103,13 @@ class TimeSeriesPreprocessor:
         """Remove rows with any NaN values if self.remove_na is True"""
         if self.remove_na:
             df = df.dropna()
+            na_count_before = df.isna().sum().sum()
+            na_columns = df.columns[df.isna().any()].tolist()
+            df = df.dropna()
+            na_count_after = df.isna().sum().sum()
+            self.logger.info(
+                f"Removed {na_count_before - na_count_after} NaNs from columns: {na_columns}"
+            )
         return df
 
     def _apply_scaling(
@@ -101,10 +120,15 @@ class TimeSeriesPreprocessor:
         If fit=True, fit the scalers first, then transform.
         """
         # Scale features
+        self.logger.debug(f"Applying scaling to features of shape {X.shape}.")
+        if y is not None:
+            self.logger.debug(f"Target scaling applied to target of shape {y.shape}.")
+
         if self.feature_scaler is not None:
             if fit:
                 self.fitted_feature_scaler = self.feature_scaler.fit(X)
                 X_scaled = self.fitted_feature_scaler.transform(X)
+                self.logger.info("Feature scaler fitted and applied.")
             else:
                 X_scaled = self.fitted_feature_scaler.transform(X)
         else:
@@ -116,6 +140,7 @@ class TimeSeriesPreprocessor:
             if fit:
                 self.fitted_target_scaler = self.target_scaler.fit(y)
                 y_scaled = self.fitted_target_scaler.transform(y).ravel()
+                self.logger.info("Target scaler fitted and applied.")
             else:
                 y_scaled = self.fitted_target_scaler.transform(y).ravel()
         else:
@@ -125,11 +150,68 @@ class TimeSeriesPreprocessor:
 
     def _add_temporal_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Add typical datetime-based features (e.g., day_of_week, month, etc.).
+        Automatically add temporal features based on the granularity of the datetime column.
+        Determines appropriate features dynamically based on available datetime attributes.
+
+        :param df: DataFrame with a datetime column.
+        :return: DataFrame with added temporal features.
         """
-        df["day_of_week"] = df[self.datetime_col].dt.dayofweek
-        df["month"] = df[self.datetime_col].dt.month
-        # you can expand more (year, day of year, hour, etc.)
+        self.logger.info(f"Adding temporal features from column '{self.datetime_col}'.")
+
+        # Ensure datetime_col is a datetime type
+        if not pd.api.types.is_datetime64_any_dtype(df[self.datetime_col]):
+            df[self.datetime_col] = pd.to_datetime(df[self.datetime_col])
+            self.logger.info(f"Converted '{self.datetime_col}' to datetime type.")
+
+        # Add year
+        if hasattr(df[self.datetime_col].dt, "year"):
+            df["year"] = df[self.datetime_col].dt.year
+            self.logger.debug("Added 'year' feature.")
+
+        # Add month
+        if hasattr(df[self.datetime_col].dt, "month"):
+            df["month"] = df[self.datetime_col].dt.month
+            self.logger.debug("Added 'month' feature.")
+
+        # Add day
+        if hasattr(df[self.datetime_col].dt, "day"):
+            df["day"] = df[self.datetime_col].dt.day
+            self.logger.debug("Added 'day' feature.")
+
+        # Add day of week
+        if hasattr(df[self.datetime_col].dt, "dayofweek"):
+            df["day_of_week"] = df[self.datetime_col].dt.dayofweek
+            self.logger.debug("Added 'day_of_week' feature.")
+
+        # Add day of year
+        if hasattr(df[self.datetime_col].dt, "dayofyear"):
+            df["day_of_year"] = df[self.datetime_col].dt.dayofyear
+            self.logger.debug("Added 'day_of_year' feature.")
+
+        # Add quarter
+        if hasattr(df[self.datetime_col].dt, "quarter"):
+            df["quarter"] = df[self.datetime_col].dt.quarter
+            self.logger.debug("Added 'quarter' feature.")
+
+        # Add hour if applicable
+        if hasattr(df[self.datetime_col].dt, "hour"):
+            if (df[self.datetime_col].dt.hour.nunique() > 1):  # Only add if hours are relevant
+                df["hour"] = df[self.datetime_col].dt.hour
+                self.logger.debug("Added 'hour' feature.")
+
+        # Add minute if applicable
+        if hasattr(df[self.datetime_col].dt, "minute"):
+            if (df[self.datetime_col].dt.minute.nunique() > 1):  # Only add if minutes are relevant
+                df["minute"] = df[self.datetime_col].dt.minute
+                self.logger.debug("Added 'minute' feature.")
+
+        # Add second if applicable
+        if hasattr(df[self.datetime_col].dt, "second"):
+            if (df[self.datetime_col].dt.second.nunique() > 1):  # Only add if seconds are relevant
+                df["second"] = df[self.datetime_col].dt.second
+                self.logger.debug("Added 'second' feature.")
+
+        self.logger.info("Temporal features added successfully.")
         return df
 
     def _fourier_transform(
@@ -140,12 +222,14 @@ class TimeSeriesPreprocessor:
         """
         # Number of samples
         n = len(series)
+        self.logger.info(f"Performing FFT on a series of length {n} with period {period}.")
         # Perform FFT
         fft_values = np.fft.fft(series)
         # Frequencies
         freqs = np.fft.fftfreq(n)
         # Magnitudes
         magnitudes = np.abs(fft_values)
+        self.logger.debug(f"FFT completed. Found {len(freqs)} frequencies.")
         return freqs, magnitudes
 
     def _add_fourier_features(self, df: pd.DataFrame, period: int = 365):
@@ -153,6 +237,9 @@ class TimeSeriesPreprocessor:
         Add top_k_fourier Fourier features to the DataFrame based on the target column.
         For simplicity, we'll do a global FFT on the entire series (not windowed).
         """
+        self.logger.info(
+            f"Adding top {self.top_k_fourier} Fourier components as features using column '{self.target_col}'."
+        )
         target_series = df[self.target_col].values
         freqs, mags = self._fourier_transform(target_series, period=period)
 
@@ -164,6 +251,9 @@ class TimeSeriesPreprocessor:
         # Get top k by magnitude
         sorted_idx = np.argsort(mags)[::-1]
         top_k_idx = sorted_idx[: self.top_k_fourier]
+        self.logger.debug(
+            f"Top {self.top_k_fourier} frequencies selected: {freqs[top_k_idx]}."
+        )
 
         for i, idx in enumerate(top_k_idx):
             # For each top frequency, add as a feature:
@@ -171,6 +261,8 @@ class TimeSeriesPreprocessor:
             df[feature_name] = np.sin(
                 2 * np.pi * freqs[idx] * np.arange(len(df))
             ) + np.cos(2 * np.pi * freqs[idx] * np.arange(len(df)))
+            self.logger.debug(f"Fourier feature '{feature_name}' added.")
+        self.logger.info("Fourier features added successfully.")
         return df
 
     def _create_sequences(
@@ -184,6 +276,9 @@ class TimeSeriesPreprocessor:
         Create sequences of length seq_length with the next forecast_horizon step as target.
         Typically used for supervised learning in time-series.
         """
+        self.logger.info(
+            f"Creating sequences with seq_length={seq_length} and forecast_horizon={forecast_horizon}."
+        )
         sequences_X = []
         sequences_y = []
         for i in range(len(X) - seq_length - forecast_horizon + 1):
@@ -192,6 +287,10 @@ class TimeSeriesPreprocessor:
             sequences_X.append(seq_x)
             if seq_y is not None:
                 sequences_y.append(seq_y)
+
+            self.logger.info(
+            f"Generated {len(sequences_X)} sequences for features and targets."
+        )
 
         sequences_X = np.array(sequences_X)
         if y is not None:
