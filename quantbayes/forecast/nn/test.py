@@ -7,6 +7,7 @@ from quantbayes.forecast.nn.base import (
 )
 from quantbayes.forecast.nn.models import *
 from quantbayes.fake_data import create_synthetic_time_series
+from quantbayes.forecast.nn.models.n_beats import NBeats
 
 
 X_train, X_val, y_train, y_val = create_synthetic_time_series()
@@ -28,7 +29,7 @@ train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
 val_loader = DataLoader(val_dataset, batch_size=32)
 
 # Instantiate model
-model = Wavelength(1)
+model = NBeats(10)
 trainer = TimeSeriesTrainer(model)
 trainer.compile(
     optimizer=torch.optim.Adam(model.parameters(), lr=1e-3),

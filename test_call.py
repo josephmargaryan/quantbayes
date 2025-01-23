@@ -6,9 +6,9 @@ import numpyro.distributions as dist
 import numpy as np
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.model_selection import train_test_split
-from bnn.utils.generalization_bound import BayesianAnalysis
+from quantbayes.bnn.utils.generalization_bound import BayesianAnalysis
 from quantbayes import bnn
-from fake_data import *
+from quantbayes.fake_data import *
 
 
 class Test(bnn.Module):
