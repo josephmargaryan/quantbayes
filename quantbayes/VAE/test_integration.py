@@ -159,7 +159,7 @@ def vae_guide(X: jnp.ndarray, encoder: nn.Module, latent_dim: int):
     Parameters:
         X: Input data, shape (batch_size, x_dim).
     """
-    batch_size, _ = X.shape
+    batch_size = X.shape[0]
 
     # Register Flax encoder with NumPyro
     encoder_module = flax_module("encoder", encoder, input_shape=(batch_size, X.shape[1]))
@@ -314,7 +314,7 @@ def main():
 
 
     # Train the VAE
-    params, losses = train_vae(X, vae_att_encoder, vae_att_decoder, latent_dim, num_steps=100)
+    params, losses = train_vae(X, vae_att_encoder, vae_decoder, latent_dim, num_steps=100)
 
     # Plot loss curve
     plt.figure(figsize=(8, 5))
@@ -326,13 +326,13 @@ def main():
     plt.show()
 
     # Visualize reconstructions
-    visualize_reconstructions(X, params, vae_att_encoder, vae_att_decoder, latent_dim)
+    visualize_reconstructions(X, params, vae_att_encoder, vae_decoder, latent_dim)
 
     visualize_single_reconstruction(
     X=X,
     params=params,
     encoder=vae_att_encoder,
-    decoder=vae_att_decoder,
+    decoder=vae_decoder,
     latent_dim=latent_dim,
     feature_index=2  # Visualize the 3rd feature (index starts at 0)
     )
