@@ -11,48 +11,83 @@ from quantbayes import bnn
 from quantbayes.fake_data import *
 
 
-class Test(bnn.Module):
+class TransposedConvTest(bnn.Module):
     def __init__(self):
-        super().__init__(method="steinvi", task_type="regression")
+        super().__init__(method="nuts", task_type="binary")
 
     def __call__(self, X, y=None):
-        in_features = X.shape[
-            -1
-        ]  # No particle dimension here, handled internally by ParticleLinear
-        fcl = bnn.FFTParticleLinear(in_features, "particle_lcl1")
-        fcl = jax.nn.silu(fcl(X))
-        out = bnn.ParticleLinear(in_features, 1, "particle_out", aggregation="max")
-        logits = out(fcl).squeeze()
-        numpyro.deterministic("logits", logits)
-        sigma = numpyro.sample("sigma", dist.Exponential(1.0))
-        numpyro.sample("y", dist.Normal(logits, sigma), obs=y)
+        # Define a transposed convolution layer
+        conv = bnn.TransposedConv2d(
+            in_channels=1,
+            out_channels=1,
+            kernel_size=(3, 3),
+            stride=(2, 2),
+            padding="same",
+            name="transposed_conv",
+        )
+
+        # Apply the transposed convolution
+        X_conv = conv(X)  # Output shape: (batch_size, out_channels, height, width)
+
+        # Flatten the output for classification
+        X_flat = X_conv.reshape((X_conv.shape[0], -1))  # (batch_size, flattened_features)
+
+        # Use the predefined Linear layer
+        dense = bnn.Linear(in_features=X_flat.shape[-1], out_features=1, name="dense")
+        logits = dense(X_flat)
+
+        # Define binary classification likelihood
+        probs = jax.nn.sigmoid(logits)
+        numpyro.sample("obs", dist.Bernoulli(probs=probs), obs=y)
+
+class FFTTransposedConvTest(bnn.Module):
+    def __init__(self):
+        super().__init__(method="nuts", task_type="binary")
+
+    def __call__(self, X, y=None):
+        # Define an FFT-based transposed convolution layer
+        conv = bnn.FFTTransposedConv2d(
+            in_channels=1,
+            out_channels=1,
+            kernel_size=(3, 3),
+            name="fft_transposed_conv",
+        )
+
+        # Apply the FFT-based transposed convolution
+        X_conv = conv(X)  # Output shape: (batch_size, out_channels, height, width)
+
+        # Flatten the output for classification
+        X_flat = X_conv.reshape((X_conv.shape[0], -1))  # (batch_size, flattened_features)
+
+        # Use FFTLinear for initial transformation
+        fft_dense = bnn.FFTLinear(in_features=X_flat.shape[-1], name="fft_dense")
+        hidden = fft_dense(X_flat)  # Output shape: (batch_size, in_features)
+
+        # Use Linear for final transformation to output dimension
+        dense = bnn.Linear(in_features=hidden.shape[-1], out_features=1, name="dense")
+        logits = dense(hidden)  # Output shape: (batch_size, 1)
+
+        # Define binary classification likelihood
+        probs = jax.nn.sigmoid(logits.squeeze(-1))  # Squeeze to match (batch_size,)
+        numpyro.sample("obs", dist.Bernoulli(probs=probs), obs=y)
 
 
-df = generate_regression_data()
-X, y = df.drop("target", axis=1), df["target"]
-X, y = jnp.array(X), jnp.array(y)
-scaler = MinMaxScaler()
-y = scaler.fit_transform(y.reshape(-1, 1)).reshape(-1)
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.2, random_state=24
-)
 
-# Instantiate and train the model
-model = Test()
-rng_key = jax.random.PRNGKey(0)
+import jax
 
-# Compile with NUTS
-model.compile()
+# Generate dummy data
+rng = jax.random.PRNGKey(42)
+X = jax.random.normal(rng, shape=(32, 1, 28, 28))  # Batch of grayscale images
+y = jax.random.bernoulli(rng, p=0.5, shape=(32,))  # Binary labels
 
-# Fit the model
-model.fit(X_train, y_train, rng_key, num_steps=100000)
+# Test TransposedConv2d
+"""print("Testing TransposedConv2d with Linear...")
+transposed_conv_test = TransposedConvTest()
+transposed_conv_test.compile(num_samples=100, num_warmup=50, num_chains=1)
+transposed_conv_test.fit(X, y, rng)"""
 
-# Make predictions
-predictions = model.predict(X_test, rng_key, "y")
-# probs = jax.nn.softmax(predictions, axis=-1)
-
-model.visualize(X_test, y_test)
-bound = BayesianAnalysis(
-    len(X_train), 0.05, "regression", "steinvi", model.get_stein_result
-)
-bound.compute_pac_bayesian_bound(predictions, y_test)
+# Test FFTTransposedConv2d
+print("Testing FFTTransposedConv2d with FFTLinear...")
+fft_transposed_conv_test = FFTTransposedConvTest()
+fft_transposed_conv_test.compile(num_samples=100, num_warmup=50, num_chains=1)
+fft_transposed_conv_test.fit(X, y, rng)

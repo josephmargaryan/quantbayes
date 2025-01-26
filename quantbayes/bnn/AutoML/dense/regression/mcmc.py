@@ -123,12 +123,13 @@ class DenseRegressionMCMC(BaseTask, BaseInference):
         preds = predictive(rng_key=rng_key, X=X_test)
         return preds["mean"]
 
-    def visualize(self, X_test, y_test, posteriors, feature_index=None):
+    def visualize(self, X_test, y_test, feature_index=None):
         """
         Visualize predictions with uncertainty bounds and true targets.
         """
         X_test = np.array(X_test)
         y_test = np.array(y_test)
+        posteriors = self.predict(X_test, jax.random.key(1234))
         mean_preds = np.array(posteriors.mean(axis=0))
         lower_bound = np.percentile(posteriors, 2.5, axis=0)
         upper_bound = np.percentile(posteriors, 97.5, axis=0)

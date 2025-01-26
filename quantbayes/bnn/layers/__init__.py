@@ -16,5 +16,7 @@ __all__ = [
     "Conv1d",
     "Conv2d",
     "SelfAttention",
+    "TransposedConv2d",
+    "FFTTransposedConv2d",
     # You can list other classes or functions from layers.py as needed
 ]

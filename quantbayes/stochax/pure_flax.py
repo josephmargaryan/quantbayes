@@ -7,7 +7,8 @@ import matplotlib.pyplot as plt
 from quantbayes.fake_data import generate_regression_data
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.model_selection import train_test_split
-
+import flax.serialization
+import pickle
 
 # 1. Data Preparation
 df = generate_regression_data()
@@ -102,6 +103,16 @@ for epoch in range(1, num_epochs + 1):
         elapsed = time.time() - start_time
         print(f"Epoch {epoch}, Loss: {mean_epoch_loss:.4f}, Time Elapsed: {elapsed:.2f}s")
         start_time = time.time()
+
+### Save the trained network 
+with open("flax_model_params.pkl", "wb") as f:
+    pickle.dump(flax.serialization.to_state_dict(state.params), f)
+"""
+# Load parameters from a file
+with open("flax_model_params.pkl", "rb") as f:
+    loaded_params = flax.serialization.from_state_dict(model.init(rng, jnp.ones([1, input_dim]))["params"], pickle.load(f))
+
+"""
 
 # 5. Evaluation
 # Define a prediction function

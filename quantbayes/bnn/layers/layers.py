@@ -3,6 +3,18 @@ import jax.numpy as jnp
 import numpyro
 import numpyro.distributions as dist
 
+__all__ = [
+    "Linear",  # Add your other classes from layers.py
+    "FFTLinear",
+    "ParticleLinear",
+    "FFTParticleLinear",
+    "Conv1d",
+    "Conv2d",
+    "SelfAttention",
+    "TransposedConv2d",
+    "FFTTransposedConv2d",
+    # You can list other classes or functions from layers.py as needed
+]
 
 class LayerNorm:
     def __init__(self, num_features, name="layer_norm"):
@@ -883,6 +895,171 @@ class FFTConv2d:
                 )
                 weight_fft = jnp.fft.fft2(
                     weight[out_c, in_c], s=(height + kernel_h - 1, width + kernel_w - 1)
+                )
+
+                conv_fft = X_fft * weight_fft
+
+                channel_out += jnp.fft.ifft2(conv_fft).real
+
+            channel_out += bias[out_c].reshape(1, 1)
+
+            output.append(channel_out)
+
+        output = jnp.stack(output, axis=1)
+        return output
+
+class TransposedConv2d:
+    """
+    Implements a 2D transposed convolutional layer with learnable weights and biases.
+    This layer is commonly used for upsampling in neural networks.
+    """
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: int | tuple,
+        stride: int | tuple = 1,
+        padding: str = "valid",
+        name: str = "transposed_conv2d",
+    ):
+        """
+        Initialize the TransposedConv2d layer.
+
+        :param in_channels: int
+            Number of input channels.
+        :param out_channels: int
+            Number of output channels.
+        :param kernel_size: int or tuple
+            Size of the transposed convolutional kernel.
+        :param stride: int or tuple, optional
+            Stride of the transposed convolution (default: 1).
+        :param padding: str, optional
+            Padding type, either "valid" or "same" (default: "valid").
+        :param name: str, optional
+            Name of the layer (default: "transposed_conv2d").
+        """
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.kernel_size = (
+            kernel_size
+            if isinstance(kernel_size, tuple)
+            else (kernel_size, kernel_size)
+        )
+        self.stride = stride if isinstance(stride, tuple) else (stride, stride)
+        self.padding = padding
+        self.name = name
+
+    def __call__(self, X: jnp.ndarray) -> jnp.ndarray:
+        """
+        Perform the forward pass of the TransposedConv2d layer.
+
+        :param X: jnp.ndarray
+            Input tensor of shape `(batch_size, in_channels, height, width)`.
+
+        :returns: jnp.ndarray
+            Output tensor of shape `(batch_size, out_channels, new_height, new_width)`.
+        """
+        kernel_h, kernel_w = self.kernel_size
+        stride_h, stride_w = self.stride
+
+        # Determine padding
+        if self.padding == "same":
+            padding = "SAME"
+        elif self.padding == "valid":
+            padding = "VALID"
+        else:
+            raise ValueError(f"Unsupported padding mode: {self.padding}")
+
+        weight = numpyro.sample(
+            f"{self.name}_weight",
+            dist.Normal(0, 1).expand(
+                [self.in_channels, self.out_channels, kernel_h, kernel_w]
+            ),
+        )
+        bias = numpyro.sample(
+            f"{self.name}_bias", dist.Normal(0, 1).expand([self.out_channels])
+        )
+
+        convolved = jax.lax.conv_transpose(
+            lhs=X,
+            rhs=weight,
+            strides=(stride_h, stride_w),
+            padding=padding,
+            dimension_numbers=("NCHW", "OIHW", "NCHW"),
+        )
+
+        convolved += bias[None, :, None, None]  # Add bias per channel
+        return convolved
+
+class FFTTransposedConv2d:
+    """
+    Implements a 2D transposed convolutional layer using FFT-based computation.
+
+    This layer performs a 2D transposed convolution in the frequency domain
+    for efficiency with large kernel sizes.
+    """
+
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: int | tuple,
+        name: str = "fft_transposed_conv2d",
+    ):
+        """
+        Initialize the FFTTransposedConv2d layer.
+
+        :param in_channels: int
+            Number of input channels.
+        :param out_channels: int
+            Number of output channels.
+        :param kernel_size: int or tuple
+            Size of the transposed convolutional kernel.
+        :param name: str, optional
+            Name of the layer (default: "fft_transposed_conv2d").
+        """
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.kernel_size = (
+            kernel_size
+            if isinstance(kernel_size, tuple)
+            else (kernel_size, kernel_size)
+        )
+        self.name = name
+
+    def __call__(self, X: jnp.ndarray) -> jnp.ndarray:
+        """
+        Perform the forward pass of the FFTTransposedConv2d layer.
+
+        :param X: jnp.ndarray
+            Input tensor of shape `(batch_size, in_channels, height, width)`.
+
+        :returns: jnp.ndarray
+            Output tensor of shape `(batch_size, out_channels, new_height, new_width)`.
+        """
+        batch_size, in_channels, height, width = X.shape
+        kernel_h, kernel_w = self.kernel_size
+
+        weight = numpyro.sample(
+            f"{self.name}_weight",
+            dist.Normal(0, 1).expand(
+                [self.in_channels, self.out_channels, kernel_h, kernel_w]
+            ),
+        )
+        bias = numpyro.sample(
+            f"{self.name}_bias", dist.Normal(0, 1).expand([self.out_channels])
+        )
+
+        output = []
+        for out_c in range(self.out_channels):
+            channel_out = 0
+            for in_c in range(self.in_channels):
+                X_fft = jnp.fft.fft2(
+                    X[:, in_c], s=(height + kernel_h - 1, width + kernel_w - 1)
+                )
+                weight_fft = jnp.fft.fft2(
+                    weight[in_c, out_c], s=(height + kernel_h - 1, width + kernel_w - 1)
                 )
 
                 conv_fft = X_fft * weight_fft
