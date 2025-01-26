@@ -1,5 +1,5 @@
 import numpy as np
-from quantbayes.sde.gan_sde import run_sde
+from quantbayes.generative.gan_sde import run_sde
 
 
 def fake_data_test():

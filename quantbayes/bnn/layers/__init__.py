@@ -1,14 +1,13 @@
-# quantbayes/bnn/layers/__init__.py
-
 # Import Module from base
-from .base import Module  # Expose the Module class
+from .base import Module
 
-# Import all classes from layers.py
-from .layers import *  # Optionally, you could list specific imports here as well
+# Import all classes and the __all__ list from layers.py
+from .layers import *  # This imports everything listed in layers.py's __all__
+
 
 # Explicitly define what this module exposes
 __all__ = [
-    "Module",  # Expose the Module class
+    "Module",
     "Linear",  # Add your other classes from layers.py
     "FFTLinear",
     "ParticleLinear",
@@ -18,5 +17,7 @@ __all__ = [
     "SelfAttention",
     "TransposedConv2d",
     "FFTTransposedConv2d",
+    "MaxPool2d",
+    "FFTConv2d"
     # You can list other classes or functions from layers.py as needed
 ]

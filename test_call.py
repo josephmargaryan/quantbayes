@@ -81,10 +81,10 @@ X = jax.random.normal(rng, shape=(32, 1, 28, 28))  # Batch of grayscale images
 y = jax.random.bernoulli(rng, p=0.5, shape=(32,))  # Binary labels
 
 # Test TransposedConv2d
-"""print("Testing TransposedConv2d with Linear...")
+print("Testing TransposedConv2d with Linear...")
 transposed_conv_test = TransposedConvTest()
 transposed_conv_test.compile(num_samples=100, num_warmup=50, num_chains=1)
-transposed_conv_test.fit(X, y, rng)"""
+transposed_conv_test.fit(X, y, rng)
 
 # Test FFTTransposedConv2d
 print("Testing FFTTransposedConv2d with FFTLinear...")

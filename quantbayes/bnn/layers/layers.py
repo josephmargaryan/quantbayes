@@ -13,6 +13,8 @@ __all__ = [
     "SelfAttention",
     "TransposedConv2d",
     "FFTTransposedConv2d",
+    "MaxPool2d",
+    "FFTConv2d"
     # You can list other classes or functions from layers.py as needed
 ]
 
@@ -33,7 +35,45 @@ class LayerNorm:
         )
         normalized = (X - mean) / jnp.sqrt(variance + epsilon)
         return scale * normalized + shift
+    
+class MaxPool2d:
+    """
+    A 2D max-pooling layer.
+    """
 
+    def __init__(self, kernel_size=2, stride=2, name="maxpool2d"):
+        """
+        :param kernel_size: int
+            Size of the pooling kernel.
+        :param stride: int
+            Stride for the pooling.
+        :param name: str
+            Name of the layer (not strictly used in your Bayesian parameter naming,
+            but good for clarity).
+        """
+        self.kernel_size = kernel_size
+        self.stride = stride
+        self.name = name
+
+    def __call__(self, X: jnp.ndarray) -> jnp.ndarray:
+        """
+        Perform max pooling on the input.
+
+        :param X: jnp.ndarray
+            Input tensor of shape `(batch_size, channels, height, width)`.
+
+        :return: jnp.ndarray
+            Pooled output tensor of shape `(batch_size, channels, pooled_height, pooled_width)`.
+        """
+        # Reduce window applies max pooling over the spatial dimensions (height, width).
+        return jax.lax.reduce_window(
+            X,
+            init_value=-jnp.inf,
+            computation=jax.lax.max,
+            window_dimensions=(1, 1, self.kernel_size, self.kernel_size),
+            window_strides=(1, 1, self.stride, self.stride),
+            padding="VALID",  # For typical UNet, "VALID" pooling is common
+        )
 
 class Linear:
     """
