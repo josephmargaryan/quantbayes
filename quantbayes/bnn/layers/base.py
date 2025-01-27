@@ -5,6 +5,7 @@ from numpyro.infer import SVI, Trace_ELBO, Predictive, MCMC, NUTS
 from numpyro.infer.autoguide import AutoNormal
 from numpyro.contrib.einstein import SteinVI, RBFKernel, MixtureGuidePredictive
 from numpyro.optim import Adam, Adagrad, SGD
+import numpy as np
 
 
 class Module:
@@ -170,29 +171,82 @@ class Module:
             return self.stein_result
         raise ValueError("SteinVI is not the selected inference method.")
 
-    def visualize(
-        self,
-        X,
-        y=None,
-        num_classes=None,
-        features=(0, 1),
-        resolution=100,
-        feature_index=None,
-    ):
+    def visualize(self, X, y=None, num_classes=None, features=(0, 1), resolution=100, feature_index=None):
         """
         Visualizes model outputs based on the task type.
         """
         if self.task_type == "multiclass":
-            assert (
-                num_classes is not None
-            ), "num_classes must be provided for multiclass visualization."
+            assert num_classes is not None, "num_classes must be provided for multiclass visualization."
             self._visualize_multiclass(X, y, num_classes, features, resolution)
         elif self.task_type == "binary":
             self._visualize_binary(X, y, features, resolution)
         elif self.task_type == "regression":
             self._visualize_regression(X, y, feature_index)
+        elif self.task_type == "image_classification":
+            assert num_classes is not None, "num_classes must be provided for image classification visualization."
+            self._visualize_image_classification(X, y, num_classes)
         else:
             raise ValueError(f"Unknown task type: {self.task_type}")
+
+    def _visualize_image_classification(self, X, y, num_classes):
+        """
+        Visualizes predictions for image classification tasks.
+
+        :param X: jnp.ndarray
+            Input images (batch_size, channels, height, width) or preprocessed patches.
+        :param y: jnp.ndarray
+            True labels (optional, for comparison).
+        :param num_classes: int
+            Number of output classes.
+        """
+        # Handle input shape
+        if X.ndim == 4:  # Image shape: (batch_size, channels, height, width)
+            patches = self.patchify(X)  # Convert to patches
+        elif X.ndim == 3:  # Already patchified: (batch_size, num_patches, patch_dim)
+            patches = X
+        else:
+            raise ValueError(f"Unexpected input shape: {X.shape}. Expected 4D images or 3D patches.")
+
+        # Predict on patches
+        pred_samples = self.predict(patches, jax.random.PRNGKey(0))  # [num_samples, batch_size, num_classes]
+        mean_preds = jax.nn.softmax(pred_samples.mean(axis=0), axis=-1)  # [batch_size, num_classes]
+        predicted_classes = jnp.argmax(mean_preds, axis=-1)  # [batch_size]
+
+        # Visualization
+        batch_size = X.shape[0]
+        rows = int(jnp.ceil(batch_size / 4))  # 4 images per row
+        fig, axes = plt.subplots(rows, 4, figsize=(12, rows * 3))
+
+        if rows == 1:
+            axes = axes[np.newaxis, :]  # Ensure axes is 2D for consistency
+
+        for i, ax in enumerate(axes.flatten()):
+            if i >= batch_size:
+                ax.axis("off")
+                continue
+
+            # Select image and predictions
+            if X.ndim == 4:  # If input is image data
+                img = X[i].transpose(1, 2, 0)  # Convert to (H, W, C) for visualization
+            else:  # If input is patches, visualization may be harder
+                img = jnp.zeros((self.image_size, self.image_size, self.in_channels))  # Placeholder blank image
+
+            true_label = y[i] if y is not None else None
+            pred_label = predicted_classes[i]
+            pred_probs = mean_preds[i]
+
+            # Display image
+            ax.imshow(img.squeeze(), cmap="gray" if X.ndim == 4 and X.shape[1] == 1 else None)
+            ax.axis("off")
+
+            # Title with predictions and uncertainty
+            title = f"Pred: {pred_label} ({pred_probs[pred_label]:.2f})"
+            if y is not None:
+                title += f"\nTrue: {true_label}"
+            ax.set_title(title, fontsize=10)
+
+        plt.tight_layout()
+        plt.show()
 
     def _visualize_multiclass(self, X, y, num_classes, features, resolution):
         feature_1, feature_2 = features

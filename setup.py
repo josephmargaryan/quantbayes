@@ -14,8 +14,9 @@ setup(
         "numpyro",
         "torch",
         "matplotlib",
-        "pyro-ppl",
+        "flax",
         "pandas",
+        "optax"
     ],
     python_requires=">=3.7",
 )

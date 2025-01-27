@@ -5,9 +5,9 @@ import numpyro.distributions as dist
 from quantbayes.bnn import Module
 from typing import Optional
 
-class Unet(Module):
+class AttentionUNet(Module):
     """
-    A simplified 2-level UNet for segmentation (binary by default).
+    A simplified 2-level UNet with attention gates on skip connections.
     """
 
     def __init__(
@@ -46,23 +46,77 @@ class Unet(Module):
         relu2 = jax.nn.relu(conv2)
         return relu2
 
+    def attention_gate(
+        self, skip: jnp.ndarray, gating: jnp.ndarray, out_ch: int, name_prefix: str
+    ):
+        """
+        Attention gate that takes skip connection and gating signal,
+        returns skip * attention_coefficients.
+        """
+        from quantbayes.bnn import Conv2d
+
+        # 1x1 conv to reduce channel dimensions
+        theta_x = Conv2d(
+            in_channels=skip.shape[1],
+            out_channels=out_ch,
+            kernel_size=1,
+            padding="valid",
+            name=f"{name_prefix}_theta_x",
+        )(skip)
+
+        phi_g = Conv2d(
+            in_channels=gating.shape[1],
+            out_channels=out_ch,
+            kernel_size=1,
+            padding="valid",
+            name=f"{name_prefix}_phi_g",
+        )(gating)
+
+        # Reshape if spatial dims differ (basic up/down if needed).
+        # Here, we assume gating is smaller; we can do simple interpolation:
+        if theta_x.shape[2] != phi_g.shape[2] or theta_x.shape[3] != phi_g.shape[3]:
+            # Basic approach: nearest neighbor upsampling to match skip's spatial size
+            scale_h = theta_x.shape[2] // phi_g.shape[2]
+            scale_w = theta_x.shape[3] // phi_g.shape[3]
+            phi_g = jax.image.resize(
+                phi_g,
+                (phi_g.shape[0], phi_g.shape[1], theta_x.shape[2], theta_x.shape[3]),
+                method="nearest",
+            )
+
+        concat = jax.nn.relu(theta_x + phi_g)
+
+        psi = Conv2d(
+            in_channels=out_ch,
+            out_channels=1,
+            kernel_size=1,
+            padding="valid",
+            name=f"{name_prefix}_psi",
+        )(concat)
+        # Attention coefficients
+        alpha = jax.nn.sigmoid(psi)
+
+        # Broadcast alpha over channel dimension
+        alpha = jnp.broadcast_to(alpha, skip.shape)
+
+        # Multiply skip with attention coefficients
+        attended_skip = skip * alpha
+        return attended_skip
+
     def up(self, x: jnp.ndarray, out_ch: int, name_prefix: str):
         """
-        Upsampling via transposed conv.
-        1x1 conv adjusts channels before the transposed convolution.
+        Upsampling via transposed conv (like normal UNet).
         """
         from quantbayes.bnn import Conv2d, TransposedConv2d
 
-        # Adjust channels first
+        # Adjust channels
         x = Conv2d(
             in_channels=x.shape[1],
             out_channels=out_ch,
             kernel_size=1,
-            padding="valid",
-            name=f"{name_prefix}_adjust_channels",
+            name=f"{name_prefix}_adj_channels",
         )(x)
 
-        # Transposed conv to upsample
         x = TransposedConv2d(
             in_channels=out_ch,
             out_channels=out_ch,
@@ -75,11 +129,13 @@ class Unet(Module):
 
     def __call__(self, X: jnp.ndarray, y: Optional[jnp.ndarray] = None):
         """
-        Forward pass:
-          - Two "down" levels
-          - Bottleneck
-          - Two "up" levels
-          - 1x1 output conv
+        2-level UNet with attention gates:
+          - down1 -> pool1
+          - down2 -> pool2
+          - bottleneck
+          - up2 (attend skip2)
+          - up1 (attend skip1)
+          - final conv
         """
         from quantbayes.bnn import MaxPool2d, Conv2d
 
@@ -96,12 +152,16 @@ class Unet(Module):
 
         # Up 2
         u2 = self.up(bottleneck, 128, "up2")
-        merge2 = jnp.concatenate([d2, u2], axis=1)
+        # Attention gate for skip d2
+        attn_d2 = self.attention_gate(d2, u2, out_ch=128, name_prefix="attn2")
+        merge2 = jnp.concatenate([attn_d2, u2], axis=1)
         uc2 = self.double_conv(merge2, 128 + 128, 128, "upconv2")
 
         # Up 1
         u1 = self.up(uc2, 64, "up1")
-        merge1 = jnp.concatenate([d1, u1], axis=1)
+        # Attention gate for skip d1
+        attn_d1 = self.attention_gate(d1, u1, out_ch=64, name_prefix="attn1")
+        merge1 = jnp.concatenate([attn_d1, u1], axis=1)
         uc1 = self.double_conv(merge1, 64 + 64, 64, "upconv1")
 
         # Final 1x1 conv
@@ -114,6 +174,5 @@ class Unet(Module):
         )(uc1)
 
         numpyro.deterministic("logits", logits)
-        # For binary segmentation:
         numpyro.sample("obs", dist.Bernoulli(logits=logits), obs=y)
         return logits

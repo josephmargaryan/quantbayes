@@ -1,25 +1,25 @@
-# quantbayes/bnn/__init__.py
-
-# Import specific classes from layers.py to expose them clearly
 from .layers import *
 from .layers.base import Module
 
-# Import everything from AutoML (if needed)
-from .AutoML import *
-
-# Explicitly define what this module exposes
 __all__ = [
     "Module",
-    "Linear",  # Add your other classes from layers.py
+    "Linear",
     "FFTLinear",
     "ParticleLinear",
     "FFTParticleLinear",
     "Conv1d",
     "Conv2d",
-    "SelfAttention",
+    "FFTConv1d",
+    "FFTConv2d",
     "TransposedConv2d",
     "FFTTransposedConv2d",
     "MaxPool2d",
-    "FFTConv2d"
-    # You can list other classes or functions from layers.py as needed
+    "SelfAttention",
+    "MultiHeadSelfAttention",
+    "PositionalEncoding",
+    "TransformerEncoder",
+    "LayerNorm",
+    "LSTM",
+    "GaussianProcessLayer",
+    "VariationalLayer"
 ]

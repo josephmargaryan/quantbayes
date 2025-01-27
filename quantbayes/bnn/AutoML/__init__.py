@@ -28,7 +28,6 @@ from .dense.regression.svi import DenseRegressionSVI
 from .dense.regression.mcmc import DenseRegressionMCMC
 from .dense.regression.stein_vi import DenseRegressionSteinVI
 
-# Expose all components in __all__
 __all__ = [
     # fft.binary_classification
     "FFTBinarySVI",

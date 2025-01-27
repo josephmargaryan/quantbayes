@@ -2,21 +2,30 @@ import jax
 import jax.numpy as jnp
 import numpyro
 import numpyro.distributions as dist
+from jax.scipy.signal import fftconvolve
 
 __all__ = [
-    "Linear",  # Add your other classes from layers.py
+    "Linear",
     "FFTLinear",
     "ParticleLinear",
     "FFTParticleLinear",
     "Conv1d",
     "Conv2d",
-    "SelfAttention",
+    "FFTConv1d",
+    "FFTConv2d",
     "TransposedConv2d",
     "FFTTransposedConv2d",
     "MaxPool2d",
-    "FFTConv2d"
-    # You can list other classes or functions from layers.py as needed
+    "SelfAttention",
+    "MultiHeadSelfAttention",
+    "PositionalEncoding",
+    "TransformerEncoder",
+    "LayerNorm",
+    "LSTM",
+    "GaussianProcessLayer",
+    "VariationalLayer"
 ]
+
 
 class LayerNorm:
     def __init__(self, num_features, name="layer_norm"):
@@ -877,6 +886,7 @@ class FFTConv2d:
         in_channels: int,
         out_channels: int,
         kernel_size: int | tuple,
+        padding: str = "same",  # Added padding parameter
         name: str = "fft_conv2d",
     ):
         """
@@ -888,6 +898,8 @@ class FFTConv2d:
             Number of output channels.
         :param kernel_size: int or tuple
             Size of the convolutional kernel, either as an integer or a tuple (kernel_h, kernel_w).
+        :param padding: str, optional
+            Padding mode, either "same" or "valid" (default: "same").
         :param name: str, optional
             Name of the layer, used for parameter naming (default: "fft_conv2d").
         """
@@ -898,6 +910,9 @@ class FFTConv2d:
             if isinstance(kernel_size, tuple)
             else (kernel_size, kernel_size)
         )
+        if padding not in ("same", "valid"):
+            raise ValueError(f"Unsupported padding mode: {padding}")
+        self.padding = padding
         self.name = name
 
     def __call__(self, X: jnp.ndarray) -> jnp.ndarray:
@@ -909,12 +924,32 @@ class FFTConv2d:
 
         :returns: jnp.ndarray
             Output tensor of shape `(batch_size, out_channels, new_height, new_width)`, where:
-            - `new_height = height + kernel_h - 1`
-            - `new_width = width + kernel_w - 1`.
+            - For "same" padding: `new_height = height`, `new_width = width`
+            - For "valid" padding: `new_height = height - kernel_h + 1`, `new_width = width - kernel_w + 1`
         """
         batch_size, in_channels, height, width = X.shape
         kernel_h, kernel_w = self.kernel_size
 
+        # Determine padding sizes
+        if self.padding == "same":
+            pad_h = kernel_h // 2
+            pad_w = kernel_w // 2
+            # Apply padding to height and width
+            X_padded = jnp.pad(
+                X,
+                pad_width=((0, 0), (0, 0), (pad_h, pad_h), (pad_w, pad_w)),
+                mode="constant",
+                constant_values=0,
+            )
+        elif self.padding == "valid":
+            X_padded = X
+        else:
+            raise ValueError(f"Unsupported padding mode: {self.padding}")
+
+        # Update dimensions after padding
+        _, _, H_padded, W_padded = X_padded.shape
+
+        # Prepare weight and bias
         weight = numpyro.sample(
             f"{self.name}_weight",
             dist.Normal(0, 1).expand(
@@ -926,26 +961,50 @@ class FFTConv2d:
             dist.Normal(0, 1).expand([self.out_channels]),
         )
 
+        # Determine FFT size
+        out_h = H_padded + kernel_h - 1
+        out_w = W_padded + kernel_w - 1
+
         output = []
         for out_c in range(self.out_channels):
             channel_out = 0
             for in_c in range(self.in_channels):
+                # FFT of input
                 X_fft = jnp.fft.fft2(
-                    X[:, in_c], s=(height + kernel_h - 1, width + kernel_w - 1)
+                    X_padded[:, in_c], s=(out_h, out_w)
                 )
+                # FFT of weight
                 weight_fft = jnp.fft.fft2(
-                    weight[out_c, in_c], s=(height + kernel_h - 1, width + kernel_w - 1)
+                    weight[out_c, in_c], s=(out_h, out_w)
                 )
 
+                # Element-wise multiplication in frequency domain
                 conv_fft = X_fft * weight_fft
 
-                channel_out += jnp.fft.ifft2(conv_fft).real
+                # Inverse FFT to get the convolved output
+                conv = jnp.fft.ifft2(conv_fft).real
 
-            channel_out += bias[out_c].reshape(1, 1)
+                # Crop to desired size
+                if self.padding == "same":
+                    # To get the same size as input, center crop
+                    start_h = (conv.shape[1] - height) // 2
+                    start_w = (conv.shape[2] - width) // 2
+                    conv_cropped = conv[:, start_h:start_h + height, start_w:start_w + width]
+                elif self.padding == "valid":
+                    conv_cropped = conv[:, kernel_h - 1 : height, kernel_w - 1 : width]
+                else:
+                    raise ValueError(f"Unsupported padding mode: {self.padding}")
+
+                channel_out += conv_cropped
+
+            # Add bias
+            channel_out += bias[out_c].reshape(1, 1, 1)
 
             output.append(channel_out)
 
-        output = jnp.stack(output, axis=1)
+        # Stack all output channels
+        output = jnp.stack(output, axis=1)  # Shape: (batch_size, out_channels, H, W)
+
         return output
 
 class TransposedConv2d:
@@ -1045,6 +1104,8 @@ class FFTTransposedConv2d:
         in_channels: int,
         out_channels: int,
         kernel_size: int | tuple,
+        stride: int | tuple = 1,  # Add stride for compatibility
+        padding: str = "same",    # Added padding parameter
         name: str = "fft_transposed_conv2d",
     ):
         """
@@ -1056,6 +1117,10 @@ class FFTTransposedConv2d:
             Number of output channels.
         :param kernel_size: int or tuple
             Size of the transposed convolutional kernel.
+        :param stride: int or tuple, optional
+            Stride of the transposed convolution (default: 1).
+        :param padding: str, optional
+            Padding mode, either "same" or "valid" (default: "same").
         :param name: str, optional
             Name of the layer (default: "fft_transposed_conv2d").
         """
@@ -1066,6 +1131,10 @@ class FFTTransposedConv2d:
             if isinstance(kernel_size, tuple)
             else (kernel_size, kernel_size)
         )
+        self.stride = stride if isinstance(stride, tuple) else (stride, stride)
+        if padding not in ("same", "valid"):
+            raise ValueError(f"Unsupported padding mode: {padding}")
+        self.padding = padding
         self.name = name
 
     def __call__(self, X: jnp.ndarray) -> jnp.ndarray:
@@ -1080,7 +1149,9 @@ class FFTTransposedConv2d:
         """
         batch_size, in_channels, height, width = X.shape
         kernel_h, kernel_w = self.kernel_size
+        stride_h, stride_w = self.stride
 
+        # Prepare weight and bias
         weight = numpyro.sample(
             f"{self.name}_weight",
             dist.Normal(0, 1).expand(
@@ -1091,26 +1162,83 @@ class FFTTransposedConv2d:
             f"{self.name}_bias", dist.Normal(0, 1).expand([self.out_channels])
         )
 
+        # Calculate output spatial dimensions
+        out_h = height * stride_h
+        out_w = width * stride_w
+
+        # Apply stride-based upsampling if stride > 1
+        if self.stride != (1, 1):
+            # Initialize a zero array with upsampled spatial dimensions
+            upsampled = jnp.zeros((batch_size, in_channels, out_h, out_w))
+            # Assign input values to the upsampled array with the given stride
+            upsampled = upsampled.at[:, :, ::stride_h, ::stride_w].set(X)
+        else:
+            upsampled = X
+
+        # Determine padding sizes for transposed convolution
+        if self.padding == "same":
+            pad_h = kernel_h // 2
+            pad_w = kernel_w // 2
+            # Apply padding to height and width
+            upsampled_padded = jnp.pad(
+                upsampled,
+                pad_width=((0, 0), (0, 0), (pad_h, pad_h), (pad_w, pad_w)),
+                mode="constant",
+                constant_values=0,
+            )
+        elif self.padding == "valid":
+            upsampled_padded = upsampled
+        else:
+            raise ValueError(f"Unsupported padding mode: {self.padding}")
+
+        # Update dimensions after padding
+        _, _, H_padded, W_padded = upsampled_padded.shape
+
+        # Determine FFT size
+        conv_h = H_padded + kernel_h - 1
+        conv_w = W_padded + kernel_w - 1
+
         output = []
         for out_c in range(self.out_channels):
             channel_out = 0
             for in_c in range(self.in_channels):
+                # FFT of upsampled input
                 X_fft = jnp.fft.fft2(
-                    X[:, in_c], s=(height + kernel_h - 1, width + kernel_w - 1)
+                    upsampled_padded[:, in_c], s=(conv_h, conv_w)
                 )
+                # FFT of weight (note the transpose for transposed convolution)
                 weight_fft = jnp.fft.fft2(
-                    weight[in_c, out_c], s=(height + kernel_h - 1, width + kernel_w - 1)
+                    weight[in_c, out_c], s=(conv_h, conv_w)
                 )
 
+                # Element-wise multiplication in frequency domain
                 conv_fft = X_fft * weight_fft
 
-                channel_out += jnp.fft.ifft2(conv_fft).real
+                # Inverse FFT to get the convolved output
+                conv = jnp.fft.ifft2(conv_fft).real
 
-            channel_out += bias[out_c].reshape(1, 1)
+                # Crop to desired size
+                if self.padding == "same":
+                    # To maintain the upsampled size
+                    start_h = (conv.shape[1] - out_h) // 2
+                    start_w = (conv.shape[2] - out_w) // 2
+                    conv_cropped = conv[:, start_h:start_h + out_h, start_w:start_w + out_w]
+                elif self.padding == "valid":
+                    # Calculate the amount to crop based on kernel size
+                    conv_cropped = conv[:, kernel_h - 1 : out_h, kernel_w - 1 : out_w]
+                else:
+                    raise ValueError(f"Unsupported padding mode: {self.padding}")
+
+                channel_out += conv_cropped
+
+            # Add bias
+            channel_out += bias[out_c].reshape(1, 1, 1)
 
             output.append(channel_out)
 
-        output = jnp.stack(output, axis=1)
+        # Stack all output channels
+        output = jnp.stack(output, axis=1)  # Shape: (batch_size, out_channels, out_h, out_w)
+
         return output
 
 

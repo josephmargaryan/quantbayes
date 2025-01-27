@@ -1,108 +1,85 @@
 from quantbayes.bnn import * 
-import numpyro
+import jax.numpy as jnp 
+import numpyro 
 import numpyro.distributions as dist
-import jax
-import jax.numpy as jnp
+import jax 
 
-class FFTUNet(Module):
-    def __init__(self, 
-                method: str, 
-                 task_type: str,
-                 in_channels: int = 1, 
-                 out_channels: int = 1
-                 ):
+
+class FFTUnet(Module):
+    """
+    A simple two-level FFT-based U-Net for binary image segmentation.
+    """
+
+    def __init__(self, in_channels: int, out_channels: int, method="nuts", task_type="binary"):
         """
-        A 4-level UNet for binary segmentation, using FFT-based convolutions.
+        Initialize the FFTUnet.
+
+        :param in_channels: int
+            Number of input channels.
+        :param out_channels: int
+            Number of output channels.
+        :param method: str
+            Inference method ('nuts', 'svi', or 'steinvi').
+        :param task_type: str
+            Task type ('binary').
         """
         super().__init__(method=method, task_type=task_type)
         self.in_channels = in_channels
         self.out_channels = out_channels
 
-    def double_conv(self, x: jnp.ndarray, in_ch: int, out_ch: int, name_prefix: str):
+        # Encoder
+        self.encoder_conv1 = FFTConv2d(in_channels, 16, kernel_size=3, padding="same", name="enc_conv1")
+        self.encoder_conv2 = FFTConv2d(16, 32, kernel_size=3, padding="same", name="enc_conv2")
+        self.pool1 = MaxPool2d(kernel_size=2, stride=2, name="pool1")
+
+        # Bottleneck
+        self.bottleneck_conv = FFTConv2d(32, 64, kernel_size=3, padding="same", name="bottleneck_conv")
+
+        # Decoder
+        self.upconv1 = FFTTransposedConv2d(64, 32, kernel_size=2, stride=2, padding="same", name="upconv1")
+        self.decoder_conv1 = FFTConv2d(64, 32, kernel_size=3, padding="same", name="dec_conv1")
+        self.decoder_conv2 = FFTConv2d(32, 16, kernel_size=3, padding="same", name="dec_conv2")
+
+        # Output Layer
+        self.output_conv = FFTConv2d(16, out_channels, kernel_size=1, padding="same", name="output_conv")
+
+    def __call__(self, X: jnp.ndarray, y=None) -> jnp.ndarray:
         """
-        Two consecutive FFTConv2d operations (3x3) + ReLU.
+        Forward pass of the FFTUnet.
+
+        :param X: jnp.ndarray
+            Input tensor of shape `(batch_size, in_channels, height, width)`.
+        :param y: jnp.ndarray or None
+            Ground truth labels for the binary task. Required for training.
+
+        :returns: jnp.ndarray
+            Output tensor of shape `(batch_size, out_channels, height, width)`.
         """
-        conv1 = FFTConv2d(
-            in_channels=in_ch,
-            out_channels=out_ch,
-            kernel_size=3,
-            name=f"{name_prefix}_conv1",
-        )(x)
-        relu1 = jax.nn.relu(conv1)
+        # Encoder
+        enc1 = self.encoder_conv1(X)  # Shape: (batch, 16, H, W)
+        enc1 = jax.nn.relu(enc1)
+        enc2 = self.encoder_conv2(enc1)  # Shape: (batch, 32, H, W)
+        enc2 = jax.nn.relu(enc2)
+        pool1 = self.pool1(enc2)  # Shape: (batch, 32, H/2, W/2)
 
-        conv2 = FFTConv2d(
-            in_channels=out_ch,
-            out_channels=out_ch,
-            kernel_size=3,
-            name=f"{name_prefix}_conv2",
-        )(relu1)
-        relu2 = jax.nn.relu(conv2)
+        # Bottleneck
+        bottleneck = self.bottleneck_conv(pool1)  # Shape: (batch, 64, H/2, W/2)
+        bottleneck = jax.nn.relu(bottleneck)
 
-        return relu2
+        # Decoder
+        up1 = self.upconv1(bottleneck)  # Shape: (batch, 32, H, W)
+        # Concatenate with encoder feature map
+        concat1 = jnp.concatenate([up1, enc2], axis=1)  # Shape: (batch, 64, H, W)
+        dec1 = self.decoder_conv1(concat1)  # Shape: (batch, 32, H, W)
+        dec1 = jax.nn.relu(dec1)
+        dec2 = self.decoder_conv2(dec1)  # Shape: (batch, 16, H, W)
+        dec2 = jax.nn.relu(dec2)
 
-    def up(self, x: jnp.ndarray, out_ch: int, name_prefix: str, kernel_size=(2,2)):
-        """
-        Up-sampling via FFTTransposedConv2d.
-        """
-        # Since FFTTransposedConv2d does not expose a 'stride' the same way,
-        # you might have to tailor the logic to your code. 
-        # We'll treat kernel_size as the "upsample factor."
-        upsampled = FFTTransposedConv2d(
-            in_channels=x.shape[1],
-            out_channels=out_ch,
-            kernel_size=kernel_size,
-            name=f"{name_prefix}_fft_transposed_conv",
-        )(x)
-        return upsampled
+        # Output Layer
+        out = self.output_conv(dec2)  # Shape: (batch, out_channels, H, W)
 
-    def __call__(self, X: jnp.ndarray, y: jnp.ndarray = None):
-        """
-        Forward pass for the FFT-based UNet.
-        Expects X of shape (batch_size, in_channels, H, W).
-        For binary segmentation, y of shape (batch_size, 1, H, W).
-        """
+        # Probabilistic Modeling for Binary Tasks
+        numpyro.deterministic("logits", out)
+        numpyro.sample("obs", dist.Bernoulli(logits=out), obs=y)
 
-        # Down path
-        d1 = self.double_conv(X, self.in_channels, 64, "down1")
-        p1 = MaxPool2d(kernel_size=2, stride=2, name="pool1")(d1)
-
-        d2 = self.double_conv(p1, 64, 128, "down2")
-        p2 = MaxPool2d(kernel_size=2, stride=2, name="pool2")(d2)
-
-        d3 = self.double_conv(p2, 128, 256, "down3")
-        p3 = MaxPool2d(kernel_size=2, stride=2, name="pool3")(d3)
-
-        d4 = self.double_conv(p3, 256, 512, "down4")
-        p4 = MaxPool2d(kernel_size=2, stride=2, name="pool4")(d4)
-
-        bottleneck = self.double_conv(p4, 512, 1024, "bottleneck")
-
-        # Up path
-        u4 = self.up(bottleneck, 512, "up4", kernel_size=(2,2))
-        merge4 = jnp.concatenate([d4, u4], axis=1)
-        uc4 = self.double_conv(merge4, 512 + 512, 512, "upconv4")
-
-        u3 = self.up(uc4, 256, "up3", kernel_size=(2,2))
-        merge3 = jnp.concatenate([d3, u3], axis=1)
-        uc3 = self.double_conv(merge3, 256 + 256, 256, "upconv3")
-
-        u2 = self.up(uc3, 128, "up2", kernel_size=(2,2))
-        merge2 = jnp.concatenate([d2, u2], axis=1)
-        uc2 = self.double_conv(merge2, 128 + 128, 128, "upconv2")
-
-        u1 = self.up(uc2, 64, "up1", kernel_size=(2,2))
-        merge1 = jnp.concatenate([d1, u1], axis=1)
-        uc1 = self.double_conv(merge1, 64 + 64, 64, "upconv1")
-
-        # Final 1x1 FFTConv
-        # (Though typically you'd just do a standard 1x1 conv, but let's keep it FFT-based for the example)
-        logits = FFTConv2d(
-            in_channels=64,
-            out_channels=self.out_channels,
-            kernel_size=1,
-            name="final_fft_conv",
-        )(uc1)
-
-        numpyro.deterministic("logits", logits)
-        numpyro.sample("obs", dist.Bernoulli(logits=logits), obs=y)
-        return logits
+        return out
