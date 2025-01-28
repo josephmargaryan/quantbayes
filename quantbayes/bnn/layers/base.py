@@ -185,8 +185,11 @@ class Module:
         elif self.task_type == "image_classification":
             assert num_classes is not None, "num_classes must be provided for image classification visualization."
             self._visualize_image_classification(X, y, num_classes)
+        elif self.task_type == "image_segmentation":
+            self._visualize_image_segmentation(X, y)  # Automatically handle segmentation
         else:
             raise ValueError(f"Unknown task type: {self.task_type}")
+
 
     def _visualize_image_classification(self, X, y, num_classes):
         """
@@ -395,4 +398,62 @@ class Module:
         plt.xlabel(f"Feature {feature_index}")
         plt.ylabel("Target")
         plt.title("Regression Visualization with Uncertainty Bounds")
+        plt.show()
+
+    def _visualize_image_segmentation(self, X, y=None):
+        """
+        Visualizes predictions for image segmentation tasks.
+
+        :param X: jnp.ndarray
+            Input images (batch_size, channels, height, width).
+        :param y: jnp.ndarray
+            Ground truth segmentation masks (optional, for comparison).
+        :param num_samples: int
+            Number of posterior samples for uncertainty estimation.
+        """
+        # Predict on input images
+        pred_samples = self.predict(X, jax.random.PRNGKey(0))  # [num_samples, batch, 1, H, W]
+        mean_preds = jax.nn.sigmoid(pred_samples.mean(axis=0))  # [batch, 1, H, W]
+        uncertainty = -(
+            mean_preds * jnp.log(mean_preds + 1e-9) + (1 - mean_preds) * jnp.log(1 - mean_preds + 1e-9)
+        )  # Entropy [batch, 1, H, W]
+
+        # Visualization
+        batch_size = X.shape[0]
+        fig, axes = plt.subplots(batch_size, 3, figsize=(15, 5 * batch_size))
+
+        if batch_size == 1:
+            axes = axes[np.newaxis, :]  # Ensure axes is always 2D for consistency
+
+        for i in range(batch_size):
+            # Original image
+            img = X[i].squeeze()  # (H, W) for visualization
+            pred_mask = mean_preds[i].squeeze()  # (H, W) predicted mask
+            unc_map = uncertainty[i].squeeze()  # (H, W) uncertainty map
+
+            # Ground truth mask (optional)
+            if y is not None:
+                true_mask = y[i].squeeze()
+
+            # Plot original image
+            axes[i, 0].imshow(img, cmap="gray")
+            axes[i, 0].axis("off")
+            axes[i, 0].set_title("Original Image")
+
+            # Plot predicted mask
+            axes[i, 1].imshow(pred_mask, cmap="gray")
+            axes[i, 1].axis("off")
+            axes[i, 1].set_title("Predicted Segmentation")
+
+            # Overlay ground truth on predicted mask (optional)
+            if y is not None:
+                axes[i, 1].contour(true_mask, colors="red", linewidths=1, alpha=0.7, levels=[0.5])
+
+            # Plot uncertainty heatmap
+            im = axes[i, 2].imshow(unc_map, cmap="viridis")
+            axes[i, 2].axis("off")
+            axes[i, 2].set_title("Uncertainty (Entropy)")
+            plt.colorbar(im, ax=axes[i, 2], fraction=0.046, pad=0.04)
+
+        plt.tight_layout()
         plt.show()

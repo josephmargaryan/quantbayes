@@ -15,7 +15,7 @@ class AttentionUNet(Module):
         in_channels: int = 1,
         out_channels: int = 1,
         method: str = "nuts",
-        task_type: str = "binary",
+        task_type: str = "image_segmentation",
     ):
         super().__init__(method=method, task_type=task_type)
         self.in_channels = in_channels
