@@ -3,7 +3,7 @@ import torch.nn as nn
 from quantbayes.forecast.nn import BaseModel, MonteCarloMixin
 
 
-class LSTM(BaseModel, MonteCarloMixin):
+class LSTMModel(BaseModel, MonteCarloMixin):
     """
     A simple LSTM-based model for single-step forecasting:
       - LSTM input: (B, seq_len, input_dim)
@@ -54,7 +54,7 @@ class LSTM(BaseModel, MonteCarloMixin):
 
 if __name__ == "__main__":
     # Example usage
-    model = LSTM(input_dim=5, hidden_dim=32, num_layers=2, dropout=0.1)
+    model = LSTMModel(input_dim=5, hidden_dim=32, num_layers=2, dropout=0.1)
     x = torch.randn(8, 10, 5)  # (batch=8, seq_len=10, input_dim=5)
     y = model(x)  # => (8, 1)
     print("LSTMStyleNet output shape:", y.shape)

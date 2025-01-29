@@ -5,7 +5,7 @@ import numpyro
 import numpyro.distributions as dist
 from numpyro.infer import MCMC, NUTS
 from scipy.optimize import minimize
-from sde_base import BaseSDE
+from quantbayes.sde.sde_base import BaseSDE
 
 
 def sanitize_mle_params(mle_params):

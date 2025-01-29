@@ -2,7 +2,7 @@ import matplotlib.pyplot as plt
 import torch
 import numpy as np
 
-from sde_base import BaseSDE
+from quantbayes.sde.sde_base import BaseSDE
 
 
 class StochasticModel:

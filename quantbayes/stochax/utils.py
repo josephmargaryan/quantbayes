@@ -2,16 +2,17 @@ import jax.numpy as jnp
 import flax.linen as nn
 import jax
 
+
 class FFTDense(nn.Module):
     features: int  # Number of output features (similar to Dense)
-    
+
     @nn.compact
     def __call__(self, x):
         """
         FFT-based Dense Layer
         Args:
             x: Input tensor (batch_size, input_dim)
-        
+
         Returns:
             Transformed output tensor (batch_size, features)
         """
@@ -19,14 +20,18 @@ class FFTDense(nn.Module):
         fft_x = jnp.fft.fft(x)
 
         # Learnable weights for modifying frequency components
-        fft_weights = self.param("fft_weights", nn.initializers.lecun_normal(), (x.shape[-1], self.features))
-        
+        fft_weights = self.param(
+            "fft_weights", nn.initializers.lecun_normal(), (x.shape[-1], self.features)
+        )
+
         # Multiply FFT-transformed input with learnable weights
-        fft_transformed = fft_x @ fft_weights  # Matrix multiplication in the frequency domain
-        
+        fft_transformed = (
+            fft_x @ fft_weights
+        )  # Matrix multiplication in the frequency domain
+
         # Apply Inverse FFT (convert back to time domain)
         output = jnp.fft.ifft(fft_transformed).real  # Take only the real part
-        
+
         return output
 
 
@@ -44,10 +49,16 @@ class CirculantFFTDense(nn.Module):
             Transformed output tensor (batch_size, features)
         """
         in_features = x.shape[-1]
-        assert in_features == self.features, "Strict circulant structure requires in_features == out_features"
-        
+        assert (
+            in_features == self.features
+        ), "Strict circulant structure requires in_features == out_features"
+
         # FIX: Use normal initialization explicitly for 1D tensor
-        first_row = self.param("first_row", lambda rng, shape: jax.random.normal(rng, shape) * 0.1, (in_features,))
+        first_row = self.param(
+            "first_row",
+            lambda rng, shape: jax.random.normal(rng, shape) * 0.1,
+            (in_features,),
+        )
 
         # Compute the full circulant matrix in Fourier space
         fft_weights = jnp.fft.fft(first_row)  # Fourier transform of the first row
@@ -56,13 +67,13 @@ class CirculantFFTDense(nn.Module):
         fft_x = jnp.fft.fft(x)
 
         # Efficient elementwise multiplication in Fourier space (Hadamard product)
-        fft_transformed = fft_x * fft_weights  
+        fft_transformed = fft_x * fft_weights
 
         # Convert back to time domain using IFFT
         output = jnp.fft.ifft(fft_transformed).real  # Take only the real part
 
         return output
-    
+
 
 def test_fft_dense():
     """Test function for FFTDense layer"""
@@ -115,9 +126,13 @@ def test_combined_model():
 
         @nn.compact
         def __call__(self, x):
-            x = CirculantFFTDense(features=x.shape[-1])(x)  # Circulant FFT Dense (in_features == out_features)
+            x = CirculantFFTDense(features=x.shape[-1])(
+                x
+            )  # Circulant FFT Dense (in_features == out_features)
             x = nn.relu(x)
-            x = nn.Dense(self.output_dim)(x)  # Fully connected layer for flexible output
+            x = nn.Dense(self.output_dim)(
+                x
+            )  # Fully connected layer for flexible output
             return x
 
     # Define model

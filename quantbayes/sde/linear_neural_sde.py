@@ -1,6 +1,7 @@
-from neural_sde_base import NeuralSDE
 from torch import nn
 import torch
+
+from quantbayes.sde.neural_sde_base import NeuralSDE
 
 
 class LinearNeuralSDE(NeuralSDE):

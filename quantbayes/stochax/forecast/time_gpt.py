@@ -204,5 +204,5 @@ def test_time_gtp():
     print("Output shape:", output.shape)
 
 
-# Run the test
-test_time_gtp()
+if __name__ == "__main__":
+    test_time_gtp()

@@ -239,4 +239,5 @@ def test_temporal_fusion_transformer():
     print("TFT output shape:", y.shape)  # Expected: [B, output_dim]
 
 
-test_temporal_fusion_transformer()
+if __name__ == "__main__":
+    test_temporal_fusion_transformer()

@@ -1,6 +1,3 @@
-from .utils import FFTDense, CirculantFFTDense 
+from .utils import FFTDense, CirculantFFTDense
 
-__all__ = [
-    "FFTDense",
-    "CirculantFFTDense"
-]
+__all__ = ["FFTDense", "CirculantFFTDense"]

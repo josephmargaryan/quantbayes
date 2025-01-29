@@ -170,7 +170,6 @@ mse = mean_squared_error(np.array(y_test), np.array(mean_preds))
 print(f"MSE: {mse}")
 
 
-
 """
 For models with dropout we need o use the apply_rng
 

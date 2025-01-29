@@ -136,4 +136,5 @@ def test_tcn_forecaster():
     print("Output shape:", y.shape)  # Expected: (B, 1)
 
 
-test_tcn_forecaster()
+if __name__ == "__main__":
+    test_tcn_forecaster()

@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from sde_base import BaseSDE
+from quantbayes.sde.sde_base import BaseSDE
 
 
 class NeuralSDE(BaseSDE):

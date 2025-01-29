@@ -1,5 +1,5 @@
 import numpy as np
-from sde_base import BaseSDE
+from quantbayes.sde.sde_base import BaseSDE
 
 
 class HestonModel(BaseSDE):

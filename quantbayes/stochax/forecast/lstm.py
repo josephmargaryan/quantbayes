@@ -14,10 +14,9 @@ class LSTMModel(nn.Module):
     hidden_dim: int = 32
     num_layers: int = 1
     dropout: float = 0.0
-    deterministic: bool = True  # For dropout
 
     @nn.compact
-    def __call__(self, x, carry=None):
+    def __call__(self, x, carry=None, deterministic: bool = True):
         """
         Forward pass.
 
@@ -27,28 +26,26 @@ class LSTMModel(nn.Module):
 
         Returns:
             y: Output tensor of shape (batch_size, 1)
-            new_carry: Updated carry states
         """
         batch_size, seq_len, _ = x.shape
 
-        if carry is None:
-            # Initialize carry for all layers
-            carry = []
-            for _ in range(self.num_layers):
-                # Pass hidden_dim to LSTMCell
-                lstm_cell = nn.LSTMCell(features=self.hidden_dim, name=f"lstm_cell_{_}")
-                carry.append(
-                    lstm_cell.initialize_carry(
-                        jax.random.PRNGKey(0), (batch_size, self.hidden_dim)
-                    )
-                )
-            carry = tuple(carry)
+        # Instantiate all LSTMCells first
+        lstm_cells = [
+            nn.LSTMCell(features=self.hidden_dim, name=f"lstm_cell_{layer}")
+            for layer in range(self.num_layers)
+        ]
 
-        for layer in range(self.num_layers):
-            # Pass hidden_dim to LSTMCell
-            lstm_cell = nn.LSTMCell(
-                features=self.hidden_dim, name=f"2lstm_cell_{layer}"
+        if carry is None:
+            # Initialize carry for all layers using the instantiated LSTMCells
+            carry = tuple(
+                lstm_cell.initialize_carry(
+                    jax.random.PRNGKey(layer), (batch_size, self.hidden_dim)
+                )
+                for layer, lstm_cell in enumerate(lstm_cells)
             )
+
+        # Iterate through each LSTM layer
+        for layer, lstm_cell in enumerate(lstm_cells):
             hidden = carry[layer]
             outputs = []
             for t in range(seq_len):
@@ -56,7 +53,8 @@ class LSTMModel(nn.Module):
                 outputs.append(out)
             x = jnp.stack(outputs, axis=1)  # (batch_size, seq_len, hidden_dim)
             if self.dropout > 0.0:
-                x = nn.Dropout(rate=self.dropout)(x, deterministic=self.deterministic)
+                x = nn.Dropout(rate=self.dropout)(x, deterministic=deterministic)
+            # Update carry with the latest hidden state
             carry = carry[:layer] + (hidden,) + carry[layer + 1 :]
 
         # Take the last hidden state from the top layer
@@ -65,7 +63,7 @@ class LSTMModel(nn.Module):
         # Final dense layer to produce single scalar
         y = nn.Dense(features=1, name="output_dense")(last_hidden)  # (batch_size, 1)
 
-        return y, carry
+        return y
 
 
 def test_lstm_forecast_model():
