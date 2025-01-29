@@ -1,7 +1,6 @@
 import jax
 import jax.numpy as jnp
 from flax import linen as nn
-from typing import Any, Callable, Sequence
 import numpy as np
 import matplotlib.pyplot as plt
 
