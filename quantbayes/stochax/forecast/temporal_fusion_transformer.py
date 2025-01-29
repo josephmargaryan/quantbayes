@@ -1,13 +1,15 @@
-import jax 
-import flax.linen as nn 
+import jax
+import flax.linen as nn
 import jax.numpy as jnp
 from typing import Optional
+
 
 class GatingLayer(nn.Module):
     """
     Gated Linear Unit (GLU) based gating mechanism:
       out = x ⊗ σ(W_g x + b_g)
     """
+
     input_dim: int
     hidden_dim: int
 
@@ -26,10 +28,12 @@ class GatingLayer(nn.Module):
         gate = nn.sigmoid(gate)
         return value * gate
 
+
 class AddNorm(nn.Module):
     """
     Applies skip connection followed by layer normalization.
     """
+
     normalized_shape: int
 
     @nn.compact
@@ -43,10 +47,12 @@ class AddNorm(nn.Module):
         """
         return nn.LayerNorm()(x + sub_layer_out)
 
+
 class MLP(nn.Module):
     """
     A simple feed-forward network: Linear -> ReLU -> Dropout -> Linear
     """
+
     input_dim: int
     hidden_dim: int
     output_dim: int
@@ -66,11 +72,13 @@ class MLP(nn.Module):
         x = nn.Dense(self.output_dim)(x)
         return x
 
+
 class GatedResidualNetwork(nn.Module):
     """
     Gated Residual Network (GRN):
       Combines MLP and gating with a residual connection and LayerNorm.
     """
+
     input_dim: int
     hidden_dim: int
     output_dim: Optional[int] = None
@@ -94,7 +102,9 @@ class GatedResidualNetwork(nn.Module):
         hidden = nn.Dense(self.output_dim)(hidden)
 
         # Gating
-        gated = GatingLayer(input_dim=self.output_dim, hidden_dim=self.output_dim)(hidden)
+        gated = GatingLayer(input_dim=self.output_dim, hidden_dim=self.output_dim)(
+            hidden
+        )
 
         # Residual connection and LayerNorm
         out = nn.LayerNorm()(x + gated)
@@ -107,7 +117,13 @@ class MultiHeadAttention(nn.Module):
     dropout_rate: float = 0.1
 
     @nn.compact
-    def __call__(self, q: jnp.ndarray, kv: jnp.ndarray, mask: Optional[jnp.ndarray] = None, deterministic: bool = True) -> jnp.ndarray:
+    def __call__(
+        self,
+        q: jnp.ndarray,
+        kv: jnp.ndarray,
+        mask: Optional[jnp.ndarray] = None,
+        deterministic: bool = True,
+    ) -> jnp.ndarray:
         """
         Args:
             q: Query tensor of shape [B, T_q, embed_dim]
@@ -135,6 +151,7 @@ class TemporalFusionTransformer(nn.Module):
       - Gated Residual Networks and AddNorm for skip connections.
       - Final projection for forecasting.
     """
+
     input_dim: int
     d_model: int = 64
     lstm_hidden_dim: int = 64
@@ -168,7 +185,7 @@ class TemporalFusionTransformer(nn.Module):
 
         carry = nn.LSTMCell(features=self.lstm_hidden_dim).initialize_carry(
             rng=jax.random.PRNGKey(0),
-            input_shape=(batch_size, self.d_model)  # Input shape to the LSTM cell
+            input_shape=(batch_size, self.d_model),  # Input shape to the LSTM cell
         )
 
         carry, lstm_out = lstm_cell(carry, x_emb)  # [B, L, lstm_hidden_dim]
@@ -191,9 +208,10 @@ class TemporalFusionTransformer(nn.Module):
         )(attn_out, train=train)
 
         # 5. Final projection to output
-        out = nn.Dense(self.output_dim, name="output_layer")(grn_out)  # [B, L, output_dim]
+        out = nn.Dense(self.output_dim, name="output_layer")(
+            grn_out
+        )  # [B, L, output_dim]
         return out[:, -1, :]  # Return the last time step's output
-
 
 
 def test_temporal_fusion_transformer():
@@ -219,5 +237,6 @@ def test_temporal_fusion_transformer():
     y = model.apply(variables, x, train=False)
 
     print("TFT output shape:", y.shape)  # Expected: [B, output_dim]
+
 
 test_temporal_fusion_transformer()

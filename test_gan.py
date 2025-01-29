@@ -39,5 +39,3 @@ df = run_sde(
     seed=5678,
     max_plot_trajectories=30,
 )
-
-

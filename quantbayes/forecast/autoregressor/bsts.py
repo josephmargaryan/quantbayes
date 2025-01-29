@@ -21,8 +21,14 @@ def bsts_extended_model(y, seasonality=12, fourier_order=2, future=0):
     slope_0 = numpyro.sample("slope_0", dist.Normal(0.0, 2.0))
 
     # Fourier coefficients
-    alpha_list = [numpyro.sample(f"alpha_{k}", dist.Normal(0.0, 2.0)) for k in range(1, fourier_order + 1)]
-    beta_list = [numpyro.sample(f"beta_{k}", dist.Normal(0.0, 2.0)) for k in range(1, fourier_order + 1)]
+    alpha_list = [
+        numpyro.sample(f"alpha_{k}", dist.Normal(0.0, 2.0))
+        for k in range(1, fourier_order + 1)
+    ]
+    beta_list = [
+        numpyro.sample(f"beta_{k}", dist.Normal(0.0, 2.0))
+        for k in range(1, fourier_order + 1)
+    ]
     alpha_vec, beta_vec = jnp.array(alpha_list), jnp.array(beta_list)
 
     N = y.shape[0]
@@ -33,12 +39,20 @@ def bsts_extended_model(y, seasonality=12, fourier_order=2, future=0):
         rng_key, subkey = random.split(rng_key)
 
         # State updates
-        level_next = level + slope + numpyro.sample(f"lvl_noise_{t}", dist.Normal(0, sigma_level))
-        slope_next = slope + numpyro.sample(f"slp_noise_{t}", dist.Normal(0, sigma_slope))
+        level_next = (
+            level
+            + slope
+            + numpyro.sample(f"lvl_noise_{t}", dist.Normal(0, sigma_level))
+        )
+        slope_next = slope + numpyro.sample(
+            f"slp_noise_{t}", dist.Normal(0, sigma_slope)
+        )
 
         # Fourier-based seasonality
         angles = 2.0 * jnp.pi * jnp.arange(1, fourier_order + 1) * (t / seasonality)
-        seasonal_term = jnp.sum(alpha_vec * jnp.sin(angles) + beta_vec * jnp.cos(angles))
+        seasonal_term = jnp.sum(
+            alpha_vec * jnp.sin(angles) + beta_vec * jnp.cos(angles)
+        )
         mean_t = level + seasonal_term
 
         # Observation model
@@ -46,13 +60,10 @@ def bsts_extended_model(y, seasonality=12, fourier_order=2, future=0):
             t < N,
             lambda _: y[t],  # Observed data
             lambda _: mean_t,  # Forecast
-            operand=None
+            operand=None,
         )
         obs = numpyro.sample(
-            f"y_{t}",
-            dist.StudentT(nu, mean_t, sigma),
-            obs=y_t,
-            rng_key=subkey
+            f"y_{t}", dist.StudentT(nu, mean_t, sigma), obs=y_t, rng_key=subkey
         )
 
         return (level_next, slope_next, rng_key), obs
@@ -73,7 +84,14 @@ class BSTSS:
       - Robust StudentT observations
     """
 
-    def __init__(self, seasonality=12, fourier_order=2, num_warmup=500, num_samples=1000, rng_key=0):
+    def __init__(
+        self,
+        seasonality=12,
+        fourier_order=2,
+        num_warmup=500,
+        num_samples=1000,
+        rng_key=0,
+    ):
         self.seasonality = seasonality
         self.fourier_order = fourier_order
         self.num_warmup = num_warmup
@@ -86,13 +104,15 @@ class BSTSS:
     def fit(self, y):
         y = jnp.array(y)
         nuts_kernel = NUTS(bsts_extended_model)
-        self.mcmc = MCMC(nuts_kernel, num_warmup=self.num_warmup, num_samples=self.num_samples)
+        self.mcmc = MCMC(
+            nuts_kernel, num_warmup=self.num_warmup, num_samples=self.num_samples
+        )
         self.mcmc.run(
             random.PRNGKey(self.rng_key),
             y=y,
             seasonality=self.seasonality,
             fourier_order=self.fourier_order,
-            future=0
+            future=0,
         )
         self.fitted_ = True
         self.y_train_ = y
@@ -103,18 +123,22 @@ class BSTSS:
             raise RuntimeError("Model not fitted. Call .fit(...) first.")
 
         samples = self.mcmc.get_samples()
-        predictive = Predictive(bsts_extended_model, samples, return_sites=["y_forecast"])
+        predictive = Predictive(
+            bsts_extended_model, samples, return_sites=["y_forecast"]
+        )
         out = predictive(
             random.PRNGKey(self.rng_key + 1),
             y=self.y_train_,
             seasonality=self.seasonality,
             fourier_order=self.fourier_order,
-            future=steps
+            future=steps,
         )
         forecast_samples = out["y_forecast"]
         return forecast_samples
 
-    def plot_forecast(self, y_train, forecast_samples, ax=None, credible_interval=(5, 95)):
+    def plot_forecast(
+        self, y_train, forecast_samples, ax=None, credible_interval=(5, 95)
+    ):
         import numpy as np
 
         if ax is None:
@@ -126,13 +150,21 @@ class BSTSS:
         ax.plot(y_train, label="Training Data", color="blue")
         forecast_mean = jnp.mean(forecast_samples, axis=0)
         x_fore = range(len(y_train), len(y_train) + future_steps)
-        ax.plot(x_fore, forecast_mean, label="Forecast Mean", color="orange", linestyle="--")
+        ax.plot(
+            x_fore, forecast_mean, label="Forecast Mean", color="orange", linestyle="--"
+        )
 
         lower, upper = credible_interval
         fc_lower = jnp.percentile(forecast_samples, lower, axis=0)
         fc_upper = jnp.percentile(forecast_samples, upper, axis=0)
-        ax.fill_between(x_fore, fc_lower, fc_upper, color="orange", alpha=0.3,
-                        label=f"{upper - lower}% Credible Interval")
+        ax.fill_between(
+            x_fore,
+            fc_lower,
+            fc_upper,
+            color="orange",
+            alpha=0.3,
+            label=f"{upper - lower}% Credible Interval",
+        )
 
         ax.set_xlabel("Time")
         ax.set_ylabel("Value")
@@ -161,13 +193,17 @@ if __name__ == "__main__":
     for i in range(N):
         level += slope + np.random.normal(0, 0.2)
         slope += np.random.normal(0, 0.01)
-        seas = 5.0 * np.sin(2 * np.pi * (i / 12.0)) + 3.0 * np.cos(4 * np.pi * (i / 12.0))
+        seas = 5.0 * np.sin(2 * np.pi * (i / 12.0)) + 3.0 * np.cos(
+            4 * np.pi * (i / 12.0)
+        )
         y_val = level + seas + np.random.standard_t(df=8) * 0.5
         y_data.append(y_val)
     y_data = np.array(y_data)
 
     # Fit the model
-    model = BSTSS(seasonality=12, fourier_order=2, num_warmup=500, num_samples=1000, rng_key=123)
+    model = BSTSS(
+        seasonality=12, fourier_order=2, num_warmup=500, num_samples=1000, rng_key=123
+    )
     model.fit(y_data)
 
     # Predict future steps

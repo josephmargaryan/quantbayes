@@ -1,8 +1,8 @@
-from quantbayes.bnn import * 
-import jax.numpy as jnp 
-import numpyro 
+from quantbayes.bnn import *
+import jax.numpy as jnp
+import numpyro
 import numpyro.distributions as dist
-import jax 
+import jax
 
 
 class FFTUnet(Module):
@@ -10,7 +10,9 @@ class FFTUnet(Module):
     A simple two-level FFT-based U-Net for binary image segmentation.
     """
 
-    def __init__(self, in_channels: int, out_channels: int, method="nuts", task_type="binary"):
+    def __init__(
+        self, in_channels: int, out_channels: int, method="nuts", task_type="binary"
+    ):
         """
         Initialize the FFTUnet.
 
@@ -28,20 +30,34 @@ class FFTUnet(Module):
         self.out_channels = out_channels
 
         # Encoder
-        self.encoder_conv1 = FFTConv2d(in_channels, 16, kernel_size=3, padding="same", name="enc_conv1")
-        self.encoder_conv2 = FFTConv2d(16, 32, kernel_size=3, padding="same", name="enc_conv2")
+        self.encoder_conv1 = FFTConv2d(
+            in_channels, 16, kernel_size=3, padding="same", name="enc_conv1"
+        )
+        self.encoder_conv2 = FFTConv2d(
+            16, 32, kernel_size=3, padding="same", name="enc_conv2"
+        )
         self.pool1 = MaxPool2d(kernel_size=2, stride=2, name="pool1")
 
         # Bottleneck
-        self.bottleneck_conv = FFTConv2d(32, 64, kernel_size=3, padding="same", name="bottleneck_conv")
+        self.bottleneck_conv = FFTConv2d(
+            32, 64, kernel_size=3, padding="same", name="bottleneck_conv"
+        )
 
         # Decoder
-        self.upconv1 = FFTTransposedConv2d(64, 32, kernel_size=2, stride=2, padding="same", name="upconv1")
-        self.decoder_conv1 = FFTConv2d(64, 32, kernel_size=3, padding="same", name="dec_conv1")
-        self.decoder_conv2 = FFTConv2d(32, 16, kernel_size=3, padding="same", name="dec_conv2")
+        self.upconv1 = FFTTransposedConv2d(
+            64, 32, kernel_size=2, stride=2, padding="same", name="upconv1"
+        )
+        self.decoder_conv1 = FFTConv2d(
+            64, 32, kernel_size=3, padding="same", name="dec_conv1"
+        )
+        self.decoder_conv2 = FFTConv2d(
+            32, 16, kernel_size=3, padding="same", name="dec_conv2"
+        )
 
         # Output Layer
-        self.output_conv = FFTConv2d(16, out_channels, kernel_size=1, padding="same", name="output_conv")
+        self.output_conv = FFTConv2d(
+            16, out_channels, kernel_size=1, padding="same", name="output_conv"
+        )
 
     def __call__(self, X: jnp.ndarray, y=None) -> jnp.ndarray:
         """

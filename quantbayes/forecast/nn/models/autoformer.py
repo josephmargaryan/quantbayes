@@ -3,11 +3,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+
 # -----------------------------------------------------------------------------
 # 1) Series Decomposition (same as in the Fedformer example, or simplified)
 # -----------------------------------------------------------------------------
 class SeriesDecomposition(nn.Module):
     """Decompose a time series into trend + seasonal using a simple moving average."""
+
     def __init__(self, kernel_size=25):
         super().__init__()
         self.kernel_size = kernel_size
@@ -20,19 +22,24 @@ class SeriesDecomposition(nn.Module):
         B, L, C = x.shape
         pad = self.kernel_size // 2
         # Pad in time dimension
-        x_pad = F.pad(x.transpose(1, 2), (pad, pad), mode='reflect')  # (B, C, L + 2*pad)
+        x_pad = F.pad(
+            x.transpose(1, 2), (pad, pad), mode="reflect"
+        )  # (B, C, L + 2*pad)
 
         # Compute moving average (trend) for each channel
         trend = []
         for c_ in range(C):
-            channel_data = x_pad[:, c_:c_+1, :]  # [B, 1, L+2*pad]
-            weight = torch.ones(1, 1, self.kernel_size, device=x.device) / self.kernel_size
+            channel_data = x_pad[:, c_ : c_ + 1, :]  # [B, 1, L+2*pad]
+            weight = (
+                torch.ones(1, 1, self.kernel_size, device=x.device) / self.kernel_size
+            )
             trend_c = F.conv1d(channel_data, weight, padding=0)  # [B, 1, L]
             trend.append(trend_c)
-        trend = torch.cat(trend, dim=1)          # [B, C, L]
-        trend = trend.transpose(1,2)            # [B, L, C]
+        trend = torch.cat(trend, dim=1)  # [B, C, L]
+        trend = trend.transpose(1, 2)  # [B, L, C]
         seasonal = x - trend
         return trend, seasonal
+
 
 # -----------------------------------------------------------------------------
 # 2) AutoCorrelation Block
@@ -52,6 +59,7 @@ class AutoCorrelationBlock(nn.Module):
     For simplicity, we'll skip some advanced features and do a naive approach
     similar to the "FourierBlock" used in the simplified Fedformer code.
     """
+
     def __init__(self, top_k=16):
         super().__init__()
         self.top_k = top_k
@@ -88,6 +96,7 @@ class AutoCorrelationBlock(nn.Module):
         # 5) (optional) We might want to combine correlation with x. We'll keep it simple and return out.
         return out
 
+
 # -----------------------------------------------------------------------------
 # 3) Autoformer Encoder Layer
 # -----------------------------------------------------------------------------
@@ -97,6 +106,7 @@ class AutoformerEncoderLayer(nn.Module):
     - Applies AutoCorrelationBlock to 'seasonal'
     - Then feed-forward, skip-connection
     """
+
     def __init__(self, d_model=64, top_k=16, dropout=0.1):
         super().__init__()
         self.autocorr = AutoCorrelationBlock(top_k=top_k)
@@ -120,6 +130,7 @@ class AutoformerEncoderLayer(nn.Module):
         # trend is passed through (or you can do advanced manipulations)
         return out, trend
 
+
 # -----------------------------------------------------------------------------
 # 4) AutoformerEncoder: stacked layers + repeated decomposition if desired
 # -----------------------------------------------------------------------------
@@ -127,13 +138,16 @@ class AutoformerEncoder(nn.Module):
     """
     Repeated decomposition and auto-correlation across multiple layers.
     """
+
     def __init__(self, d_model=64, layer_num=2, kernel_size=25, top_k=16, dropout=0.1):
         super().__init__()
         self.decomp = SeriesDecomposition(kernel_size=kernel_size)
-        self.layers = nn.ModuleList([
-            AutoformerEncoderLayer(d_model=d_model, top_k=top_k, dropout=dropout)
-            for _ in range(layer_num)
-        ])
+        self.layers = nn.ModuleList(
+            [
+                AutoformerEncoderLayer(d_model=d_model, top_k=top_k, dropout=dropout)
+                for _ in range(layer_num)
+            ]
+        )
         self.layernorm = nn.LayerNorm(d_model)
 
     def forward(self, x):
@@ -153,6 +167,7 @@ class AutoformerEncoder(nn.Module):
         out = self.layernorm(out)
         return out
 
+
 # -----------------------------------------------------------------------------
 # 5) Full "AutoformerNoFuture"
 # -----------------------------------------------------------------------------
@@ -164,14 +179,9 @@ class Autoformer(BaseModel, MonteCarloMixin):
       - Final projection to 1 dimension
       - Return last time step's forecast
     """
+
     def __init__(
-        self,
-        input_dim,
-        d_model=64,
-        layer_num=2,
-        top_k=16,
-        dropout=0.1,
-        kernel_size=25
+        self, input_dim, d_model=64, layer_num=2, top_k=16, dropout=0.1, kernel_size=25
     ):
         super().__init__()
         self.input_dim = input_dim
@@ -179,11 +189,13 @@ class Autoformer(BaseModel, MonteCarloMixin):
         # 1) input embedding
         self.embedding = nn.Linear(input_dim, d_model)
         # 2) Autoformer encoder
-        self.encoder = AutoformerEncoder(d_model=d_model,
-                                         layer_num=layer_num,
-                                         kernel_size=kernel_size,
-                                         top_k=top_k,
-                                         dropout=dropout)
+        self.encoder = AutoformerEncoder(
+            d_model=d_model,
+            layer_num=layer_num,
+            kernel_size=kernel_size,
+            top_k=top_k,
+            dropout=dropout,
+        )
         # 3) projection
         self.projection = nn.Linear(d_model, 1)
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -194,7 +206,7 @@ class Autoformer(BaseModel, MonteCarloMixin):
         => out: (B, 1)
         """
         # embed
-        x = self.embedding(x)    # [B, L, d_model]
+        x = self.embedding(x)  # [B, L, d_model]
         # encoder
         enc_out = self.encoder(x)  # [B, L, d_model]
         # take last step
@@ -202,6 +214,7 @@ class Autoformer(BaseModel, MonteCarloMixin):
         # project
         out = self.projection(last_token)  # [B, 1]
         return out
+
 
 # -----------------------------------------------------------------------------
 # 6) Quick Test
@@ -217,7 +230,7 @@ if __name__ == "__main__":
         layer_num=2,
         top_k=8,
         dropout=0.1,
-        kernel_size=7
+        kernel_size=7,
     )
     x = torch.randn(batch_size, seq_len, input_dim)
     y = model(x)

@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 
+
 # -----------------------
 # 1) Define Beta schedule
 # -----------------------
@@ -12,6 +13,7 @@ def linear_beta_schedule(timesteps, start=1e-4, end=0.02):
     """
     return torch.linspace(start, end, timesteps)
 
+
 # -----------------------
 # 2) Diffusion Utilities
 # -----------------------
@@ -20,17 +22,20 @@ class Diffusion:
     Implements forward noising process coefficients and inverse sampling.
     We'll store alpha, alpha_cumprod, etc.
     """
+
     def __init__(self, timesteps=1000, beta_start=1e-4, beta_end=0.02):
         self.timesteps = timesteps
         self.betas = linear_beta_schedule(timesteps, beta_start, beta_end)
         self.alphas = 1.0 - self.betas
         self.alphas_cumprod = torch.cumprod(self.alphas, dim=0)
-        self.alphas_cumprod_prev = torch.cat([torch.tensor([1.0]), self.alphas_cumprod[:-1]], dim=0)
+        self.alphas_cumprod_prev = torch.cat(
+            [torch.tensor([1.0]), self.alphas_cumprod[:-1]], dim=0
+        )
 
         self.sqrt_alphas_cumprod = torch.sqrt(self.alphas_cumprod)
         self.sqrt_one_minus_alphas_cumprod = torch.sqrt(1 - self.alphas_cumprod)
 
-    def noisy_sample(self, x0, t, device='cpu'):
+    def noisy_sample(self, x0, t, device="cpu"):
         """
         q(x_t | x_0) = N(x_t; sqrt_alphas_cumprod[t]*x_0, (1 - a_cumprod[t])*I).
         Sample x_t given x_0 and a time step t.
@@ -38,9 +43,10 @@ class Diffusion:
         batch_size = x0.size(0)
         noise = torch.randn_like(x0).to(device)
         sqrt_ac = self.sqrt_alphas_cumprod[t].reshape(-1, 1)
-        sqrt_1m_ac = self.sqrt_one_minus_alphas_cumprod[t].reshape(-1,1)
+        sqrt_1m_ac = self.sqrt_one_minus_alphas_cumprod[t].reshape(-1, 1)
         # broadcasting if needed
         return sqrt_ac * x0 + sqrt_1m_ac * noise
+
 
 # -----------------------
 # 3) The Model: predicts noise given (x_t, t)
@@ -49,6 +55,7 @@ class SimpleDiffusionModel(nn.Module):
     """
     Very minimal MLP that tries to predict the noise in x_t for 1D data.
     """
+
     def __init__(self, hidden_dim=64):
         super().__init__()
         self.net = nn.Sequential(
@@ -56,7 +63,7 @@ class SimpleDiffusionModel(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
-            nn.Linear(hidden_dim, 1)   # predict the noise dimension = 1
+            nn.Linear(hidden_dim, 1),  # predict the noise dimension = 1
         )
 
     def forward(self, x, t):
@@ -74,15 +81,14 @@ class SimpleDiffusionModel(nn.Module):
 # 4) Training Loop
 # -----------------------
 def train_diffusion(
-    model, diffusion, data_loader, optimizer,
-    timesteps=1000, device='cpu', epochs=5
+    model, diffusion, data_loader, optimizer, timesteps=1000, device="cpu", epochs=5
 ):
     model.to(device)
     model.train()
 
     for epoch in range(epochs):
         total_loss = 0.0
-        for real_data, in data_loader:
+        for (real_data,) in data_loader:
             real_data = real_data.to(device)
             batch_size = real_data.size(0)
 
@@ -92,13 +98,15 @@ def train_diffusion(
             # x_t from x_0
             x_noisy = []
             for i in range(batch_size):
-                x_noisy.append(diffusion.noisy_sample(real_data[i:i+1], t[i], device=device))
+                x_noisy.append(
+                    diffusion.noisy_sample(real_data[i : i + 1], t[i], device=device)
+                )
             x_noisy = torch.cat(x_noisy, dim=0)  # shape (batch_size, 1)
 
             # model predicts the noise
             epsilon_pred = model(x_noisy, t)
 
-            # ground truth noise = x_noisy - sqrt(a_cumprod[t]* x_0 ) ... 
+            # ground truth noise = x_noisy - sqrt(a_cumprod[t]* x_0 ) ...
             # but simpler is to sample the reference noise we used
             # Actually, let's do the standard L2: we know q(x_t|x_0),
             # so x_t = sqrt_ac[t]*x_0 + sqrt(1 - ac[t]) * eps
@@ -126,7 +134,7 @@ if __name__ == "__main__":
     import math
 
     N = 1000
-    data = 3.0 + 1.0*torch.randn(N,1)
+    data = 3.0 + 1.0 * torch.randn(N, 1)
     dataset = TensorDataset(data)
     dataloader = DataLoader(dataset, batch_size=64, shuffle=True)
 

@@ -7,12 +7,14 @@ from quantbayes.forecast.nn.base import MonteCarloMixin, BaseModel
 # 1. Basic Building Blocks
 # -----------------------------------------------------------------------------
 
+
 class GatingLayer(nn.Module):
     """
     Gated Linear Unit (GLU) based gating mechanism:
       out = x ⊗ σ(W_g x + b_g)
     where x is a linear transformation of the input.
     """
+
     def __init__(self, input_dim, hidden_dim):
         super(GatingLayer, self).__init__()
         self.linear = nn.Linear(input_dim, hidden_dim)
@@ -36,6 +38,7 @@ class AddNorm(nn.Module):
     Applies skip connection followed by layer normalization:
       out = LayerNorm(x + sub_layer(x))
     """
+
     def __init__(self, normalized_shape):
         super(AddNorm, self).__init__()
         self.layer_norm = nn.LayerNorm(normalized_shape)
@@ -52,6 +55,7 @@ class MLP(nn.Module):
     """
     A simple feed-forward network: Linear -> ReLU -> Linear
     """
+
     def __init__(self, input_dim, hidden_dim, output_dim, dropout=0.0):
         super(MLP, self).__init__()
         self.fc1 = nn.Linear(input_dim, hidden_dim)
@@ -73,12 +77,14 @@ class MLP(nn.Module):
 # 2. Gated Residual Network
 # -----------------------------------------------------------------------------
 
+
 class GatedResidualNetwork(nn.Module):
     """
     Gated Residual Network (GRN):
       y = LayerNorm(x + GLU( (W1(ReLU(W0(x))) + b1), Wg(...) ))
     See TFT paper for details.
     """
+
     def __init__(self, input_dim, hidden_dim, output_dim=None, dropout=0.1):
         super(GatedResidualNetwork, self).__init__()
         if output_dim is None:
@@ -116,11 +122,13 @@ class GatedResidualNetwork(nn.Module):
 # 3. Multi-Head Attention
 # -----------------------------------------------------------------------------
 
+
 class MultiHeadAttention(nn.Module):
     """
     Standard Multi-Head Attention mechanism:
       Att(Q, K, V) = softmax(QK^T / sqrt(d_k)) V
     """
+
     def __init__(self, d_model, num_heads, dropout=0.1):
         super(MultiHeadAttention, self).__init__()
         assert d_model % num_heads == 0, "d_model must be divisible by num_heads"
@@ -153,9 +161,9 @@ class MultiHeadAttention(nn.Module):
         v = v.reshape(B, L, self.num_heads, self.d_k).transpose(1, 2)
 
         # 3) Scaled Dot-Product Attention
-        scores = torch.matmul(q, k.transpose(-2, -1)) / (self.d_k ** 0.5)
+        scores = torch.matmul(q, k.transpose(-2, -1)) / (self.d_k**0.5)
         if mask is not None:
-            scores = scores.masked_fill(mask == 0, float('-inf'))
+            scores = scores.masked_fill(mask == 0, float("-inf"))
         attn = F.softmax(scores, dim=-1)
         attn = self.dropout(attn)
 
@@ -173,6 +181,7 @@ class MultiHeadAttention(nn.Module):
 # 4. TemporalFusionTransformer Module
 # -----------------------------------------------------------------------------
 
+
 class TemporalFusionTransformer(BaseModel, MonteCarloMixin):
     """
     Simplified TFT implementation. Key steps:
@@ -182,15 +191,16 @@ class TemporalFusionTransformer(BaseModel, MonteCarloMixin):
       4) Gated Residual Networks (with skip connections)
       5) Final projection to output
     """
+
     def __init__(
         self,
-        input_dim,          # number of input features (continuous + categorical)
-        d_model=64,         # hidden dimension
-        lstm_hidden_dim=64, # LSTM hidden dimension
-        num_heads=4,        # multi-head attention
+        input_dim,  # number of input features (continuous + categorical)
+        d_model=64,  # hidden dimension
+        lstm_hidden_dim=64,  # LSTM hidden dimension
+        num_heads=4,  # multi-head attention
         dropout=0.1,
         num_lstm_layers=1,  # depth of LSTM
-        output_dim=1        # dimension of the forecast output
+        output_dim=1,  # dimension of the forecast output
     ):
         super(TemporalFusionTransformer, self).__init__()
 
@@ -220,14 +230,16 @@ class TemporalFusionTransformer(BaseModel, MonteCarloMixin):
             input_size=d_model,
             hidden_size=lstm_hidden_dim,
             num_layers=num_lstm_layers,
-            batch_first=True
+            batch_first=True,
         )
         self.lstm_proj = nn.Linear(lstm_hidden_dim, d_model)
 
         # ---------------------------------------------------------------------
         # 4.3. Multi-head Attention layer (to combine local context with global)
         # ---------------------------------------------------------------------
-        self.attention = MultiHeadAttention(d_model=d_model, num_heads=num_heads, dropout=dropout)
+        self.attention = MultiHeadAttention(
+            d_model=d_model, num_heads=num_heads, dropout=dropout
+        )
         self.attention_add_norm = AddNorm(d_model)
 
         # ---------------------------------------------------------------------
@@ -255,7 +267,7 @@ class TemporalFusionTransformer(BaseModel, MonteCarloMixin):
 
         # 2) LSTM for local processing
         #    shape => [B, seq_len, d_model]
-        lstm_out, _ = self.lstm(x_emb)  
+        lstm_out, _ = self.lstm(x_emb)
         # project LSTM output up to d_model dimension
         lstm_out = self.lstm_proj(lstm_out)
 

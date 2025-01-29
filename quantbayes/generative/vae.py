@@ -4,6 +4,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 import numpy as np
 
+
 # -----------------------
 # 1) Define VAE networks
 # -----------------------
@@ -74,12 +75,10 @@ class VAE(nn.Module):
 def vae_loss(x, x_recon, mu, logvar):
     """
     -ELBO = reconstruction_loss + KL
-    Here, we'll do a simple MSE or BCE for reconstruction. 
+    Here, we'll do a simple MSE or BCE for reconstruction.
     We'll use BCE if data is in [0,1].
     """
-    bce = nn.functional.binary_cross_entropy(
-        x_recon, x, reduction='sum'
-    )
+    bce = nn.functional.binary_cross_entropy(x_recon, x, reduction="sum")
     # KL divergence
     kl = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
     return bce + kl
@@ -88,14 +87,14 @@ def vae_loss(x, x_recon, mu, logvar):
 # -----------------------
 # 3) Example Training Loop
 # -----------------------
-def train_vae(model, data_loader, optimizer, epochs=5, device='cpu'):
+def train_vae(model, data_loader, optimizer, epochs=5, device="cpu"):
     model.to(device)
     model.train()
     for epoch in range(epochs):
         total_loss = 0.0
-        for batch_x, in data_loader:
+        for (batch_x,) in data_loader:
             batch_x = batch_x.to(device)
-            
+
             optimizer.zero_grad()
             x_recon, mu, logvar = model(batch_x)
             loss = vae_loss(batch_x, x_recon, mu, logvar)
@@ -103,7 +102,9 @@ def train_vae(model, data_loader, optimizer, epochs=5, device='cpu'):
             optimizer.step()
 
             total_loss += loss.item()
-        print(f"Epoch {epoch+1}/{epochs}, Loss: {total_loss/len(data_loader.dataset):.4f}")
+        print(
+            f"Epoch {epoch+1}/{epochs}, Loss: {total_loss/len(data_loader.dataset):.4f}"
+        )
 
 
 # -----------------------

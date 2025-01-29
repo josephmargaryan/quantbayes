@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from quantbayes.forecast.nn import BaseModel, MonteCarloMixin
 
+
 class TemporalConvBlock(nn.Module):
     """
     A single TCN residual block:
@@ -10,13 +11,16 @@ class TemporalConvBlock(nn.Module):
       - Residual/skip connection
       - Causal convolutions with dilation
     """
-    def __init__(self, 
-                 in_channels,
-                 out_channels,
-                 kernel_size=3,
-                 stride=1,
-                 dilation=1,
-                 dropout=0.2):
+
+    def __init__(
+        self,
+        in_channels,
+        out_channels,
+        kernel_size=3,
+        stride=1,
+        dilation=1,
+        dropout=0.2,
+    ):
         super().__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
@@ -31,25 +35,35 @@ class TemporalConvBlock(nn.Module):
         self.padding = (kernel_size - 1) * dilation
 
         # First conv layer
-        self.conv1 = nn.Conv1d(in_channels, out_channels,
-                               kernel_size=kernel_size,
-                               stride=stride,
-                               padding=self.padding,
-                               dilation=dilation)
+        self.conv1 = nn.Conv1d(
+            in_channels,
+            out_channels,
+            kernel_size=kernel_size,
+            stride=stride,
+            padding=self.padding,
+            dilation=dilation,
+        )
         self.bn1 = nn.BatchNorm1d(out_channels)
 
         # Second conv layer
-        self.conv2 = nn.Conv1d(out_channels, out_channels,
-                               kernel_size=kernel_size,
-                               stride=stride,
-                               padding=self.padding,
-                               dilation=dilation)
+        self.conv2 = nn.Conv1d(
+            out_channels,
+            out_channels,
+            kernel_size=kernel_size,
+            stride=stride,
+            padding=self.padding,
+            dilation=dilation,
+        )
         self.bn2 = nn.BatchNorm1d(out_channels)
 
         self.dropout_layer = nn.Dropout(dropout)
 
         # If in_channels != out_channels, we use a 1x1 conv to match dimensions for residual
-        self.downsample = nn.Conv1d(in_channels, out_channels, kernel_size=1) if in_channels != out_channels else None
+        self.downsample = (
+            nn.Conv1d(in_channels, out_channels, kernel_size=1)
+            if in_channels != out_channels
+            else None
+        )
 
     def forward(self, x):
         """
@@ -58,20 +72,20 @@ class TemporalConvBlock(nn.Module):
         """
         # First convolution
         out = self.conv1(x)
-        # Remove the "future" part by slicing => out[:, :, :-self.padding] 
-        #   if we want strictly causal at each time step. 
+        # Remove the "future" part by slicing => out[:, :, :-self.padding]
+        #   if we want strictly causal at each time step.
         #   However, typically TCN keeps the same length and relies on the padding at left.
-        #   We just trust the "left padding" for causality. 
+        #   We just trust the "left padding" for causality.
         #   We'll keep length the same for convenience, ignoring the trailing output that might
         #   have partial future leakage. But standard TCN references do so.
-        out = out[:, :, :x.size(2)]  # ensure output length is same as x if needed
+        out = out[:, :, : x.size(2)]  # ensure output length is same as x if needed
         out = self.bn1(out)
         out = F.relu(out)
         out = self.dropout_layer(out)
 
         # Second convolution
         out = self.conv2(out)
-        out = out[:, :, :x.size(2)]  # keep same length
+        out = out[:, :, : x.size(2)]  # keep same length
         out = self.bn2(out)
         out = F.relu(out)
         out = self.dropout_layer(out)
@@ -81,9 +95,10 @@ class TemporalConvBlock(nn.Module):
         if self.downsample is not None:
             # match channel dimensions
             res = self.downsample(res)
-            res = res[:, :, :x.size(2)]  # keep length
+            res = res[:, :, : x.size(2)]  # keep length
 
         return F.relu(out + res)
+
 
 class TemporalConvNet(nn.Module):
     """
@@ -91,11 +106,14 @@ class TemporalConvNet(nn.Module):
       - Each layer is a TemporalConvBlock with increasing dilation.
       - Channels might be [in_channels, hidden_channels, ..., out_channels].
     """
-    def __init__(self, 
-                 in_channels,         # input feature channels
-                 num_channels_list,   # list of output channels for each layer
-                 kernel_size=3,
-                 dropout=0.2):
+
+    def __init__(
+        self,
+        in_channels,  # input feature channels
+        num_channels_list,  # list of output channels for each layer
+        kernel_size=3,
+        dropout=0.2,
+    ):
         super().__init__()
         layers = []
         prev_channels = in_channels
@@ -106,7 +124,7 @@ class TemporalConvNet(nn.Module):
                 out_channels=out_channels,
                 kernel_size=kernel_size,
                 dilation=dilation,
-                dropout=dropout
+                dropout=dropout,
             )
             layers.append(block)
             prev_channels = out_channels
@@ -120,17 +138,17 @@ class TemporalConvNet(nn.Module):
         """
         return self.network(x)
 
+
 class TCNForecaster(BaseModel, MonteCarloMixin):
     """
     A TCN for time-series forecasting:
       - Input shape:  (B, seq_len, input_dim)
       - Output shape: (B, 1) (predicts single step, e.g. last time step)
     """
-    def __init__(self,
-                 input_dim=1,
-                 tcn_channels=[32, 32, 64],
-                 kernel_size=3,
-                 dropout=0.2):
+
+    def __init__(
+        self, input_dim=1, tcn_channels=[32, 32, 64], kernel_size=3, dropout=0.2
+    ):
         super().__init__()
         # The TCN expects channels as the "input_features".
         # We'll transform (B, L, input_dim) => (B, input_dim, L).
@@ -145,7 +163,7 @@ class TCNForecaster(BaseModel, MonteCarloMixin):
             in_channels=input_dim,
             num_channels_list=tcn_channels,
             kernel_size=kernel_size,
-            dropout=dropout
+            dropout=dropout,
         )
 
         # The output of TCN has channels = tcn_channels[-1].
@@ -172,6 +190,7 @@ class TCNForecaster(BaseModel, MonteCarloMixin):
         out = self.output_linear(last_step)  # (B, 1)
         return out
 
+
 if __name__ == "__main__":
     import torch
 
@@ -180,10 +199,7 @@ if __name__ == "__main__":
     input_dim = 3
 
     model = TCNForecaster(
-        input_dim=input_dim,
-        tcn_channels=[16, 16, 32],
-        kernel_size=3,
-        dropout=0.1
+        input_dim=input_dim, tcn_channels=[16, 16, 32], kernel_size=3, dropout=0.1
     )
 
     x = torch.randn(batch_size, seq_len, input_dim)  # e.g. 3 features
@@ -199,7 +215,7 @@ if __name__ == "__main__":
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
     for epoch in range(100):
         optimizer.zero_grad()
-        pred = model(x)         # (B, 1)
+        pred = model(x)  # (B, 1)
         loss = F.mse_loss(pred, target)
         loss.backward()
         optimizer.step()

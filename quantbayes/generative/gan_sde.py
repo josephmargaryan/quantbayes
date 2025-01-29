@@ -325,17 +325,16 @@ def plot_trajectories(df, num_trajectories=30):
             original_trajectories[i],
             label="Original" if i == 0 else "",
             color="dodgerblue",
-            linewidth=0.5, 
-            alpha=0.7
+            linewidth=0.5,
+            alpha=0.7,
         )
         plt.plot(
             time_steps,
             generated_trajectories[i],
             label="Generated" if i == 0 else "",
             color="crimson",
-            linewidth=0.5, 
-            alpha=0.7
-
+            linewidth=0.5,
+            alpha=0.7,
         )
 
     plt.title(f"Original vs. Generated Trajectories (max {num_trajectories})")
@@ -344,6 +343,7 @@ def plot_trajectories(df, num_trajectories=30):
     plt.legend()
     plt.grid(True)
     plt.show()
+
 
 def run_sde(
     real_data,  # Required parameter: Tuple of (ts, ys)
@@ -363,7 +363,7 @@ def run_sde(
     """
     Runs the Stochastic Differential equation as the Generator in the Generative Adversarial Network
     With correponding Controlled Differential Equation as the discriminator
-    
+
     :param real_data, Tuple of (ts, ys) where ts has shape (num_sequences, num_timesteps) and ys has shape (num_sequences, num_timesteps, 1)
     """
     if real_data is None:

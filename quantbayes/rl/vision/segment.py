@@ -5,10 +5,12 @@ from torch.distributions import Categorical
 import numpy as np
 import matplotlib.pyplot as plt
 
+
 class RLSegmentationModel(nn.Module):
     """
     A minimal segmentation model that outputs pixel-wise classes (foreground vs background).
     """
+
     def __init__(self, in_channels=1, out_channels=2):
         super(RLSegmentationModel, self).__init__()
         # Example: A small conv net producing a 2-class output for each pixel
@@ -29,16 +31,20 @@ class RLSegmentationModel(nn.Module):
         probs = self.softmax(logits)  # shape: (batch_size, 2, H, W)
         return probs
 
+
 def generate_random_segmentation_data(num_samples=32, image_size=(1, 16, 16), seed=42):
     """
     Generate random images (noise) and random segmentation masks (0 or 1 per pixel).
     """
     np.random.seed(seed)
     images = np.random.randn(num_samples, *image_size).astype(np.float32)
-    seg_masks = np.random.randint(0, 2, size=(num_samples, image_size[1], image_size[2])) # shape: (num_samples, H, W)
+    seg_masks = np.random.randint(
+        0, 2, size=(num_samples, image_size[1], image_size[2])
+    )  # shape: (num_samples, H, W)
     X = torch.tensor(images, dtype=torch.float32)
     Y = torch.tensor(seg_masks, dtype=torch.long)  # each pixel is 0 or 1
     return X, Y
+
 
 def train_rl_segmentation(model, data_loader, optimizer, num_epochs=5):
     """
@@ -57,12 +63,14 @@ def train_rl_segmentation(model, data_loader, optimizer, num_epochs=5):
             probs = model(X_batch)  # (batch_size, 2, H, W)
             # We'll flatten for a simpler policy gradient approach
             batch_size, num_classes, H, W = probs.shape
-            probs_2d = probs.permute(0, 2, 3, 1).reshape(-1, num_classes)  # (batch_size*H*W, 2)
-            labels_1d = Y_batch.view(-1)                                   # (batch_size*H*W,)
+            probs_2d = probs.permute(0, 2, 3, 1).reshape(
+                -1, num_classes
+            )  # (batch_size*H*W, 2)
+            labels_1d = Y_batch.view(-1)  # (batch_size*H*W,)
 
             dist = Categorical(probs_2d)
-            actions = dist.sample()               # (batch_size*H*W,)
-            log_probs = dist.log_prob(actions)    # (batch_size*H*W,)
+            actions = dist.sample()  # (batch_size*H*W,)
+            log_probs = dist.log_prob(actions)  # (batch_size*H*W,)
 
             rewards = torch.where(actions == labels_1d, 1.0, -1.0)
             loss = -(log_probs * rewards).mean()
@@ -72,7 +80,10 @@ def train_rl_segmentation(model, data_loader, optimizer, num_epochs=5):
             optimizer.step()
 
             total_loss += loss.item()
-        print(f"Epoch {epoch+1}/{num_epochs} - Loss: {total_loss / len(data_loader):.4f}")
+        print(
+            f"Epoch {epoch+1}/{num_epochs} - Loss: {total_loss / len(data_loader):.4f}"
+        )
+
 
 def visualize_segmentation_results(X_test, Y_test, Y_pred, num_images=5):
     """
@@ -91,9 +102,11 @@ def visualize_segmentation_results(X_test, Y_test, Y_pred, num_images=5):
     fig, axes = plt.subplots(num_images, 3, figsize=(9, num_images * 3))
 
     for i in range(num_images):
-        image = X_test[i].squeeze(0).numpy()  # Convert to 2D grayscale if single channel
-        gt_mask = Y_test[i].numpy()           # Ground truth mask
-        pred_mask = Y_pred[i].numpy()         # Predicted mask
+        image = (
+            X_test[i].squeeze(0).numpy()
+        )  # Convert to 2D grayscale if single channel
+        gt_mask = Y_test[i].numpy()  # Ground truth mask
+        pred_mask = Y_pred[i].numpy()  # Predicted mask
 
         # Convert prediction to binary mask (0 or 1) using argmax
         pred_mask = np.argmax(pred_mask, axis=0)
@@ -116,15 +129,18 @@ def visualize_segmentation_results(X_test, Y_test, Y_pred, num_images=5):
     plt.tight_layout()
     plt.show()
 
+
 if __name__ == "__main__":
     batch_size = 4
     epochs = 5
     lr = 0.001
 
     # Generate data
-    X, Y = generate_random_segmentation_data(num_samples=16, image_size=(1,16,16))
+    X, Y = generate_random_segmentation_data(num_samples=16, image_size=(1, 16, 16))
     dataset = torch.utils.data.TensorDataset(X, Y)
-    data_loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    data_loader = torch.utils.data.DataLoader(
+        dataset, batch_size=batch_size, shuffle=True
+    )
 
     # Initialize model & optimizer
     model = RLSegmentationModel(in_channels=1, out_channels=2)
@@ -145,4 +161,3 @@ if __name__ == "__main__":
 
         # Call the visualization function
         visualize_segmentation_results(sample_X, sample_Y, sample_probs, num_images=5)
-

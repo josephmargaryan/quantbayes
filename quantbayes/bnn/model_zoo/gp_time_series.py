@@ -1,9 +1,10 @@
 from quantbayes.bnn import Module
 from quantbayes.bnn.layers import GaussianProcessLayer
-import jax 
+import jax
 import jax.numpy as jnp
-import numpyro 
+import numpyro
 import numpyro.distributions as dist
+
 
 class GaussianProcessTimeSeries(Module):
     """
@@ -30,7 +31,9 @@ class GaussianProcessTimeSeries(Module):
         mean = jnp.zeros((N,))
 
         # sample y
-        numpyro.sample("y", dist.MultivariateNormal(loc=mean, covariance_matrix=K), obs=y)
+        numpyro.sample(
+            "y", dist.MultivariateNormal(loc=mean, covariance_matrix=K), obs=y
+        )
 
         return None  # or return mean or K
 
@@ -43,6 +46,7 @@ def generate_synthetic_gp_data(N=50, input_dim=1):
     y = jnp.sin(2 * jnp.pi * X.squeeze(-1)) + 0.1 * jax.random.normal(rng, (N,))
     return X, y
 
+
 def test_gaussian_process_ts():
     X, y = generate_synthetic_gp_data(N=50)
     model = GaussianProcessTimeSeries(input_dim=1, method="svi")
@@ -50,6 +54,7 @@ def test_gaussian_process_ts():
     rng_key = jax.random.PRNGKey(42)
     model.fit(X, y, rng_key=rng_key)
     print("Gaussian Process Time Series fitted!")
+
 
 if __name__ == "__main__":
     test_gaussian_process_ts()

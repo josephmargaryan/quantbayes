@@ -11,7 +11,9 @@ class LSTMCell(nn.Module):
     features: int
 
     @nn.compact
-    def __call__(self, carry: Tuple[jnp.ndarray, jnp.ndarray], inputs: jnp.ndarray) -> Tuple[Tuple[jnp.ndarray, jnp.ndarray], jnp.ndarray]:
+    def __call__(
+        self, carry: Tuple[jnp.ndarray, jnp.ndarray], inputs: jnp.ndarray
+    ) -> Tuple[Tuple[jnp.ndarray, jnp.ndarray], jnp.ndarray]:
         c, h = carry
         dense = nn.Dense(features=4 * self.features)
         gates = dense(jnp.concatenate([inputs, h], axis=-1))
@@ -69,7 +71,6 @@ class DeepAR(nn.Module):
         return jnp.mean(loss)  # Average loss across batch and sequence
 
 
-
 def create_train_state(rng, model, learning_rate, input_shape):
     params = model.init(rng, jnp.ones(input_shape))["params"]
     tx = optax.adam(learning_rate)
@@ -91,11 +92,12 @@ def train_step(state, batch):
     x, y = batch
 
     def loss_fn(params):
-        return DeepAR(input_dim=1, rnn_hidden=32, num_layers=2).compute_loss(params, (x, y))
+        return DeepAR(input_dim=1, rnn_hidden=32, num_layers=2).compute_loss(
+            params, (x, y)
+        )
 
     loss, grads = jax.value_and_grad(loss_fn)(state.params)
     return state.apply_gradients(grads=grads), loss
-
 
 
 def generate_synthetic_data(batch_size, time_steps, input_dim=1):
@@ -119,7 +121,6 @@ def train_model():
         state, loss = train_step(state, (x, y))
         if epoch % 20 == 0:
             print(f"Epoch {epoch}, Loss={loss:.4f}")
-
 
 
 if __name__ == "__main__":

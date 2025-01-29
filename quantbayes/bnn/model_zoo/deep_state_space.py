@@ -5,6 +5,7 @@ import numpyro.distributions as dist
 
 from quantbayes.bnn.layers.base import Module
 
+
 class DeepStateSpace(Module):
     """
     A Deep Markov Model for 1D time-series, with global neural network parameters:
@@ -26,11 +27,11 @@ class DeepStateSpace(Module):
         # e.g. W1 shape: (in_dim, hidden_dim)
         W1 = numpyro.param(f"{prefix}_W1", 0.01 * jnp.ones((in_dim, self.hidden_dim)))
         b1 = numpyro.param(f"{prefix}_b1", jnp.zeros((self.hidden_dim,)))
-        
+
         # e.g. W2 shape: (hidden_dim, out_dim)
         W2 = numpyro.param(f"{prefix}_W2", 0.01 * jnp.ones((self.hidden_dim, out_dim)))
         b2 = numpyro.param(f"{prefix}_b2", jnp.zeros((out_dim,)))
-        
+
         return (W1, b1, W2, b2)
 
     def _forward_mlp(self, x, params, activation=jax.nn.tanh):
@@ -45,7 +46,7 @@ class DeepStateSpace(Module):
     def __call__(self, X, y=None):
         """
         X: shape (batch_size, seq_len). We'll do 1D time-series for each row in X.
-        We define a global transition-MLP and emission-MLP. 
+        We define a global transition-MLP and emission-MLP.
         Then for each data row we unroll z_t.
 
         This calls:
@@ -59,29 +60,29 @@ class DeepStateSpace(Module):
 
         # 1) Define global MLP parameters for transition net: z_{t-1} -> (mu, log_sigma).
         trans_mlp_params = self._init_mlp_params(
-            prefix="transition", 
-            in_dim=1,      # input is z_{t-1} shape (batch_size,1)
-            out_dim=2      # output is (mu, log_sigma)
+            prefix="transition",
+            in_dim=1,  # input is z_{t-1} shape (batch_size,1)
+            out_dim=2,  # output is (mu, log_sigma)
         )
 
         # 2) Define global MLP parameters for emission net: z_t -> (mu_x, log_sigma_x).
-        emit_mlp_params = self._init_mlp_params(
-            prefix="emission",
-            in_dim=1,
-            out_dim=2
-        )
+        emit_mlp_params = self._init_mlp_params(prefix="emission", in_dim=1, out_dim=2)
 
         # 3) We unroll over batch dimension
         with numpyro.plate("batch", batch_size):
             # Sample initial latent z_0. We'll just do z_1 ~ Normal(0,1).
-            z_prev = numpyro.sample("z_init", dist.Normal(0.0, 1.0))   # shape: (batch_size,)
+            z_prev = numpyro.sample(
+                "z_init", dist.Normal(0.0, 1.0)
+            )  # shape: (batch_size,)
             z_prev = z_prev[:, None]  # shape (batch_size, 1)
 
             for t in range(seq_len):
                 # 3a) Transition step: z_t ~ Normal(...).
                 # pass z_prev -> transition MLP -> (mu, log_sigma).
                 trans_out = self._forward_mlp(z_prev, trans_mlp_params)
-                mu_z, log_sigma_z = jnp.split(trans_out, 2, axis=-1)  # shape (batch_size,1) each
+                mu_z, log_sigma_z = jnp.split(
+                    trans_out, 2, axis=-1
+                )  # shape (batch_size,1) each
                 sigma_z = jnp.exp(log_sigma_z)
 
                 z_t = numpyro.sample(
@@ -104,6 +105,7 @@ class DeepStateSpace(Module):
 
         return None
 
+
 def generate_synthetic_dssm(num_samples=50, seq_len=10):
     rng = jax.random.PRNGKey(0)
     z = jnp.zeros((num_samples, seq_len))
@@ -123,16 +125,18 @@ def generate_synthetic_dssm(num_samples=50, seq_len=10):
         x = x.at[i].set(jnp.concatenate(x_i))
     return x  # ignoring the latent z for now
 
+
 def test_deep_state_space():
     X = generate_synthetic_dssm(num_samples=50, seq_len=10)
 
     model = DeepStateSpace(hidden_dim=16, method="svi")
     # We'll compile with some basic SVI config
     model.compile(num_steps=1000, learning_rate=1e-2)
-    
+
     rng_key = jax.random.PRNGKey(42)
     model.fit(X, y_train=None, rng_key=rng_key)
     print("Deep State Space Model fitted with SVI!")
+
 
 if __name__ == "__main__":
     test_deep_state_space()

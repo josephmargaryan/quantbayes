@@ -5,6 +5,7 @@ import numpyro.distributions as dist
 from quantbayes.bnn import Module
 from typing import Optional
 
+
 class AttentionUNet(Module):
     """
     A simplified 2-level UNet with attention gates on skip connections.

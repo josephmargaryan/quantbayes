@@ -1,6 +1,7 @@
-import torch 
+import torch
 import torch.nn as nn
 from quantbayes.forecast.nn import BaseModel, MonteCarloMixin
+
 
 class LSTM(BaseModel, MonteCarloMixin):
     """
@@ -8,6 +9,7 @@ class LSTM(BaseModel, MonteCarloMixin):
       - LSTM input: (B, seq_len, input_dim)
       - We take the last hidden state -> project to (B,1)
     """
+
     def __init__(self, input_dim, hidden_dim=32, num_layers=1, dropout=0.0):
         super().__init__()
         self.input_dim = input_dim
@@ -21,7 +23,7 @@ class LSTM(BaseModel, MonteCarloMixin):
             hidden_size=hidden_dim,
             num_layers=num_layers,
             batch_first=True,
-            dropout=dropout if num_layers > 1 else 0.0
+            dropout=dropout if num_layers > 1 else 0.0,
         )
 
         # Final linear layer to produce single scalar
@@ -49,9 +51,10 @@ class LSTM(BaseModel, MonteCarloMixin):
         y = self.fc(last_hidden)  # (B, 1)
         return y
 
+
 if __name__ == "__main__":
     # Example usage
     model = LSTM(input_dim=5, hidden_dim=32, num_layers=2, dropout=0.1)
     x = torch.randn(8, 10, 5)  # (batch=8, seq_len=10, input_dim=5)
-    y = model(x)               # => (8, 1)
+    y = model(x)  # => (8, 1)
     print("LSTMStyleNet output shape:", y.shape)

@@ -15,7 +15,7 @@ setup(
         "matplotlib",
         "flax",
         "pandas",
-        "optax"
+        "optax",
     ],
     python_requires=">=3.7",
 )

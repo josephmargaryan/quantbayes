@@ -17,6 +17,7 @@ import numpy as np
 #################Utils#####################
 ###########################################
 
+
 def extract_module_params(params: Dict[str, Any], prefix: str) -> Dict[str, Any]:
     """
     Extract parameters for a specific module by its prefix.
@@ -33,6 +34,7 @@ def extract_module_params(params: Dict[str, Any], prefix: str) -> Dict[str, Any]
         print(f"[WARNING] No parameters found for prefix '{prefix}'.")
         return {}
     return params[key]
+
 
 def reconstruct_data(
     X: jnp.ndarray,
@@ -75,10 +77,10 @@ def reconstruct_data(
     return recon_X
 
 
-
 ########################################
 # 1. Different Encoder Architectures   #
 ########################################
+
 
 # --------------------------------------------------------------------
 # 1A. Simple Fully-Connected Encoder (for tabular / generic data)
@@ -109,6 +111,7 @@ class ConvEncoder(nn.Module):
     Example for images shaped like (batch, H, W, C).
     We'll apply a few convolutions, flatten, and produce mu, log_sigma.
     """
+
     latent_dim: int
     hidden_channels: int = 32  # number of channels in conv layers
 
@@ -119,8 +122,16 @@ class ConvEncoder(nn.Module):
         returns (mu, log_sigma) with shape (batch, latent_dim).
         """
         # Convolution stack
-        x = nn.relu(nn.Conv(features=self.hidden_channels, kernel_size=(4,4), strides=(2,2))(x))
-        x = nn.relu(nn.Conv(features=self.hidden_channels*2, kernel_size=(4,4), strides=(2,2))(x))
+        x = nn.relu(
+            nn.Conv(features=self.hidden_channels, kernel_size=(4, 4), strides=(2, 2))(
+                x
+            )
+        )
+        x = nn.relu(
+            nn.Conv(
+                features=self.hidden_channels * 2, kernel_size=(4, 4), strides=(2, 2)
+            )(x)
+        )
         # Flatten
         x = x.reshape((x.shape[0], -1))
         # Final dense
@@ -140,6 +151,7 @@ class LSTMEncoder(nn.Module):
     We'll process the entire sequence with LSTM, then produce mu, log_sigma
     from the final hidden state.
     """
+
     hidden_dim: int
     latent_dim: int
 
@@ -156,7 +168,7 @@ class LSTMEncoder(nn.Module):
         # Initialize carry
         carry = lstm.initialize_carry(
             rng=jax.random.PRNGKey(0),
-            input_shape=(batch_size, x.shape[-1])  # Shape includes batch and features
+            input_shape=(batch_size, x.shape[-1]),  # Shape includes batch and features
         )
 
         # Process the sequence
@@ -186,12 +198,12 @@ class AttentionEncoder(nn.Module):
         For simplicity, we treat x as shape (batch_size, input_dim).
         """
         x_proj = nn.LayerNorm()(nn.relu(nn.Dense(self.hidden_dim)(x)))
-        # Self-Attention (treating the single dimension as "length"? 
+        # Self-Attention (treating the single dimension as "length"?
         # If you want multi-token, reshape accordingly.)
         attn_output = nn.MultiHeadDotProductAttention(
             num_heads=self.num_heads,
             qkv_features=self.hidden_dim,
-            out_features=self.hidden_dim
+            out_features=self.hidden_dim,
         )(x_proj, x_proj)
 
         # Combine and project further
@@ -208,11 +220,12 @@ class AttentionEncoder(nn.Module):
 # 2. Different Decoder Architectures   #
 ########################################
 
+
 # --------------------------------------------------------------------
 # 2A. Simple Fully-Connected Decoder
 # --------------------------------------------------------------------
 class MLPDecoder(nn.Module):
-    x_dim: int     # dimension of reconstructed data
+    x_dim: int  # dimension of reconstructed data
     hidden_dim: int
 
     @nn.compact
@@ -236,6 +249,7 @@ class ConvDecoder(nn.Module):
     For demonstration, let's assume we decode 8x8 -> upsample to 16x16 -> 28x28.
     Adjust kernel_size/strides to match your data dimension.
     """
+
     latent_dim: int
     output_shape: Tuple[int, int, int]  # (H, W, C)
     hidden_channels: int = 32
@@ -250,15 +264,24 @@ class ConvDecoder(nn.Module):
         x = nn.relu(nn.Dense(7 * 7 * self.hidden_channels)(z))
         x = x.reshape((x.shape[0], 7, 7, self.hidden_channels))  # arbitrary size
         # Upsample to 14x14
-        x = nn.relu(nn.ConvTranspose(features=self.hidden_channels, 
-                                     kernel_size=(4,4), 
-                                     strides=(2,2))(x))
+        x = nn.relu(
+            nn.ConvTranspose(
+                features=self.hidden_channels, kernel_size=(4, 4), strides=(2, 2)
+            )(x)
+        )
         # Upsample to final H, W (e.g. 28x28)
-        x = nn.relu(nn.ConvTranspose(features=self.hidden_channels//2,
-                                     kernel_size=(4,4), 
-                                     strides=(2,2))(x))
+        x = nn.relu(
+            nn.ConvTranspose(
+                features=self.hidden_channels // 2, kernel_size=(4, 4), strides=(2, 2)
+            )(x)
+        )
         # Final conv to match output channels
-        x = nn.Conv(features=self.output_shape[-1], kernel_size=(3,3), strides=(1,1), padding='SAME')(x)
+        x = nn.Conv(
+            features=self.output_shape[-1],
+            kernel_size=(3, 3),
+            strides=(1, 1),
+            padding="SAME",
+        )(x)
         # Here we do not apply a final activation, we let the distribution handle it
         return x
 
@@ -271,9 +294,10 @@ class LSTMDecoder(nn.Module):
     Will decode from z -> repeated hidden state -> LSTM -> output of shape (batch, seq_length, features).
     You can also do a more advanced approach that conditions each step on z, or a teacher forcing approach, etc.
     """
-    output_dim: int   # dimension per time-step
+
+    output_dim: int  # dimension per time-step
     hidden_dim: int
-    seq_length: int   # for demonstration, a fixed sequence length
+    seq_length: int  # for demonstration, a fixed sequence length
 
     @nn.compact
     def __call__(self, z: jnp.ndarray) -> jnp.ndarray:
@@ -292,8 +316,9 @@ class LSTMDecoder(nn.Module):
         # We'll decode a fixed sequence by feeding zeros or a learned embedding:
         outputs = []
         # Let's use a "learned" token as input at each step:
-        learned_token = self.param("learned_token", nn.initializers.normal(stddev=0.1),
-                                   (self.output_dim,))
+        learned_token = self.param(
+            "learned_token", nn.initializers.normal(stddev=0.1), (self.output_dim,)
+        )
         for t in range(self.seq_length):
             carry, h = lstm(carry, jnp.tile(learned_token[None, :], (batch_size, 1)))
             # Project h to output dimension
@@ -325,7 +350,7 @@ class AttentionDecoder(nn.Module):
         attn_output = nn.MultiHeadDotProductAttention(
             num_heads=self.num_heads,
             qkv_features=self.hidden_dim,
-            out_features=self.hidden_dim
+            out_features=self.hidden_dim,
         )(z_proj, z_proj)
         combined = nn.relu(nn.Dense(self.hidden_dim)(attn_output))
         recon_x = nn.Dense(self.output_dim)(combined)
@@ -335,6 +360,7 @@ class AttentionDecoder(nn.Module):
 ########################################
 # 3. VAE model / guide / training      #
 ########################################
+
 
 def vae_model(
     X: jnp.ndarray,
@@ -356,11 +382,15 @@ def vae_model(
     # Register Flax modules in NumPyro
     # We need input_shape so that the modules can be properly initialized
     # by `flax_module`. Adjust the shape accordingly for each encoder/decoder usage.
-    encoder_module = flax_module("encoder", encoder, 
-                                 input_shape=X.shape)  # shape is (batch, ...)
-    decoder_module = flax_module("decoder", decoder,
-                                 # For decoder, the input shape is (batch, latent_dim)
-                                 input_shape=(batch_size, latent_dim))
+    encoder_module = flax_module(
+        "encoder", encoder, input_shape=X.shape
+    )  # shape is (batch, ...)
+    decoder_module = flax_module(
+        "decoder",
+        decoder,
+        # For decoder, the input shape is (batch, latent_dim)
+        input_shape=(batch_size, latent_dim),
+    )
 
     # Encode
     mu, log_sigma = encoder_module(X)
@@ -375,17 +405,12 @@ def vae_model(
     numpyro.sample("obs", dist.Normal(recon, 1.0).to_event(event_ndims), obs=X)
 
 
-def vae_guide(
-    X: jnp.ndarray,
-    encoder: nn.Module,
-    latent_dim: int
-):
+def vae_guide(X: jnp.ndarray, encoder: nn.Module, latent_dim: int):
     """
     VAE guide: same as model but only the encoder -> sample z.
     """
     batch_size = X.shape[0]
-    encoder_module = flax_module("encoder", encoder, 
-                                 input_shape=X.shape)
+    encoder_module = flax_module("encoder", encoder, input_shape=X.shape)
 
     mu, log_sigma = encoder_module(X)
     sigma = jnp.exp(log_sigma)
@@ -400,11 +425,12 @@ def train_vae(
     event_ndims: int = 1,
     num_steps: int = 1000,
     learning_rate: float = 1e-3,
-    seed: int = 0
+    seed: int = 0,
 ) -> Tuple[Dict[str, Any], np.ndarray]:
     """
     Train the VAE using SVI.
     """
+
     def model_fn(data):
         return vae_model(data, encoder, decoder, latent_dim, event_ndims)
 
@@ -419,7 +445,7 @@ def train_vae(
     for step in range(num_steps):
         svi_state, loss = svi.update(svi_state, X)
         losses.append(loss)
-        if step % max(1, (num_steps//5)) == 0:
+        if step % max(1, (num_steps // 5)) == 0:
             print(f"[Step {step}] ELBO: {-loss:.4f}")
     return svi.get_params(svi_state), np.array(losses)
 
@@ -427,6 +453,7 @@ def train_vae(
 ########################################
 # 4. Example Data / Testing            #
 ########################################
+
 
 def generate_random_tabular_data(n=128, d=10, seed=0):
     rng = np.random.default_rng(seed)
@@ -445,7 +472,7 @@ def generate_random_timeseries_data(n=64, t=10, features=2, seed=0):
 
 
 def plot_losses(losses, title="Training Loss"):
-    plt.figure(figsize=(6,4))
+    plt.figure(figsize=(6, 4))
     plt.plot(losses, label="loss")
     plt.xlabel("iteration")
     plt.ylabel("loss (negative ELBO)")
@@ -468,14 +495,15 @@ def main():
     decoder = MLPDecoder(x_dim=X_tab.shape[1], hidden_dim=32)
 
     params_tab, losses_tab = train_vae(
-        X_tab, encoder, decoder,
+        X_tab,
+        encoder,
+        decoder,
         latent_dim=latent_dim,
         event_ndims=1,  # we treat the last dim as the event
         num_steps=200,
-        learning_rate=1e-3
+        learning_rate=1e-3,
     )
     plot_losses(losses_tab, title="MLP VAE on Tabular Data")
-
 
     ###################
     # 4B. Image Data
@@ -488,9 +516,9 @@ def main():
 
     conv_encoder = ConvEncoder(latent_dim=latent_dim, hidden_channels=32)
     # We'll decode back to shape (28, 28, 1)
-    conv_decoder = ConvDecoder(latent_dim=latent_dim, 
-                               output_shape=(28, 28, 1), 
-                               hidden_channels=32)
+    conv_decoder = ConvDecoder(
+        latent_dim=latent_dim, output_shape=(28, 28, 1), hidden_channels=32
+    )
 
     # For images, we have event_ndims=3 => the last 3 dims (H,W,C) form the "event"
     params_img, losses_img = train_vae(
@@ -500,10 +528,9 @@ def main():
         latent_dim=latent_dim,
         event_ndims=3,
         num_steps=200,
-        learning_rate=1e-3
+        learning_rate=1e-3,
     )
     plot_losses(losses_img, title="Conv VAE on Image Data")
-
 
     ###################
     # 4C. Time Series
@@ -525,10 +552,9 @@ def main():
         latent_dim=latent_dim,
         event_ndims=2,
         num_steps=200,
-        learning_rate=1e-3
+        learning_rate=1e-3,
     )
     plot_losses(losses_ts, title="LSTM VAE on Time Series")
-
 
     ###################
     # 4D. Attention
@@ -547,7 +573,7 @@ def main():
         latent_dim=latent_dim,
         event_ndims=1,
         num_steps=200,
-        learning_rate=1e-3
+        learning_rate=1e-3,
     )
     plot_losses(losses_attn, title="Attention VAE on Tabular Data")
 
@@ -566,7 +592,11 @@ def main():
     plt.figure(figsize=(8, 4))
     for feature in range(X_ts.shape[2]):
         plt.plot(X_ts[0, :, feature], label=f"Original Feature {feature+1}")
-        plt.plot(reconstructed_ts[0, :, feature], "--", label=f"Reconstructed Feature {feature+1}")
+        plt.plot(
+            reconstructed_ts[0, :, feature],
+            "--",
+            label=f"Reconstructed Feature {feature+1}",
+        )
     plt.title("Time Series Reconstruction")
     plt.xlabel("Time Steps")
     plt.legend()
@@ -591,7 +621,6 @@ def main():
     plt.ylabel("Reconstructed")
     plt.show()
 
-
     ##################################
     # 5C. Reconstruct Image Data
     ##################################
@@ -613,7 +642,6 @@ def main():
     plt.axis("off")
     plt.show()
 
-
     ##################################
     # 5D. Reconstruct Tabular Data
     ##################################
@@ -632,7 +660,6 @@ def main():
     plt.xlabel("Original")
     plt.ylabel("Reconstructed")
     plt.show()
-
 
 
 if __name__ == "__main__":

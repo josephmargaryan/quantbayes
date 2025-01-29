@@ -6,6 +6,7 @@ import numpyro.distributions as dist
 from numpyro.infer import MCMC, NUTS, Predictive
 import matplotlib.pyplot as plt
 
+
 def sgt_model(y, seasonality, future=0):
     """
     The SGT (Student's T Generalized) model definition for univariate time series.
@@ -36,8 +37,7 @@ def sgt_model(y, seasonality, future=0):
     level_sm = numpyro.sample("level_sm", dist.Beta(1, 2))
     s_sm = numpyro.sample("s_sm", dist.Uniform(0, 1))
     init_s = numpyro.sample(
-        "init_s",
-        dist.Cauchy(0, jnp.clip(y[:seasonality] * 0.3, a_min=1e-6))
+        "init_s", dist.Cauchy(0, jnp.clip(y[:seasonality] * 0.3, a_min=1e-6))
     )
 
     # ========================
@@ -56,9 +56,7 @@ def sgt_model(y, seasonality, future=0):
 
         # Rolling sum for seasonal adjustment
         moving_sum = (
-            moving_sum
-            + y_t
-            - jnp.where(t >= seasonality, y[t - seasonality], 0.0)
+            moving_sum + y_t - jnp.where(t >= seasonality, y[t - seasonality], 0.0)
         )
 
         # Update level
@@ -98,9 +96,10 @@ def sgt_model(y, seasonality, future=0):
     if future > 0:
         numpyro.deterministic("y_forecast", ys[-future:])
 
+
 class SGTModel:
     """
-    SGTModel: A univariate time-series forecasting model using a 
+    SGTModel: A univariate time-series forecasting model using a
     Student's T Generalized (SGT) approach in NumPyro, with NUTS MCMC.
 
     This class provides a scikit-learn-like interface:
@@ -116,6 +115,7 @@ class SGTModel:
         num_samples (int): Number of post-warmup MCMC samples.
         rng_key (int): Random seed or PRNGKey for MCMC runs.
     """
+
     def __init__(self, seasonality=12, num_warmup=500, num_samples=1000, rng_key=0):
         self.seasonality = seasonality
         self.num_warmup = num_warmup
@@ -137,8 +137,15 @@ class SGTModel:
         """
         self.y_train = jnp.array(y)  # Save training data
         nuts_kernel = NUTS(sgt_model)
-        self.mcmc = MCMC(nuts_kernel, num_warmup=self.num_warmup, num_samples=self.num_samples)
-        self.mcmc.run(random.PRNGKey(self.rng_key), y=self.y_train, seasonality=self.seasonality, future=0)
+        self.mcmc = MCMC(
+            nuts_kernel, num_warmup=self.num_warmup, num_samples=self.num_samples
+        )
+        self.mcmc.run(
+            random.PRNGKey(self.rng_key),
+            y=self.y_train,
+            seasonality=self.seasonality,
+            future=0,
+        )
         self.fitted_ = True
         return self
 
@@ -151,7 +158,7 @@ class SGTModel:
 
         Returns:
             jnp.array: Forecast samples of shape (num_samples, steps).
-                       Each row is a sample from the predictive distribution 
+                       Each row is a sample from the predictive distribution
                        for the entire future horizon.
         """
         if not self.fitted_:
@@ -160,15 +167,19 @@ class SGTModel:
         predictive = Predictive(sgt_model, samples, return_sites=["y_forecast"])
         # We'll pass in the original data again for the 'y' argument
         # but now with 'future=steps' to get the forecast
-        chain = predictive(random.PRNGKey(self.rng_key + 1), 
-                           y=self.y_train, 
-                           seasonality=self.seasonality, 
-                           future=steps)
+        chain = predictive(
+            random.PRNGKey(self.rng_key + 1),
+            y=self.y_train,
+            seasonality=self.seasonality,
+            future=steps,
+        )
         # shape => {"y_forecast": (num_samples, steps)}
         forecast_samples = chain["y_forecast"]
         return forecast_samples
 
-    def plot_forecast(self, y_train, forecast_samples, ax=None, credible_interval=(5, 95)):
+    def plot_forecast(
+        self, y_train, forecast_samples, ax=None, credible_interval=(5, 95)
+    ):
         """
         Plot the training data, forecast mean, and credible intervals.
 
@@ -176,7 +187,7 @@ class SGTModel:
             y_train (array-like): 1D array of training data used in fit().
             forecast_samples (jnp.array): Forecast samples of shape (num_samples, future_steps)
                 (output of self.predict(...)).
-            ax (matplotlib.axes.Axes, optional): Axis to plot on. 
+            ax (matplotlib.axes.Axes, optional): Axis to plot on.
             credible_interval (tuple of int): Lower/upper percentile for uncertainty band.
         """
         import numpy as np
@@ -229,7 +240,7 @@ class SGTModel:
         Retrieve the posterior samples from the fitted MCMC run.
 
         Returns:
-            dict: A dictionary of posterior samples. 
+            dict: A dictionary of posterior samples.
         """
         if not self.fitted_:
             raise RuntimeError("Model not fitted yet; no samples to retrieve.")
@@ -237,8 +248,9 @@ class SGTModel:
 
 
 if __name__ == "__main__":
-    from quantbayes.fake_data import create_synthetic_time_series 
+    from quantbayes.fake_data import create_synthetic_time_series
     from sklearn.preprocessing import MinMaxScaler
+
     _, _, y_train, y_test = create_synthetic_time_series()
     scaler = MinMaxScaler()
     y_train = scaler.fit_transform(y_train.reshape(-1, 1)).reshape(-1)
@@ -247,6 +259,6 @@ if __name__ == "__main__":
     model.fit(y_train)
 
     forecast_samples = model.predict(steps=50)  # returns shape (num_samples, 24)
-    fig, ax = plt.subplots(figsize=(10,5))
-    model.plot_forecast(y_train, forecast_samples, ax=ax, credible_interval=(5,95))
+    fig, ax = plt.subplots(figsize=(10, 5))
+    model.plot_forecast(y_train, forecast_samples, ax=ax, credible_interval=(5, 95))
     plt.show()

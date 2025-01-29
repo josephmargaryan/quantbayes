@@ -4,6 +4,7 @@ from dataclasses import field
 from flax import linen as nn
 from typing import List
 
+
 class TemporalConvBlock(nn.Module):
     """
     A single TCN residual block:
@@ -11,6 +12,7 @@ class TemporalConvBlock(nn.Module):
       - Residual/skip connection
       - Causal convolutions with dilation
     """
+
     in_channels: int
     out_channels: int
     kernel_size: int = 3
@@ -29,9 +31,9 @@ class TemporalConvBlock(nn.Module):
             strides=(self.stride,),
             padding=((padding, 0),),
             kernel_dilation=(self.dilation,),
-            use_bias=False
+            use_bias=False,
         )(x)
-        out = out[:, :, :x.shape[2]]  # Keep length consistent
+        out = out[:, :, : x.shape[2]]  # Keep length consistent
         out = nn.BatchNorm(use_running_average=not train)(out)
         out = nn.relu(out)
         out = nn.Dropout(self.dropout)(out, deterministic=not train)
@@ -43,9 +45,9 @@ class TemporalConvBlock(nn.Module):
             strides=(self.stride,),
             padding=((padding, 0),),
             kernel_dilation=(self.dilation,),
-            use_bias=False
+            use_bias=False,
         )(out)
-        out = out[:, :, :x.shape[2]]  # Keep length consistent
+        out = out[:, :, : x.shape[2]]  # Keep length consistent
         out = nn.BatchNorm(use_running_average=not train)(out)
         out = nn.relu(out)
         out = nn.Dropout(self.dropout)(out, deterministic=not train)
@@ -54,7 +56,7 @@ class TemporalConvBlock(nn.Module):
         res = x
         if self.in_channels != self.out_channels:
             res = nn.Conv(features=self.out_channels, kernel_size=(1,))(res)
-            res = res[:, :, :x.shape[2]]  # Keep length consistent
+            res = res[:, :, : x.shape[2]]  # Keep length consistent
 
         return nn.relu(out + res)
 
@@ -63,6 +65,7 @@ class TemporalConvNet(nn.Module):
     """
     A multi-layer TCN with increasing dilation.
     """
+
     in_channels: int
     num_channels_list: list
     kernel_size: int = 3
@@ -81,11 +84,11 @@ class TemporalConvNet(nn.Module):
         return x
 
 
-
 class TCNForecaster(nn.Module):
     """
     A TCN for time-series forecasting.
     """
+
     input_dim: int = 1
     tcn_channels: List[int] = field(default_factory=lambda: [32, 32, 64])
     kernel_size: int = 3
@@ -118,19 +121,19 @@ def test_tcn_forecaster():
     input_dim = 3
 
     model = TCNForecaster(
-        input_dim=input_dim,
-        tcn_channels=[16, 16, 32],
-        kernel_size=3,
-        dropout=0.1
+        input_dim=input_dim, tcn_channels=[16, 16, 32], kernel_size=3, dropout=0.1
     )
 
     # Generate random input
-    x = jax.random.normal(key, (batch_size, seq_len, input_dim))  # Shape (B, L, input_dim)
+    x = jax.random.normal(
+        key, (batch_size, seq_len, input_dim)
+    )  # Shape (B, L, input_dim)
 
     # Initialize and run the model
     variables = model.init(jax.random.PRNGKey(1), x, train=True)
     y = model.apply(variables, x, train=False)
 
     print("Output shape:", y.shape)  # Expected: (B, 1)
+
 
 test_tcn_forecaster()

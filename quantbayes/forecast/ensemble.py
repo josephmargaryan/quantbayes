@@ -9,6 +9,7 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
+
 def safe_slice(data, indices):
     """
     Slice data based on indices, supporting both pandas and NumPy arrays.
@@ -26,6 +27,7 @@ def safe_slice(data, indices):
         return data.iloc[indices]
     else:
         raise TypeError(f"Unsupported data type: {type(data)}")
+
 
 class EnsembleModel:
     def __init__(self, models, n_splits=5):
@@ -175,7 +177,9 @@ class EnsembleModel:
             )
 
         if weights is None:
-            weights = np.ones(len(self.models)) / len(self.models)  # Equal weights by default
+            weights = np.ones(len(self.models)) / len(
+                self.models
+            )  # Equal weights by default
 
         if len(weights) != len(self.models):
             raise ValueError("Length of weights must match the number of models.")
@@ -189,6 +193,8 @@ class EnsembleModel:
 
         # Compute weighted ensemble predictions
         predictions = np.array(predictions)  # Shape: (num_models, num_samples)
-        ensemble_pred = np.average(predictions, axis=0, weights=weights)  # Weighted average
+        ensemble_pred = np.average(
+            predictions, axis=0, weights=weights
+        )  # Weighted average
 
         return ensemble_pred

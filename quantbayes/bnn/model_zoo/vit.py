@@ -4,11 +4,8 @@ import numpyro
 import numpyro.distributions as dist
 from quantbayes.bnn import Module
 from typing import Optional
-from quantbayes.bnn import (
-    Module,
-    PositionalEncoding,
-    TransformerEncoder
-)
+from quantbayes.bnn import Module, PositionalEncoding, TransformerEncoder
+
 
 class ViT(Module):
     """
@@ -160,9 +157,7 @@ class ViT(Module):
         w_head = numpyro.sample(
             "head_w", dist.Normal(0, 1).expand([self.embed_dim, self.num_classes])
         )
-        b_head = numpyro.sample(
-            "head_b", dist.Normal(0, 1).expand([self.num_classes])
-        )
+        b_head = numpyro.sample("head_b", dist.Normal(0, 1).expand([self.num_classes]))
         logits = jnp.dot(cls_out, w_head) + b_head
 
         numpyro.deterministic("logits", logits)

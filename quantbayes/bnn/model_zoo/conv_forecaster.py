@@ -1,12 +1,15 @@
-from quantbayes.bnn.layers import Conv1d, Linear 
+from quantbayes.bnn.layers import Conv1d, Linear
 import jax.numpy as jnp
+
 
 class Conv1DTimeSeriesForecaster:
     """
     Simple 1D CNN for forecasting the next step of a time series.
     """
 
-    def __init__(self, in_channels=1, out_channels=8, kernel_size=3, name="conv1d_forecaster"):
+    def __init__(
+        self, in_channels=1, out_channels=8, kernel_size=3, name="conv1d_forecaster"
+    ):
         """
         :param in_channels: int, number of input channels (e.g. 1 for univariate)
         :param out_channels: int, number of channels after convolution
@@ -17,7 +20,9 @@ class Conv1DTimeSeriesForecaster:
         self.kernel_size = kernel_size
         self.name = name
 
-        self.conv1 = Conv1d(in_channels, out_channels, kernel_size, name=f"{name}_conv1")
+        self.conv1 = Conv1d(
+            in_channels, out_channels, kernel_size, name=f"{name}_conv1"
+        )
         # We'll do a final linear that takes out_channels -> 1
         self.linear_out = Linear(out_channels, 1, name=f"{name}_linear_out")
 
@@ -27,11 +32,11 @@ class Conv1DTimeSeriesForecaster:
         returns: forecast, shape (batch_size,)
         """
         # 1) Convolution
-        conv_out = self.conv1(X)  
+        conv_out = self.conv1(X)
         # shape = (batch_size, out_channels, new_len)
 
         # 2) Global average pooling across time dimension
-        pooled = jnp.mean(conv_out, axis=-1)  
+        pooled = jnp.mean(conv_out, axis=-1)
         # shape = (batch_size, out_channels)
 
         # 3) Final linear -> produce single scalar

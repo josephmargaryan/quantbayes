@@ -1,11 +1,19 @@
 from quantbayes.bnn.layers import Conv2d, Linear
 
+
 class Conv2DClassifier:
     """
     Minimal 2D CNN for image classification, e.g. MNIST (batch_size, 1, 28, 28).
     """
 
-    def __init__(self, in_channels=1, out_channels=8, kernel_size=3, stride=1, name="conv2d_classifier"):
+    def __init__(
+        self,
+        in_channels=1,
+        out_channels=8,
+        kernel_size=3,
+        stride=1,
+        name="conv2d_classifier",
+    ):
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.kernel_size = kernel_size
@@ -13,7 +21,14 @@ class Conv2DClassifier:
         self.name = name
 
         # Convolution layer
-        self.conv2d = Conv2d(in_channels, out_channels, kernel_size, stride=stride, padding="same", name=f"{name}_conv2d")
+        self.conv2d = Conv2d(
+            in_channels,
+            out_channels,
+            kernel_size,
+            stride=stride,
+            padding="same",
+            name=f"{name}_conv2d",
+        )
         # After convolution, let's flatten and do a final linear
         # We'll not know the exact output shape until we fix image size,
         # so let's do e.g. out_channels * 28 * 28 => 10 classes.

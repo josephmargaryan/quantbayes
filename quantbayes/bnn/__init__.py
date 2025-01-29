@@ -21,5 +21,5 @@ __all__ = [
     "LayerNorm",
     "LSTM",
     "GaussianProcessLayer",
-    "VariationalLayer"
+    "VariationalLayer",
 ]

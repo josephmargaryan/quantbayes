@@ -2,6 +2,7 @@ from flax import linen as nn
 import jax.numpy as jnp
 from typing import Tuple
 
+
 class SeriesDecomposition(nn.Module):
     kernel_size: int
 
@@ -24,7 +25,9 @@ class SeriesDecomposition(nn.Module):
         batch, length, channels = x.shape
 
         # Expand kernel to match the number of input channels
-        kernel = jnp.tile(self.kernel, (1, 1, channels))  # Shape: (kernel_size, 1, channels)
+        kernel = jnp.tile(
+            self.kernel, (1, 1, channels)
+        )  # Shape: (kernel_size, 1, channels)
 
         # Apply convolution along the time dimension
         trend = jax.lax.conv_general_dilated(
@@ -33,7 +36,7 @@ class SeriesDecomposition(nn.Module):
             window_strides=(1,),  # Stride 1
             padding=((self.kernel_size // 2, self.kernel_size // 2),),  # "SAME" padding
             dimension_numbers=("NWC", "WIO", "NWC"),  # Channels last format
-            feature_group_count=channels  # One kernel per channel
+            feature_group_count=channels,  # One kernel per channel
         )
 
         # Compute the seasonal component
@@ -41,8 +44,10 @@ class SeriesDecomposition(nn.Module):
 
         return trend, seasonal
 
+
 class FourierBlock(nn.Module):
     """A simple frequency block that uses 1D FFT -> processing -> iFFT."""
+
     top_k_freq: int
 
     @nn.compact
@@ -58,7 +63,9 @@ class FourierBlock(nn.Module):
         batch, length, channels = x.shape
 
         # 1) FFT
-        freq_x = jnp.fft.rfft(x, axis=1)  # shape: (batch, length // 2 + 1, channels), complex
+        freq_x = jnp.fft.rfft(
+            x, axis=1
+        )  # shape: (batch, length // 2 + 1, channels), complex
 
         # 2) Select top-K largest frequencies based on magnitude
         mag = jnp.abs(freq_x)  # shape: (batch, length // 2 + 1, channels)
@@ -68,7 +75,7 @@ class FourierBlock(nn.Module):
             # Filter frequencies for a single batch
             def filter_channel(freq_x_bc, mag_bc):
                 # Get top-k indices for this channel
-                top_k_indices = jnp.argsort(mag_bc)[-self.top_k_freq:]
+                top_k_indices = jnp.argsort(mag_bc)[-self.top_k_freq :]
                 # Create a mask to retain only the top-k frequencies
                 mask = jnp.zeros_like(mag_bc)
                 mask = mask.at[top_k_indices].set(1)
@@ -82,8 +89,11 @@ class FourierBlock(nn.Module):
         freq_x_filtered = jax.vmap(filter_frequencies, in_axes=(0, 0))(freq_x, mag)
 
         # 3) iFFT
-        out = jnp.fft.irfft(freq_x_filtered, n=length, axis=1)  # shape: (batch, length, channels), real
+        out = jnp.fft.irfft(
+            freq_x_filtered, n=length, axis=1
+        )  # shape: (batch, length, channels), real
         return out
+
 
 class FedformerEncoderLayer(nn.Module):
     """
@@ -92,12 +102,15 @@ class FedformerEncoderLayer(nn.Module):
       - A feed-forward network with dropout and layer normalization
       - Optionally merges or passes the trend component unmodified
     """
+
     d_model: int = 64
     top_k_freq: int = 16
     dropout: float = 0.1
 
     @nn.compact
-    def __call__(self, seasonal: jnp.ndarray, trend: jnp.ndarray, deterministic: bool = True) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    def __call__(
+        self, seasonal: jnp.ndarray, trend: jnp.ndarray, deterministic: bool = True
+    ) -> Tuple[jnp.ndarray, jnp.ndarray]:
         """
         Args:
             seasonal: [batch, length, d_model] - Seasonal component
@@ -108,7 +121,9 @@ class FedformerEncoderLayer(nn.Module):
             trend: [batch, length, d_model] - Passed unmodified
         """
         # 1) Frequency modeling of seasonal
-        freq_seasonal = FourierBlock(top_k_freq=self.top_k_freq)(seasonal)  # [batch, length, d_model]
+        freq_seasonal = FourierBlock(top_k_freq=self.top_k_freq)(
+            seasonal
+        )  # [batch, length, d_model]
 
         # 2) Feed-forward on frequency-transformed seasonal
         out = nn.Dense(self.d_model)(freq_seasonal)
@@ -119,10 +134,12 @@ class FedformerEncoderLayer(nn.Module):
         # Pass trend forward unmodified
         return processed_seasonal, trend
 
+
 class FedformerEncoder(nn.Module):
     """
     Stack multiple FedformerEncoderLayer with series decomposition each time.
     """
+
     d_model: int = 64
     layer_num: int = 2
     decomp_ks: int = 25
@@ -134,7 +151,9 @@ class FedformerEncoder(nn.Module):
         self.decomp = SeriesDecomposition(kernel_size=self.decomp_ks)
         # Stack of FedformerEncoderLayer
         self.layers = [
-            FedformerEncoderLayer(d_model=self.d_model, top_k_freq=self.top_k_freq, dropout=self.dropout)
+            FedformerEncoderLayer(
+                d_model=self.d_model, top_k_freq=self.top_k_freq, dropout=self.dropout
+            )
             for _ in range(self.layer_num)
         ]
         # Layer normalization
@@ -161,6 +180,7 @@ class FedformerEncoder(nn.Module):
         out = self.layernorm(out)
         return out
 
+
 class Fedformer(nn.Module):
     """
     A simplified Fedformer-like model with:
@@ -171,6 +191,7 @@ class Fedformer(nn.Module):
     Input shape: (batch, length, input_dim)
     Output shape: (batch, 1)
     """
+
     input_dim: int
     d_model: int = 64
     layer_num: int = 2
@@ -187,7 +208,7 @@ class Fedformer(nn.Module):
             layer_num=self.layer_num,
             decomp_ks=self.kernel_size,
             top_k_freq=self.top_k_freq,
-            dropout=self.dropout
+            dropout=self.dropout,
         )
         # 3) Final projection
         self.projection = nn.Dense(1)
@@ -203,7 +224,9 @@ class Fedformer(nn.Module):
         # 1) Embed input
         x = self.embedding(x)  # [batch, length, d_model]
         # 2) Apply Fedformer encoder
-        enc_out = self.encoder(x, deterministic=deterministic)  # [batch, length, d_model]
+        enc_out = self.encoder(
+            x, deterministic=deterministic
+        )  # [batch, length, d_model]
         # 3) Take the last time step
         last_token = enc_out[:, -1, :]  # [batch, d_model]
         # 4) Project to a single value
@@ -226,7 +249,9 @@ if __name__ == "__main__":
     input_dim = 10
 
     # Random input time series
-    x = jnp.array(np.random.rand(batch_size, sequence_length, input_dim), dtype=jnp.float32)
+    x = jnp.array(
+        np.random.rand(batch_size, sequence_length, input_dim), dtype=jnp.float32
+    )
 
     # Initialize the model
     model = Fedformer(
@@ -235,7 +260,7 @@ if __name__ == "__main__":
         layer_num=2,
         top_k_freq=16,
         dropout=0.1,
-        kernel_size=25
+        kernel_size=25,
     )
 
     # Initialize parameters

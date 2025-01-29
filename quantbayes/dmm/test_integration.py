@@ -15,11 +15,13 @@ import matplotlib.pyplot as plt
 ##############Transitions##################
 ###########################################
 
+
 class LSTMTransition(nn.Module):
     """
     LSTM for transitions:
        z_{t-1} -> [mu_z, log_sigma_z]
     """
+
     hidden_dim: int
     z_dim: int
 
@@ -30,7 +32,9 @@ class LSTMTransition(nn.Module):
         Returns: (mu_z, log_sigma_z), each of shape (batch_size, z_dim)
         """
         lstm_cell = nn.LSTMCell(features=self.hidden_dim)
-        carry = lstm_cell.initialize_carry(jax.random.PRNGKey(0), (z_prev.shape[0], self.hidden_dim))
+        carry = lstm_cell.initialize_carry(
+            jax.random.PRNGKey(0), (z_prev.shape[0], self.hidden_dim)
+        )
         carry, h = lstm_cell(carry, z_prev)  # h has shape (batch_size, hidden_dim)
 
         mu_z = nn.Dense(self.z_dim)(h)
@@ -43,6 +47,7 @@ class TransformerTransition(nn.Module):
     Transformer for transitions:
        z_{t-1} -> [mu_z, log_sigma_z]
     """
+
     num_heads: int
     hidden_dim: int
     z_dim: int
@@ -54,13 +59,17 @@ class TransformerTransition(nn.Module):
         Returns: (mu_z, log_sigma_z), each of shape (batch_size, z_dim)
         """
         if self.z_dim % self.num_heads != 0:
-            raise ValueError(f"z_dim ({self.z_dim}) must be divisible by num_heads ({self.num_heads}).")
+            raise ValueError(
+                f"z_dim ({self.z_dim}) must be divisible by num_heads ({self.num_heads})."
+            )
 
         # Add a dummy time dimension for Transformer compatibility
         z_prev = jnp.expand_dims(z_prev, axis=1)  # Shape: (batch_size, 1, z_dim)
-        
+
         attn = nn.MultiHeadDotProductAttention(num_heads=self.num_heads)(z_prev, z_prev)
-        attn = jnp.squeeze(attn, axis=1)  # Remove dummy time dimension, Shape: (batch_size, z_dim)
+        attn = jnp.squeeze(
+            attn, axis=1
+        )  # Remove dummy time dimension, Shape: (batch_size, z_dim)
 
         x = nn.Dense(self.hidden_dim)(attn)
         x = nn.relu(x)
@@ -80,22 +89,26 @@ class ConvTransition(nn.Module):
         z_prev = z_prev[..., None]  # Add channel dimension -> (batch_size, z_dim, 1)
 
         # Correctly use kernel_size
-        conv = nn.Conv(features=self.hidden_dim, kernel_size=(self.kernel_size,))(z_prev)
+        conv = nn.Conv(features=self.hidden_dim, kernel_size=(self.kernel_size,))(
+            z_prev
+        )
         conv = nn.relu(conv)
 
         # Flatten back to (batch_size, z_dim)
-        conv = jnp.mean(conv, axis=-1)  # Average over the "channel" dimension, if needed
+        conv = jnp.mean(
+            conv, axis=-1
+        )  # Average over the "channel" dimension, if needed
         mu_z = nn.Dense(self.z_dim)(conv)
         log_sigma_z = nn.Dense(self.z_dim)(conv)
         return mu_z, log_sigma_z
 
 
-    
 class MLPTransition(nn.Module):
     """
     MLP for transitions:
        z_{t-1} -> [mu_z, log_sigma_z]
     """
+
     hidden_dim: int
     z_dim: int
 
@@ -111,12 +124,14 @@ class MLPTransition(nn.Module):
         x = nn.Dense(2 * self.z_dim)(x)
         mu_z, log_sigma_z = jnp.split(x, 2, axis=-1)
         return mu_z, log_sigma_z
-    
+
+
 class ConvAttentionTransition(nn.Module):
     """
     Hybrid transition combining Convolution and Attention:
        z_{t-1} -> [mu_z, log_sigma_z]
     """
+
     hidden_dim: int
     z_dim: int
     kernel_size: int = 3
@@ -133,21 +148,24 @@ class ConvAttentionTransition(nn.Module):
 
         # Apply convolution
         conv = nn.Conv(
-            features=self.hidden_dim,
-            kernel_size=(self.kernel_size,),
-            padding="SAME"
-        )(z_prev)  # Shape: (batch_size, z_dim, hidden_dim)
+            features=self.hidden_dim, kernel_size=(self.kernel_size,), padding="SAME"
+        )(
+            z_prev
+        )  # Shape: (batch_size, z_dim, hidden_dim)
 
         # Flatten for attention
         conv_flat = jnp.mean(conv, axis=-1)  # Shape: (batch_size, z_dim)
 
         # Apply Multi-Head Attention
-        z_proj = nn.Dense(features=self.hidden_dim)(conv_flat)  # Shape: (batch_size, hidden_dim)
+        z_proj = nn.Dense(features=self.hidden_dim)(
+            conv_flat
+        )  # Shape: (batch_size, hidden_dim)
         z_proj = jnp.expand_dims(z_proj, axis=1)  # Add sequence dimension for attention
         attn = nn.MultiHeadDotProductAttention(
-            num_heads=self.num_heads,
-            out_features=self.hidden_dim
-        )(z_proj, z_proj, z_proj)  # Shape: (batch_size, 1, hidden_dim)
+            num_heads=self.num_heads, out_features=self.hidden_dim
+        )(
+            z_proj, z_proj, z_proj
+        )  # Shape: (batch_size, 1, hidden_dim)
 
         attn = jnp.squeeze(attn, axis=1)  # Remove sequence dimension
 
@@ -157,11 +175,13 @@ class ConvAttentionTransition(nn.Module):
         mu_z, log_sigma_z = jnp.split(x, 2, axis=-1)
         return mu_z, log_sigma_z
 
+
 class TransformerLSTMTransition(nn.Module):
     """
     Hybrid transition combining Transformer and LSTM:
        z_{t-1} -> [mu_z, log_sigma_z]
     """
+
     hidden_dim: int
     z_dim: int
     num_heads: int = 4
@@ -173,20 +193,25 @@ class TransformerLSTMTransition(nn.Module):
         Returns: (mu_z, log_sigma_z), each of shape (batch_size, z_dim)
         """
         # Project to higher dimensional space for attention
-        z_proj = nn.Dense(features=self.hidden_dim)(z_prev)  # Shape: (batch_size, hidden_dim)
+        z_proj = nn.Dense(features=self.hidden_dim)(
+            z_prev
+        )  # Shape: (batch_size, hidden_dim)
         z_proj = jnp.expand_dims(z_proj, axis=1)  # Add sequence dimension for attention
 
         # Apply Multi-Head Attention
         attn = nn.MultiHeadDotProductAttention(
-            num_heads=self.num_heads,
-            out_features=self.hidden_dim
-        )(z_proj, z_proj, z_proj)  # Shape: (batch_size, 1, hidden_dim)
+            num_heads=self.num_heads, out_features=self.hidden_dim
+        )(
+            z_proj, z_proj, z_proj
+        )  # Shape: (batch_size, 1, hidden_dim)
 
         attn = jnp.squeeze(attn, axis=1)  # Remove sequence dimension
 
         # Process with LSTM
         lstm_cell = nn.LSTMCell(features=self.hidden_dim)
-        carry = lstm_cell.initialize_carry(jax.random.PRNGKey(0), (attn.shape[0], self.hidden_dim))
+        carry = lstm_cell.initialize_carry(
+            jax.random.PRNGKey(0), (attn.shape[0], self.hidden_dim)
+        )
         carry, h = lstm_cell(carry, attn)  # h: (batch_size, hidden_dim)
 
         # Output layers for [mu_z, log_sigma_z]
@@ -195,11 +220,13 @@ class TransformerLSTMTransition(nn.Module):
         mu_z, log_sigma_z = jnp.split(x, 2, axis=-1)
         return mu_z, log_sigma_z
 
+
 class ConvLSTMTransition(nn.Module):
     """
     Hybrid transition combining Convolution and LSTM:
        z_{t-1} -> [mu_z, log_sigma_z]
     """
+
     hidden_dim: int
     z_dim: int
     kernel_size: int = 3
@@ -215,17 +242,19 @@ class ConvLSTMTransition(nn.Module):
 
         # Apply convolution
         conv = nn.Conv(
-            features=self.hidden_dim,
-            kernel_size=(self.kernel_size,),
-            padding="SAME"
-        )(z_prev)  # Shape: (batch_size, z_dim, hidden_dim)
+            features=self.hidden_dim, kernel_size=(self.kernel_size,), padding="SAME"
+        )(
+            z_prev
+        )  # Shape: (batch_size, z_dim, hidden_dim)
 
         # Flatten for LSTM
         conv_flat = jnp.mean(conv, axis=-1)  # Shape: (batch_size, z_dim)
 
         # Process with LSTM
         lstm_cell = nn.LSTMCell(features=self.hidden_dim)
-        carry = lstm_cell.initialize_carry(jax.random.PRNGKey(0), (conv_flat.shape[0], self.hidden_dim))
+        carry = lstm_cell.initialize_carry(
+            jax.random.PRNGKey(0), (conv_flat.shape[0], self.hidden_dim)
+        )
         carry, h = lstm_cell(carry, conv_flat)  # h: (batch_size, hidden_dim)
 
         # Output layers for [mu_z, log_sigma_z]
@@ -235,10 +264,10 @@ class ConvLSTMTransition(nn.Module):
         return mu_z, log_sigma_z
 
 
-
 ###########################################
 #################Utils#####################
 ###########################################
+
 
 def extract_module_params(params: Dict[str, Any], prefix: str) -> Dict[str, Any]:
     """
@@ -258,12 +287,9 @@ def extract_module_params(params: Dict[str, Any], prefix: str) -> Dict[str, Any]
     return params[key]
 
 
-
-
 #############################################
 ##################Emission###################
 #############################################
-
 
 
 class MLPEmission(nn.Module):
@@ -271,6 +297,7 @@ class MLPEmission(nn.Module):
     MLP for emissions:
        z_t -> [mu_x, log_sigma_x]
     """
+
     hidden_dim: int
     x_dim: int
     z_dim: int
@@ -287,12 +314,14 @@ class MLPEmission(nn.Module):
         x = nn.Dense(2 * self.x_dim)(x)
         mu_x, log_sigma_x = jnp.split(x, 2, axis=-1)
         return mu_x, log_sigma_x
-    
+
+
 class ConvEmission(nn.Module):
     """
     Convolution-based emission:
        z_t -> [mu_x, log_sigma_x]
     """
+
     hidden_dim: int
     x_dim: int
     z_dim: int
@@ -309,10 +338,10 @@ class ConvEmission(nn.Module):
 
         # Apply convolution
         conv = nn.Conv(
-            features=self.hidden_dim,
-            kernel_size=(self.kernel_size,),
-            padding="SAME"
-        )(z_t)  # Shape: (batch_size, z_dim, hidden_dim)
+            features=self.hidden_dim, kernel_size=(self.kernel_size,), padding="SAME"
+        )(
+            z_t
+        )  # Shape: (batch_size, z_dim, hidden_dim)
 
         conv = nn.relu(conv)
 
@@ -325,11 +354,13 @@ class ConvEmission(nn.Module):
         mu_x, log_sigma_x = jnp.split(out, 2, axis=-1)
         return mu_x, log_sigma_x
 
+
 class TransformerEmission(nn.Module):
     """
     Transformer-based emission:
        z_t -> [mu_x, log_sigma_x]
     """
+
     hidden_dim: int
     x_dim: int
     z_dim: int
@@ -342,16 +373,19 @@ class TransformerEmission(nn.Module):
         Returns: (mu_x, log_sigma_x), each of shape (batch_size, x_dim)
         """
         # Project z_t to a higher dimensional space divisible by num_heads
-        z_proj = nn.Dense(features=self.hidden_dim)(z_t)  # Shape: (batch_size, hidden_dim)
+        z_proj = nn.Dense(features=self.hidden_dim)(
+            z_t
+        )  # Shape: (batch_size, hidden_dim)
 
         # Add dummy sequence dimension for compatibility with attention
         z_proj = jnp.expand_dims(z_proj, axis=1)  # Shape: (batch_size, 1, hidden_dim)
 
         # Self-attention layer
         attn = nn.MultiHeadDotProductAttention(
-            num_heads=self.num_heads,
-            out_features=self.hidden_dim
-        )(z_proj, z_proj, z_proj)  # Shape: (batch_size, 1, hidden_dim)
+            num_heads=self.num_heads, out_features=self.hidden_dim
+        )(
+            z_proj, z_proj, z_proj
+        )  # Shape: (batch_size, 1, hidden_dim)
 
         # Remove sequence dimension
         attn = jnp.squeeze(attn, axis=1)  # Shape: (batch_size, hidden_dim)
@@ -362,11 +396,13 @@ class TransformerEmission(nn.Module):
         mu_x, log_sigma_x = jnp.split(out, 2, axis=-1)
         return mu_x, log_sigma_x
 
+
 class LSTMEmission(nn.Module):
     """
     LSTM-based emission:
        z_t -> [mu_x, log_sigma_x]
     """
+
     hidden_dim: int
     x_dim: int
     z_dim: int
@@ -378,7 +414,9 @@ class LSTMEmission(nn.Module):
         Returns: (mu_x, log_sigma_x), each of shape (batch_size, x_dim)
         """
         lstm_cell = nn.LSTMCell(features=self.hidden_dim)
-        carry = lstm_cell.initialize_carry(jax.random.PRNGKey(0), (z_t.shape[0], self.hidden_dim))
+        carry = lstm_cell.initialize_carry(
+            jax.random.PRNGKey(0), (z_t.shape[0], self.hidden_dim)
+        )
 
         # Process latent variable with LSTM
         carry, h = lstm_cell(carry, z_t)  # h: (batch_size, hidden_dim)
@@ -395,6 +433,7 @@ class ConvAttentionEmission(nn.Module):
     Hybrid emission combining Convolution and Attention:
        z_t -> [mu_x, log_sigma_x]
     """
+
     hidden_dim: int
     x_dim: int
     z_dim: int
@@ -412,23 +451,26 @@ class ConvAttentionEmission(nn.Module):
 
         # Apply convolution
         conv = nn.Conv(
-            features=self.hidden_dim,
-            kernel_size=(self.kernel_size,),
-            padding="SAME"
-        )(z_t)  # Shape: (batch_size, z_dim, hidden_dim)
+            features=self.hidden_dim, kernel_size=(self.kernel_size,), padding="SAME"
+        )(
+            z_t
+        )  # Shape: (batch_size, z_dim, hidden_dim)
 
         # Flatten for attention
         conv_flat = jnp.mean(conv, axis=-1)  # Shape: (batch_size, z_dim)
 
         # Project to higher dimensional space for attention
-        z_proj = nn.Dense(features=self.hidden_dim)(conv_flat)  # Shape: (batch_size, hidden_dim)
+        z_proj = nn.Dense(features=self.hidden_dim)(
+            conv_flat
+        )  # Shape: (batch_size, hidden_dim)
         z_proj = jnp.expand_dims(z_proj, axis=1)  # Add sequence dimension for attention
 
         # Apply Multi-Head Attention
         attn = nn.MultiHeadDotProductAttention(
-            num_heads=self.num_heads,
-            out_features=self.hidden_dim
-        )(z_proj, z_proj, z_proj)  # Shape: (batch_size, 1, hidden_dim)
+            num_heads=self.num_heads, out_features=self.hidden_dim
+        )(
+            z_proj, z_proj, z_proj
+        )  # Shape: (batch_size, 1, hidden_dim)
 
         attn = jnp.squeeze(attn, axis=1)  # Remove sequence dimension
 
@@ -437,12 +479,14 @@ class ConvAttentionEmission(nn.Module):
         out = nn.Dense(2 * self.x_dim)(x)  # Shape: (batch_size, 2 * x_dim)
         mu_x, log_sigma_x = jnp.split(out, 2, axis=-1)
         return mu_x, log_sigma_x
-    
+
+
 class TransformerLSTMEmission(nn.Module):
     """
     Hybrid emission combining Transformer and LSTM:
        z_t -> [mu_x, log_sigma_x]
     """
+
     hidden_dim: int
     x_dim: int
     z_dim: int
@@ -455,20 +499,25 @@ class TransformerLSTMEmission(nn.Module):
         Returns: (mu_x, log_sigma_x), each of shape (batch_size, x_dim)
         """
         # Project to higher dimensional space for attention
-        z_proj = nn.Dense(features=self.hidden_dim)(z_t)  # Shape: (batch_size, hidden_dim)
+        z_proj = nn.Dense(features=self.hidden_dim)(
+            z_t
+        )  # Shape: (batch_size, hidden_dim)
         z_proj = jnp.expand_dims(z_proj, axis=1)  # Add sequence dimension for attention
 
         # Apply Transformer Attention
         attn = nn.MultiHeadDotProductAttention(
-            num_heads=self.num_heads,
-            out_features=self.hidden_dim
-        )(z_proj, z_proj, z_proj)  # Shape: (batch_size, 1, hidden_dim)
+            num_heads=self.num_heads, out_features=self.hidden_dim
+        )(
+            z_proj, z_proj, z_proj
+        )  # Shape: (batch_size, 1, hidden_dim)
 
         attn = jnp.squeeze(attn, axis=1)  # Remove sequence dimension
 
         # Process with LSTM
         lstm_cell = nn.LSTMCell(features=self.hidden_dim)
-        carry = lstm_cell.initialize_carry(jax.random.PRNGKey(0), (attn.shape[0], self.hidden_dim))
+        carry = lstm_cell.initialize_carry(
+            jax.random.PRNGKey(0), (attn.shape[0], self.hidden_dim)
+        )
         carry, h = lstm_cell(carry, attn)  # h: (batch_size, hidden_dim)
 
         # Final dense layers to produce [mu_x, log_sigma_x]
@@ -477,11 +526,13 @@ class TransformerLSTMEmission(nn.Module):
         mu_x, log_sigma_x = jnp.split(out, 2, axis=-1)
         return mu_x, log_sigma_x
 
+
 class ConvLSTMEmission(nn.Module):
     """
     Hybrid emission combining Convolution and LSTM:
        z_t -> [mu_x, log_sigma_x]
     """
+
     hidden_dim: int
     x_dim: int
     z_dim: int
@@ -498,17 +549,19 @@ class ConvLSTMEmission(nn.Module):
 
         # Apply convolution
         conv = nn.Conv(
-            features=self.hidden_dim,
-            kernel_size=(self.kernel_size,),
-            padding="SAME"
-        )(z_t)  # Shape: (batch_size, z_dim, hidden_dim)
+            features=self.hidden_dim, kernel_size=(self.kernel_size,), padding="SAME"
+        )(
+            z_t
+        )  # Shape: (batch_size, z_dim, hidden_dim)
 
         # Flatten for LSTM
         conv_flat = jnp.mean(conv, axis=-1)  # Shape: (batch_size, z_dim)
 
         # Process with LSTM
         lstm_cell = nn.LSTMCell(features=self.hidden_dim)
-        carry = lstm_cell.initialize_carry(jax.random.PRNGKey(0), (conv_flat.shape[0], self.hidden_dim))
+        carry = lstm_cell.initialize_carry(
+            jax.random.PRNGKey(0), (conv_flat.shape[0], self.hidden_dim)
+        )
         carry, h = lstm_cell(carry, conv_flat)  # h: (batch_size, hidden_dim)
 
         # Final dense layers to produce [mu_x, log_sigma_x]
@@ -518,11 +571,9 @@ class ConvLSTMEmission(nn.Module):
         return mu_x, log_sigma_x
 
 
-
 ######################################################
 #####################Encoder##########################
 ######################################################
-
 
 
 class LSTMEncoder(nn.Module):
@@ -530,6 +581,7 @@ class LSTMEncoder(nn.Module):
     Amortized encoder using LSTM:
       Reads the entire sequence of observations and outputs parameters for q(z_t | X)
     """
+
     hidden_dim: int
     x_dim: int
     z_dim: int
@@ -549,7 +601,9 @@ class LSTMEncoder(nn.Module):
         dense2 = nn.Dense(features=2 * self.z_dim)
 
         # Initialize carry
-        carry = lstm_cell.initialize_carry(jax.random.PRNGKey(0), (batch_size, self.hidden_dim))
+        carry = lstm_cell.initialize_carry(
+            jax.random.PRNGKey(0), (batch_size, self.hidden_dim)
+        )
 
         mu_list = []
         log_sigma_list = []
@@ -564,18 +618,20 @@ class LSTMEncoder(nn.Module):
             out = dense2(x)
             mu_t, log_sigma_t = jnp.split(out, 2, axis=-1)
 
-            mu_list.append(mu_t)             # each shape (batch, z_dim)
+            mu_list.append(mu_t)  # each shape (batch, z_dim)
             log_sigma_list.append(log_sigma_t)
 
         # Stack across time => shape (batch, T, z_dim)
-        mu_seq        = jnp.stack(mu_list, axis=1)        # (batch, T, z_dim)
-        log_sigma_seq = jnp.stack(log_sigma_list, axis=1) # (batch, T, z_dim)
+        mu_seq = jnp.stack(mu_list, axis=1)  # (batch, T, z_dim)
+        log_sigma_seq = jnp.stack(log_sigma_list, axis=1)  # (batch, T, z_dim)
         return mu_seq, log_sigma_seq
-    
+
+
 class AttentionEncoder(nn.Module):
     """
     Encoder with Multi-Head Dot-Product Attention to parameterize q(z_t | X).
     """
+
     hidden_dim: int
     x_dim: int
     z_dim: int
@@ -597,9 +653,10 @@ class AttentionEncoder(nn.Module):
 
         # Apply multi-head attention
         attention = nn.MultiHeadDotProductAttention(
-            num_heads=self.num_heads, 
-            out_features=self.hidden_dim
-        )(q, k, v)  # Shape: (batch, T, hidden_dim)
+            num_heads=self.num_heads, out_features=self.hidden_dim
+        )(
+            q, k, v
+        )  # Shape: (batch, T, hidden_dim)
 
         # Transform to latent space dimension
         dense1 = nn.Dense(features=self.hidden_dim)
@@ -607,19 +664,21 @@ class AttentionEncoder(nn.Module):
 
         # Apply Dense layers to produce mu and log_sigma
         x = nn.relu(dense1(attention))  # (batch, T, hidden_dim)
-        out = dense2(x)                # (batch, T, 2 * z_dim)
+        out = dense2(x)  # (batch, T, 2 * z_dim)
         mu_seq, log_sigma_seq = jnp.split(out, 2, axis=-1)
         return mu_seq, log_sigma_seq
+
 
 class ConvEncoder(nn.Module):
     """
     Convolutional Encoder to parameterize q(z_t | X).
     """
+
     hidden_dim: int
     x_dim: int
     z_dim: int
     kernel_size: int = 3  # Size of the convolutional kernel
-    strides: int = 1      # Stride for the convolution
+    strides: int = 1  # Stride for the convolution
 
     @nn.compact
     def __call__(self, x_seq: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray]:
@@ -634,22 +693,26 @@ class ConvEncoder(nn.Module):
             kernel_size=(self.kernel_size,),
             strides=(self.strides,),
             padding="SAME",
-        )(x_seq)  # (batch, T, hidden_dim)
+        )(
+            x_seq
+        )  # (batch, T, hidden_dim)
 
         # Transform to latent space dimension
         dense1 = nn.Dense(features=self.hidden_dim)
         dense2 = nn.Dense(features=2 * self.z_dim)
 
         # Apply Dense layers to produce mu and log_sigma
-        x = nn.relu(dense1(conv))     # (batch, T, hidden_dim)
-        out = dense2(x)              # (batch, T, 2 * z_dim)
+        x = nn.relu(dense1(conv))  # (batch, T, hidden_dim)
+        out = dense2(x)  # (batch, T, 2 * z_dim)
         mu_seq, log_sigma_seq = jnp.split(out, 2, axis=-1)
         return mu_seq, log_sigma_seq
-    
+
+
 class ConvLSTMEncoder(nn.Module):
     """
     Hybrid Encoder combining Convolution and LSTM for q(z_t | X).
     """
+
     hidden_dim: int
     x_dim: int
     z_dim: int
@@ -667,12 +730,16 @@ class ConvLSTMEncoder(nn.Module):
             features=self.hidden_dim,
             kernel_size=(self.kernel_size,),
             strides=(1,),
-            padding="SAME"
-        )(x_seq)  # Shape: (batch, T, hidden_dim)
+            padding="SAME",
+        )(
+            x_seq
+        )  # Shape: (batch, T, hidden_dim)
 
         # LSTM processing
         lstm_cell = nn.LSTMCell(features=self.hidden_dim)
-        carry = lstm_cell.initialize_carry(jax.random.PRNGKey(0), (conv.shape[0], self.hidden_dim))
+        carry = lstm_cell.initialize_carry(
+            jax.random.PRNGKey(0), (conv.shape[0], self.hidden_dim)
+        )
 
         mu_list, log_sigma_list = [], []
         for t in range(conv.shape[1]):
@@ -688,10 +755,12 @@ class ConvLSTMEncoder(nn.Module):
         log_sigma_seq = jnp.stack(log_sigma_list, axis=1)
         return mu_seq, log_sigma_seq
 
+
 class MLPEncoder(nn.Module):
     """
     MLP Encoder to parameterize q(z_t | X).
     """
+
     hidden_dim: int
     x_dim: int
     z_dim: int
@@ -717,11 +786,13 @@ class MLPEncoder(nn.Module):
         out = out.reshape((batch_size, T, 2 * self.z_dim))  # (batch, T, 2 * z_dim)
         mu_seq, log_sigma_seq = jnp.split(out, 2, axis=-1)
         return mu_seq, log_sigma_seq
-    
+
+
 class ConvAttentionEncoder(nn.Module):
     """
     Hybrid Encoder combining Convolution and Multi-Head Attention for q(z_t | X).
     """
+
     hidden_dim: int
     x_dim: int
     z_dim: int
@@ -740,14 +811,17 @@ class ConvAttentionEncoder(nn.Module):
             features=self.hidden_dim,
             kernel_size=(self.kernel_size,),
             strides=(1,),
-            padding="SAME"
-        )(x_seq)  # Shape: (batch, T, hidden_dim)
+            padding="SAME",
+        )(
+            x_seq
+        )  # Shape: (batch, T, hidden_dim)
 
         # Multi-Head Attention
         attention = nn.MultiHeadDotProductAttention(
-            num_heads=self.num_heads,
-            out_features=self.hidden_dim
-        )(conv, conv, conv)  # Self-attention
+            num_heads=self.num_heads, out_features=self.hidden_dim
+        )(
+            conv, conv, conv
+        )  # Self-attention
 
         # Dense transformations to produce mu and log_sigma
         x = nn.relu(nn.Dense(features=self.hidden_dim)(attention))
@@ -760,6 +834,7 @@ class TransformerLSTMEncoder(nn.Module):
     """
     Hybrid Encoder combining Transformer and LSTM for q(z_t | X).
     """
+
     hidden_dim: int
     x_dim: int
     z_dim: int
@@ -773,17 +848,22 @@ class TransformerLSTMEncoder(nn.Module):
           mu_seq, log_sigma_seq: each shape (batch, T, z_dim)
         """
         # Project input to a higher dimensional space divisible by num_heads
-        x_proj = nn.Dense(features=self.hidden_dim)(x_seq)  # Shape: (batch, T, hidden_dim)
+        x_proj = nn.Dense(features=self.hidden_dim)(
+            x_seq
+        )  # Shape: (batch, T, hidden_dim)
 
         # Multi-Head Attention for global context
         attention = nn.MultiHeadDotProductAttention(
-            num_heads=self.num_heads,
-            out_features=self.hidden_dim
-        )(x_proj, x_proj, x_proj)  # Self-attention
+            num_heads=self.num_heads, out_features=self.hidden_dim
+        )(
+            x_proj, x_proj, x_proj
+        )  # Self-attention
 
         # LSTM processing
         lstm_cell = nn.LSTMCell(features=self.hidden_dim)
-        carry = lstm_cell.initialize_carry(jax.random.PRNGKey(0), (attention.shape[0], self.hidden_dim))
+        carry = lstm_cell.initialize_carry(
+            jax.random.PRNGKey(0), (attention.shape[0], self.hidden_dim)
+        )
 
         mu_list, log_sigma_list = [], []
         for t in range(attention.shape[1]):
@@ -800,7 +880,6 @@ class TransformerLSTMEncoder(nn.Module):
         return mu_seq, log_sigma_seq
 
 
-
 def transformer_lstm_guide(X: jnp.ndarray, z_dim: int, hidden_dim: int, x_dim: int):
     """
     Guide using Transformer-LSTM Encoder to parameterize q(z_t | X).
@@ -809,9 +888,9 @@ def transformer_lstm_guide(X: jnp.ndarray, z_dim: int, hidden_dim: int, x_dim: i
 
     # Register TransformerLSTM encoder module with NumPyro
     enc_module = flax_module(
-        "transformer_lstm_enc", 
+        "transformer_lstm_enc",
         TransformerLSTMEncoder(hidden_dim=hidden_dim, x_dim=x_dim, z_dim=z_dim),
-        input_shape=(batch_size, T, x_dim)
+        input_shape=(batch_size, T, x_dim),
     )
 
     # Run the Transformer-LSTM encoder
@@ -822,8 +901,9 @@ def transformer_lstm_guide(X: jnp.ndarray, z_dim: int, hidden_dim: int, x_dim: i
     for t in range(T):
         z_t = numpyro.sample(
             f"z_{t}",
-            dist.Normal(mu_seq[:, t], jnp.exp(log_sigma_seq[:, t]))
-                .to_event(1)  # Treat z_dim as event dimension
+            dist.Normal(mu_seq[:, t], jnp.exp(log_sigma_seq[:, t])).to_event(
+                1
+            ),  # Treat z_dim as event dimension
         )
 
 
@@ -835,9 +915,9 @@ def conv_attention_guide(X: jnp.ndarray, z_dim: int, hidden_dim: int, x_dim: int
 
     # Register ConvAttention encoder module with NumPyro
     enc_module = flax_module(
-        "conv_attention_enc", 
+        "conv_attention_enc",
         ConvAttentionEncoder(hidden_dim=hidden_dim, x_dim=x_dim, z_dim=z_dim),
-        input_shape=(batch_size, T, x_dim)
+        input_shape=(batch_size, T, x_dim),
     )
 
     # Run the ConvAttention encoder
@@ -848,8 +928,9 @@ def conv_attention_guide(X: jnp.ndarray, z_dim: int, hidden_dim: int, x_dim: int
     for t in range(T):
         z_t = numpyro.sample(
             f"z_{t}",
-            dist.Normal(mu_seq[:, t], jnp.exp(log_sigma_seq[:, t]))
-                .to_event(1)  # Treat z_dim as event dimension
+            dist.Normal(mu_seq[:, t], jnp.exp(log_sigma_seq[:, t])).to_event(
+                1
+            ),  # Treat z_dim as event dimension
         )
 
 
@@ -861,9 +942,9 @@ def conv_lstm_guide(X: jnp.ndarray, z_dim: int, hidden_dim: int, x_dim: int):
 
     # Register ConvLSTM encoder module with NumPyro
     enc_module = flax_module(
-        "conv_lstm_enc", 
+        "conv_lstm_enc",
         ConvLSTMEncoder(hidden_dim=hidden_dim, x_dim=x_dim, z_dim=z_dim),
-        input_shape=(batch_size, T, x_dim)
+        input_shape=(batch_size, T, x_dim),
     )
 
     # Run the ConvLSTM encoder
@@ -874,10 +955,10 @@ def conv_lstm_guide(X: jnp.ndarray, z_dim: int, hidden_dim: int, x_dim: int):
     for t in range(T):
         z_t = numpyro.sample(
             f"z_{t}",
-            dist.Normal(mu_seq[:, t], jnp.exp(log_sigma_seq[:, t]))
-                .to_event(1)  # Treat z_dim as event dimension
+            dist.Normal(mu_seq[:, t], jnp.exp(log_sigma_seq[:, t])).to_event(
+                1
+            ),  # Treat z_dim as event dimension
         )
-
 
 
 def conv_guide(X: jnp.ndarray, z_dim: int, hidden_dim: int, x_dim: int):
@@ -888,9 +969,9 @@ def conv_guide(X: jnp.ndarray, z_dim: int, hidden_dim: int, x_dim: int):
 
     # Register encoder module with NumPyro
     enc_module = flax_module(
-        "conv_enc", 
+        "conv_enc",
         ConvEncoder(hidden_dim=hidden_dim, x_dim=x_dim, z_dim=z_dim),
-        input_shape=(batch_size, T, x_dim)
+        input_shape=(batch_size, T, x_dim),
     )
 
     # Run the Convolutional encoder
@@ -901,8 +982,9 @@ def conv_guide(X: jnp.ndarray, z_dim: int, hidden_dim: int, x_dim: int):
     for t in range(T):
         z_t = numpyro.sample(
             f"z_{t}",
-            dist.Normal(mu_seq[:, t], jnp.exp(log_sigma_seq[:, t]))
-                .to_event(1)  # Treat z_dim as event dimension
+            dist.Normal(mu_seq[:, t], jnp.exp(log_sigma_seq[:, t])).to_event(
+                1
+            ),  # Treat z_dim as event dimension
         )
 
 
@@ -914,9 +996,9 @@ def attention_guide(X: jnp.ndarray, z_dim: int, hidden_dim: int, x_dim: int):
 
     # Register encoder module with NumPyro
     enc_module = flax_module(
-        "attention_enc", 
+        "attention_enc",
         AttentionEncoder(hidden_dim=hidden_dim, x_dim=x_dim, z_dim=z_dim),
-        input_shape=(batch_size, T, x_dim)
+        input_shape=(batch_size, T, x_dim),
     )
 
     # Run the Attention encoder
@@ -927,23 +1009,24 @@ def attention_guide(X: jnp.ndarray, z_dim: int, hidden_dim: int, x_dim: int):
     for t in range(T):
         z_t = numpyro.sample(
             f"z_{t}",
-            dist.Normal(mu_seq[:, t], jnp.exp(log_sigma_seq[:, t]))
-                .to_event(1)  # Treat z_dim as event dimension
+            dist.Normal(mu_seq[:, t], jnp.exp(log_sigma_seq[:, t])).to_event(
+                1
+            ),  # Treat z_dim as event dimension
         )
 
-def lstm_guide(
-    X: jnp.ndarray,
-    z_dim: int = 2,
-    hidden_dim: int = 16,
-    x_dim: int = 3
-):
+
+def lstm_guide(X: jnp.ndarray, z_dim: int = 2, hidden_dim: int = 16, x_dim: int = 3):
     """
     Guide using an LSTM encoder to parameterize q(z_t | X).
     """
     batch_size, T, _ = X.shape
 
     # Register encoder module with NumPyro using flax_module
-    enc_module = flax_module("enc", LSTMEncoder(hidden_dim=hidden_dim, x_dim=x_dim, z_dim=z_dim), input_shape=(batch_size, T, x_dim))
+    enc_module = flax_module(
+        "enc",
+        LSTMEncoder(hidden_dim=hidden_dim, x_dim=x_dim, z_dim=z_dim),
+        input_shape=(batch_size, T, x_dim),
+    )
 
     # Run the LSTM encoder
     mu_seq, log_sigma_seq = enc_module(X)
@@ -953,10 +1036,10 @@ def lstm_guide(
     for t in range(T):
         z_t = numpyro.sample(
             f"z_{t}",
-            dist.Normal(mu_seq[:, t], jnp.exp(log_sigma_seq[:, t]))
-                .to_event(1)  # Treat z_dim as event dimension
+            dist.Normal(mu_seq[:, t], jnp.exp(log_sigma_seq[:, t])).to_event(
+                1
+            ),  # Treat z_dim as event dimension
         )
-
 
 
 def mlp_guide(X: jnp.ndarray, z_dim: int, hidden_dim: int, x_dim: int):
@@ -967,9 +1050,9 @@ def mlp_guide(X: jnp.ndarray, z_dim: int, hidden_dim: int, x_dim: int):
 
     # Register MLP encoder module with NumPyro
     enc_module = flax_module(
-        "mlp_enc", 
+        "mlp_enc",
         MLPEncoder(hidden_dim=hidden_dim, x_dim=x_dim, z_dim=z_dim),
-        input_shape=(batch_size, T, x_dim)
+        input_shape=(batch_size, T, x_dim),
     )
 
     # Run the MLP encoder
@@ -980,14 +1063,15 @@ def mlp_guide(X: jnp.ndarray, z_dim: int, hidden_dim: int, x_dim: int):
     for t in range(T):
         z_t = numpyro.sample(
             f"z_{t}",
-            dist.Normal(mu_seq[:, t], jnp.exp(log_sigma_seq[:, t]))
-                .to_event(1)  # Treat z_dim as event dimension
+            dist.Normal(mu_seq[:, t], jnp.exp(log_sigma_seq[:, t])).to_event(
+                1
+            ),  # Treat z_dim as event dimension
         )
 
 
-
-
-def apply_mlp(nested_params: Dict[str, Any], module: nn.Module, x: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray]:
+def apply_mlp(
+    nested_params: Dict[str, Any], module: nn.Module, x: jnp.ndarray
+) -> Tuple[jnp.ndarray, jnp.ndarray]:
     """
     Manually apply a Flax module 'module' to input x,
     using the nested parameters in 'nested_params'.
@@ -999,13 +1083,14 @@ def apply_mlp(nested_params: Dict[str, Any], module: nn.Module, x: jnp.ndarray) 
 # 2) Model & Guide
 ##############################################################################
 
+
 def dmm_model(
     X: jnp.ndarray,
     transition: nn.Module,
     emission: nn.Module,
     z_dim: int = 2,
     hidden_dim: int = 16,
-    x_dim: int = 3
+    x_dim: int = 3,
 ):
     """
     Deep Markov Model in NumPyro, vectorized over the batch dimension.
@@ -1021,9 +1106,11 @@ def dmm_model(
     # Sample z_0 for each item in the batch
     z_0 = numpyro.sample(
         "z_0",
-        dist.Normal(jnp.zeros((batch_size, z_dim)),
-                    jnp.ones((batch_size, z_dim)))
-            .to_event(1)  # Treat z_dim as event dimension
+        dist.Normal(
+            jnp.zeros((batch_size, z_dim)), jnp.ones((batch_size, z_dim))
+        ).to_event(
+            1
+        ),  # Treat z_dim as event dimension
     )
 
     z_prev = z_0
@@ -1034,7 +1121,9 @@ def dmm_model(
             sigma_z = jnp.exp(log_sigma_z)
             z_t = numpyro.sample(
                 f"z_{t}",
-                dist.Normal(mu_z, sigma_z).to_event(1)  # Treat z_dim as event dimension
+                dist.Normal(mu_z, sigma_z).to_event(
+                    1
+                ),  # Treat z_dim as event dimension
             )
         else:
             z_t = z_prev  # For t=0, z_t = z_0
@@ -1047,27 +1136,27 @@ def dmm_model(
         numpyro.sample(
             f"x_{t}",
             dist.Normal(mu_x, sigma_x).to_event(1),  # x_dim as event dimension
-            obs=X[:, t]
+            obs=X[:, t],
         )
 
         z_prev = z_t
-
 
 
 ##############################################################################
 # 3) Training Function
 ##############################################################################
 
+
 def train_dmm(
     X: jnp.ndarray,
-    transition: nn.Module, 
+    transition: nn.Module,
     emission: nn.Module,
     z_dim: int = 2,
     hidden_dim: int = 16,
     num_steps: int = 1000,
     learning_rate: float = 1e-3,
     x_dim: int = 3,
-    guide = lstm_guide
+    guide=lstm_guide,
 ) -> Tuple[Dict[str, Any], list]:
     """
     Train the Deep Markov Model using SVI.
@@ -1080,7 +1169,14 @@ def train_dmm(
     rng_svi = rng  # Use the same RNG for simplicity
 
     def model_fn(X_):
-        return dmm_model(X_, transition=transition, emission=emission,  z_dim=z_dim, hidden_dim=hidden_dim, x_dim=x_dim)
+        return dmm_model(
+            X_,
+            transition=transition,
+            emission=emission,
+            z_dim=z_dim,
+            hidden_dim=hidden_dim,
+            x_dim=x_dim,
+        )
 
     def guide_fn(X_):
         return guide(X_, z_dim=z_dim, hidden_dim=hidden_dim, x_dim=x_dim)
@@ -1097,16 +1193,17 @@ def train_dmm(
         if step % (num_steps // 5) == 0 or step == num_steps - 1:
             print(f"[DMM] step={step}, ELBO={-loss:.2f}")
     params = svi.get_params(svi_state)
-    
+
     # Debug: Print all parameter keys
     print("Parameter Keys:", params.keys())
-    
+
     return params, losses
 
 
 ##############################################################################
 # 4) Synthetic Data Generation
 ##############################################################################
+
 
 def synthetic_data_dmm(batch_size=20, T=15, z_dim=2, x_dim=3, seed=0):
     """
@@ -1135,6 +1232,7 @@ def synthetic_data_dmm(batch_size=20, T=15, z_dim=2, x_dim=3, seed=0):
 # 5) Visualization Functions
 ##############################################################################
 
+
 def plot_loss_curve(losses: list):
     plt.figure(figsize=(8, 4))
     plt.plot(losses)
@@ -1145,9 +1243,14 @@ def plot_loss_curve(losses: list):
     plt.show()
 
 
-def visualize_latent_space(X: jnp.ndarray, Z_true: jnp.ndarray, params: Dict[str, Any], 
-                           guide: nn.Module,
-                          z_dim: int = 2, plot_dims: Tuple[int, int] = (0, 1)):
+def visualize_latent_space(
+    X: jnp.ndarray,
+    Z_true: jnp.ndarray,
+    params: Dict[str, Any],
+    guide: nn.Module,
+    z_dim: int = 2,
+    plot_dims: Tuple[int, int] = (0, 1),
+):
     """
     Compare true latent variables with inferred latents from the guide.
     Parameters:
@@ -1161,42 +1264,54 @@ def visualize_latent_space(X: jnp.ndarray, Z_true: jnp.ndarray, params: Dict[str
     guide_samples = predictive(rng_key, X, z_dim=z_dim, hidden_dim=16, x_dim=3)
 
     # Collect all z_t samples
-    z_keys = [k for k in guide_samples.keys() if k.startswith('z_')]
-    z_samples = [guide_samples[k] for k in z_keys]  # Each: (num_samples, batch_size, z_dim)
+    z_keys = [k for k in guide_samples.keys() if k.startswith("z_")]
+    z_samples = [
+        guide_samples[k] for k in z_keys
+    ]  # Each: (num_samples, batch_size, z_dim)
 
     # Stack and compute mean over samples
     z_samples = jnp.stack(z_samples, axis=0)  # (T, num_samples, batch_size, z_dim)
-    z_mean = jnp.mean(z_samples, axis=1)      # (T, batch_size, z_dim)
-    z_mean = jnp.transpose(z_mean, (1, 0, 2)) # (batch_size, T, z_dim)
+    z_mean = jnp.mean(z_samples, axis=1)  # (T, batch_size, z_dim)
+    z_mean = jnp.transpose(z_mean, (1, 0, 2))  # (batch_size, T, z_dim)
 
     # Plot true vs inferred latent trajectories
     batch_size, T, _ = Z_true.shape
     dim_x, dim_y = plot_dims  # Selected dimensions for plotting
-    fig, axes = plt.subplots(4, batch_size // 4, figsize=(12, 6), constrained_layout=True)
+    fig, axes = plt.subplots(
+        4, batch_size // 4, figsize=(12, 6), constrained_layout=True
+    )
 
     # Flatten axes for easy iteration
     axes = axes.flatten()
 
     for i in range(batch_size):
-        axes[i].plot(Z_true[i, :, dim_x], Z_true[i, :, dim_y], label='True Z', marker='o')
-        axes[i].plot(z_mean[i, :, dim_x], z_mean[i, :, dim_y], label='Inferred Z', marker='x')
+        axes[i].plot(
+            Z_true[i, :, dim_x], Z_true[i, :, dim_y], label="True Z", marker="o"
+        )
+        axes[i].plot(
+            z_mean[i, :, dim_x], z_mean[i, :, dim_y], label="Inferred Z", marker="x"
+        )
         axes[i].set_title(f"Batch {i+1}")
         axes[i].set_xlabel(f"z_dim {dim_x}")
         axes[i].set_ylabel(f"z_dim {dim_y}")
 
     # Add a global legend
     handles, labels = axes[0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc='upper center', bbox_to_anchor=(0.5, 1.02), ncol=2)
+    fig.legend(handles, labels, loc="upper center", bbox_to_anchor=(0.5, 1.02), ncol=2)
 
     plt.show()
 
 
-
-def visualize_reconstructions(X: jnp.ndarray, params: Dict[str, Any],
-                              emission: nn.Module,
-                              guide: nn.Module,
-                              z_dim: int = 2, hidden_dim: int = 16, x_dim: int = 3, 
-                              plot_dims: List[int] = [0]):
+def visualize_reconstructions(
+    X: jnp.ndarray,
+    params: Dict[str, Any],
+    emission: nn.Module,
+    guide: nn.Module,
+    z_dim: int = 2,
+    hidden_dim: int = 16,
+    x_dim: int = 3,
+    plot_dims: List[int] = [0],
+):
     """
     Reconstruct observations from inferred latent variables and compare to true observations.
     Parameters:
@@ -1209,19 +1324,23 @@ def visualize_reconstructions(X: jnp.ndarray, params: Dict[str, Any],
 
     # Generate samples from the guide
     rng_key = random.PRNGKey(2)
-    guide_samples = predictive(rng_key, X, z_dim=z_dim, hidden_dim=hidden_dim, x_dim=x_dim)
+    guide_samples = predictive(
+        rng_key, X, z_dim=z_dim, hidden_dim=hidden_dim, x_dim=x_dim
+    )
 
     # Collect all z_t samples
-    z_keys = [k for k in guide_samples.keys() if k.startswith('z_')]
-    z_samples = [guide_samples[k] for k in z_keys]  # Each: (num_samples, batch_size, z_dim)
+    z_keys = [k for k in guide_samples.keys() if k.startswith("z_")]
+    z_samples = [
+        guide_samples[k] for k in z_keys
+    ]  # Each: (num_samples, batch_size, z_dim)
 
     # Stack and compute mean over samples
     z_samples = jnp.stack(z_samples, axis=0)  # (T, num_samples, batch_size, z_dim)
-    z_mean = jnp.mean(z_samples, axis=1)      # (T, batch_size, z_dim)
-    z_mean = jnp.transpose(z_mean, (1, 0, 2)) # (batch_size, T, z_dim)
+    z_mean = jnp.mean(z_samples, axis=1)  # (T, batch_size, z_dim)
+    z_mean = jnp.transpose(z_mean, (1, 0, 2))  # (batch_size, T, z_dim)
 
     # Extract emission parameters with 'emis.' prefix
-    emis_params_nested = extract_module_params(params, 'emis')
+    emis_params_nested = extract_module_params(params, "emis")
     print("All Parameter Keys:", params.keys())
 
     # Create the emission module
@@ -1233,7 +1352,9 @@ def visualize_reconstructions(X: jnp.ndarray, params: Dict[str, Any],
         z_t = z_mean[:, t, :]  # (batch_size, z_dim)
         try:
             # Apply the emission module with extracted parameters
-            mu_x, _ = emis_module.apply({"params": emis_params_nested}, z_t)  # (batch_size, x_dim)
+            mu_x, _ = emis_module.apply(
+                {"params": emis_params_nested}, z_t
+            )  # (batch_size, x_dim)
         except Exception as e:
             print(f"[ERROR] Emission module failed at time step {t}: {e}")
             raise
@@ -1245,14 +1366,20 @@ def visualize_reconstructions(X: jnp.ndarray, params: Dict[str, Any],
     for dim in plot_dims:
         plt.figure(figsize=(12, 6))
         for i in range(X.shape[0]):
-            plt.plot(X[i, :, dim], label=f'True X (dim={dim})' if i == 0 else "", alpha=0.5)
-            plt.plot(reconstructed_X[i, :, dim], '--', label=f'Reconstructed X (dim={dim})' if i == 0 else "", alpha=0.7)
+            plt.plot(
+                X[i, :, dim], label=f"True X (dim={dim})" if i == 0 else "", alpha=0.5
+            )
+            plt.plot(
+                reconstructed_X[i, :, dim],
+                "--",
+                label=f"Reconstructed X (dim={dim})" if i == 0 else "",
+                alpha=0.7,
+            )
         plt.title(f"True vs Reconstructed Observations (dim={dim})")
         plt.xlabel("Time step")
         plt.ylabel(f"x_dim {dim}")
         plt.legend()
         plt.show()
-
 
 
 def demo_dmm():
@@ -1262,40 +1389,39 @@ def demo_dmm():
     mlp_transition = MLPTransition(hidden_dim=16, z_dim=2)
 
     conv_attention_transition = ConvAttentionTransition(
-    hidden_dim=16, z_dim=2, kernel_size=3, num_heads=4
+        hidden_dim=16, z_dim=2, kernel_size=3, num_heads=4
     )
     transformer_lstm_transition = TransformerLSTMTransition(
         hidden_dim=16, z_dim=2, num_heads=4
     )
-    conv_lstm_transition = ConvLSTMTransition(
-        hidden_dim=16, z_dim=2, kernel_size=3
-    )
-
+    conv_lstm_transition = ConvLSTMTransition(hidden_dim=16, z_dim=2, kernel_size=3)
 
     mlp_emission = MLPEmission(hidden_dim=16, x_dim=3, z_dim=2)
     conv_emission = ConvEmission(hidden_dim=16, x_dim=3, z_dim=2, kernel_size=3)
-    transformer_emission = TransformerEmission(hidden_dim=16, x_dim=3, z_dim=2, num_heads=4)
+    transformer_emission = TransformerEmission(
+        hidden_dim=16, x_dim=3, z_dim=2, num_heads=4
+    )
     lstm_emission = LSTMEmission(hidden_dim=16, x_dim=3, z_dim=2)
     conv_attention_emission = ConvAttentionEmission(
         hidden_dim=16,  # Number of hidden dimensions
-        x_dim=3,        # Observation dimensionality
-        z_dim=2,        # Latent state dimensionality
+        x_dim=3,  # Observation dimensionality
+        z_dim=2,  # Latent state dimensionality
         kernel_size=3,  # Kernel size for convolution
-        num_heads=4     # Number of attention heads
+        num_heads=4,  # Number of attention heads
     )
 
     conv_lstm_emission = ConvLSTMEmission(
         hidden_dim=16,  # Number of hidden dimensions
-        x_dim=3,        # Observation dimensionality
-        z_dim=2,        # Latent state dimensionality
-        kernel_size=3   # Kernel size for convolution
+        x_dim=3,  # Observation dimensionality
+        z_dim=2,  # Latent state dimensionality
+        kernel_size=3,  # Kernel size for convolution
     )
 
     transformer_lstm_emission = TransformerLSTMEmission(
         hidden_dim=16,  # Number of hidden dimensions
-        x_dim=3,        # Observation dimensionality
-        z_dim=2,        # Latent state dimensionality
-        num_heads=4     # Number of attention heads
+        x_dim=3,  # Observation dimensionality
+        z_dim=2,  # Latent state dimensionality
+        num_heads=4,  # Number of attention heads
     )
 
     # Generate synthetic data
@@ -1303,14 +1429,15 @@ def demo_dmm():
     print("Synthetic data shape:", X.shape, "(batch_size, T, x_dim)")
 
     # Train DMM
-    params, losses = train_dmm(X, 
-                               transition=transformer_lstm_transition,
-                               emission=transformer_lstm_emission, 
-                               z_dim=2, 
-                               hidden_dim=16, 
-                               num_steps=10, 
-                               guide=transformer_lstm_guide
-                               )
+    params, losses = train_dmm(
+        X,
+        transition=transformer_lstm_transition,
+        emission=transformer_lstm_emission,
+        z_dim=2,
+        hidden_dim=16,
+        num_steps=10,
+        guide=transformer_lstm_guide,
+    )
 
     print("Final DMM loss (Negative ELBO):", losses[-1])
 
@@ -1318,22 +1445,27 @@ def demo_dmm():
     plot_loss_curve(losses)
 
     # Visualize latent space
-    visualize_latent_space(X=X,
-                           Z_true=Z,
-                           params=params,
-                           guide=transformer_lstm_guide,
-                           z_dim=2,
-                           plot_dims=(0, 2))
+    visualize_latent_space(
+        X=X,
+        Z_true=Z,
+        params=params,
+        guide=transformer_lstm_guide,
+        z_dim=2,
+        plot_dims=(0, 2),
+    )
 
     # Visualize reconstructions
-    visualize_reconstructions(X=X,
-                              params=params,
-                              emission=transformer_lstm_emission,
-                              guide=transformer_lstm_guide,
-                              z_dim=2,
-                              hidden_dim=16,
-                              x_dim=3,
-                              plot_dims=[0, 1])
+    visualize_reconstructions(
+        X=X,
+        params=params,
+        emission=transformer_lstm_emission,
+        guide=transformer_lstm_guide,
+        z_dim=2,
+        hidden_dim=16,
+        x_dim=3,
+        plot_dims=[0, 1],
+    )
+
 
 if __name__ == "__main__":
     demo_dmm()

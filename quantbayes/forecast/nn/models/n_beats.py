@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 from quantbayes.forecast.nn.base import MonteCarloMixin, BaseModel
 
+
 class NBeatsBlock(MonteCarloMixin, BaseModel):
     """
     A single N-BEATS block in "generic" mode:
@@ -9,12 +10,15 @@ class NBeatsBlock(MonteCarloMixin, BaseModel):
       - backcast = linear_b(theta_b)
       - forecast = linear_f(theta_f)
     """
-    def __init__(self,
-                 input_size,   # L * input_dim (flattened size)
-                 hidden_dim=256,
-                 n_harmonics=1,   # not used here, but a placeholder if you want expansions
-                 n_layers=4,
-                 basis='generic'):
+
+    def __init__(
+        self,
+        input_size,  # L * input_dim (flattened size)
+        hidden_dim=256,
+        n_harmonics=1,  # not used here, but a placeholder if you want expansions
+        n_layers=4,
+        basis="generic",
+    ):
         """
         :param input_size: Flattened input size = L * input_dim
         :param hidden_dim: Width of hidden layers in MLP
@@ -51,8 +55,10 @@ class NBeatsBlock(MonteCarloMixin, BaseModel):
         # So effectively:
         # backcast = backcast_proj(theta_b) -> shape (B, input_size)
         # forecast = forecast_proj(theta_f) -> shape (B, 1)
-        self.backcast_lin = nn.Identity()   # can skip or do nn.Linear(backcast_size, backcast_size)
-        self.forecast_lin = nn.Identity()   # same idea
+        self.backcast_lin = (
+            nn.Identity()
+        )  # can skip or do nn.Linear(backcast_size, backcast_size)
+        self.forecast_lin = nn.Identity()  # same idea
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
     def forward(self, x):
@@ -63,16 +69,16 @@ class NBeatsBlock(MonteCarloMixin, BaseModel):
           - forecast shape (B, 1)
         """
         # 1) pass input through the MLP
-        hidden = self.fc(x)                     # (B, hidden_dim)
-        theta = self.last_fc(hidden)            # (B, input_size + 1)
+        hidden = self.fc(x)  # (B, hidden_dim)
+        theta = self.last_fc(hidden)  # (B, input_size + 1)
 
         # 2) split into backcast and forecast parts
-        theta_b = theta[:, :self.input_size]    # (B, input_size)
-        theta_f = theta[:, self.input_size:]     # (B, 1)
+        theta_b = theta[:, : self.input_size]  # (B, input_size)
+        theta_f = theta[:, self.input_size :]  # (B, 1)
 
         # 3) map them to actual outputs (generic basis => direct identity map)
-        backcast = self.backcast_lin(theta_b)   # shape (B, input_size)
-        forecast = self.forecast_lin(theta_f)   # shape (B, 1)
+        backcast = self.backcast_lin(theta_b)  # shape (B, input_size)
+        forecast = self.forecast_lin(theta_f)  # shape (B, 1)
 
         return backcast, forecast
 
@@ -82,22 +88,27 @@ class NBeatsStack(nn.Module):
     A stack of multiple N-BEATS blocks. The final forecast is sum of each block's forecast.
     The residual for block i+1 is x_{i+1} = x_i - backcast_i.
     """
-    def __init__(self,
-                 input_size,   # L * input_dim
-                 num_blocks=3,
-                 block_hidden=256,
-                 n_layers=4,
-                 basis='generic'):
+
+    def __init__(
+        self,
+        input_size,  # L * input_dim
+        num_blocks=3,
+        block_hidden=256,
+        n_layers=4,
+        basis="generic",
+    ):
         super().__init__()
         self.input_size = input_size
         self.num_blocks = num_blocks
 
         blocks = []
         for _ in range(num_blocks):
-            block = NBeatsBlock(input_size=input_size,
-                                hidden_dim=block_hidden,
-                                n_layers=n_layers,
-                                basis=basis)
+            block = NBeatsBlock(
+                input_size=input_size,
+                hidden_dim=block_hidden,
+                n_layers=n_layers,
+                basis=basis,
+            )
             blocks.append(block)
         self.blocks = nn.ModuleList(blocks)
 
@@ -117,21 +128,25 @@ class NBeatsStack(nn.Module):
 
         return forecast_final
 
+
 class NBeats(nn.Module):
     """
-    A simplified N-BEATS model for single-step forecasting, 
+    A simplified N-BEATS model for single-step forecasting,
     with "generic basis" blocks, no future covariates.
-    
+
     Input shape:  (B, L, input_dim)
     Output shape: (B, 1)
     """
-    def __init__(self,
-                 seq_len,       # L
-                 input_dim=1,
-                 num_blocks=3,
-                 block_hidden=256,
-                 n_layers=4,
-                 basis='generic'):
+
+    def __init__(
+        self,
+        seq_len,  # L
+        input_dim=1,
+        num_blocks=3,
+        block_hidden=256,
+        n_layers=4,
+        basis="generic",
+    ):
         super().__init__()
         self.seq_len = seq_len
         self.input_dim = input_dim
@@ -141,7 +156,7 @@ class NBeats(nn.Module):
             num_blocks=num_blocks,
             block_hidden=block_hidden,
             n_layers=n_layers,
-            basis=basis
+            basis=basis,
         )
 
     def forward(self, x):
@@ -154,10 +169,11 @@ class NBeats(nn.Module):
         assert C == self.input_dim, f"Expected input_dim={self.input_dim}, got C={C}"
 
         # Flatten
-        x_flat = x.reshape(B, -1)   # (B, L*C)
+        x_flat = x.reshape(B, -1)  # (B, L*C)
 
         forecast = self.n_beats_stack(x_flat)  # (B, 1)
         return forecast
+
 
 if __name__ == "__main__":
     batch_size = 16
@@ -170,7 +186,7 @@ if __name__ == "__main__":
         num_blocks=3,
         block_hidden=128,
         n_layers=4,
-        basis='generic'
+        basis="generic",
     )
 
     x = torch.randn(batch_size, seq_len, input_dim)

@@ -9,6 +9,7 @@ from typing import Tuple, Optional
 # -----------------------------------------------------------------------------
 class SeriesDecomposition(nn.Module):
     """Decompose a time series into trend + seasonal using a simple moving average."""
+
     kernel_size: int = 25  # Size of the moving average kernel
 
     @nn.compact
@@ -26,20 +27,22 @@ class SeriesDecomposition(nn.Module):
         x_padded = jnp.pad(
             x,
             pad_width=((0, 0), (pad, pad), (0, 0)),  # Only pad the L dimension
-            mode="reflect"
+            mode="reflect",
         )  # [B, L + 2*pad, C]
 
         # Create moving average kernel with output channels matching C
-        kernel = jnp.ones((self.kernel_size, 1, C)) / self.kernel_size  # [kernel_size, 1, C]
+        kernel = (
+            jnp.ones((self.kernel_size, 1, C)) / self.kernel_size
+        )  # [kernel_size, 1, C]
 
         # Perform depthwise convolution
         trend = jax.lax.conv_general_dilated(
-            lhs=x_padded,                   # [B, L + 2*pad, C]
-            rhs=kernel,                     # [kernel_size, 1, C]
-            window_strides=(1,),            # Stride of 1
-            padding='VALID',                # Padding is already applied
-            dimension_numbers=('NWC', 'WIO', 'NWC'),  # Corrected dimension numbers
-            feature_group_count=C           # Perform depthwise convolution
+            lhs=x_padded,  # [B, L + 2*pad, C]
+            rhs=kernel,  # [kernel_size, 1, C]
+            window_strides=(1,),  # Stride of 1
+            padding="VALID",  # Padding is already applied
+            dimension_numbers=("NWC", "WIO", "NWC"),  # Corrected dimension numbers
+            feature_group_count=C,  # Perform depthwise convolution
         )  # [B, L, C]
 
         # Seasonal component
@@ -60,6 +63,7 @@ class AutoCorrelationBlock(nn.Module):
       - Pick top-k correlated time-lags
       - Reconstruct an output
     """
+
     top_k: int = 16  # Number of top correlations to retain
 
     @nn.compact
@@ -89,7 +93,9 @@ class AutoCorrelationBlock(nn.Module):
         mag_transposed = jnp.transpose(mag, (0, 2, 1))  # [B, C, L]
 
         # Use lax.top_k to get top-k indices along the time axis for each [B, C]
-        topk_values, topk_indices = jax.lax.top_k(mag_transposed, self.top_k)  # [B, C, top_k]
+        topk_values, topk_indices = jax.lax.top_k(
+            mag_transposed, self.top_k
+        )  # [B, C, top_k]
 
         # Create one-hot encodings for the top-k indices
         one_hot = jax.nn.one_hot(topk_indices, num_classes=L)  # [B, C, top_k, L]
@@ -115,6 +121,7 @@ class AutoformerEncoderLayer(nn.Module):
       - Applies AutoCorrelationBlock to the seasonal component
       - Uses a feed-forward layer, skip connections, and layer normalization
     """
+
     d_model: int = 64
     top_k: int = 16
     dropout: float = 0.1
@@ -126,7 +133,7 @@ class AutoformerEncoderLayer(nn.Module):
         trend: jnp.ndarray,
         *,
         train: bool = True,
-        rngs: Optional[dict] = None
+        rngs: Optional[dict] = None,
     ) -> Tuple[jnp.ndarray, jnp.ndarray]:
         """
         Args:
@@ -139,18 +146,24 @@ class AutoformerEncoderLayer(nn.Module):
             Tuple[jnp.ndarray, jnp.ndarray]: Processed seasonal and trend components.
         """
         # 1) AutoCorrelation on seasonal
-        auto_seasonal = AutoCorrelationBlock(top_k=self.top_k)(seasonal)  # [B, L, d_model]
+        auto_seasonal = AutoCorrelationBlock(top_k=self.top_k)(
+            seasonal
+        )  # [B, L, d_model]
 
         # 2) Feed-forward network with skip connection
-        ff_output = nn.Dense(self.d_model, name="feed_forward")(auto_seasonal)  # [B, L, d_model]
+        ff_output = nn.Dense(self.d_model, name="feed_forward")(
+            auto_seasonal
+        )  # [B, L, d_model]
         ff_output = nn.Dropout(rate=self.dropout)(
             ff_output,
             deterministic=not train,
-            rng=rngs.get("dropout") if rngs else None
+            rng=rngs.get("dropout") if rngs else None,
         )
 
         # Add skip connection and apply layer normalization
-        seasonal_out = nn.LayerNorm(name="layer_norm")(seasonal + ff_output)  # [B, L, d_model]
+        seasonal_out = nn.LayerNorm(name="layer_norm")(
+            seasonal + ff_output
+        )  # [B, L, d_model]
 
         # The trend component is passed through unchanged
         return seasonal_out, trend
@@ -163,6 +176,7 @@ class AutoformerEncoder(nn.Module):
     """
     Repeated decomposition and auto-correlation across multiple layers.
     """
+
     d_model: int = 64
     layer_num: int = 2
     kernel_size: int = 25
@@ -171,11 +185,7 @@ class AutoformerEncoder(nn.Module):
 
     @nn.compact
     def __call__(
-        self,
-        x: jnp.ndarray,
-        *,
-        train: bool = True,
-        rngs: Optional[dict] = None
+        self, x: jnp.ndarray, *, train: bool = True, rngs: Optional[dict] = None
     ) -> jnp.ndarray:
         """
         Args:
@@ -187,7 +197,9 @@ class AutoformerEncoder(nn.Module):
             jnp.ndarray: Encoded output [B, L, d_model]
         """
         # 1) Decompose into trend + seasonal
-        trend, seasonal = SeriesDecomposition(kernel_size=self.kernel_size)(x)  # [B, L, d_model] each
+        trend, seasonal = SeriesDecomposition(kernel_size=self.kernel_size)(
+            x
+        )  # [B, L, d_model] each
 
         # 2) Pass through stacked encoder layers
         for i in range(self.layer_num):
@@ -195,7 +207,7 @@ class AutoformerEncoder(nn.Module):
                 d_model=self.d_model,
                 top_k=self.top_k,
                 dropout=self.dropout,
-                name=f"encoder_layer_{i}"
+                name=f"encoder_layer_{i}",
             )(seasonal, trend, train=train, rngs=rngs)
 
         # 3) Combine seasonal and trend
@@ -218,6 +230,7 @@ class Autoformer(nn.Module):
       - Final projection to 1 dimension
       - Return last time step's forecast
     """
+
     input_dim: int
     d_model: int = 64
     layer_num: int = 2
@@ -227,11 +240,7 @@ class Autoformer(nn.Module):
 
     @nn.compact
     def __call__(
-        self,
-        x: jnp.ndarray,
-        *,
-        train: bool = True,
-        rngs: Optional[dict] = None
+        self, x: jnp.ndarray, *, train: bool = True, rngs: Optional[dict] = None
     ) -> jnp.ndarray:
         """
         Args:
@@ -252,7 +261,7 @@ class Autoformer(nn.Module):
             kernel_size=self.kernel_size,
             top_k=self.top_k,
             dropout=self.dropout,
-            name="autoformer_encoder"
+            name="autoformer_encoder",
         )
         enc_out = encoder(embedding, train=train, rngs=rngs)  # [B, L, d_model]
 
@@ -293,7 +302,7 @@ def test_autoformer():
         layer_num=layer_num,
         top_k=top_k,
         dropout=dropout,
-        kernel_size=kernel_size
+        kernel_size=kernel_size,
     )
 
     # Initialize parameters

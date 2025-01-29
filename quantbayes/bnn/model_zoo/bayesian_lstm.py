@@ -5,6 +5,7 @@ import numpyro.distributions as dist
 from quantbayes.bnn.layers.base import Module
 from quantbayes.bnn.layers import LSTM, Linear
 
+
 class BayesianLSTM(Module):
     """
     A Bayesian LSTM regressor that produces a single scalar output `y`.
@@ -43,6 +44,7 @@ class BayesianLSTM(Module):
         # For convenience we’ll return logits
         return logits
 
+
 def test_bayesian_lstm():
     # Suppose we have data X of shape (N, seq_len, input_dim),
     # and y of shape (N,) for regression.
@@ -58,6 +60,7 @@ def test_bayesian_lstm():
     rng_key = jax.random.PRNGKey(42)
     model.fit(X, y, rng_key=rng_key)
     print("BayesianLSTM training done!")
+
 
 if __name__ == "__main__":
     test_bayesian_lstm()

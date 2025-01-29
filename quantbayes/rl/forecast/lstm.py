@@ -5,10 +5,12 @@ from torch.distributions import Categorical
 import numpy as np
 import matplotlib.pyplot as plt
 
+
 class RLTimeSeriesModel(nn.Module):
     """
     A simple LSTM-based policy network that outputs a distribution over two classes (Up/Down).
     """
+
     def __init__(self, input_dim, hidden_dim, output_dim=2):
         super(RLTimeSeriesModel, self).__init__()
         self.lstm = nn.LSTM(input_dim, hidden_dim, batch_first=True)
@@ -23,14 +25,15 @@ class RLTimeSeriesModel(nn.Module):
         lstm_out, _ = self.lstm(x)
         # Use the last timestep's output
         last_step_out = lstm_out[:, -1, :]  # shape: (batch_size, hidden_dim)
-        logits = self.fc(last_step_out)     # shape: (batch_size, output_dim)
-        probs = self.softmax(logits)        # shape: (batch_size, output_dim)
+        logits = self.fc(last_step_out)  # shape: (batch_size, output_dim)
+        probs = self.softmax(logits)  # shape: (batch_size, output_dim)
         return probs
+
 
 def generate_time_series_data(num_samples=100, seq_len=20, input_dim=5, seed=42):
     """
-    Generate synthetic time-series data. 
-    We interpret the target as binary (0 or 1) based on whether 
+    Generate synthetic time-series data.
+    We interpret the target as binary (0 or 1) based on whether
     the final step in the first feature is higher or lower than the second to last step.
     """
     np.random.seed(seed)
@@ -39,6 +42,7 @@ def generate_time_series_data(num_samples=100, seq_len=20, input_dim=5, seed=42)
     X = torch.tensor(data, dtype=torch.float32)
     y = torch.tensor(labels, dtype=torch.long)
     return X, y
+
 
 def visualize_time_series_predictions(X, y_pred, title="Time Series Predictions"):
     """
@@ -51,14 +55,17 @@ def visualize_time_series_predictions(X, y_pred, title="Time Series Predictions"
         final_val = X[i, -1, 0].item()
         color = "red" if y_pred[i].item() == 1 else "blue"
         label = "Up" if y_pred[i].item() == 1 else "Down"
-        plt.scatter([X.shape[1]-1], [final_val], c=color, marker='o', label=f"Pred: {label}")
+        plt.scatter(
+            [X.shape[1] - 1], [final_val], c=color, marker="o", label=f"Pred: {label}"
+        )
     plt.title(title)
     plt.legend()
     plt.show()
 
+
 def train_rl_time_series_model(model, data_loader, optimizer, num_epochs=10):
     """
-    Simple policy gradient training loop. 
+    Simple policy gradient training loop.
     Reward = +1 for correct classification, -1 for incorrect.
     """
     model.train()
@@ -66,10 +73,10 @@ def train_rl_time_series_model(model, data_loader, optimizer, num_epochs=10):
         total_loss = 0.0
         for X_batch, y_batch in data_loader:
             # Forward pass
-            probs = model(X_batch)               # (batch_size, 2)
+            probs = model(X_batch)  # (batch_size, 2)
             dist = Categorical(probs)
-            actions = dist.sample()              # (batch_size,)
-            log_probs = dist.log_prob(actions)   # (batch_size,)
+            actions = dist.sample()  # (batch_size,)
+            log_probs = dist.log_prob(actions)  # (batch_size,)
 
             # Compute reward
             rewards = torch.where(actions == y_batch, 1.0, -1.0)
@@ -82,7 +89,10 @@ def train_rl_time_series_model(model, data_loader, optimizer, num_epochs=10):
             optimizer.step()
 
             total_loss += loss.item()
-        print(f"Epoch {epoch+1}/{num_epochs} - Loss: {total_loss / len(data_loader):.4f}")
+        print(
+            f"Epoch {epoch+1}/{num_epochs} - Loss: {total_loss / len(data_loader):.4f}"
+        )
+
 
 if __name__ == "__main__":
     # Hyperparams
@@ -95,7 +105,9 @@ if __name__ == "__main__":
     # Generate data
     X, y = generate_time_series_data(num_samples=100, seq_len=20, input_dim=input_dim)
     dataset = torch.utils.data.TensorDataset(X, y)
-    data_loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    data_loader = torch.utils.data.DataLoader(
+        dataset, batch_size=batch_size, shuffle=True
+    )
 
     # Model & optimizer
     model = RLTimeSeriesModel(input_dim, hidden_dim)
@@ -110,4 +122,6 @@ if __name__ == "__main__":
         sample_X = X[:8]
         sample_probs = model(sample_X)
         sample_preds = torch.argmax(sample_probs, dim=-1)
-        visualize_time_series_predictions(sample_X, sample_preds, title="Sample Time Series Predictions")
+        visualize_time_series_predictions(
+            sample_X, sample_preds, title="Sample Time Series Predictions"
+        )

@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+
 class DeepAR(nn.Module):
     """
     A simplified DeepAR model for univariate time series with Gaussian likelihood.
@@ -28,7 +29,7 @@ class DeepAR(nn.Module):
             input_size=input_dim,
             hidden_size=rnn_hidden,
             num_layers=num_layers,
-            batch_first=True
+            batch_first=True,
         )
 
         # Output layer -> (mu, sigma)
@@ -45,8 +46,8 @@ class DeepAR(nn.Module):
         # LSTM
         out, _ = self.lstm(x)  # (B, T, rnn_hidden)
         # project to 2 distribution parameters
-        out = self.proj(out)   # (B, T, 2)
-        mu = out[:, :, 0]      # (B, T)
+        out = self.proj(out)  # (B, T, 2)
+        mu = out[:, :, 0]  # (B, T)
         sigma = F.softplus(out[:, :, 1]) + 1e-3  # keep sigma > 0
         return mu, sigma
 
@@ -58,9 +59,9 @@ class DeepAR(nn.Module):
         y: (B, T)   same shape in unrolled form
         returns scalar loss
         """
-        mu, sigma = self.forward(x)   # each (B, T)
+        mu, sigma = self.forward(x)  # each (B, T)
         # Gaussian NLL
-        loss = 0.5 * torch.log(2 * torch.pi * sigma**2) + (y - mu)**2 / (2*sigma**2)
+        loss = 0.5 * torch.log(2 * torch.pi * sigma**2) + (y - mu) ** 2 / (2 * sigma**2)
         return loss.mean()
 
     def predict(self, x, pred_steps=1):
@@ -73,7 +74,7 @@ class DeepAR(nn.Module):
         B, T, _ = x.shape
 
         with torch.no_grad():
-            hs, (h, c) = self.lstm(x)   # (B, T, rnn_hidden)
+            hs, (h, c) = self.lstm(x)  # (B, T, rnn_hidden)
             # h, c each has shape (num_layers, B, rnn_hidden)
 
         preds = []
@@ -82,14 +83,16 @@ class DeepAR(nn.Module):
 
         for step in range(pred_steps):
             out, (h, c) = self.lstm(current_input, (h, c))  # out: (B, 1, rnn_hidden)
-            out = self.proj(out)                            # (B, 1, 2)
-            mu = out[:, :, 0:1]                             # shape (B, 1, 1)
-            sigma = F.softplus(out[:, :, 1:2]) + 1e-3       # (B, 1, 1)
+            out = self.proj(out)  # (B, 1, 2)
+            mu = out[:, :, 0:1]  # shape (B, 1, 1)
+            sigma = F.softplus(out[:, :, 1:2]) + 1e-3  # (B, 1, 1)
 
             # let's do mean-based forecast => shape (B, 1, 1)
             y_pred = mu
 
-            preds.append(y_pred.squeeze(2))  # => (B, 1), we only remove dimension=2, keep dimension=1
+            preds.append(
+                y_pred.squeeze(2)
+            )  # => (B, 1), we only remove dimension=2, keep dimension=1
             # or just do: preds.append(mu.squeeze(-1)) => (B, 1)
 
             # feed it back
@@ -105,7 +108,7 @@ if __name__ == "__main__":
     # Synthetic example
     B, T = 16, 30
     x = torch.randn(B, T, 1)  # random input
-    y = x.squeeze(-1) + 0.1*torch.randn(B, T)  # some synthetic target
+    y = x.squeeze(-1) + 0.1 * torch.randn(B, T)  # some synthetic target
 
     model = DeepAR(input_dim=1, rnn_hidden=32, num_layers=2)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)

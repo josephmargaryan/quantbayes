@@ -6,16 +6,18 @@ import torch.utils.data as data
 import numpy as np
 import matplotlib.pyplot as plt
 
+
 class RLCNNClassifier(nn.Module):
     """
     A very simple CNN-based classifier to illustrate a RL approach to image classification.
     """
+
     def __init__(self, num_channels=1, num_classes=10):
         super(RLCNNClassifier, self).__init__()
         self.conv1 = nn.Conv2d(num_channels, 8, kernel_size=3, padding=1)
         self.conv2 = nn.Conv2d(8, 16, kernel_size=3, padding=1)
         self.pool = nn.MaxPool2d(2, 2)
-        self.fc1 = nn.Linear(16*8*8, num_classes)
+        self.fc1 = nn.Linear(16 * 8 * 8, num_classes)
         self.softmax = nn.Softmax(dim=-1)
 
     def forward(self, x):
@@ -25,11 +27,14 @@ class RLCNNClassifier(nn.Module):
         x = self.pool(torch.relu(self.conv1(x)))
         x = self.pool(torch.relu(self.conv2(x)))
         x = x.view(x.size(0), -1)
-        logits = self.fc1(x)           # shape: (batch_size, num_classes)
-        probs = self.softmax(logits)   # shape: (batch_size, num_classes)
+        logits = self.fc1(x)  # shape: (batch_size, num_classes)
+        probs = self.softmax(logits)  # shape: (batch_size, num_classes)
         return probs
 
-def generate_random_image_data(num_samples=256, num_classes=10, image_size=(1, 32, 32), seed=42):
+
+def generate_random_image_data(
+    num_samples=256, num_classes=10, image_size=(1, 32, 32), seed=42
+):
     """
     Generate random 'images' and random labels.
     """
@@ -40,6 +45,7 @@ def generate_random_image_data(num_samples=256, num_classes=10, image_size=(1, 3
     y = torch.tensor(labels, dtype=torch.long)
     return X, y
 
+
 def train_rl_image_classifier(model, data_loader, optimizer, num_epochs=5):
     """
     Simple policy gradient approach for classification.
@@ -48,10 +54,10 @@ def train_rl_image_classifier(model, data_loader, optimizer, num_epochs=5):
     for epoch in range(num_epochs):
         total_loss = 0.0
         for X_batch, y_batch in data_loader:
-            probs = model(X_batch)               # shape: (batch_size, num_classes)
+            probs = model(X_batch)  # shape: (batch_size, num_classes)
             dist = Categorical(probs)
-            actions = dist.sample()              # (batch_size,)
-            log_probs = dist.log_prob(actions)   # (batch_size,)
+            actions = dist.sample()  # (batch_size,)
+            log_probs = dist.log_prob(actions)  # (batch_size,)
 
             rewards = torch.where(actions == y_batch, 1.0, -1.0)
             loss = -(log_probs * rewards).mean()
@@ -61,7 +67,10 @@ def train_rl_image_classifier(model, data_loader, optimizer, num_epochs=5):
             optimizer.step()
 
             total_loss += loss.item()
-        print(f"Epoch {epoch+1}/{num_epochs} - Loss: {total_loss / len(data_loader):.4f}")
+        print(
+            f"Epoch {epoch+1}/{num_epochs} - Loss: {total_loss / len(data_loader):.4f}"
+        )
+
 
 def visualize_image_classification(X_test, y_test, y_pred, num_images=5):
     """
@@ -80,7 +89,9 @@ def visualize_image_classification(X_test, y_test, y_pred, num_images=5):
     fig, axes = plt.subplots(1, num_images, figsize=(num_images * 3, 3))
 
     for i in range(num_images):
-        image = X_test[i].squeeze(0).numpy()  # Convert to 2D grayscale if single channel
+        image = (
+            X_test[i].squeeze(0).numpy()
+        )  # Convert to 2D grayscale if single channel
         true_label = y_test[i].item()
         predicted_label = y_pred[i].item()
 
@@ -91,6 +102,7 @@ def visualize_image_classification(X_test, y_test, y_pred, num_images=5):
 
     plt.tight_layout()
     plt.show()
+
 
 if __name__ == "__main__":
     num_samples = 256

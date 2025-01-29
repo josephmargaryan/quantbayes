@@ -1,8 +1,9 @@
 from quantbayes.bnn.layers import MultiHeadSelfAttention, Linear, Module
-import jax 
+import jax
 import jax.numpy as jnp
-import numpyro 
+import numpyro
 import numpyro.distributions as dist
+
 
 class BayesianTransformer(Module):
     """
@@ -17,6 +18,7 @@ class BayesianTransformer(Module):
         self.mha = MultiHeadSelfAttention(embed_dim, num_heads, name="bayes_mha")
         self.ff1 = Linear(embed_dim, embed_dim, name="bayes_tf_ff1")
         self.out = Linear(embed_dim, 1, name="bayes_tf_out")
+
 
 def __call__(self, X, y=None):
     """
@@ -34,9 +36,7 @@ def __call__(self, X, y=None):
         for t in range(seq_len):
             # Transition step
             mu_z, sigma_z = self.transition(z_prev)
-            z_t = numpyro.sample(
-                f"z_{t}", dist.Normal(mu_z, sigma_z).to_event(1)
-            )
+            z_t = numpyro.sample(f"z_{t}", dist.Normal(mu_z, sigma_z).to_event(1))
 
             # Emission step
             mu_x, sigma_x = self.emission(z_t)
@@ -50,6 +50,7 @@ def __call__(self, X, y=None):
 
     return None
 
+
 def test_bayesian_transformer():
     rng = jax.random.PRNGKey(0)
     batch_size, seq_len, embed_dim = 32, 10, 4
@@ -61,6 +62,7 @@ def test_bayesian_transformer():
     model.compile(num_steps=2000, learning_rate=0.001)
     model.fit(X, y, rng_key=rng)
     print("BayesianTransformer training done!")
+
 
 if __name__ == "__main__":
     test_bayesian_transformer()

@@ -31,10 +31,11 @@ X_train, X_test, y_train, y_test = train_test_split(
     X, y, random_state=24, test_size=0.2
 )
 
+
 # 2. Model Definition
 class MLP(nn.Module):
     hidden_features: int = 64  # Number of hidden units
-    out_features: int = 1      # Output dimension
+    out_features: int = 1  # Output dimension
 
     @nn.compact
     def __call__(self, x):
@@ -45,20 +46,19 @@ class MLP(nn.Module):
         x = nn.Dense(self.out_features)(x)
         return x.squeeze(-1)  # To match the shape of y
 
+
 # 3. Training Setup
 def create_train_state(rng, model, learning_rate, input_dim):
-    params = model.init(rng, jnp.ones([1, input_dim]))['params']
+    params = model.init(rng, jnp.ones([1, input_dim]))["params"]
     tx = optax.adam(learning_rate)
-    return train_state.TrainState.create(
-        apply_fn=model.apply,
-        params=params,
-        tx=tx
-    )
+    return train_state.TrainState.create(apply_fn=model.apply, params=params, tx=tx)
+
 
 # Define the loss function (Mean Squared Error)
 def mse_loss(params, apply_fn, x, y):
-    predictions = apply_fn({'params': params}, x)
+    predictions = apply_fn({"params": params}, x)
     return jnp.mean((predictions - y) ** 2)
+
 
 # Define a single training step
 @jax.jit
@@ -66,6 +66,7 @@ def train_step(state, x, y):
     loss, grads = jax.value_and_grad(mse_loss)(state.params, state.apply_fn, x, y)
     state = state.apply_gradients(grads=grads)
     return state, loss
+
 
 # Initialize the model and training state
 rng = jax.random.PRNGKey(0)
@@ -79,6 +80,7 @@ import time
 num_epochs = 1000
 batch_size = 32
 
+
 # Create a function to generate mini-batches
 def data_generator(X, y, batch_size):
     num_samples = X.shape[0]
@@ -88,6 +90,7 @@ def data_generator(X, y, batch_size):
     for start in range(0, num_samples, batch_size):
         end = start + batch_size
         yield X_shuffled[start:end], y_shuffled[start:end]
+
 
 # Training
 train_losses = []
@@ -101,10 +104,12 @@ for epoch in range(1, num_epochs + 1):
     train_losses.append(mean_epoch_loss)
     if epoch % 100 == 0 or epoch == 1:
         elapsed = time.time() - start_time
-        print(f"Epoch {epoch}, Loss: {mean_epoch_loss:.4f}, Time Elapsed: {elapsed:.2f}s")
+        print(
+            f"Epoch {epoch}, Loss: {mean_epoch_loss:.4f}, Time Elapsed: {elapsed:.2f}s"
+        )
         start_time = time.time()
 
-### Save the trained network 
+### Save the trained network
 with open("flax_model_params.pkl", "wb") as f:
     pickle.dump(flax.serialization.to_state_dict(state.params), f)
 """
@@ -114,10 +119,12 @@ with open("flax_model_params.pkl", "rb") as f:
 
 """
 
+
 # 5. Evaluation
 # Define a prediction function
 def predict(params, apply_fn, x):
-    return apply_fn({'params': params}, x)
+    return apply_fn({"params": params}, x)
+
 
 # Make predictions on the test set
 predictions = predict(state.params, state.apply_fn, X_test)
@@ -128,17 +135,23 @@ print(f"Test MSE: {test_mse:.4f}")
 
 # Optionally, invert scaling for better interpretability
 y_test_unscaled = scaler_y.inverse_transform(y_test.reshape(-1, 1)).reshape(-1)
-predictions_unscaled = scaler_y.inverse_transform(predictions.reshape(-1, 1)).reshape(-1)
+predictions_unscaled = scaler_y.inverse_transform(predictions.reshape(-1, 1)).reshape(
+    -1
+)
 
 # 6. Visualization
 plt.figure(figsize=(8, 6))
 plt.scatter(y_test_unscaled, predictions_unscaled, alpha=0.6)
-plt.plot([y_test_unscaled.min(), y_test_unscaled.max()],
-         [y_test_unscaled.min(), y_test_unscaled.max()],
-         color='red', linestyle='--', label='Ideal')
-plt.xlabel('True Values')
-plt.ylabel('Predictions')
-plt.title('True vs. Predicted Values')
+plt.plot(
+    [y_test_unscaled.min(), y_test_unscaled.max()],
+    [y_test_unscaled.min(), y_test_unscaled.max()],
+    color="red",
+    linestyle="--",
+    label="Ideal",
+)
+plt.xlabel("True Values")
+plt.ylabel("Predictions")
+plt.title("True vs. Predicted Values")
 plt.legend()
 plt.grid(True)
 plt.show()
@@ -146,8 +159,8 @@ plt.show()
 # Plot training loss
 plt.figure(figsize=(8, 6))
 plt.plot(train_losses)
-plt.xlabel('Epoch')
-plt.ylabel('MSE Loss')
-plt.title('Training Loss Over Epochs')
+plt.xlabel("Epoch")
+plt.ylabel("MSE Loss")
+plt.title("Training Loss Over Epochs")
 plt.grid(True)
 plt.show()

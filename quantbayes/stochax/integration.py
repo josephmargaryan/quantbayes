@@ -21,19 +21,24 @@ plt.rcParams["figure.facecolor"] = "white"
 # Data Generation
 # -----------------------------------
 from quantbayes.fake_data import generate_regression_data
+
 df = generate_regression_data()
 X, y = df.drop("target", axis=1), df["target"]
 X, y = jnp.array(X), jnp.array(y)
 scaler = MinMaxScaler()
 y = scaler.fit_transform(y.reshape(-1, 1)).reshape(-1)
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=24)
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=24
+)
 
 
 # Generate and preprocess data
 df = generate_regression_data(n_samples=1000, n_features=1, random_seed=42)
 X, y = df.drop("target", axis=1), df["target"]
 X, y = jnp.array(X), jnp.array(y)
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=24)
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=24
+)
 
 
 # -----------------------------------
@@ -41,14 +46,18 @@ X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_
 # -----------------------------------
 class Classification(nn.Module):
     num_classes: int
+
     @nn.compact
     def __call__(self, x):
         x = nn.Dense(features=16)(x)  # First hidden layer
         x = nn.relu(x)
         x = nn.Dense(features=16)(x)  # Second hidden layer
         x = nn.relu(x)
-        logits = nn.Dense(features=self.num_classes)(x)  # Output logits for binary classification
+        logits = nn.Dense(features=self.num_classes)(
+            x
+        )  # Output logits for binary classification
         return logits
+
 
 class MuNetwork(nn.Module):
     @nn.compact
@@ -68,21 +77,18 @@ class SigmaNetwork(nn.Module):
         x = nn.relu(x)
         x = nn.Dense(features=4)(x)  # Second hidden layer
         x = nn.relu(x)
-        sigma = nn.softplus(nn.Dense(features=1)(x))  # Output layer for sigma with softplus
+        sigma = nn.softplus(
+            nn.Dense(features=1)(x)
+        )  # Output layer for sigma with softplus
         return sigma
-
 
 
 # -----------------------------------
 # Probabilistic Model
 # -----------------------------------
 def model(x, y=None):
-    mu_nn = flax_module("mu_nn", 
-                               MuNetwork(),
-                               input_shape=(1,))
-    log_sigma_nn = flax_module("sigma_nn", 
-                                      SigmaNetwork(), 
-                                      input_shape=(1,))
+    mu_nn = flax_module("mu_nn", MuNetwork(), input_shape=(1,))
+    log_sigma_nn = flax_module("sigma_nn", SigmaNetwork(), input_shape=(1,))
 
     mu = numpyro.deterministic("mu", mu_nn(x).squeeze())
     sigma = numpyro.deterministic("sigma", jnp.exp(log_sigma_nn(x)).squeeze())
@@ -110,6 +116,7 @@ predictive = Predictive(model, guide=guide, params=params, num_samples=100)
 posterior_predictive = predictive(rng_key, X_test)
 print(f"All the posterior approximations: {posterior_predictive.keys()}")
 posteriors = posterior_predictive["y"]
+
 
 def visualize(X_test, y_test, posteriors, feature_index=None):
     """
@@ -139,9 +146,7 @@ def visualize(X_test, y_test, posteriors, feature_index=None):
     # Plot
     plt.figure(figsize=(10, 6))
     plt.scatter(feature, y_test, color="blue", alpha=0.6, label="True Targets")
-    plt.plot(
-        feature, mean_preds, color="red", label="Mean Predictions", linestyle="-"
-    )
+    plt.plot(feature, mean_preds, color="red", label="Mean Predictions", linestyle="-")
     plt.fill_between(
         feature,
         lower_bound,
@@ -156,6 +161,7 @@ def visualize(X_test, y_test, posteriors, feature_index=None):
     plt.legend()
     plt.grid(alpha=0.4)
     plt.show()
+
 
 visualize(X_test, y_test, posteriors, feature_index=0)
 

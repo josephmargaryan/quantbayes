@@ -2,6 +2,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+
 class Viz_preds:
     @staticmethod
     def visualize_unseen_data(
@@ -27,9 +28,9 @@ class Viz_preds:
         # Ensure datetime column is properly formatted
         if not pd.api.types.is_datetime64_any_dtype(test_df[datetime_col]):
             test_df[datetime_col] = pd.to_datetime(test_df[datetime_col])
-        
+
         # Align shapes of test_df and predictions
-        dates = test_df[datetime_col].values[:len(predictions)]
+        dates = test_df[datetime_col].values[: len(predictions)]
         mean_predictions = predictions.squeeze()
         lower_bound = mean_predictions - 2 * uncertainties.squeeze()
         upper_bound = mean_predictions + 2 * uncertainties.squeeze()
@@ -89,14 +90,15 @@ class Viz_preds:
             plt.grid(True)
             plt.show()
 
+
 if __name__ == "__main__":
-    results = pd.DataFrame({"mean":np.arange(0, 100), "uncertainty":np.arage(0, 100)})
-    test = pd.DataFrame({"mean":np.arange(0, 100), "uncertainty":np.arage(0, 100)})
+    results = pd.DataFrame({"mean": np.arange(0, 100), "uncertainty": np.arage(0, 100)})
+    test = pd.DataFrame({"mean": np.arange(0, 100), "uncertainty": np.arage(0, 100)})
     Viz_preds.visualize_unseen_data(
-    test_df=test,  # your test DataFrame
-    predictions=results["mean"],
-    uncertainties=results["uncertainty"],
-    datetime_col="date",  # Replace with your actual datetime column name
-    title="Test Predictions with Uncertainty (Static)",
-    interactive=True,  # Static Matplotlib plot
-)
+        test_df=test,  # your test DataFrame
+        predictions=results["mean"],
+        uncertainties=results["uncertainty"],
+        datetime_col="date",  # Replace with your actual datetime column name
+        title="Test Predictions with Uncertainty (Static)",
+        interactive=True,  # Static Matplotlib plot
+    )

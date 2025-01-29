@@ -23,7 +23,7 @@ __all__ = [
     "LayerNorm",
     "LSTM",
     "GaussianProcessLayer",
-    "VariationalLayer"
+    "VariationalLayer",
 ]
 
 
@@ -44,7 +44,8 @@ class LayerNorm:
         )
         normalized = (X - mean) / jnp.sqrt(variance + epsilon)
         return scale * normalized + shift
-    
+
+
 class MaxPool2d:
     """
     A 2D max-pooling layer.
@@ -83,6 +84,7 @@ class MaxPool2d:
             window_strides=(1, 1, self.stride, self.stride),
             padding="VALID",  # For typical UNet, "VALID" pooling is common
         )
+
 
 class Linear:
     """
@@ -970,13 +972,9 @@ class FFTConv2d:
             channel_out = 0
             for in_c in range(self.in_channels):
                 # FFT of input
-                X_fft = jnp.fft.fft2(
-                    X_padded[:, in_c], s=(out_h, out_w)
-                )
+                X_fft = jnp.fft.fft2(X_padded[:, in_c], s=(out_h, out_w))
                 # FFT of weight
-                weight_fft = jnp.fft.fft2(
-                    weight[out_c, in_c], s=(out_h, out_w)
-                )
+                weight_fft = jnp.fft.fft2(weight[out_c, in_c], s=(out_h, out_w))
 
                 # Element-wise multiplication in frequency domain
                 conv_fft = X_fft * weight_fft
@@ -989,7 +987,9 @@ class FFTConv2d:
                     # To get the same size as input, center crop
                     start_h = (conv.shape[1] - height) // 2
                     start_w = (conv.shape[2] - width) // 2
-                    conv_cropped = conv[:, start_h:start_h + height, start_w:start_w + width]
+                    conv_cropped = conv[
+                        :, start_h : start_h + height, start_w : start_w + width
+                    ]
                 elif self.padding == "valid":
                     conv_cropped = conv[:, kernel_h - 1 : height, kernel_w - 1 : width]
                 else:
@@ -1006,6 +1006,7 @@ class FFTConv2d:
         output = jnp.stack(output, axis=1)  # Shape: (batch_size, out_channels, H, W)
 
         return output
+
 
 class TransposedConv2d:
     """
@@ -1091,6 +1092,7 @@ class TransposedConv2d:
         convolved += bias[None, :, None, None]  # Add bias per channel
         return convolved
 
+
 class FFTTransposedConv2d:
     """
     Implements a 2D transposed convolutional layer using FFT-based computation.
@@ -1105,7 +1107,7 @@ class FFTTransposedConv2d:
         out_channels: int,
         kernel_size: int | tuple,
         stride: int | tuple = 1,  # Add stride for compatibility
-        padding: str = "same",    # Added padding parameter
+        padding: str = "same",  # Added padding parameter
         name: str = "fft_transposed_conv2d",
     ):
         """
@@ -1203,13 +1205,9 @@ class FFTTransposedConv2d:
             channel_out = 0
             for in_c in range(self.in_channels):
                 # FFT of upsampled input
-                X_fft = jnp.fft.fft2(
-                    upsampled_padded[:, in_c], s=(conv_h, conv_w)
-                )
+                X_fft = jnp.fft.fft2(upsampled_padded[:, in_c], s=(conv_h, conv_w))
                 # FFT of weight (note the transpose for transposed convolution)
-                weight_fft = jnp.fft.fft2(
-                    weight[in_c, out_c], s=(conv_h, conv_w)
-                )
+                weight_fft = jnp.fft.fft2(weight[in_c, out_c], s=(conv_h, conv_w))
 
                 # Element-wise multiplication in frequency domain
                 conv_fft = X_fft * weight_fft
@@ -1222,7 +1220,9 @@ class FFTTransposedConv2d:
                     # To maintain the upsampled size
                     start_h = (conv.shape[1] - out_h) // 2
                     start_w = (conv.shape[2] - out_w) // 2
-                    conv_cropped = conv[:, start_h:start_h + out_h, start_w:start_w + out_w]
+                    conv_cropped = conv[
+                        :, start_h : start_h + out_h, start_w : start_w + out_w
+                    ]
                 elif self.padding == "valid":
                     # Calculate the amount to crop based on kernel size
                     conv_cropped = conv[:, kernel_h - 1 : out_h, kernel_w - 1 : out_w]
@@ -1237,7 +1237,9 @@ class FFTTransposedConv2d:
             output.append(channel_out)
 
         # Stack all output channels
-        output = jnp.stack(output, axis=1)  # Shape: (batch_size, out_channels, out_h, out_w)
+        output = jnp.stack(
+            output, axis=1
+        )  # Shape: (batch_size, out_channels, out_h, out_w)
 
         return output
 

@@ -5,6 +5,7 @@ import numpyro.distributions as dist
 from quantbayes.bnn import Module
 from typing import Optional
 
+
 class Unet(Module):
     """
     A simplified 2-level UNet for segmentation (binary by default).

@@ -5,14 +5,23 @@ from torch.distributions import Categorical
 import numpy as np
 import matplotlib.pyplot as plt
 
+
 # Transformer-based time series model
 class TransformerTimeSeriesModel(nn.Module):
-    def __init__(self, input_dim, emb_dim, num_heads, num_layers, output_dim, dropout=0.1):
+    def __init__(
+        self, input_dim, emb_dim, num_heads, num_layers, output_dim, dropout=0.1
+    ):
         super(TransformerTimeSeriesModel, self).__init__()
         self.embedding = nn.Linear(input_dim, emb_dim)
-        self.pos_embedding = nn.Parameter(torch.randn(1, 100, emb_dim))  # Maximum 100 time steps
-        self.encoder_layer = nn.TransformerEncoderLayer(d_model=emb_dim, nhead=num_heads, dropout=dropout, batch_first=True)
-        self.transformer_encoder = nn.TransformerEncoder(self.encoder_layer, num_layers=num_layers)
+        self.pos_embedding = nn.Parameter(
+            torch.randn(1, 100, emb_dim)
+        )  # Maximum 100 time steps
+        self.encoder_layer = nn.TransformerEncoderLayer(
+            d_model=emb_dim, nhead=num_heads, dropout=dropout, batch_first=True
+        )
+        self.transformer_encoder = nn.TransformerEncoder(
+            self.encoder_layer, num_layers=num_layers
+        )
         self.fc = nn.Linear(emb_dim, output_dim)
         self.softmax = nn.Softmax(dim=-1)
 
@@ -25,6 +34,7 @@ class TransformerTimeSeriesModel(nn.Module):
         probs = self.softmax(logits)
         return probs
 
+
 # Learned reward model
 class LearnedRewardModel(nn.Module):
     def __init__(self, input_dim):
@@ -32,18 +42,24 @@ class LearnedRewardModel(nn.Module):
         self.network = nn.Sequential(
             nn.Linear(input_dim, 128),
             nn.ReLU(),
-            nn.Linear(128, 1)  # Scalar reward output
+            nn.Linear(128, 1),  # Scalar reward output
         )
 
     def forward(self, x):
         return self.network(x)
 
+
 # Simulate stock price data
 def simulate_data(num_samples, sequence_length, num_features):
     np.random.seed(42)
-    data = np.cumsum(np.random.randn(num_samples, sequence_length, num_features), axis=1)
+    data = np.cumsum(
+        np.random.randn(num_samples, sequence_length, num_features), axis=1
+    )
     labels = (data[:, -1, 0] > data[:, -2, 0]).astype(int)  # Predict up (1) or down (0)
-    return torch.tensor(data, dtype=torch.float32), torch.tensor(labels, dtype=torch.long)
+    return torch.tensor(data, dtype=torch.float32), torch.tensor(
+        labels, dtype=torch.long
+    )
+
 
 # Visualization function
 def visualize_predictions(data, predictions, title="Predictions vs True Data"):
@@ -51,15 +67,29 @@ def visualize_predictions(data, predictions, title="Predictions vs True Data"):
     for i in range(min(len(data), 5)):  # Plot up to 5 sequences
         plt.plot(data[i, :, 0].numpy(), label=f"True Sequence {i + 1}")
         pred_label = "Up" if predictions[i] == 1 else "Down"
-        plt.scatter(len(data[i]) - 1, data[i, -1, 0].numpy(), c="red" if predictions[i] == 1 else "blue", label=f"Predicted: {pred_label}")
+        plt.scatter(
+            len(data[i]) - 1,
+            data[i, -1, 0].numpy(),
+            c="red" if predictions[i] == 1 else "blue",
+            label=f"Predicted: {pred_label}",
+        )
     plt.title(title)
     plt.xlabel("Time Steps")
     plt.ylabel("Stock Price")
     plt.legend()
     plt.show()
 
+
 # Training loop with learned reward model
-def train_with_learned_rewards(model, reward_model, data_loader, optimizer, reward_optimizer, gamma=0.99, visualize_after_epochs=5):
+def train_with_learned_rewards(
+    model,
+    reward_model,
+    data_loader,
+    optimizer,
+    reward_optimizer,
+    gamma=0.99,
+    visualize_after_epochs=5,
+):
     model.train()
     for epoch in range(epochs):
         total_loss = 0
@@ -73,8 +103,12 @@ def train_with_learned_rewards(model, reward_model, data_loader, optimizer, rewa
             log_probs = dist.log_prob(actions)
 
             # Compute rewards using the learned reward model
-            rewards = reward_model(inputs[:, -1, :])  # Use last time step as input to reward model
-            rewards = rewards.squeeze() * (actions == targets).float()  # Scale rewards by correctness
+            rewards = reward_model(
+                inputs[:, -1, :]
+            )  # Use last time step as input to reward model
+            rewards = (
+                rewards.squeeze() * (actions == targets).float()
+            )  # Scale rewards by correctness
 
             # Compute returns
             returns = []
@@ -93,7 +127,9 @@ def train_with_learned_rewards(model, reward_model, data_loader, optimizer, rewa
             optimizer.step()
 
             # Train reward model
-            reward_loss = nn.MSELoss()(rewards, (actions == targets).float())  # Fit reward to correctness
+            reward_loss = nn.MSELoss()(
+                rewards, (actions == targets).float()
+            )  # Fit reward to correctness
             reward_optimizer.zero_grad()
             reward_loss.backward()
             reward_optimizer.step()
@@ -105,9 +141,12 @@ def train_with_learned_rewards(model, reward_model, data_loader, optimizer, rewa
             model.eval()
             sample_data = data[:10]  # Take first 10 samples
             predictions = torch.argmax(model(sample_data), dim=-1)
-            visualize_predictions(sample_data, predictions, title=f"Epoch {epoch + 1} Predictions")
+            visualize_predictions(
+                sample_data, predictions, title=f"Epoch {epoch + 1} Predictions"
+            )
 
         print(f"Epoch {epoch+1}/{epochs}, Loss: {total_loss / len(data_loader)}")
+
 
 if __name__ == "__main__":
     # Hyperparameters
@@ -126,13 +165,19 @@ if __name__ == "__main__":
     features = 5
     data, labels = simulate_data(num_samples, sequence_length, features)
     dataset = torch.utils.data.TensorDataset(data, labels)
-    data_loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    data_loader = torch.utils.data.DataLoader(
+        dataset, batch_size=batch_size, shuffle=True
+    )
 
     # Initialize the model, reward model, and optimizers
-    model = TransformerTimeSeriesModel(input_dim, emb_dim, num_heads, num_layers, output_dim)
+    model = TransformerTimeSeriesModel(
+        input_dim, emb_dim, num_heads, num_layers, output_dim
+    )
     reward_model = LearnedRewardModel(input_dim)
     optimizer = optim.Adam(model.parameters(), lr=lr)
     reward_optimizer = optim.Adam(reward_model.parameters(), lr=lr)
 
     # Train the model and visualize
-    train_with_learned_rewards(model, reward_model, data_loader, optimizer, reward_optimizer)
+    train_with_learned_rewards(
+        model, reward_model, data_loader, optimizer, reward_optimizer
+    )

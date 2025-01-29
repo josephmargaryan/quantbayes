@@ -11,6 +11,7 @@ from typing import Optional, List, Tuple, Union
 from datetime import datetime
 import logging
 
+
 class TimeSeriesPreprocessor:
     def __init__(
         self,
@@ -195,19 +196,25 @@ class TimeSeriesPreprocessor:
 
         # Add hour if applicable
         if hasattr(df[self.datetime_col].dt, "hour"):
-            if (df[self.datetime_col].dt.hour.nunique() > 1):  # Only add if hours are relevant
+            if (
+                df[self.datetime_col].dt.hour.nunique() > 1
+            ):  # Only add if hours are relevant
                 df["hour"] = df[self.datetime_col].dt.hour
                 self.logger.debug("Added 'hour' feature.")
 
         # Add minute if applicable
         if hasattr(df[self.datetime_col].dt, "minute"):
-            if (df[self.datetime_col].dt.minute.nunique() > 1):  # Only add if minutes are relevant
+            if (
+                df[self.datetime_col].dt.minute.nunique() > 1
+            ):  # Only add if minutes are relevant
                 df["minute"] = df[self.datetime_col].dt.minute
                 self.logger.debug("Added 'minute' feature.")
 
         # Add second if applicable
         if hasattr(df[self.datetime_col].dt, "second"):
-            if (df[self.datetime_col].dt.second.nunique() > 1):  # Only add if seconds are relevant
+            if (
+                df[self.datetime_col].dt.second.nunique() > 1
+            ):  # Only add if seconds are relevant
                 df["second"] = df[self.datetime_col].dt.second
                 self.logger.debug("Added 'second' feature.")
 
@@ -222,7 +229,9 @@ class TimeSeriesPreprocessor:
         """
         # Number of samples
         n = len(series)
-        self.logger.info(f"Performing FFT on a series of length {n} with period {period}.")
+        self.logger.info(
+            f"Performing FFT on a series of length {n} with period {period}."
+        )
         # Perform FFT
         fft_values = np.fft.fft(series)
         # Frequencies

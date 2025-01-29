@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from quantbayes.forecast.nn.base import MonteCarloMixin, BaseModel
 
+
 class WaveNetResidualBlock(nn.Module):
     """
     A single residual block in WaveNet:
@@ -10,12 +11,15 @@ class WaveNetResidualBlock(nn.Module):
       - 1x1 conv for residual
       - 1x1 conv for skip
     """
-    def __init__(self,
-                 in_channels,
-                 dilation,
-                 kernel_size=2,
-                 residual_channels=32,
-                 skip_channels=32):
+
+    def __init__(
+        self,
+        in_channels,
+        dilation,
+        kernel_size=2,
+        residual_channels=32,
+        skip_channels=32,
+    ):
         super().__init__()
         self.dilation = dilation
         self.kernel_size = kernel_size
@@ -24,16 +28,18 @@ class WaveNetResidualBlock(nn.Module):
         self.padding = (kernel_size - 1) * dilation
 
         self.conv_filter = nn.Conv1d(
-            in_channels, residual_channels,
+            in_channels,
+            residual_channels,
             kernel_size=kernel_size,
             dilation=dilation,
-            padding=self.padding
+            padding=self.padding,
         )
         self.conv_gate = nn.Conv1d(
-            in_channels, residual_channels,
+            in_channels,
+            residual_channels,
             kernel_size=kernel_size,
             dilation=dilation,
-            padding=self.padding
+            padding=self.padding,
         )
 
         # 1x1 conv for residual and skip outputs
@@ -45,22 +51,28 @@ class WaveNetResidualBlock(nn.Module):
         x: (B, in_channels, L)
         Returns:
           out => same shape as x (residual updated)
-          skip => (B, skip_channels, L) 
+          skip => (B, skip_channels, L)
         """
         # 1) Convolution outputs
-        filter_out = self.conv_filter(x)   # shape => (B, residual_channels, L + self.padding)
-        gate_out   = self.conv_gate(x)     # shape => (B, residual_channels, L + self.padding)
+        filter_out = self.conv_filter(
+            x
+        )  # shape => (B, residual_channels, L + self.padding)
+        gate_out = self.conv_gate(
+            x
+        )  # shape => (B, residual_channels, L + self.padding)
 
         # 2) Trim the extra frames on the right to keep length = L
         L = x.size(2)  # original length
         filter_out = filter_out[:, :, :L]  # (B, residual_channels, L)
-        gate_out   = gate_out[:, :, :L]    # (B, residual_channels, L)
+        gate_out = gate_out[:, :, :L]  # (B, residual_channels, L)
 
         # 3) Gated activation
-        gated = torch.tanh(filter_out) * torch.sigmoid(gate_out)  # (B, residual_channels, L)
+        gated = torch.tanh(filter_out) * torch.sigmoid(
+            gate_out
+        )  # (B, residual_channels, L)
 
         # 4) Skip path
-        skip = self.conv_skip(gated)       # (B, skip_channels, L)
+        skip = self.conv_skip(gated)  # (B, skip_channels, L)
 
         # 5) Residual path
         residual = self.conv_residual(gated)  # (B, in_channels, L)
@@ -75,12 +87,15 @@ class WaveNet(MonteCarloMixin, BaseModel):
       Input shape:  (B, seq_len, input_dim)
       Output shape: (B, 1)
     """
-    def __init__(self,
-                 input_dim=1,        # #features
-                 residual_channels=32,
-                 skip_channels=32,
-                 dilation_depth=6,   # number of layers
-                 kernel_size=2):
+
+    def __init__(
+        self,
+        input_dim=1,  # #features
+        residual_channels=32,
+        skip_channels=32,
+        dilation_depth=6,  # number of layers
+        kernel_size=2,
+    ):
         super().__init__()
         self.input_dim = input_dim
         self.residual_channels = residual_channels
@@ -90,25 +105,23 @@ class WaveNet(MonteCarloMixin, BaseModel):
 
         # 1) initial 1x1 conv: map input_dim => residual_channels
         self.input_conv = nn.Conv1d(
-            in_channels=input_dim,
-            out_channels=residual_channels,
-            kernel_size=1
+            in_channels=input_dim, out_channels=residual_channels, kernel_size=1
         )
 
         # 2) stack of residual blocks with dilations [1,2,4,...2^(dilation_depth-1)]
         self.blocks = nn.ModuleList()
         for i in range(dilation_depth):
-            dilation = 2 ** i
+            dilation = 2**i
             block = WaveNetResidualBlock(
                 in_channels=residual_channels,
                 dilation=dilation,
                 kernel_size=kernel_size,
                 residual_channels=residual_channels,
-                skip_channels=skip_channels
+                skip_channels=skip_channels,
             )
             self.blocks.append(block)
 
-        # 3) Combine skip outputs. 
+        # 3) Combine skip outputs.
         # We'll do two 1x1 conv layers on the sum of all skip connections
         self.postprocess1 = nn.Conv1d(skip_channels, skip_channels, kernel_size=1)
         self.postprocess2 = nn.Conv1d(skip_channels, skip_channels, kernel_size=1)
@@ -155,6 +168,7 @@ class WaveNet(MonteCarloMixin, BaseModel):
 
 if __name__ == "__main__":
     import torch
+
     batch_size = 8
     seq_len = 30
     input_dim = 2
@@ -164,7 +178,7 @@ if __name__ == "__main__":
         residual_channels=32,
         skip_channels=32,
         dilation_depth=4,  # => dilations = 1,2,4,8
-        kernel_size=2
+        kernel_size=2,
     )
 
     x = torch.randn(batch_size, seq_len, input_dim)

@@ -1,8 +1,9 @@
-from quantbayes.bnn.layers import Conv1d, Linear, Module 
+from quantbayes.bnn.layers import Conv1d, Linear, Module
 import jax
 import jax.numpy as jnp
-import numpyro.distributions as dist 
+import numpyro.distributions as dist
 import numpyro
+
 
 class BayesianCNN(Module):
     """
@@ -54,18 +55,22 @@ class BayesianCNN(Module):
 
         return logits
 
+
 def test_bayesian_cnn():
     rng = jax.random.PRNGKey(0)
     batch_size, in_channels, width = 50, 2, 20
     X = jax.random.normal(rng, (batch_size, in_channels, width))
     true_weights = jax.random.normal(rng, (in_channels,))
-    y = jnp.sum(X[..., -1].transpose(1,0) * true_weights[:,None], axis=0) + 0.1*jax.random.normal(rng, (batch_size,))
+    y = jnp.sum(
+        X[..., -1].transpose(1, 0) * true_weights[:, None], axis=0
+    ) + 0.1 * jax.random.normal(rng, (batch_size,))
 
     model = BayesianCNN(in_channels=2, out_channels=4, kernel_size=3, method="nuts")
     model.compile(num_warmup=200, num_samples=500)  # MCMC parameters
     model.fit(X, y, rng_key=rng)
     samples = model.get_samples
     print("BayesianCNN MCMC done! Posterior samples keys:", samples.keys())
+
 
 if __name__ == "__main__":
     test_bayesian_cnn()

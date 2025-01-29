@@ -1,6 +1,5 @@
 from quantbayes.bnn.model_zoo import Unet, AttentionUNet, FFTUnet, ViT
-import jax 
-
+import jax
 
 
 # Example usage of AttentionUnet:
@@ -8,7 +7,9 @@ rng_key = jax.random.PRNGKey(42)
 X = jax.random.normal(rng_key, shape=(4, 1, 32, 32))  # 4 images, 1 channel, 32X32
 y = jax.random.bernoulli(rng_key, p=0.5, shape=(4, 1, 32, 32))
 
-fft_unet = AttentionUNet(in_channels=1, out_channels=1, method="svi", task_type="image_segmentation")
+fft_unet = AttentionUNet(
+    in_channels=1, out_channels=1, method="svi", task_type="image_segmentation"
+)
 fft_unet.compile(num_warmup=50, num_samples=100, num_chains=1)
 fft_unet.fit(X, y, rng_key, num_steps=10)
 preds_fft = fft_unet.predict(X, rng_key, posterior="logits")

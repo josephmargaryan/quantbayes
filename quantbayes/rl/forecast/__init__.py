@@ -1,3 +1,3 @@
-from .lstm import RLTimeSeriesModel 
+from .lstm import RLTimeSeriesModel
 
 __all__ = ["RLTimeSeriesModel"]

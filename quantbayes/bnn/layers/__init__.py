@@ -1,6 +1,6 @@
 from .base import Module
 
-from .layers import *  
+from .layers import *
 
 __all__ = [
     "Module",
@@ -22,6 +22,5 @@ __all__ = [
     "LayerNorm",
     "LSTM",
     "GaussianProcessLayer",
-    "VariationalLayer"
+    "VariationalLayer",
 ]
-

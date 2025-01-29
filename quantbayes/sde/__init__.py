@@ -17,5 +17,5 @@ __all__ = [
     "BayesianMertonJumpDiffusion",
     "BayesianOrnsteinUhlenbeck",
     "BayesianGeometricBrownianMotion",
-    "BayesianHestonModel"
+    "BayesianHestonModel",
 ]

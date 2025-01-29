@@ -171,25 +171,38 @@ class Module:
             return self.stein_result
         raise ValueError("SteinVI is not the selected inference method.")
 
-    def visualize(self, X, y=None, num_classes=None, features=(0, 1), resolution=100, feature_index=None):
+    def visualize(
+        self,
+        X,
+        y=None,
+        num_classes=None,
+        features=(0, 1),
+        resolution=100,
+        feature_index=None,
+    ):
         """
         Visualizes model outputs based on the task type.
         """
         if self.task_type == "multiclass":
-            assert num_classes is not None, "num_classes must be provided for multiclass visualization."
+            assert (
+                num_classes is not None
+            ), "num_classes must be provided for multiclass visualization."
             self._visualize_multiclass(X, y, num_classes, features, resolution)
         elif self.task_type == "binary":
             self._visualize_binary(X, y, features, resolution)
         elif self.task_type == "regression":
             self._visualize_regression(X, y, feature_index)
         elif self.task_type == "image_classification":
-            assert num_classes is not None, "num_classes must be provided for image classification visualization."
+            assert (
+                num_classes is not None
+            ), "num_classes must be provided for image classification visualization."
             self._visualize_image_classification(X, y, num_classes)
         elif self.task_type == "image_segmentation":
-            self._visualize_image_segmentation(X, y)  # Automatically handle segmentation
+            self._visualize_image_segmentation(
+                X, y
+            )  # Automatically handle segmentation
         else:
             raise ValueError(f"Unknown task type: {self.task_type}")
-
 
     def _visualize_image_classification(self, X, y, num_classes):
         """
@@ -208,11 +221,17 @@ class Module:
         elif X.ndim == 3:  # Already patchified: (batch_size, num_patches, patch_dim)
             patches = X
         else:
-            raise ValueError(f"Unexpected input shape: {X.shape}. Expected 4D images or 3D patches.")
+            raise ValueError(
+                f"Unexpected input shape: {X.shape}. Expected 4D images or 3D patches."
+            )
 
         # Predict on patches
-        pred_samples = self.predict(patches, jax.random.PRNGKey(0))  # [num_samples, batch_size, num_classes]
-        mean_preds = jax.nn.softmax(pred_samples.mean(axis=0), axis=-1)  # [batch_size, num_classes]
+        pred_samples = self.predict(
+            patches, jax.random.PRNGKey(0)
+        )  # [num_samples, batch_size, num_classes]
+        mean_preds = jax.nn.softmax(
+            pred_samples.mean(axis=0), axis=-1
+        )  # [batch_size, num_classes]
         predicted_classes = jnp.argmax(mean_preds, axis=-1)  # [batch_size]
 
         # Visualization
@@ -232,14 +251,18 @@ class Module:
             if X.ndim == 4:  # If input is image data
                 img = X[i].transpose(1, 2, 0)  # Convert to (H, W, C) for visualization
             else:  # If input is patches, visualization may be harder
-                img = jnp.zeros((self.image_size, self.image_size, self.in_channels))  # Placeholder blank image
+                img = jnp.zeros(
+                    (self.image_size, self.image_size, self.in_channels)
+                )  # Placeholder blank image
 
             true_label = y[i] if y is not None else None
             pred_label = predicted_classes[i]
             pred_probs = mean_preds[i]
 
             # Display image
-            ax.imshow(img.squeeze(), cmap="gray" if X.ndim == 4 and X.shape[1] == 1 else None)
+            ax.imshow(
+                img.squeeze(), cmap="gray" if X.ndim == 4 and X.shape[1] == 1 else None
+            )
             ax.axis("off")
 
             # Title with predictions and uncertainty
@@ -412,10 +435,13 @@ class Module:
             Number of posterior samples for uncertainty estimation.
         """
         # Predict on input images
-        pred_samples = self.predict(X, jax.random.PRNGKey(0))  # [num_samples, batch, 1, H, W]
+        pred_samples = self.predict(
+            X, jax.random.PRNGKey(0)
+        )  # [num_samples, batch, 1, H, W]
         mean_preds = jax.nn.sigmoid(pred_samples.mean(axis=0))  # [batch, 1, H, W]
         uncertainty = -(
-            mean_preds * jnp.log(mean_preds + 1e-9) + (1 - mean_preds) * jnp.log(1 - mean_preds + 1e-9)
+            mean_preds * jnp.log(mean_preds + 1e-9)
+            + (1 - mean_preds) * jnp.log(1 - mean_preds + 1e-9)
         )  # Entropy [batch, 1, H, W]
 
         # Visualization
@@ -447,7 +473,9 @@ class Module:
 
             # Overlay ground truth on predicted mask (optional)
             if y is not None:
-                axes[i, 1].contour(true_mask, colors="red", linewidths=1, alpha=0.7, levels=[0.5])
+                axes[i, 1].contour(
+                    true_mask, colors="red", linewidths=1, alpha=0.7, levels=[0.5]
+                )
 
             # Plot uncertainty heatmap
             im = axes[i, 2].imshow(unc_map, cmap="viridis")

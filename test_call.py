@@ -30,7 +30,9 @@ class TransposedConvTest(bnn.Module):
         X_conv = conv(X)  # Output shape: (batch_size, out_channels, height, width)
 
         # Flatten the output for classification
-        X_flat = X_conv.reshape((X_conv.shape[0], -1))  # (batch_size, flattened_features)
+        X_flat = X_conv.reshape(
+            (X_conv.shape[0], -1)
+        )  # (batch_size, flattened_features)
 
         # Use the predefined Linear layer
         dense = bnn.Linear(in_features=X_flat.shape[-1], out_features=1, name="dense")
@@ -39,6 +41,7 @@ class TransposedConvTest(bnn.Module):
         # Define binary classification likelihood
         probs = jax.nn.sigmoid(logits)
         numpyro.sample("obs", dist.Bernoulli(probs=probs), obs=y)
+
 
 class FFTTransposedConvTest(bnn.Module):
     def __init__(self):
@@ -57,7 +60,9 @@ class FFTTransposedConvTest(bnn.Module):
         X_conv = conv(X)  # Output shape: (batch_size, out_channels, height, width)
 
         # Flatten the output for classification
-        X_flat = X_conv.reshape((X_conv.shape[0], -1))  # (batch_size, flattened_features)
+        X_flat = X_conv.reshape(
+            (X_conv.shape[0], -1)
+        )  # (batch_size, flattened_features)
 
         # Use FFTLinear for initial transformation
         fft_dense = bnn.FFTLinear(in_features=X_flat.shape[-1], name="fft_dense")
@@ -70,7 +75,6 @@ class FFTTransposedConvTest(bnn.Module):
         # Define binary classification likelihood
         probs = jax.nn.sigmoid(logits.squeeze(-1))  # Squeeze to match (batch_size,)
         numpyro.sample("obs", dist.Bernoulli(probs=probs), obs=y)
-
 
 
 import jax

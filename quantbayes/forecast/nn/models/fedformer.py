@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+
 # ---------------------------------------------------------------------
 # 1. Series Decomposition
 #    This is typically done with a moving-average filter to get "trend"
@@ -11,6 +12,7 @@ import torch.nn.functional as F
 # ---------------------------------------------------------------------
 class SeriesDecomposition(nn.Module):
     """Decompose a time series into trend + seasonal using simple moving average."""
+
     def __init__(self, kernel_size=25):
         super().__init__()
         # Here, we create a 1D depthwise-conv that acts like a moving average
@@ -39,20 +41,22 @@ class SeriesDecomposition(nn.Module):
         trend = []
         pad = self.kernel_size // 2
         # We can pad the time dimension so the convolution is "same" sized
-        x_pad = F.pad(x.transpose(1,2), (pad, pad), mode='reflect')  # (B, C, L+2*pad)
+        x_pad = F.pad(x.transpose(1, 2), (pad, pad), mode="reflect")  # (B, C, L+2*pad)
         # Now x_pad shape is [B, C, L + kernel_size - 1]
         # We'll do a moving average by convolving with 1/kernel_size
         # shape => (B, C, L)
         for i in range(C):
             # conv1d for that channel
             # But let's do direct
-            channel_i = x_pad[:, i:i+1, :]  # shape [B, 1, L+2pad]
-            weight = torch.ones(1, 1, self.kernel_size, device=x.device) / self.kernel_size
+            channel_i = x_pad[:, i : i + 1, :]  # shape [B, 1, L+2pad]
+            weight = (
+                torch.ones(1, 1, self.kernel_size, device=x.device) / self.kernel_size
+            )
             # conv1d
             trend_i = F.conv1d(channel_i, weight, padding=0)  # [B, 1, L]
             trend.append(trend_i)
         trend = torch.cat(trend, dim=1)  # [B, C, L]
-        trend = trend.transpose(1,2)     # [B, L, C]
+        trend = trend.transpose(1, 2)  # [B, L, C]
         seasonal = x - trend
         return trend, seasonal
 
@@ -66,6 +70,7 @@ class SeriesDecomposition(nn.Module):
 # ---------------------------------------------------------------------
 class FourierBlock(nn.Module):
     """A simple frequency block that uses 1D FFT -> processing -> iFFT."""
+
     def __init__(self, top_k_freq=16):
         super().__init__()
         self.top_k_freq = top_k_freq
@@ -119,6 +124,7 @@ class FedformerEncoderLayer(nn.Module):
       - Then has a feed-forward path
       - Optionally merges 'trend' back or passes it onward
     """
+
     def __init__(self, d_model=64, top_k_freq=16, dropout=0.1):
         super().__init__()
         self.fourier_block = FourierBlock(top_k_freq=top_k_freq)
@@ -147,13 +153,20 @@ class FedformerEncoderLayer(nn.Module):
 
 class FedformerEncoder(nn.Module):
     """Stack multiple FedformerEncoderLayer with series decomposition each time."""
-    def __init__(self, d_model=64, layer_num=2, decomp_ks=25, top_k_freq=16, dropout=0.1):
+
+    def __init__(
+        self, d_model=64, layer_num=2, decomp_ks=25, top_k_freq=16, dropout=0.1
+    ):
         super().__init__()
         self.decomp = SeriesDecomposition(kernel_size=decomp_ks)
-        self.layers = nn.ModuleList([
-            FedformerEncoderLayer(d_model=d_model, top_k_freq=top_k_freq, dropout=dropout)
-            for _ in range(layer_num)
-        ])
+        self.layers = nn.ModuleList(
+            [
+                FedformerEncoderLayer(
+                    d_model=d_model, top_k_freq=top_k_freq, dropout=dropout
+                )
+                for _ in range(layer_num)
+            ]
+        )
         self.layernorm = nn.LayerNorm(d_model)
 
     def forward(self, x):
@@ -185,10 +198,11 @@ class Fedformer(BaseModel, MonteCarloMixin):
       - Input linear embedding
       - FedformerEncoder
       - Output projection (single-step forecast -> we take last step's output)
-    
+
     Input shape: (B, L, input_dim)
     Output shape: (B, 1)
     """
+
     def __init__(
         self,
         input_dim,
@@ -196,7 +210,7 @@ class Fedformer(BaseModel, MonteCarloMixin):
         layer_num=2,
         top_k_freq=16,
         dropout=0.1,
-        kernel_size=25
+        kernel_size=25,
     ):
         super().__init__()
         self.input_dim = input_dim
@@ -209,7 +223,7 @@ class Fedformer(BaseModel, MonteCarloMixin):
             layer_num=layer_num,
             decomp_ks=kernel_size,
             top_k_freq=top_k_freq,
-            dropout=dropout
+            dropout=dropout,
         )
         # 3) Final projection
         self.projection = nn.Linear(d_model, 1)
@@ -245,7 +259,7 @@ if __name__ == "__main__":
         layer_num=2,
         top_k_freq=10,
         dropout=0.1,
-        kernel_size=15
+        kernel_size=15,
     )
     x = torch.randn(batch_size, seq_len, input_dim)
     y = model(x)

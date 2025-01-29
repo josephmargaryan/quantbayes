@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
+
 # -----------------------
 # 1) Define Generator & Discriminator
 # -----------------------
@@ -29,7 +30,7 @@ class Discriminator(nn.Module):
             nn.Linear(hidden_dim, hidden_dim),
             nn.LeakyReLU(0.2),
             nn.Linear(hidden_dim, 1),
-            nn.Sigmoid()
+            nn.Sigmoid(),
         )
 
     def forward(self, x):
@@ -40,11 +41,14 @@ class Discriminator(nn.Module):
 # 2) Training Loop
 # -----------------------
 def train_gan(
-    generator, discriminator,
+    generator,
+    discriminator,
     data_loader,
-    g_optimizer, d_optimizer,
-    noise_dim=16, epochs=5,
-    device='cpu'
+    g_optimizer,
+    d_optimizer,
+    noise_dim=16,
+    epochs=5,
+    device="cpu",
 ):
     criterion = nn.BCELoss()
 
@@ -52,7 +56,7 @@ def train_gan(
     discriminator.to(device)
 
     for epoch in range(epochs):
-        for real_data, in data_loader:
+        for (real_data,) in data_loader:
             real_data = real_data.to(device)
 
             batch_size = real_data.size(0)
@@ -78,14 +82,18 @@ def train_gan(
             z = torch.randn(batch_size, noise_dim, device=device)
             fake_data = generator(z)
             preds_fake = discriminator(fake_data)
-            labels_gen = torch.ones(batch_size, 1, device=device)  # generator wants disc to say "1"
+            labels_gen = torch.ones(
+                batch_size, 1, device=device
+            )  # generator wants disc to say "1"
             g_loss = criterion(preds_fake, labels_gen)
 
             g_optimizer.zero_grad()
             g_loss.backward()
             g_optimizer.step()
 
-        print(f"Epoch [{epoch+1}/{epochs}], D_loss: {d_loss.item():.4f}, G_loss: {g_loss.item():.4f}")
+        print(
+            f"Epoch [{epoch+1}/{epochs}], D_loss: {d_loss.item():.4f}, G_loss: {g_loss.item():.4f}"
+        )
 
 
 # -----------------------
