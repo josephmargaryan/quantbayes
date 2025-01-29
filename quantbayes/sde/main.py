@@ -1,5 +1,4 @@
 import numpy as np
-import matplotlib.pyplot as plt
 
 from stochastic_model import StochasticModel
 from sde_gbm import GeometricBrownianMotion
