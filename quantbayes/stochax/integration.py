@@ -168,3 +168,47 @@ visualize(X_test, y_test, posteriors, feature_index=0)
 mean_preds = posteriors.mean(axis=0)
 mse = mean_squared_error(np.array(y_test), np.array(mean_preds))
 print(f"MSE: {mse}")
+
+
+
+"""
+For models with dropout we need o use the apply_rng
+
+model_config = {
+    'in_channels': 1,
+    'img_size': 28,
+    'patch_size': 4,
+    'emb_dim': 768,
+    'num_layers': 12,
+    'num_heads': 12,
+    'mlp_dim': 3072,
+    'num_classes': 10,
+    'dropout_rate': 0.1
+}
+
+vit = VisionTransformer(**model_config)
+def model(X, y=None, **kwargs):
+    assert X.shape[1:] == (28, 28, 1), f"Expected (28, 28, 1), got {X.shape}"
+    test = flax_module(
+        "vit", vit, input_shape=(1, 28, 28, 1), apply_rng=["dropout"]
+    )
+    logits = numpyro.deterministic("logits", test(X, rngs={"dropout": numpyro.prng_key()}))
+    with numpyro.plate("data", len(X)):
+        numpyro.sample("obs", dist.Categorical(logits=logits), obs=y)
+
+
+dummy_input = jnp.ones((1, 28, 28, 1))  # Single grayscale image
+
+# Initialize model parameters
+rngs = {'params': random.PRNGKey(0), 'dropout': random.PRNGKey(1)}
+params = vit.init(rngs, dummy_input)
+
+# Training mode (dropout enabled)
+train_logits = vit.apply({'params': params['params']}, dummy_input, train=True, rngs={'dropout': random.PRNGKey(2)})
+print(f"Logits (train): {train_logits.shape}")
+
+# Evaluation mode (dropout disabled)
+eval_logits = vit.apply({'params': params['params']}, dummy_input, train=False)
+print(f"Logits (eval): {eval_logits.shape}")
+
+"""
