@@ -1,4 +1,4 @@
-from .test_integration import (
+from .dmm import (
     LSTMTransition,
     TransformerTransition,
     ConvTransition,

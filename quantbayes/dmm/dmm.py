@@ -6,7 +6,7 @@ import numpyro
 import numpyro.distributions as dist
 from numpyro.infer import SVI, Trace_ELBO, Predictive
 from numpyro.optim import Adam
-from numpyro.contrib.module import flax_module
+from numpyro.contrib.module import flax_module, random_flax_module
 import jax.random as random
 import numpy as np
 import matplotlib.pyplot as plt
@@ -1205,14 +1205,11 @@ def train_dmm(
 ##############################################################################
 
 
-def synthetic_data_dmm(batch_size=20, T=15, z_dim=2, x_dim=3, seed=0):
-    """
-    Generate synthetic linear-Gaussian data for DMM demonstration.
-    """
+def synthetic_data_dmm(batch_size=20, T=50, z_dim=2, x_dim=3, seed=0):
     rng = np.random.default_rng(seed)
 
-    A = 0.8 * np.eye(z_dim)  # Transition matrix
-    B = rng.normal(scale=0.5, size=(x_dim, z_dim))  # Emission matrix
+    A = np.array([[0.95, -0.2], [0.2, 0.95]])  # More structured transitions
+    B = np.array([[1, 0], [0, 1], [0.5, -0.5]])  # Fixed emission structure
 
     Z = np.zeros((batch_size, T, z_dim))
     X = np.zeros((batch_size, T, x_dim))
@@ -1220,12 +1217,12 @@ def synthetic_data_dmm(batch_size=20, T=15, z_dim=2, x_dim=3, seed=0):
     for b in range(batch_size):
         z_prev = rng.normal(size=(z_dim,))
         for t in range(T):
-            if t == 0:
-                Z[b, t, :] = z_prev
-            else:
-                Z[b, t, :] = A @ Z[b, t - 1, :] + 0.1 * rng.normal(size=(z_dim,))
-            X[b, t, :] = B @ Z[b, t, :] + 0.1 * rng.normal(size=(x_dim,))
+            Z[b, t, :] = A @ z_prev + 0.05 * rng.normal(size=(z_dim,))
+            z_prev = Z[b, t, :]
+            X[b, t, :] = B @ Z[b, t, :] + 0.05 * rng.normal(size=(x_dim,))
+    
     return jnp.array(X), jnp.array(Z)
+
 
 
 ##############################################################################
@@ -1286,10 +1283,12 @@ def visualize_latent_space(
 
     for i in range(batch_size):
         axes[i].plot(
-            Z_true[i, :, dim_x], Z_true[i, :, dim_y], label="True Z", marker="o"
+            Z_true[i, :, dim_x], Z_true[i, :, dim_y], label="True Z",
+            color="dodgerblue", linewidth=0.5, alpha=0.7
         )
         axes[i].plot(
-            z_mean[i, :, dim_x], z_mean[i, :, dim_y], label="Inferred Z", marker="x"
+            z_mean[i, :, dim_x], z_mean[i, :, dim_y], label="Inferred Z", 
+            color="crimson", linewidth=0.5, alpha=0.7
         )
         axes[i].set_title(f"Batch {i+1}")
         axes[i].set_xlabel(f"z_dim {dim_x}")
@@ -1367,19 +1366,92 @@ def visualize_reconstructions(
         plt.figure(figsize=(12, 6))
         for i in range(X.shape[0]):
             plt.plot(
-                X[i, :, dim], label=f"True X (dim={dim})" if i == 0 else "", alpha=0.5
+                X[i, :, dim], label=f"True X (dim={dim})" if i == 0 else "", 
+                color="dodgerblue", linewidth=0.5, alpha=0.7
             )
             plt.plot(
                 reconstructed_X[i, :, dim],
                 "--",
                 label=f"Reconstructed X (dim={dim})" if i == 0 else "",
-                alpha=0.7,
+                color="crimson", linewidth=0.5, alpha=0.7
             )
         plt.title(f"True vs Reconstructed Observations (dim={dim})")
         plt.xlabel("Time step")
         plt.ylabel(f"x_dim {dim}")
         plt.legend()
         plt.show()
+
+
+################### 
+# Bidirectional 
+
+class BiLSTMEncoder(nn.Module):
+    hidden_dim: int
+    x_dim: int
+    z_dim: int
+
+    @nn.compact
+    def __call__(self, x_seq: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray]:
+        batch_size, T, _ = x_seq.shape
+        lstm_fw = nn.LSTMCell(features=self.hidden_dim)
+        lstm_bw = nn.LSTMCell(features=self.hidden_dim)
+
+        carry_fw = lstm_fw.initialize_carry(jax.random.PRNGKey(0), (batch_size, self.hidden_dim))
+        carry_bw = lstm_bw.initialize_carry(jax.random.PRNGKey(1), (batch_size, self.hidden_dim))
+
+        mu_list, log_sigma_list = [], []
+
+        for t in range(T):
+            carry_fw, h_fw = lstm_fw(carry_fw, x_seq[:, t, :])
+            carry_bw, h_bw = lstm_bw(carry_bw, x_seq[:, T - t - 1, :])  # Reverse direction
+            h_combined = jnp.concatenate([h_fw, h_bw], axis=-1)  # Merge forward & backward
+
+            x = nn.relu(nn.Dense(self.hidden_dim)(h_combined))
+            out = nn.Dense(2 * self.z_dim)(x)
+            mu_t, log_sigma_t = jnp.split(out, 2, axis=-1)
+
+            mu_list.append(mu_t)
+            log_sigma_list.append(log_sigma_t)
+
+        mu_seq = jnp.stack(mu_list, axis=1)
+        log_sigma_seq = jnp.stack(log_sigma_list, axis=1)
+        return mu_seq, log_sigma_seq
+
+class StructuredTransition(nn.Module):
+    z_dim: int
+    hidden_dim: int
+
+    @nn.compact
+    def __call__(self, z_prev: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray]:
+        A = self.param("A", nn.initializers.orthogonal(), (self.z_dim, self.z_dim))
+        b = self.param("b", nn.initializers.zeros, (self.z_dim,))
+        
+        mu_z = jnp.dot(z_prev, A) + b
+        log_sigma_z = nn.Dense(self.z_dim)(z_prev)
+        return mu_z, log_sigma_z
+
+def bilstm_guide(X: jnp.ndarray, z_dim: int, hidden_dim: int, x_dim: int):
+    """
+    Guide function using a BiLSTM encoder for variational inference q(z_t | x_{1:T}).
+    """
+    batch_size, T, _ = X.shape
+
+    # Register the BiLSTM encoder with NumPyro
+    enc_module = flax_module(
+        "bilstm_enc",
+        BiLSTMEncoder(hidden_dim=hidden_dim, x_dim=x_dim, z_dim=z_dim),
+        input_shape=(batch_size, T, x_dim),
+    )
+
+    # Run the BiLSTM encoder to get q(z_t | x_{1:T})
+    mu_seq, log_sigma_seq = enc_module(X)
+
+    # Sample z_t for each timestep
+    for t in range(T):
+        numpyro.sample(
+            f"z_{t}",
+            dist.Normal(mu_seq[:, t], jnp.exp(log_sigma_seq[:, t])).to_event(1),
+        )
 
 
 def demo_dmm():
@@ -1424,6 +1496,8 @@ def demo_dmm():
         num_heads=4,  # Number of attention heads
     )
 
+    structured_transition = StructuredTransition(hidden_dim=16, z_dim=2)
+    bilstm_encoder = BiLSTMEncoder(hidden_dim=16, x_dim=3, z_dim=2)
     # Generate synthetic data
     X, Z = synthetic_data_dmm(batch_size=20, T=15, z_dim=2, x_dim=3)
     print("Synthetic data shape:", X.shape, "(batch_size, T, x_dim)")
@@ -1431,12 +1505,12 @@ def demo_dmm():
     # Train DMM
     params, losses = train_dmm(
         X,
-        transition=transformer_lstm_transition,
-        emission=transformer_lstm_emission,
+        transition=structured_transition,
+        emission=mlp_emission,
         z_dim=2,
         hidden_dim=16,
-        num_steps=10,
-        guide=transformer_lstm_guide,
+        num_steps=100,
+        guide=bilstm_guide,
     )
 
     print("Final DMM loss (Negative ELBO):", losses[-1])
@@ -1449,17 +1523,17 @@ def demo_dmm():
         X=X,
         Z_true=Z,
         params=params,
-        guide=transformer_lstm_guide,
+        guide=bilstm_guide,
         z_dim=2,
-        plot_dims=(0, 2),
+        plot_dims=(0, 1),
     )
 
     # Visualize reconstructions
     visualize_reconstructions(
         X=X,
         params=params,
-        emission=transformer_lstm_emission,
-        guide=transformer_lstm_guide,
+        emission=mlp_emission,
+        guide=bilstm_guide,
         z_dim=2,
         hidden_dim=16,
         x_dim=3,
