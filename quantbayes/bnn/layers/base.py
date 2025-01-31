@@ -275,7 +275,7 @@ class Module:
         plt.tight_layout()
         plt.show()
 
-    def _visualize_multiclass(self, X, y, num_classes, features, resolution):
+    def _visualize_multiclass(self, X, y, num_classes, features, resolution, posterior):
         feature_1, feature_2 = features
         X_selected = X[:, [feature_1, feature_2]]
         x_min, x_max = X_selected[:, 0].min() - 1, X_selected[:, 0].max() + 1
@@ -332,7 +332,7 @@ class Module:
         plt.grid(True)
         plt.show()
 
-    def _visualize_binary(self, X, y, features, resolution):
+    def _visualize_binary(self, X, y, features, resolution, posterior):
         feature_1, feature_2 = features
         X_selected = X[:, [feature_1, feature_2]]
         x_min, x_max = X_selected[:, 0].min() - 1, X_selected[:, 0].max() + 1
@@ -386,7 +386,7 @@ class Module:
         plt.grid(True)
         plt.show()
 
-    def _visualize_regression(self, X, y, feature_index):
+    def _visualize_regression(self, X, y, feature_index, posterior):
         preds = self.predict(X, jax.random.PRNGKey(0), posterior=posterior)
         mean_preds = preds.mean(axis=0).squeeze()  # Ensure the mean is 1D
         lower_bound = jnp.percentile(
@@ -424,7 +424,7 @@ class Module:
         plt.title("Regression Visualization with Uncertainty Bounds")
         plt.show()
 
-    def _visualize_image_segmentation(self, X, y=None):
+    def _visualize_image_segmentation(self, X, y=None, posterior):
         """
         Visualizes predictions for image segmentation tasks.
 
