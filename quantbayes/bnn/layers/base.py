@@ -424,7 +424,7 @@ class Module:
         plt.title("Regression Visualization with Uncertainty Bounds")
         plt.show()
 
-    def _visualize_image_segmentation(self, X, y=None, posterior):
+    def _visualize_image_segmentation(self, X, y=None, posterior="logits"):
         """
         Visualizes predictions for image segmentation tasks.
 
