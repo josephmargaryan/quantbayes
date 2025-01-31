@@ -176,6 +176,7 @@ class Module:
         X,
         y=None,
         num_classes=None,
+        posterior="logits",
         features=(0, 1),
         resolution=100,
         feature_index=None,
@@ -204,7 +205,7 @@ class Module:
         else:
             raise ValueError(f"Unknown task type: {self.task_type}")
 
-    def _visualize_image_classification(self, X, y, num_classes):
+    def _visualize_image_classification(self, X, y, num_classes, posterior):
         """
         Visualizes predictions for image classification tasks.
 
@@ -227,7 +228,7 @@ class Module:
 
         # Predict on patches
         pred_samples = self.predict(
-            patches, jax.random.PRNGKey(0)
+            patches, jax.random.PRNGKey(0), posterior=posterior
         )  # [num_samples, batch_size, num_classes]
         mean_preds = jax.nn.softmax(
             pred_samples.mean(axis=0), axis=-1
@@ -290,7 +291,7 @@ class Module:
 
         # Predict on grid points
         pred_samples = self.predict(
-            grid_points_full, jax.random.PRNGKey(0)
+            grid_points_full, jax.random.PRNGKey(0), posterior=posterior
         )  # Shape: [num_samples, resolution^2, num_classes]
         grid_mean_predictions = jax.nn.softmax(
             pred_samples.mean(axis=0), axis=-1
@@ -347,7 +348,7 @@ class Module:
 
         # Predict probabilities
         pred_samples = self.predict(
-            grid_points_full, jax.random.PRNGKey(0)
+            grid_points_full, jax.random.PRNGKey(0), posterior=posterior
         )  # Shape: [num_samples, num_grid_points]
         grid_mean_predictions = jax.nn.sigmoid(
             pred_samples.mean(axis=0)
@@ -386,7 +387,7 @@ class Module:
         plt.show()
 
     def _visualize_regression(self, X, y, feature_index):
-        preds = self.predict(X, jax.random.PRNGKey(0))
+        preds = self.predict(X, jax.random.PRNGKey(0), posterior=posterior)
         mean_preds = preds.mean(axis=0).squeeze()  # Ensure the mean is 1D
         lower_bound = jnp.percentile(
             preds, 2.5, axis=0
@@ -436,7 +437,7 @@ class Module:
         """
         # Predict on input images
         pred_samples = self.predict(
-            X, jax.random.PRNGKey(0)
+            X, jax.random.PRNGKey(0), posterior=posterior
         )  # [num_samples, batch, 1, H, W]
         mean_preds = jax.nn.sigmoid(pred_samples.mean(axis=0))  # [batch, 1, H, W]
         uncertainty = -(
