@@ -188,19 +188,19 @@ class Module:
             assert (
                 num_classes is not None
             ), "num_classes must be provided for multiclass visualization."
-            self._visualize_multiclass(X, y, num_classes, features, resolution)
+            self._visualize_multiclass(X, y, num_classes, features, resolution, posterior)
         elif self.task_type == "binary":
-            self._visualize_binary(X, y, features, resolution)
+            self._visualize_binary(X, y, features, resolution, posterior)
         elif self.task_type == "regression":
-            self._visualize_regression(X, y, feature_index)
+            self._visualize_regression(X, y, feature_index, posterior)
         elif self.task_type == "image_classification":
             assert (
                 num_classes is not None
             ), "num_classes must be provided for image classification visualization."
-            self._visualize_image_classification(X, y, num_classes)
+            self._visualize_image_classification(X, y, num_classes, posterior)
         elif self.task_type == "image_segmentation":
             self._visualize_image_segmentation(
-                X, y
+                X, y, posterior
             )  # Automatically handle segmentation
         else:
             raise ValueError(f"Unknown task type: {self.task_type}")
