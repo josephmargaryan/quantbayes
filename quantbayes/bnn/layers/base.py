@@ -5,6 +5,7 @@ from numpyro.infer import SVI, Trace_ELBO, Predictive, MCMC, NUTS
 from numpyro.infer.autoguide import AutoNormal
 from numpyro.contrib.einstein import SteinVI, RBFKernel, MixtureGuidePredictive
 from numpyro.optim import Adam, Adagrad, SGD
+import pickle
 import numpy as np
 
 
@@ -486,3 +487,66 @@ class Module:
 
         plt.tight_layout()
         plt.show()
+
+    def save_params(self, file_path):
+        """
+        Saves trained model parameters to a file.
+
+        :param file_path: str
+            Path to save the parameters.
+        """
+        if isinstance(self.inference, SVI):
+            if self.params is None:
+                raise ValueError("SVI parameters are not available. Ensure `fit` was called.")
+            params_to_save = self.params
+
+        elif isinstance(self.inference, MCMC):
+            if self.samples is None:
+                raise ValueError("MCMC samples are not available. Ensure `fit` was called.")
+            params_to_save = self.samples
+
+        elif isinstance(self.inference, SteinVI):
+            if self.stein_result is None:
+                raise ValueError("SteinVI results are not available. Ensure `fit` was called.")
+            params_to_save = self.inference.get_params(self.stein_result.state)
+
+        else:
+            raise ValueError("Inference method not initialized. Call `compile` first.")
+
+        # Save parameters as a pickle file
+        with open(file_path, "wb") as f:
+            pickle.dump(params_to_save, f)
+
+        print(f"Model parameters saved to {file_path}")
+
+    def load_params(self, file_path):
+        """
+        Loads trained model parameters from a file.
+
+        :param file_path: str
+            Path to load the parameters from.
+        """
+        with open(file_path, "rb") as f:
+            loaded_params = pickle.load(f)
+
+        # Assign to the correct inference method
+        if isinstance(self.inference, SVI):
+            self.params = loaded_params
+
+        elif isinstance(self.inference, MCMC):
+            self.samples = loaded_params
+
+        elif isinstance(self.inference, SteinVI):
+            if self.stein_result is None:
+                # Initialize SteinVI with a dummy run if it hasn't been set up
+                self.stein_result = self.inference.run(
+                    jax.random.PRNGKey(0), num_steps=1, progress_bar=False
+                )
+            # Overwrite with loaded parameters
+            self.stein_result.state = self.inference.get_params(self.stein_result.state)
+            self.stein_result.state = loaded_params
+
+        else:
+            raise ValueError("Inference method not initialized. Call `compile` first.")
+
+        print(f"Model parameters loaded from {file_path}")
