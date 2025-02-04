@@ -203,5 +203,5 @@ if __name__ == "__main__":
     )
 
     # Get predictions on the validation set.
-    preds = jax.vmap(trained_model)(X_val)
+    preds = seg_model.predict_step(trained_model, None, X_val, None)
     seg_model.visualize(X_val, Y_val, preds)
