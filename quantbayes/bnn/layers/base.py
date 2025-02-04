@@ -508,16 +508,17 @@ class Module:
         elif isinstance(self.inference, SteinVI):
             if self.stein_result is None:
                 raise ValueError("SteinVI results are not available. Ensure `fit` was called.")
-            params_to_save = self.inference.get_params(self.stein_result.state)
+            params_to_save = self.stein_result.state  # Save the entire state
 
         else:
             raise ValueError("Inference method not initialized. Call `compile` first.")
 
         # Save parameters as a pickle file
         with open(file_path, "wb") as f:
-            pickle.dump(params_to_save, f)
+            pickle.dump(params_to_save, f, protocol=pickle.HIGHEST_PROTOCOL)
 
-        print(f"Model parameters saved to {file_path}")
+        print(f"✅ Model parameters successfully saved to {file_path}")
+
 
     def load_params(self, file_path):
         """
@@ -542,11 +543,11 @@ class Module:
                 self.stein_result = self.inference.run(
                     jax.random.PRNGKey(0), num_steps=1, progress_bar=False
                 )
-            # Overwrite with loaded parameters
-            self.stein_result.state = self.inference.get_params(self.stein_result.state)
-            self.stein_result.state = loaded_params
+
+            # Overwrite SteinVI's internal state
+            self.stein_result.state = loaded_params  # Corrected assignment
 
         else:
             raise ValueError("Inference method not initialized. Call `compile` first.")
 
-        print(f"Model parameters loaded from {file_path}")
+        print(f"✅ Model parameters successfully loaded from {file_path}")

@@ -1,6 +1,11 @@
 import jax.numpy as jnp
 import flax.linen as nn
+import flax
+from flax.training import train_state
+import jax.numpy as jnp
 import jax
+import flax.linen as nn
+import flax.serialization
 
 
 class FFTDense(nn.Module):
@@ -73,6 +78,48 @@ class CirculantFFTDense(nn.Module):
         output = jnp.fft.ifft(fft_transformed).real  # Take only the real part
 
         return output
+
+
+def save_jax_model(file_path: str, state: train_state.TrainState):
+    """
+    Saves a Flax TrainState (model parameters and optimizer state).
+
+    :param file_path: str
+        Path to save the model.
+    :param state: train_state.TrainState
+        The Flax train state containing parameters and optimizer state.
+    """
+    # Convert state to bytes using Flax's serialization
+    model_bytes = flax.serialization.to_bytes(state)
+    
+    # Save as a pickle file
+    with open(file_path, "wb") as f:
+        f.write(model_bytes)
+
+    print(f"✅ JAX Model successfully saved to {file_path}")
+
+
+def load_jax_model(file_path: str, state: train_state.TrainState) -> train_state.TrainState:
+    """
+    Loads a Flax TrainState (model parameters and optimizer state).
+
+    :param file_path: str
+        Path to load the model from.
+    :param state: train_state.TrainState
+        An initialized TrainState (used as a structure for loading).
+    
+    :return: train_state.TrainState
+        The updated TrainState with loaded parameters.
+    """
+    # Load serialized bytes
+    with open(file_path, "rb") as f:
+        model_bytes = f.read()
+
+    # Restore state
+    restored_state = flax.serialization.from_bytes(state, model_bytes)
+
+    print(f"✅ JAX Model successfully loaded from {file_path}")
+    return restored_state
 
 
 def test_fft_dense():

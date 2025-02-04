@@ -3,7 +3,6 @@
 import jax
 import jax.numpy as jnp
 import optax
-import flax
 import flax.linen as nn
 from flax.training import train_state
 import numpy as np
