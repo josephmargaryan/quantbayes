@@ -16,10 +16,11 @@ class BaseModel(ABC):
             key (jax.random.PRNGKey): Random key for stochastic operations.
         """
         self.batch_size = batch_size
-        self.key = key or jax.random.PRNGKey(0)  # Default PRNG key
+        self.key = key if key is not None else jax.random.PRNGKey(0)
         self.train_losses = []
         self.val_losses = []
         self._compiled = False  # Ensure user compiles model before training
+
 
     def compile(self, optimizer, loss_fn):
         """
@@ -56,7 +57,7 @@ class BaseModel(ABC):
                 start = end
                 end = start + batch_size
 
-    def fit(self, model, state, X_train, y_train, X_val=None, y_val=None, epochs=1):
+    def fit(self, model, state, X_train, y_train, X_val=None, y_val=None, epochs=100):
         """
         Training method for the model. Uses batching if batch_size is specified.
         Args:
