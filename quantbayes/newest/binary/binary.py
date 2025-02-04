@@ -161,6 +161,7 @@ if __name__ == "__main__":
 
     # Make predictions on the test set.
     preds = jax.vmap(trained_model)(X_test)
+    preds = binary_model.predict_step(trained_model, None, X_test, None)
     # Save the trained model so it can be used in visualization.
     binary_model.model = trained_model
     binary_model.visualize(X_test, y_test, preds, feature_indices=(0, 1))

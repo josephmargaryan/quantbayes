@@ -172,6 +172,7 @@ if __name__ == "__main__":
 
     # Use the trained model to make predictions on the test set.
     preds = jax.vmap(trained_model)(X_test)
+    preds = reg_model.predict_step(trained_model, None, X_test, None)
 
     # Visualize predictions vs. ground truth.
     reg_model.visualize(X_test, y_test, preds, feature_index=0)

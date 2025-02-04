@@ -138,22 +138,13 @@ class ForecastingModel(BaseModel):
         return model
 
 if __name__ == "__main__":
-    from sklearn.model_selection import train_test_split
 
-    # For demonstration purposes, generate synthetic forecasting data.
-    # Suppose we have N samples, each is a sequence of length seq_len with input_dim features.
-    N = 200       # number of samples
+    from quantbayes.fake_data import create_synthetic_time_series
+
     seq_len = 10  # sequence length
-    input_dim = 3
-    # Create random input sequences.
-    X_np = np.random.rand(N, seq_len, input_dim)
-    # Let the target be, e.g., the sum of the first feature of the last time step.
-    y_np = np.sum(X_np[:, -1, :1], axis=1, keepdims=True)
+    input_dim = 1
 
-    X = jnp.array(X_np)
-    y = jnp.array(y_np)
-
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    X_train, X_test, y_train, y_test = create_synthetic_time_series()
 
     key = jax.random.PRNGKey(42)
     # Instantiate the forecasting network.
@@ -176,6 +167,7 @@ if __name__ == "__main__":
 
     # Make predictions on the test set.
     preds = jax.vmap(trained_model)(X_test)
+    preds = forecasting_model.predict_step(trained_model, None, X_test, None)
 
     # Visualize predictions vs. ground truth.
     forecasting_model.visualize(X_test, y_test, preds)

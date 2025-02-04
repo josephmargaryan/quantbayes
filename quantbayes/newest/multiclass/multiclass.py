@@ -39,8 +39,8 @@ class MulticlassClassificationModel(BaseModel):
         return loss, new_model, new_opt_state
 
     def predict_step(self, model, state, X, key):
-        # For a single sample, return the predicted class.
-        logits = model(X)
+        # Vectorize the model over the batch.
+        logits = jax.vmap(model)(X)
         return jnp.argmax(logits, axis=-1)
 
     def visualize(self, X_test, y_test, y_pred, feature_indices: tuple = (0, 1), title="Decision Boundary"):
@@ -153,5 +153,7 @@ if __name__ == "__main__":
 
     # Make predictions on the test set.
     preds = jax.vmap(trained_model)(X_test)
+    preds = multiclass_model.predict_step(trained_model, None, X_test, None)
+
     multiclass_model.model = trained_model
     multiclass_model.visualize(X_test, y_test, preds, feature_indices=(0, 1))
