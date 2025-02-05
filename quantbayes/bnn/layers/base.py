@@ -189,7 +189,9 @@ class Module:
             assert (
                 num_classes is not None
             ), "num_classes must be provided for multiclass visualization."
-            self._visualize_multiclass(X, y, num_classes, features, resolution, posterior)
+            self._visualize_multiclass(
+                X, y, num_classes, features, resolution, posterior
+            )
         elif self.task_type == "binary":
             self._visualize_binary(X, y, features, resolution, posterior)
         elif self.task_type == "regression":
@@ -497,17 +499,23 @@ class Module:
         """
         if isinstance(self.inference, SVI):
             if self.params is None:
-                raise ValueError("SVI parameters are not available. Ensure `fit` was called.")
+                raise ValueError(
+                    "SVI parameters are not available. Ensure `fit` was called."
+                )
             params_to_save = self.params
 
         elif isinstance(self.inference, MCMC):
             if self.samples is None:
-                raise ValueError("MCMC samples are not available. Ensure `fit` was called.")
+                raise ValueError(
+                    "MCMC samples are not available. Ensure `fit` was called."
+                )
             params_to_save = self.samples
 
         elif isinstance(self.inference, SteinVI):
             if self.stein_result is None:
-                raise ValueError("SteinVI results are not available. Ensure `fit` was called.")
+                raise ValueError(
+                    "SteinVI results are not available. Ensure `fit` was called."
+                )
             params_to_save = self.stein_result.state  # Save the entire state
 
         else:
@@ -518,7 +526,6 @@ class Module:
             pickle.dump(params_to_save, f, protocol=pickle.HIGHEST_PROTOCOL)
 
         print(f"✅ Model parameters successfully saved to {file_path}")
-
 
     def load_params(self, file_path):
         """

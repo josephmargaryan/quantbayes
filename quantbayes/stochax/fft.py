@@ -4,23 +4,24 @@ import equinox as eqx
 import jax.random
 import numpy as np
 
+
 class CirculantLinear(eqx.Module):
     """
     A custom Equinox layer that implements a linear layer with a circulant matrix.
-    
+
     The layer stores only the first row `c` (a vector of shape (n,)).
     We define the circulant matrix C so that its first row is c and its i-th row is:
-    
+
       C[i, :] = jnp.roll(c, i)
-    
+
     Then, the first column is [c_0, c_{n-1}, c_{n-2}, ..., c_1].
-    
+
     A well-known fact is that the eigenvalues of C are given by
       λ = fft(first_col)
     and one may compute C @ x via:
-    
+
       y = real( ifft( fft(x) * fft(first_col) ) )
-      
+
     Here we compute first_col by flipping c and then rolling by 1.
 
     Example use casae:
@@ -50,6 +51,7 @@ class CirculantLinear(eqx.Module):
             y = jax.vmap(lambda z: self.final_layer(z))(h)
             return y
     """
+
     first_row: jnp.ndarray  # shape (n,)
     in_features: int = eqx.static_field()
     out_features: int = eqx.static_field()
@@ -74,25 +76,29 @@ class CirculantLinear(eqx.Module):
         y = jnp.fft.ifft(fft_x * fft_w, axis=-1)
         return jnp.real(y)
 
+
 # --- Test of the custom CirculantLinear layer ---
+
 
 def test_circulant_linear():
     key = jax.random.PRNGKey(42)
     n = 8
     layer = CirculantLinear(n, key=key, init_scale=1.0)
-    
+
     key, subkey = jax.random.split(key)
     # Create a random input vector of shape (n,)
     x = jax.random.normal(subkey, (n,))
-    
+
     # Compute output using the custom layer
     y_custom = layer(x)
-    
+
     # For testing, explicitly build the circulant matrix.
     # According to our definition: the i-th row is jnp.roll(c, i)
     def circulant(first_row):
-        return jnp.stack([jnp.roll(first_row, i) for i in range(first_row.shape[0])], axis=0)
-    
+        return jnp.stack(
+            [jnp.roll(first_row, i) for i in range(first_row.shape[0])], axis=0
+        )
+
     C = circulant(layer.first_row)
     y_direct = C @ x
 
@@ -102,6 +108,7 @@ def test_circulant_linear():
     print("Input x:\n", x)
     print("CirculantLinear output:\n", y_custom)
     print("Direct multiplication output:\n", y_direct)
+
 
 if __name__ == "__main__":
     test_circulant_linear()

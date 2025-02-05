@@ -5,6 +5,7 @@ import jax.random as jr
 from jaxtyping import Array, Float, PRNGKeyArray
 import einops
 
+
 # -------------------------------------------------------------------
 # Patch Embedding Module
 #
@@ -43,6 +44,8 @@ class PatchEmbedding(eqx.Module):
         x = jax.vmap(self.linear)(x)
 
         return x
+
+
 class AttentionBlock(eqx.Module):
     layer_norm1: eqx.nn.LayerNorm
     layer_norm2: eqx.nn.LayerNorm
@@ -93,6 +96,8 @@ class AttentionBlock(eqx.Module):
         x = x + input_x
 
         return x
+
+
 class VisionTransformer(eqx.Module):
     patch_embedding: PatchEmbedding
     positional_embedding: jnp.ndarray
@@ -113,7 +118,7 @@ class VisionTransformer(eqx.Module):
         num_patches: int,
         num_classes: int,
         key: PRNGKeyArray,
-        channels: int
+        channels: int,
     ):
         key1, key2, key3, key4, key5 = jr.split(key, 5)
 
@@ -164,7 +169,8 @@ class VisionTransformer(eqx.Module):
         x = self.mlp(x)
 
         return x
-    
+
+
 def test_vision_transformer_output_shape():
     # Configuration:
     embedding_dim = 768
@@ -176,7 +182,9 @@ def test_vision_transformer_output_shape():
     img_height = 224
     img_width = 224
     channels = 3
-    num_patches = (img_height // patch_size) * (img_width // patch_size)  # 14 * 14 = 196
+    num_patches = (img_height // patch_size) * (
+        img_width // patch_size
+    )  # 14 * 14 = 196
     num_classes = 1000
 
     # Create PRNG keys.
@@ -204,7 +212,10 @@ def test_vision_transformer_output_shape():
     logits = vit(x, enable_dropout=False, key=run_key)
 
     # Check that the output has shape (num_classes,).
-    assert logits.shape == (num_classes,), f"Expected output shape ({num_classes},), got {logits.shape}"
+    assert logits.shape == (
+        num_classes,
+    ), f"Expected output shape ({num_classes},), got {logits.shape}"
+
 
 if __name__ == "__main__":
     test_vision_transformer_output_shape()

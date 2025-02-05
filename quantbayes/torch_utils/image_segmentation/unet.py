@@ -7,6 +7,7 @@ class DoubleConv(nn.Module):
     """
     Double convolution: (Conv -> ReLU -> Conv -> ReLU)
     """
+
     def __init__(self, in_channels, out_channels):
         super(DoubleConv, self).__init__()
         self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
@@ -23,6 +24,7 @@ class Down(nn.Module):
     """
     Down-sampling with maxpool then double conv.
     """
+
     def __init__(self, in_channels, out_channels):
         super(Down, self).__init__()
         self.pool = nn.MaxPool2d(2)
@@ -38,13 +40,16 @@ class Up(nn.Module):
     """
     Up-sampling (either by transposed conv or bilinear upsample) then double conv.
     """
+
     def __init__(self, in_channels, out_channels, bilinear=True):
         super(Up, self).__init__()
 
         if bilinear:
-            self.up = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
+            self.up = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True)
         else:
-            self.up = nn.ConvTranspose2d(in_channels // 2, in_channels // 2, kernel_size=2, stride=2)
+            self.up = nn.ConvTranspose2d(
+                in_channels // 2, in_channels // 2, kernel_size=2, stride=2
+            )
 
         self.double_conv = DoubleConv(in_channels, out_channels)
 
@@ -57,8 +62,7 @@ class Up(nn.Module):
         # input is CHW
         diffY = x2.size()[2] - x1.size()[2]
         diffX = x2.size()[3] - x1.size()[3]
-        x1 = F.pad(x1, [diffX // 2, diffX - diffX // 2,
-                        diffY // 2, diffY - diffY // 2])
+        x1 = F.pad(x1, [diffX // 2, diffX - diffX // 2, diffY // 2, diffY - diffY // 2])
 
         x = torch.cat([x2, x1], dim=1)
         x = self.double_conv(x)
@@ -98,34 +102,34 @@ class UNet(nn.Module):
         self.features = {}  # reset/clear at each forward
 
         x1 = self.inc(x)
-        self.features['enc1'] = x1
+        self.features["enc1"] = x1
 
         x2 = self.down1(x1)
-        self.features['enc2'] = x2
+        self.features["enc2"] = x2
 
         x3 = self.down2(x2)
-        self.features['enc3'] = x3
+        self.features["enc3"] = x3
 
         x4 = self.down3(x3)
-        self.features['enc4'] = x4
+        self.features["enc4"] = x4
 
         x5 = self.down4(x4)
-        self.features['enc5'] = x5
+        self.features["enc5"] = x5
 
         x = self.up1(x5, x4)
-        self.features['dec1'] = x
+        self.features["dec1"] = x
 
         x = self.up2(x, x3)
-        self.features['dec2'] = x
+        self.features["dec2"] = x
 
         x = self.up3(x, x2)
-        self.features['dec3'] = x
+        self.features["dec3"] = x
 
         x = self.up4(x, x1)
-        self.features['dec4'] = x
+        self.features["dec4"] = x
 
         logits = self.outc(x)
-        self.features['out'] = logits
+        self.features["out"] = logits
 
         return logits
 

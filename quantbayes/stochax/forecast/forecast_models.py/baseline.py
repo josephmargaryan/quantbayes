@@ -3,6 +3,7 @@ import jax.numpy as jnp
 import jax.nn as jnn
 import equinox as eqx
 
+
 # -------------------------------------------------------------------
 # GRU Baseline Model (single-sample version)
 #
@@ -25,12 +26,15 @@ class GRUBaseline(eqx.Module):
     def __call__(self, x: jnp.ndarray, *, key=None) -> jnp.ndarray:
         # x: shape (seq_len, input_size)
         init_state = jnp.zeros((self.hidden_size,))
+
         def step(state, x_t):
             new_state = self.cell(x_t, state)
             # new_state is a Jax array (the new hidden state)
             return new_state, new_state
+
         final_state, _ = jax.lax.scan(step, init_state, x)
         return self.final_linear(final_state)  # shape (1,)
+
 
 # -------------------------------------------------------------------
 # LSTM Baseline Model (single-sample version)
@@ -54,14 +58,17 @@ class LSTMBaseline(eqx.Module):
     def __call__(self, x: jnp.ndarray, *, key=None) -> jnp.ndarray:
         # x: shape (seq_len, input_size)
         init_state = (jnp.zeros((self.hidden_size,)), jnp.zeros((self.hidden_size,)))
+
         # Corrected scan function: the cell returns a single tuple (h, c),
         # and we output the hidden state (h).
         def step(state, x_t):
             new_state = self.cell(x_t, state)
             return new_state, new_state[0]  # new_state[0] is h
+
         _, h_seq = jax.lax.scan(step, init_state, x)
         final_hidden = h_seq[-1]
         return self.final_linear(final_hidden)  # shape (1,)
+
 
 # -------------------------------------------------------------------
 # Batch Wrappers
@@ -88,6 +95,7 @@ class GRUBaselineForecast(eqx.Module):
             batch_keys = [None] * batch_size
         return jax.vmap(lambda sample, k: self.model(sample, key=k))(x, batch_keys)
 
+
 class LSTMBaselineForecast(eqx.Module):
     model: LSTMBaseline
     seq_len: int = eqx.field(static=True)
@@ -107,10 +115,11 @@ class LSTMBaselineForecast(eqx.Module):
             batch_keys = [None] * batch_size
         return jax.vmap(lambda sample, k: self.model(sample, key=k))(x, batch_keys)
 
+
 # -------------------------------------------------------------------
 # Example Usage
 # -------------------------------------------------------------------
-if __name__ == '__main__':
+if __name__ == "__main__":
     # For example: A batch of 8 sequences, each of length 20, with 32 features.
     N, seq_len, D = 8, 20, 32
     key = jax.random.PRNGKey(42)

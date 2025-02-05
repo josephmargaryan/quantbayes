@@ -9,6 +9,7 @@ from numpyro.infer import MCMC, NUTS, Predictive
 
 import matplotlib.pyplot as plt
 
+
 # --------------------------------------------------------------------------------
 # 1. DeepAR Equinox Module
 # --------------------------------------------------------------------------------
@@ -17,6 +18,7 @@ class DeepAR(eqx.Module):
     DeepAR module with a single-layer LSTM cell and a Linear head mapping
     hidden state -> (mu, log_sigma).
     """
+
     lstm: eqx.nn.LSTMCell
     fc: eqx.nn.Linear
     hidden_size: int = eqx.static_field()
@@ -39,6 +41,7 @@ class DeepAR(eqx.Module):
         out = self.fc(h)  # shape (2,)
         return out, (h, c)
 
+
 # --------------------------------------------------------------------------------
 # 2. Synthetic Data Generation
 # --------------------------------------------------------------------------------
@@ -52,6 +55,7 @@ def generate_synthetic_timeseries(T: int = 50, noise_std: float = 0.2, seed: int
     for _ in range(1, T):
         x.append(0.8 * x[-1] + rng.normal(scale=noise_std))
     return jnp.array(x)
+
 
 # --------------------------------------------------------------------------------
 # 3. NumPyro Model: Place Priors on LSTM + Linear Weights, then Teacher-Force
@@ -132,7 +136,7 @@ def bayesian_deepar_model(x_seq=None, net=None):
     c = jnp.zeros(net.hidden_size)
     x_prev = jnp.atleast_1d(x_seq[0]) if x_seq is not None else jnp.array([0.0])
 
-     # mus = []  # We'll store predicted means for convenience (to visualize)
+    # mus = []  # We'll store predicted means for convenience (to visualize)
     # For each time step:
     for t in range(T):
         # One-step forward
@@ -151,6 +155,7 @@ def bayesian_deepar_model(x_seq=None, net=None):
 
     # No explicit return needed. The samples & deterministics are in the NumPyro trace.
     # If you want to gather them into an array, see "Predictive(...)" usage below.
+
 
 # --------------------------------------------------------------------------------
 # 4. Main: MCMC Inference + Posterior Predictive
@@ -200,7 +205,7 @@ def main():
 
     # Let's get means + intervals across the posterior draws
     obs_mean = obs_samples.mean(axis=0)
-    obs_std = obs_samples.std(axis=0) # noqa
+    obs_std = obs_samples.std(axis=0)  # noqa
 
     mu_mean = mu_samples.mean(axis=0)
     mu_std = mu_samples.std(axis=0)
@@ -210,7 +215,7 @@ def main():
     # --------------------------------------------------------------------------------
     time_axis = np.arange(T)
 
-    plt.figure(figsize=(10,5))
+    plt.figure(figsize=(10, 5))
     plt.plot(time_axis, x_seq, label="True Observations", color="blue")
 
     # Posterior predictive means
@@ -218,21 +223,29 @@ def main():
     # 2-sigma intervals around mu
     plt.fill_between(
         time_axis,
-        mu_mean - 2*mu_std,
-        mu_mean + 2*mu_std,
-        color="red", alpha=0.2,
-        label="±2σ around mu"
+        mu_mean - 2 * mu_std,
+        mu_mean + 2 * mu_std,
+        color="red",
+        alpha=0.2,
+        label="±2σ around mu",
     )
 
     # We can also plot the "obs_samples" mean, which includes noise draws.
     # It's often close to mu_mean if the model is well-fit.
-    plt.plot(time_axis, obs_mean, label="Posterior Mean of obs", color="green", linestyle="--")
+    plt.plot(
+        time_axis,
+        obs_mean,
+        label="Posterior Mean of obs",
+        color="green",
+        linestyle="--",
+    )
 
     plt.xlabel("Time")
     plt.ylabel("Value")
     plt.title("Fully Bayesian DeepAR Fit on Synthetic AR(1) Data")
     plt.legend()
     plt.show()
+
 
 if __name__ == "__main__":
     main()

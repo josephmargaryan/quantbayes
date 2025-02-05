@@ -14,6 +14,7 @@ import jax.numpy as jnp
 import equinox as eqx
 from equinox import nn
 
+
 # -------------------------------------------------------
 # Define a basic convolutional block:
 # Two times (Conv2d → BatchNorm → ReLU)
@@ -29,10 +30,14 @@ class ConvBlock(eqx.Module):
     def __init__(self, in_channels: int, out_channels: int, *, key):
         k1, k2, k3, k4 = jax.random.split(key, 4)
         # 3×3 convolution with padding=1 to preserve spatial dimensions.
-        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, key=k1)
-        self.bn1   = nn.BatchNorm(out_channels, axis_name="batch", inference=True)
-        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, key=k3)
-        self.bn2   = nn.BatchNorm(out_channels, axis_name="batch", inference=True)
+        self.conv1 = nn.Conv2d(
+            in_channels, out_channels, kernel_size=3, padding=1, key=k1
+        )
+        self.bn1 = nn.BatchNorm(out_channels, axis_name="batch", inference=True)
+        self.conv2 = nn.Conv2d(
+            out_channels, out_channels, kernel_size=3, padding=1, key=k3
+        )
+        self.bn2 = nn.BatchNorm(out_channels, axis_name="batch", inference=True)
         # Create states using the respective BatchNorm modules.
         self.bn1_state = eqx.nn.State(self.bn1)
         self.bn2_state = eqx.nn.State(self.bn2)
@@ -46,6 +51,7 @@ class ConvBlock(eqx.Module):
         x = jax.nn.relu(x)
         return x
 
+
 # -------------------------------------------------------
 # Define an up‐sampling block:
 # Upsample using ConvTranspose2d, concatenate the skip connection,
@@ -58,9 +64,13 @@ class UpConvBlock(eqx.Module):
     def __init__(self, in_channels: int, skip_channels: int, out_channels: int, *, key):
         k1, k2 = jax.random.split(key, 2)
         # Use a 2×2 kernel and stride 2 to upsample.
-        self.upconv = nn.ConvTranspose2d(in_channels, out_channels, kernel_size=2, stride=2, key=k1)
+        self.upconv = nn.ConvTranspose2d(
+            in_channels, out_channels, kernel_size=2, stride=2, key=k1
+        )
         # After upsampling, the skip connection (with skip_channels) is concatenated.
-        self.conv = ConvBlock(in_channels=out_channels + skip_channels, out_channels=out_channels, key=k2)
+        self.conv = ConvBlock(
+            in_channels=out_channels + skip_channels, out_channels=out_channels, key=k2
+        )
 
     def __call__(self, x: jnp.ndarray, skip: jnp.ndarray, *, key=None) -> jnp.ndarray:
         x = self.upconv(x, key=key)
@@ -68,6 +78,7 @@ class UpConvBlock(eqx.Module):
         x = jnp.concatenate([skip, x], axis=0)
         x = self.conv(x, key=key)
         return x
+
 
 # -------------------------------------------------------
 # Define the full U‑Net model.
@@ -90,18 +101,30 @@ class UNet(eqx.Module):
     # Built‐in MaxPool2d (with kernel size 2 and stride 2)
     pool: nn.MaxPool2d
 
-    def __init__(self, in_channels: int, out_channels: int, base_channels: int = 64, *, key):
+    def __init__(
+        self, in_channels: int, out_channels: int, base_channels: int = 64, *, key
+    ):
         keys = jax.random.split(key, 10)
         self.enc1 = ConvBlock(in_channels, base_channels, key=keys[0])
         self.enc2 = ConvBlock(base_channels, base_channels * 2, key=keys[1])
         self.enc3 = ConvBlock(base_channels * 2, base_channels * 4, key=keys[2])
         self.enc4 = ConvBlock(base_channels * 4, base_channels * 8, key=keys[3])
         self.bottleneck = ConvBlock(base_channels * 8, base_channels * 16, key=keys[4])
-        self.dec1 = UpConvBlock(base_channels * 16, base_channels * 8, base_channels * 8, key=keys[5])
-        self.dec2 = UpConvBlock(base_channels * 8, base_channels * 4, base_channels * 4, key=keys[6])
-        self.dec3 = UpConvBlock(base_channels * 4, base_channels * 2, base_channels * 2, key=keys[7])
-        self.dec4 = UpConvBlock(base_channels * 2, base_channels, base_channels, key=keys[8])
-        self.final_conv = nn.Conv2d(base_channels, out_channels, kernel_size=1, key=keys[9])
+        self.dec1 = UpConvBlock(
+            base_channels * 16, base_channels * 8, base_channels * 8, key=keys[5]
+        )
+        self.dec2 = UpConvBlock(
+            base_channels * 8, base_channels * 4, base_channels * 4, key=keys[6]
+        )
+        self.dec3 = UpConvBlock(
+            base_channels * 4, base_channels * 2, base_channels * 2, key=keys[7]
+        )
+        self.dec4 = UpConvBlock(
+            base_channels * 2, base_channels, base_channels, key=keys[8]
+        )
+        self.final_conv = nn.Conv2d(
+            base_channels, out_channels, kernel_size=1, key=keys[9]
+        )
         self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
 
     def __call__(self, x: jnp.ndarray, *, key=None) -> jnp.ndarray:
@@ -123,6 +146,7 @@ class UNet(eqx.Module):
         d4 = self.dec4(d3, e1, key=key)
         out = self.final_conv(d4, key=key)
         return out
+
 
 # -------------------------------------------------------
 # Test the UNet model.

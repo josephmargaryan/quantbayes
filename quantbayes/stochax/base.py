@@ -18,7 +18,6 @@ class BaseModel(ABC):
         self.val_losses = []
         self._compiled = False  # Ensure user compiles model before training
 
-
     def compile(self, optimizer, loss_fn):
         """
         Configures the model with optimizer and loss function before training.
@@ -42,7 +41,9 @@ class BaseModel(ABC):
             tuple: A batch of arrays.
         """
         dataset_size = arrays[0].shape[0]
-        assert all(array.shape[0] == dataset_size for array in arrays), "Arrays must have the same size."
+        assert all(
+            array.shape[0] == dataset_size for array in arrays
+        ), "Arrays must have the same size."
         indices = np.arange(dataset_size)
         while True:
             perm = np.random.permutation(indices)
@@ -70,7 +71,9 @@ class BaseModel(ABC):
             tuple: Updated model and state.
         """
         if not self._compiled:
-            raise ValueError("Model must be compiled before training. Call model.compile() first.")
+            raise ValueError(
+                "Model must be compiled before training. Call model.compile() first."
+            )
 
         updated_model, updated_state = model, state  # Track updates
 
@@ -96,11 +99,15 @@ class BaseModel(ABC):
             # Validation step
             if X_val is not None and y_val is not None:
                 self.key, subkey = jax.random.split(self.key)
-                val_loss = self.evaluate(updated_model, updated_state, X_val, y_val, key=subkey)
+                val_loss = self.evaluate(
+                    updated_model, updated_state, X_val, y_val, key=subkey
+                )
                 self.val_losses.append(val_loss)
 
-            print(f"Epoch {epoch + 1}/{epochs}, Train Loss: {self.train_losses[-1]:.4f}", 
-                  f"Val Loss: {self.val_losses[-1]:.4f}" if X_val is not None else "")
+            print(
+                f"Epoch {epoch + 1}/{epochs}, Train Loss: {self.train_losses[-1]:.4f}",
+                f"Val Loss: {self.val_losses[-1]:.4f}" if X_val is not None else "",
+            )
 
         return updated_model, updated_state
 

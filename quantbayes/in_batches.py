@@ -43,6 +43,7 @@ def in_batches(batch_size: int, async_mode: bool = False):
             iterable_param = param_names[0]
 
         if async_mode:
+
             @wraps(func)
             async def async_wrapper(*args, **kwargs) -> Any:
                 bound_args = sig.bind(*args, **kwargs)
@@ -73,8 +74,10 @@ def in_batches(batch_size: int, async_mode: bool = False):
                     else:
                         tasks.append(asyncio.to_thread(func, **call_args))
                 return await asyncio.gather(*tasks)
+
             return async_wrapper
         else:
+
             @wraps(func)
             def sync_wrapper(*args, **kwargs) -> Any:
                 bound_args = sig.bind(*args, **kwargs)
@@ -99,6 +102,7 @@ def in_batches(batch_size: int, async_mode: bool = False):
                     call_args[iterable_param] = list(batch)
                     results.append(func(**call_args))
                 return results
+
             return sync_wrapper
 
     return decorator

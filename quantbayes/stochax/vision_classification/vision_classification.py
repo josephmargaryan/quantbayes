@@ -5,7 +5,8 @@ import jax.numpy as jnp
 import optax
 import matplotlib.pyplot as plt
 import numpy as np
-from quantbayes.stochax.base import BaseModel 
+from quantbayes.stochax.base import BaseModel
+
 
 # Define a simple vision classifier.
 class SimpleVisionClassifier(eqx.Module):
@@ -17,7 +18,9 @@ class SimpleVisionClassifier(eqx.Module):
         # Split key for each layer.
         key1, key2, key3 = jax.random.split(key, 3)
         # Use SAME padding so that spatial dims are preserved.
-        self.conv1 = eqx.nn.Conv2d(in_channels, 16, kernel_size=3, padding="SAME", key=key1)
+        self.conv1 = eqx.nn.Conv2d(
+            in_channels, 16, kernel_size=3, padding="SAME", key=key1
+        )
         self.conv2 = eqx.nn.Conv2d(16, 32, kernel_size=3, padding="SAME", key=key2)
         # For simplicity, assume images are 32x32. After two conv layers (with SAME padding)
         # we flatten 32x32x32 features.
@@ -37,6 +40,7 @@ class SimpleVisionClassifier(eqx.Module):
         x = jnp.reshape(x, (-1,))
         logits = self.fc(x)
         return logits
+
 
 # Vision Classification Model subclass of BaseModel.
 class VisionClassificationModel(BaseModel):
@@ -65,6 +69,7 @@ class VisionClassificationModel(BaseModel):
         @eqx.filter_value_and_grad(has_aux=False)
         def loss_fn(m):
             return VisionClassificationModel.cross_entropy_loss(m, X, y)
+
         loss, grads = loss_fn(model)
         updates, new_opt_state = self.optimizer.update(grads, self.opt_state)
         new_model = eqx.apply_updates(model, updates)
@@ -76,7 +81,15 @@ class VisionClassificationModel(BaseModel):
         logits = jax.vmap(model)(X)
         return jnp.argmax(logits, axis=-1)
 
-    def visualize(self, X_test, y_test, y_pred, rows=3, cols=3, title="Vision Classification Results"):
+    def visualize(
+        self,
+        X_test,
+        y_test,
+        y_pred,
+        rows=3,
+        cols=3,
+        title="Vision Classification Results",
+    ):
         """
         Visualizes a grid of sample images with the predicted and ground truth labels.
         Args:
@@ -102,7 +115,17 @@ class VisionClassificationModel(BaseModel):
         plt.suptitle(title)
         plt.show()
 
-    def fit(self, model, X_train, y_train, X_val, y_val, num_epochs=100, lr=1e-3, patience=10):
+    def fit(
+        self,
+        model,
+        X_train,
+        y_train,
+        X_val,
+        y_val,
+        num_epochs=100,
+        lr=1e-3,
+        patience=10,
+    ):
         """
         Trains the vision classification model.
         Args:
@@ -129,7 +152,9 @@ class VisionClassificationModel(BaseModel):
 
         for epoch in range(num_epochs):
             self.key, subkey = jax.random.split(self.key)
-            train_loss, model, self.opt_state = self.train_step(model, None, X_train, y_train, subkey)
+            train_loss, model, self.opt_state = self.train_step(
+                model, None, X_train, y_train, subkey
+            )
             val_loss = VisionClassificationModel.cross_entropy_loss(model, X_val, y_val)
 
             self.train_losses.append(float(train_loss))
@@ -142,7 +167,9 @@ class VisionClassificationModel(BaseModel):
                 patience_counter += 1
 
             if (epoch + 1) % 10 == 0:
-                print(f"Epoch {epoch+1}/{num_epochs} - Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
+                print(
+                    f"Epoch {epoch+1}/{num_epochs} - Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}"
+                )
 
             if patience_counter >= patience:
                 print("Early stopping triggered.")
@@ -158,6 +185,7 @@ class VisionClassificationModel(BaseModel):
         plt.show()
 
         return model
+
 
 if __name__ == "__main__":
     from sklearn.model_selection import train_test_split
@@ -175,7 +203,9 @@ if __name__ == "__main__":
     X = jnp.array(X_np)
     y = jnp.array(y_np)
 
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42
+    )
 
     key = jax.random.PRNGKey(42)
     # Instantiate the simple vision classifier.
@@ -193,10 +223,9 @@ if __name__ == "__main__":
         y_val=y_test,
         num_epochs=100,
         lr=1e-3,
-        patience=10
+        patience=10,
     )
 
     # Get predictions on the test set using the predict_step.
     preds = vision_model.predict_step(trained_model, None, X_test, None)
     vision_model.visualize(X_test, y_test, preds, rows=3, cols=3)
-

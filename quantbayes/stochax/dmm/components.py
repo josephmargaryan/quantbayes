@@ -4,24 +4,31 @@ from typing import Tuple
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-import matplotlib.pyplot as plt 
+import matplotlib.pyplot as plt
 import numpy as np
 import optax
 
-from quantbayes.stochax.dmm.base import (BaseCombiner, BaseDMM, BaseEmission,
-                                         BasePosterior, BaseTransition)
+from quantbayes.stochax.dmm.base import (
+    BaseCombiner,
+    BaseDMM,
+    BaseEmission,
+    BasePosterior,
+    BaseTransition,
+)
 
 #######################################
 # 1. TRANSITION COMPONENTS
 #######################################
+
 
 class LinearTransition(eqx.Module, BaseTransition):
     """
     A simple linear transition for p(z_t | z_{t-1}).
     It applies a linear mapping to z_prev and adds a learned bias.
     """
+
     weight: jnp.ndarray  # shape: (latent_dim, latent_dim)
-    bias: jnp.ndarray    # shape: (latent_dim,)
+    bias: jnp.ndarray  # shape: (latent_dim,)
     log_scale: jnp.ndarray  # shape: (latent_dim,) constant (learned)
 
     def __init__(self, latent_dim: int, *, key):
@@ -45,6 +52,7 @@ class MLPTransition(eqx.Module, BaseTransition):
     An MLP-based transition. It takes z_prev and maps it to 2*latent_dim values,
     which are interpreted as the mean and log-scale.
     """
+
     mlp: eqx.nn.MLP
     latent_dim: int
 
@@ -55,7 +63,7 @@ class MLPTransition(eqx.Module, BaseTransition):
             out_size=2 * latent_dim,
             width_size=hidden_dim,
             depth=2,
-            key=key
+            key=key,
         )
 
     def __call__(self, z_prev: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray]:
@@ -66,9 +74,11 @@ class MLPTransition(eqx.Module, BaseTransition):
         scale = jnp.exp(log_scale)
         return loc, scale
 
+
 #######################################
 # 2. EMISSION COMPONENTS
 #######################################
+
 
 class MLPEmission(eqx.Module, BaseEmission):
     """
@@ -76,6 +86,7 @@ class MLPEmission(eqx.Module, BaseEmission):
     to parameters for p(x_t | z_t). It outputs 2*observation_dim values,
     interpreted as (loc, log_scale).
     """
+
     mlp: eqx.nn.MLP
     observation_dim: int
 
@@ -86,7 +97,7 @@ class MLPEmission(eqx.Module, BaseEmission):
             out_size=2 * observation_dim,
             width_size=hidden_dim,
             depth=2,
-            key=key
+            key=key,
         )
 
     def __call__(self, z: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray]:
@@ -96,9 +107,11 @@ class MLPEmission(eqx.Module, BaseEmission):
         scale = jnp.exp(log_scale)
         return loc, scale
 
+
 #######################################
 # 3. POSTERIOR COMPONENTS
 #######################################
+
 
 class LSTMPosterior(eqx.Module, BasePosterior):
     """
@@ -106,6 +119,7 @@ class LSTMPosterior(eqx.Module, BasePosterior):
     It processes a sequence of observations (batch, T, observation_dim)
     and returns hidden states (batch, T, hidden_dim).
     """
+
     lstm: eqx.nn.LSTMCell
     hidden_dim: int
     observation_dim: int
@@ -113,7 +127,9 @@ class LSTMPosterior(eqx.Module, BasePosterior):
     def __init__(self, observation_dim: int, hidden_dim: int, *, key):
         self.observation_dim = observation_dim
         self.hidden_dim = hidden_dim
-        self.lstm = eqx.nn.LSTMCell(input_size=observation_dim, hidden_size=hidden_dim, key=key)
+        self.lstm = eqx.nn.LSTMCell(
+            input_size=observation_dim, hidden_size=hidden_dim, key=key
+        )
 
     def __call__(self, x_seq: jnp.ndarray) -> jnp.ndarray:
         """
@@ -135,15 +151,18 @@ class LSTMPosterior(eqx.Module, BasePosterior):
         h_seq = jnp.stack(h_list, axis=1)
         return h_seq
 
+
 #######################################
 # 4. COMBINER COMPONENTS
 #######################################
+
 
 class MLPCombiner(eqx.Module, BaseCombiner):
     """
     An MLP-based combiner that fuses the previous latent state and the current hidden state
     from the posterior RNN to yield the parameters for q(z_t | z_{t-1}, h_t).
     """
+
     mlp: eqx.nn.MLP
     latent_dim: int
     hidden_dim: int
@@ -158,19 +177,18 @@ class MLPCombiner(eqx.Module, BaseCombiner):
             out_size=2 * latent_dim,
             width_size=hidden_dim,
             depth=2,
-            key=key
+            key=key,
         )
 
-    def __call__(self, z_prev: jnp.ndarray, h: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    def __call__(
+        self, z_prev: jnp.ndarray, h: jnp.ndarray
+    ) -> Tuple[jnp.ndarray, jnp.ndarray]:
         # Both z_prev and h are (batch, …)
         inp = jnp.concatenate([z_prev, h], axis=-1)  # (batch, latent_dim + hidden_dim)
         out = jax.vmap(self.mlp)(inp)  # (batch, 2*latent_dim)
         loc, log_scale = jnp.split(out, 2, axis=-1)
         scale = jnp.exp(log_scale)
         return loc, scale
-
-
-
 
 
 class DMM(eqx.Module, BaseDMM):
@@ -182,10 +200,11 @@ class DMM(eqx.Module, BaseDMM):
       - A posterior RNN to get hidden states from x_seq.
       - A combiner to yield q(z_t | zₜ₋₁, h_t).
     """
+
     transition: eqx.Module  # e.g. LinearTransition or MLPTransition
-    emission: eqx.Module    # e.g. MLPEmission
-    posterior: eqx.Module   # e.g. LSTMPosterior
-    combiner: eqx.Module    # e.g. MLPCombiner
+    emission: eqx.Module  # e.g. MLPEmission
+    posterior: eqx.Module  # e.g. LSTMPosterior
+    combiner: eqx.Module  # e.g. MLPCombiner
     latent_dim: int
     # Learned prior parameters for z₁:
     z1_loc: jnp.ndarray
@@ -198,7 +217,7 @@ class DMM(eqx.Module, BaseDMM):
         hidden_dim: int,
         transition_type: str = "mlp",  # or "linear"
         *,
-        key
+        key,
     ):
         k1, k2, k3, k4, k5 = jax.random.split(key, 5)
         self.latent_dim = latent_dim
@@ -234,13 +253,26 @@ class DMM(eqx.Module, BaseDMM):
         # Compute log probabilities for z1:
         # Prior: p(z1) ~ N(z1_loc (learned), exp(z1_logscale))
         prior_scale = jnp.exp(self.z1_logscale)
-        lp_z1 = -0.5 * jnp.sum(((z1 - self.z1_loc) / prior_scale) ** 2 + 2 * jnp.log(prior_scale) + jnp.log(2 * jnp.pi), axis=-1)
-        lq_z1 = -0.5 * jnp.sum(((z1 - q1_loc) / q1_scale) ** 2 + 2 * jnp.log(q1_scale) + jnp.log(2 * jnp.pi), axis=-1)
+        lp_z1 = -0.5 * jnp.sum(
+            ((z1 - self.z1_loc) / prior_scale) ** 2
+            + 2 * jnp.log(prior_scale)
+            + jnp.log(2 * jnp.pi),
+            axis=-1,
+        )
+        lq_z1 = -0.5 * jnp.sum(
+            ((z1 - q1_loc) / q1_scale) ** 2
+            + 2 * jnp.log(q1_scale)
+            + jnp.log(2 * jnp.pi),
+            axis=-1,
+        )
         log_w = jnp.sum(lp_z1 - lq_z1)
         # Emission log prob at t=1:
         x1 = x_seq[:, 0, :]
         e_loc, e_scale = self.emission(z1)
-        lp_x1 = -0.5 * jnp.sum(((x1 - e_loc) / e_scale) ** 2 + 2 * jnp.log(e_scale) + jnp.log(2 * jnp.pi), axis=-1)
+        lp_x1 = -0.5 * jnp.sum(
+            ((x1 - e_loc) / e_scale) ** 2 + 2 * jnp.log(e_scale) + jnp.log(2 * jnp.pi),
+            axis=-1,
+        )
         log_w += jnp.sum(lp_x1)
         z_prev = z1
         # Process time steps t=2,...,T:
@@ -250,13 +282,28 @@ class DMM(eqx.Module, BaseDMM):
             z_t = self.reparam_sample(rngs[t], qt_loc, qt_scale)
             # Transition: p(z_t | z_prev)
             pt_loc, pt_scale = self.transition(z_prev)
-            lp_zt = -0.5 * jnp.sum(((z_t - pt_loc) / pt_scale) ** 2 + 2 * jnp.log(pt_scale) + jnp.log(2 * jnp.pi), axis=-1)
-            lq_zt = -0.5 * jnp.sum(((z_t - qt_loc) / qt_scale) ** 2 + 2 * jnp.log(qt_scale) + jnp.log(2 * jnp.pi), axis=-1)
+            lp_zt = -0.5 * jnp.sum(
+                ((z_t - pt_loc) / pt_scale) ** 2
+                + 2 * jnp.log(pt_scale)
+                + jnp.log(2 * jnp.pi),
+                axis=-1,
+            )
+            lq_zt = -0.5 * jnp.sum(
+                ((z_t - qt_loc) / qt_scale) ** 2
+                + 2 * jnp.log(qt_scale)
+                + jnp.log(2 * jnp.pi),
+                axis=-1,
+            )
             log_w += jnp.sum(lp_zt - lq_zt)
             # Emission: p(x_t | z_t)
             x_t = x_seq[:, t, :]
             e_loc, e_scale = self.emission(z_t)
-            lp_xt = -0.5 * jnp.sum(((x_t - e_loc) / e_scale) ** 2 + 2 * jnp.log(e_scale) + jnp.log(2 * jnp.pi), axis=-1)
+            lp_xt = -0.5 * jnp.sum(
+                ((x_t - e_loc) / e_scale) ** 2
+                + 2 * jnp.log(e_scale)
+                + jnp.log(2 * jnp.pi),
+                axis=-1,
+            )
             log_w += jnp.sum(lp_xt)
             z_prev = z_t
         neg_elbo = -log_w / batch
@@ -266,13 +313,13 @@ class DMM(eqx.Module, BaseDMM):
 class DeepMarkovModel(DMM):
     """
     A Deep Markov Model that encapsulates its own training and reconstruction logic.
-    
+
     Inherits from DMM (which implements __call__ to compute the negative ELBO)
     and adds:
       - fit(): train the model given a dataset of sequences.
       - reconstruct(): given a sequence, produce the latent path and reconstructions.
     """
-    
+
     def fit(
         self,
         x_data: jnp.ndarray,
@@ -283,14 +330,14 @@ class DeepMarkovModel(DMM):
     ) -> "DeepMarkovModel":
         """
         Trains the DMM on the provided sequence data.
-        
+
         Parameters:
             x_data: jnp.ndarray of shape (N, T, observation_dim)
             n_epochs: Number of training epochs.
             batch_size: Batch size.
             lr: Learning rate.
             seed: RNG seed.
-        
+
         Returns:
             A new, trained DeepMarkovModel instance.
         """
@@ -320,7 +367,9 @@ class DeepMarkovModel(DMM):
             for i in range(n_batches):
                 batch = x_shuf[i * batch_size : (i + 1) * batch_size]
                 rng, step_key = jax.random.split(rng)
-                model, opt_state, loss_val = make_step(model, batch, optimizer, opt_state, step_key)
+                model, opt_state, loss_val = make_step(
+                    model, batch, optimizer, opt_state, step_key
+                )
                 epoch_loss += loss_val
             epoch_loss /= n_batches
             if (epoch + 1) % max(1, n_epochs // 5) == 0:
@@ -336,13 +385,13 @@ class DeepMarkovModel(DMM):
         a reconstruction sequence. In this example, the reconstruction
         is obtained by sampling a latent trajectory using the combiner and
         the transition networks, then mapping each latent to an observation.
-        
+
         Parameters:
             x_seq: jnp.ndarray of shape (1, T, observation_dim)
             rng_key: a JAX random key
             plot: if True and the observation is 1D or 2D, plot the original
                   vs. reconstruction.
-                  
+
         Returns:
             recon_seq: jnp.ndarray of shape (T, observation_dim)
         """
@@ -372,7 +421,7 @@ class DeepMarkovModel(DMM):
 
         # Concatenate along time: result shape (T, observation_dim)
         recon_seq = jnp.concatenate(recons, axis=0)
-        
+
         if plot:
             # If observation dimension is 1 or 2, attempt a simple visualization.
             recon_np = np.array(recon_seq)
@@ -384,7 +433,9 @@ class DeepMarkovModel(DMM):
                 plt.title("DMM Reconstruction (1D)")
             elif obs_dim == 2:
                 plt.scatter(x_np[:, 0], x_np[:, 1], c="b", label="Original")
-                plt.scatter(recon_np[:, 0], recon_np[:, 1], c="r", label="Reconstruction")
+                plt.scatter(
+                    recon_np[:, 0], recon_np[:, 1], c="r", label="Reconstruction"
+                )
                 plt.title("DMM Reconstruction (2D)")
             else:
                 print("Observation dim > 2: skipping plot")

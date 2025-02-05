@@ -5,6 +5,7 @@ import numpy as np
 
 from quantbayes.stochax.dmm.components import DeepMarkovModel
 
+
 def generate_synthetic_sequences(rng_key, n_sequences=64, T=15, x_dim=1, z_dim=2):
     """
     Generate synthetic sequences:
@@ -32,10 +33,13 @@ def generate_synthetic_sequences(rng_key, n_sequences=64, T=15, x_dim=1, z_dim=2
     x_data = jnp.array(np.stack(x_list, axis=0))  # (n_sequences, T, x_dim)
     return x_data, z_data
 
+
 if __name__ == "__main__":
     # Generate synthetic data.
     rng_key = jax.random.PRNGKey(0)
-    x_data, z_data = generate_synthetic_sequences(rng_key, n_sequences=64, T=15, x_dim=1, z_dim=2)
+    x_data, z_data = generate_synthetic_sequences(
+        rng_key, n_sequences=64, T=15, x_dim=1, z_dim=2
+    )
     print("x_data shape (DMM):", x_data.shape)  # Expected: (64, 15, 1)
     print("z_data shape (DMM):", z_data.shape)  # Expected: (64, 15, 2)
 
@@ -43,17 +47,19 @@ if __name__ == "__main__":
     latent_dim = 2
     hidden_dim = 16
     key = jax.random.PRNGKey(1)
-    
+
     # Instantiate the enhanced DMM.
     model = DeepMarkovModel(
-        observation_dim, latent_dim, hidden_dim,
-        transition_type="mlp", # or "mlp", "linear"
-        key=key
+        observation_dim,
+        latent_dim,
+        hidden_dim,
+        transition_type="mlp",  # or "mlp", "linear"
+        key=key,
     )
-    
+
     # Train the model.
     model = model.fit(x_data, n_epochs=100, batch_size=8, lr=1e-3, seed=42)
-    
+
     # Reconstruct one sequence (assume batch size 1).
     test_seq = x_data[0:1]  # shape (1, T, observation_dim)
     rng, rec_key = jax.random.split(rng_key)

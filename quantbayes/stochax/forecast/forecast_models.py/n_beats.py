@@ -4,6 +4,7 @@ import jax.nn as jnn
 import equinox as eqx
 from typing import List
 
+
 # -------------------------------------------------------
 # NBeatsBlock
 #
@@ -21,17 +22,30 @@ class NBeatsBlock(eqx.Module):
     backcast_layer: eqx.nn.Linear
     activation: callable = eqx.field(static=True)
 
-    def __init__(self, in_features: int, hidden_features: int, 
-                 forecast_dim: int, num_fc_layers: int, *, key):
+    def __init__(
+        self,
+        in_features: int,
+        hidden_features: int,
+        forecast_dim: int,
+        num_fc_layers: int,
+        *,
+        key
+    ):
         keys = jax.random.split(key, num_fc_layers + 2)
         # Create a list of fully-connected layers.
         self.fc_layers = []
         for i in range(num_fc_layers):
             # For the first layer, input dimension is in_features; then hidden_features.
             input_dim = in_features if i == 0 else hidden_features
-            self.fc_layers.append(eqx.nn.Linear(input_dim, hidden_features, key=keys[i]))
-        self.forecast_layer = eqx.nn.Linear(hidden_features, forecast_dim, key=keys[num_fc_layers])
-        self.backcast_layer = eqx.nn.Linear(hidden_features, in_features, key=keys[num_fc_layers+1])
+            self.fc_layers.append(
+                eqx.nn.Linear(input_dim, hidden_features, key=keys[i])
+            )
+        self.forecast_layer = eqx.nn.Linear(
+            hidden_features, forecast_dim, key=keys[num_fc_layers]
+        )
+        self.backcast_layer = eqx.nn.Linear(
+            hidden_features, in_features, key=keys[num_fc_layers + 1]
+        )
         self.activation = jnn.relu
 
     def __call__(self, x: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:
@@ -42,6 +56,7 @@ class NBeatsBlock(eqx.Module):
         forecast = self.forecast_layer(h)  # shape (forecast_dim,)
         backcast = self.backcast_layer(h)  # shape (in_features,)
         return forecast, backcast
+
 
 # -------------------------------------------------------
 # NBeats
@@ -56,11 +71,23 @@ class NBeats(eqx.Module):
     in_features: int = eqx.field(static=True)
     forecast_dim: int = eqx.field(static=True)
 
-    def __init__(self, in_features: int, forecast_dim: int, num_blocks: int,
-                 hidden_features: int, num_fc_layers: int, *, key):
+    def __init__(
+        self,
+        in_features: int,
+        forecast_dim: int,
+        num_blocks: int,
+        hidden_features: int,
+        num_fc_layers: int,
+        *,
+        key
+    ):
         keys = jax.random.split(key, num_blocks)
-        self.blocks = [NBeatsBlock(in_features, hidden_features, forecast_dim, num_fc_layers, key=k)
-                       for k in keys]
+        self.blocks = [
+            NBeatsBlock(
+                in_features, hidden_features, forecast_dim, num_fc_layers, key=k
+            )
+            for k in keys
+        ]
         self.num_blocks = num_blocks
         self.in_features = in_features
         self.forecast_dim = forecast_dim
@@ -76,6 +103,7 @@ class NBeats(eqx.Module):
             residual = residual - b
         return forecast_sum
 
+
 # -------------------------------------------------------
 # NBeatsForecast
 #
@@ -90,11 +118,26 @@ class NBeatsForecast(eqx.Module):
     seq_len: int = eqx.field(static=True)
     d: int = eqx.field(static=True)
 
-    def __init__(self, seq_len: int, d: int, num_blocks: int, hidden_features: int,
-                 num_fc_layers: int, *, key):
+    def __init__(
+        self,
+        seq_len: int,
+        d: int,
+        num_blocks: int,
+        hidden_features: int,
+        num_fc_layers: int,
+        *,
+        key
+    ):
         in_features = seq_len * d
         forecast_dim = 1
-        self.model = NBeats(in_features, forecast_dim, num_blocks, hidden_features, num_fc_layers, key=key)
+        self.model = NBeats(
+            in_features,
+            forecast_dim,
+            num_blocks,
+            hidden_features,
+            num_fc_layers,
+            key=key,
+        )
         self.seq_len = seq_len
         self.d = d
 
@@ -112,22 +155,25 @@ class NBeatsForecast(eqx.Module):
         forecasts = jax.vmap(self.model)(x_flat)  # shape [N, 1]
         return forecasts
 
+
 # -------------------------------------------------------
 # Example usage
 # -------------------------------------------------------
-if __name__ == '__main__':
+if __name__ == "__main__":
     # For example, a batch of 8 sequences, each of length 20, with 32 features.
     N, seq_len, D = 8, 20, 32
     key = jax.random.PRNGKey(42)
     x = jax.random.normal(key, (N, seq_len, D))
-    
+
     # Hyperparameters for the NBeats network.
-    num_blocks = 3          # number of blocks to stack
-    hidden_features = 128   # hidden layer size within each block
-    num_fc_layers = 3       # number of fully connected layers per block
-    
+    num_blocks = 3  # number of blocks to stack
+    hidden_features = 128  # hidden layer size within each block
+    num_fc_layers = 3  # number of fully connected layers per block
+
     model_key, run_key = jax.random.split(key)
-    model = NBeatsForecast(seq_len, D, num_blocks, hidden_features, num_fc_layers, key=model_key)
-    
+    model = NBeatsForecast(
+        seq_len, D, num_blocks, hidden_features, num_fc_layers, key=model_key
+    )
+
     preds = model(x)
     print("Predictions shape:", preds.shape)  # Expected: (8, 1)

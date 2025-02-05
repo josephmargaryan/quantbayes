@@ -12,6 +12,7 @@ import jax.numpy as jnp
 import equinox as eqx
 from equinox import nn
 
+
 # -------------------------------------------------------
 # Define a basic ConvBlock (as in the plain U‑Net).
 # -------------------------------------------------------
@@ -25,10 +26,14 @@ class ConvBlock(eqx.Module):
 
     def __init__(self, in_channels: int, out_channels: int, *, key):
         k1, k2, k3, k4 = jax.random.split(key, 4)
-        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, key=k1)
-        self.bn1   = nn.BatchNorm(out_channels, axis_name="batch", inference=True)
-        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, key=k3)
-        self.bn2   = nn.BatchNorm(out_channels, axis_name="batch", inference=True)
+        self.conv1 = nn.Conv2d(
+            in_channels, out_channels, kernel_size=3, padding=1, key=k1
+        )
+        self.bn1 = nn.BatchNorm(out_channels, axis_name="batch", inference=True)
+        self.conv2 = nn.Conv2d(
+            out_channels, out_channels, kernel_size=3, padding=1, key=k3
+        )
+        self.bn2 = nn.BatchNorm(out_channels, axis_name="batch", inference=True)
         self.bn1_state = eqx.nn.State(self.bn1)
         self.bn2_state = eqx.nn.State(self.bn2)
 
@@ -40,6 +45,7 @@ class ConvBlock(eqx.Module):
         x, _ = self.bn2(x, state=self.bn2_state)
         x = jax.nn.relu(x)
         return x
+
 
 # -------------------------------------------------------
 # Define the AttentionGate.
@@ -65,6 +71,7 @@ class AttentionGate(eqx.Module):
         psi = jax.nn.sigmoid(self.conv_psi(psi, key=key))
         return x * psi
 
+
 # -------------------------------------------------------
 # Define an up‐sampling block that uses an AttentionGate.
 # -------------------------------------------------------
@@ -75,10 +82,16 @@ class UpConvAttentionBlock(eqx.Module):
 
     def __init__(self, in_channels: int, skip_channels: int, out_channels: int, *, key):
         k1, k2, k3 = jax.random.split(key, 3)
-        self.upconv = nn.ConvTranspose2d(in_channels, out_channels, kernel_size=2, stride=2, key=k1)
+        self.upconv = nn.ConvTranspose2d(
+            in_channels, out_channels, kernel_size=2, stride=2, key=k1
+        )
         # F_int is typically set to skip_channels // 2.
-        self.att_gate = AttentionGate(F_g=out_channels, F_l=skip_channels, F_int=skip_channels // 2, key=k2)
-        self.conv = ConvBlock(in_channels=out_channels + skip_channels, out_channels=out_channels, key=k3)
+        self.att_gate = AttentionGate(
+            F_g=out_channels, F_l=skip_channels, F_int=skip_channels // 2, key=k2
+        )
+        self.conv = ConvBlock(
+            in_channels=out_channels + skip_channels, out_channels=out_channels, key=k3
+        )
 
     def __call__(self, x: jnp.ndarray, skip: jnp.ndarray, *, key=None) -> jnp.ndarray:
         x = self.upconv(x, key=key)
@@ -86,6 +99,7 @@ class UpConvAttentionBlock(eqx.Module):
         x = jnp.concatenate([skip_att, x], axis=0)
         x = self.conv(x, key=key)
         return x
+
 
 # -------------------------------------------------------
 # Define the full Attention U‑Net model.
@@ -107,18 +121,30 @@ class AttentionUNet(eqx.Module):
     final_conv: nn.Conv2d
     pool: nn.MaxPool2d
 
-    def __init__(self, in_channels: int, out_channels: int, base_channels: int = 64, *, key):
+    def __init__(
+        self, in_channels: int, out_channels: int, base_channels: int = 64, *, key
+    ):
         keys = jax.random.split(key, 10)
         self.enc1 = ConvBlock(in_channels, base_channels, key=keys[0])
         self.enc2 = ConvBlock(base_channels, base_channels * 2, key=keys[1])
         self.enc3 = ConvBlock(base_channels * 2, base_channels * 4, key=keys[2])
         self.enc4 = ConvBlock(base_channels * 4, base_channels * 8, key=keys[3])
         self.bottleneck = ConvBlock(base_channels * 8, base_channels * 16, key=keys[4])
-        self.dec1 = UpConvAttentionBlock(base_channels * 16, base_channels * 8, base_channels * 8, key=keys[5])
-        self.dec2 = UpConvAttentionBlock(base_channels * 8, base_channels * 4, base_channels * 4, key=keys[6])
-        self.dec3 = UpConvAttentionBlock(base_channels * 4, base_channels * 2, base_channels * 2, key=keys[7])
-        self.dec4 = UpConvAttentionBlock(base_channels * 2, base_channels, base_channels, key=keys[8])
-        self.final_conv = nn.Conv2d(base_channels, out_channels, kernel_size=1, key=keys[9])
+        self.dec1 = UpConvAttentionBlock(
+            base_channels * 16, base_channels * 8, base_channels * 8, key=keys[5]
+        )
+        self.dec2 = UpConvAttentionBlock(
+            base_channels * 8, base_channels * 4, base_channels * 4, key=keys[6]
+        )
+        self.dec3 = UpConvAttentionBlock(
+            base_channels * 4, base_channels * 2, base_channels * 2, key=keys[7]
+        )
+        self.dec4 = UpConvAttentionBlock(
+            base_channels * 2, base_channels, base_channels, key=keys[8]
+        )
+        self.final_conv = nn.Conv2d(
+            base_channels, out_channels, kernel_size=1, key=keys[9]
+        )
         self.pool = nn.MaxPool2d(kernel_size=2, stride=2)
 
     def __call__(self, x: jnp.ndarray, *, key=None) -> jnp.ndarray:
@@ -140,6 +166,7 @@ class AttentionUNet(eqx.Module):
         d4 = self.dec4(d3, e1, key=key)
         out = self.final_conv(d4, key=key)
         return out
+
 
 # -------------------------------------------------------
 # Test the Attention U‑Net model.

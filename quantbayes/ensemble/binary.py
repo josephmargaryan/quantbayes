@@ -7,8 +7,16 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.datasets import make_classification
 from sklearn.model_selection import train_test_split
 
+
 class EnsembleClassificationModel(BaseEstimator, ClassifierMixin):
-    def __init__(self, models, n_splits=5, ensemble_method="weighted_average", weights=None, meta_learner=None):
+    def __init__(
+        self,
+        models,
+        n_splits=5,
+        ensemble_method="weighted_average",
+        weights=None,
+        meta_learner=None,
+    ):
         """
         Ensemble Classification Model for binary classification.
 
@@ -23,11 +31,15 @@ class EnsembleClassificationModel(BaseEstimator, ClassifierMixin):
         self.models = models
         self.n_splits = n_splits
         if ensemble_method not in ["weighted_average", "stacking"]:
-            raise ValueError("ensemble_method must be either 'weighted_average' or 'stacking'")
+            raise ValueError(
+                "ensemble_method must be either 'weighted_average' or 'stacking'"
+            )
         self.ensemble_method = ensemble_method
         self.weights = weights
         if self.ensemble_method == "stacking":
-            self.meta_learner = meta_learner if meta_learner is not None else LogisticRegression()
+            self.meta_learner = (
+                meta_learner if meta_learner is not None else LogisticRegression()
+            )
         else:
             self.meta_learner = None
 
@@ -35,21 +47,23 @@ class EnsembleClassificationModel(BaseEstimator, ClassifierMixin):
         self.fitted_models_ = {}  # base classifiers trained on full data
         self.meta_fitted_ = None  # meta classifier (for stacking)
         self.oof_predictions_ = None  # out-of-fold predicted probabilities for stacking
-        self.train_predictions_proba_ = None  # training-set predicted probabilities from ensemble
+        self.train_predictions_proba_ = (
+            None  # training-set predicted probabilities from ensemble
+        )
         self.is_fitted_ = False
 
     def fit(self, X, y):
         """
         Fit the ensemble classifier on the training data.
-        
+
         For stacking, out-of-fold predicted probabilities (for the positive class) are generated using KFold.
         For weighted average, each base model is simply fit on the full data.
         """
         X = np.asarray(X)
         y = np.asarray(y)
-        
+
         model_names = list(self.models.keys())
-        
+
         if self.ensemble_method == "stacking":
             n_samples = X.shape[0]
             n_models = len(model_names)
@@ -65,7 +79,9 @@ class EnsembleClassificationModel(BaseEstimator, ClassifierMixin):
                     model_clone = clone(model)
                     model_clone.fit(X[train_idx], y[train_idx])
                     # Assumes that model supports predict_proba; using probability for the positive class (index 1)
-                    oof_model_preds[val_idx] = model_clone.predict_proba(X[val_idx])[:, 1]
+                    oof_model_preds[val_idx] = model_clone.predict_proba(X[val_idx])[
+                        :, 1
+                    ]
                 oof_preds[:, idx] = oof_model_preds
                 # Refit each base model on the full training data
                 fitted_model = clone(model)
@@ -76,7 +92,9 @@ class EnsembleClassificationModel(BaseEstimator, ClassifierMixin):
             self.meta_fitted_ = clone(self.meta_learner)
             self.meta_fitted_.fit(oof_preds, y)
             # Store training-set ensemble predicted probabilities using meta classifier
-            self.train_predictions_proba_ = self.meta_fitted_.predict_proba(oof_preds)[:, 1]
+            self.train_predictions_proba_ = self.meta_fitted_.predict_proba(oof_preds)[
+                :, 1
+            ]
             self.oof_predictions_ = oof_preds
 
         elif self.ensemble_method == "weighted_average":
@@ -91,7 +109,9 @@ class EnsembleClassificationModel(BaseEstimator, ClassifierMixin):
             if self.weights is None:
                 weights_arr = np.ones(len(model_names)) / len(model_names)
             else:
-                weights_arr = np.array([self.weights.get(name, 0) for name in model_names], dtype=float)
+                weights_arr = np.array(
+                    [self.weights.get(name, 0) for name in model_names], dtype=float
+                )
                 if np.sum(weights_arr) == 0:
                     raise ValueError("Sum of provided weights cannot be zero.")
                 weights_arr = weights_arr / np.sum(weights_arr)
@@ -99,7 +119,7 @@ class EnsembleClassificationModel(BaseEstimator, ClassifierMixin):
             self.train_predictions_proba_ = np.dot(preds, weights_arr)
         else:
             raise ValueError("Unknown ensemble_method provided.")
-        
+
         self.is_fitted_ = True
         return self
 
@@ -133,12 +153,14 @@ class EnsembleClassificationModel(BaseEstimator, ClassifierMixin):
             if self.weights is None:
                 weights_arr = np.ones(len(model_names)) / len(model_names)
             else:
-                weights_arr = np.array([self.weights.get(name, 0) for name in model_names], dtype=float)
+                weights_arr = np.array(
+                    [self.weights.get(name, 0) for name in model_names], dtype=float
+                )
                 weights_arr = weights_arr / np.sum(weights_arr)
             proba_pos = np.dot(preds, weights_arr)
         else:
             raise ValueError("Unknown ensemble_method provided.")
-        
+
         # Return two-column probability: [1 - proba, proba]
         proba = np.vstack([1 - proba_pos, proba_pos]).T
         return proba
@@ -162,8 +184,10 @@ class EnsembleClassificationModel(BaseEstimator, ClassifierMixin):
         Print a summary of the ensemble classifier.
         """
         if not self.is_fitted_:
-            raise RuntimeError("The model has not been fitted yet. Call fit or fit_predict first.")
-        
+            raise RuntimeError(
+                "The model has not been fitted yet. Call fit or fit_predict first."
+            )
+
         print("Ensemble Classification Model Summary")
         print("-------------------------------------")
         print(f"Ensemble Method: {self.ensemble_method}")
@@ -173,7 +197,9 @@ class EnsembleClassificationModel(BaseEstimator, ClassifierMixin):
         if self.ensemble_method == "stacking":
             print(f"Meta Learner: {self.meta_learner.__class__.__name__}")
         if self.train_predictions_proba_ is not None:
-            print("\nNote: Training-set ensemble predicted probabilities are stored in self.train_predictions_proba_.")
+            print(
+                "\nNote: Training-set ensemble predicted probabilities are stored in self.train_predictions_proba_."
+            )
             # Optionally, one can compute training accuracy and log loss here.
         print("-------------------------------------")
 
@@ -182,15 +208,19 @@ class EnsembleClassificationModel(BaseEstimator, ClassifierMixin):
         Plot the ROC curve for the provided data.
         """
         if not self.is_fitted_:
-            raise RuntimeError("The model has not been fitted yet. Call fit or fit_predict first.")
+            raise RuntimeError(
+                "The model has not been fitted yet. Call fit or fit_predict first."
+            )
         y_true = np.asarray(y_true)
         proba = self.predict_proba(X)[:, 1]
         fpr, tpr, thresholds = roc_curve(y_true, proba)
         roc_auc = auc(fpr, tpr)
-        
+
         plt.figure(figsize=(8, 6))
-        plt.plot(fpr, tpr, label=f"Ensemble ROC curve (area = {roc_auc:.2f})", color="b")
-        plt.plot([0, 1], [0, 1], 'r--')
+        plt.plot(
+            fpr, tpr, label=f"Ensemble ROC curve (area = {roc_auc:.2f})", color="b"
+        )
+        plt.plot([0, 1], [0, 1], "r--")
         plt.xlabel("False Positive Rate")
         plt.ylabel("True Positive Rate")
         plt.title("Receiver Operating Characteristic (ROC) Curve")
@@ -205,15 +235,24 @@ if __name__ == "__main__":
     from sklearn.ensemble import RandomForestClassifier
 
     # Generate a synthetic binary classification dataset.
-    X, y = make_classification(n_samples=1000, n_features=20, n_informative=15, n_redundant=5,
-                               random_state=42, flip_y=0.03, class_sep=1.0)
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    X, y = make_classification(
+        n_samples=1000,
+        n_features=20,
+        n_informative=15,
+        n_redundant=5,
+        random_state=42,
+        flip_y=0.03,
+        class_sep=1.0,
+    )
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42
+    )
 
     # Define base classifiers.
     models = {
         "LogisticRegression": LogisticRegression(max_iter=1000),
         "DecisionTree": DecisionTreeClassifier(max_depth=5),
-        "RandomForest": RandomForestClassifier(n_estimators=50, random_state=42)
+        "RandomForest": RandomForestClassifier(n_estimators=50, random_state=42),
     }
 
     # Choose ensemble method: "weighted_average" or "stacking"
@@ -221,10 +260,13 @@ if __name__ == "__main__":
     weights = None  # Only used if ensemble_method=="weighted_average"
 
     # Create an ensemble instance.
-    ensemble = EnsembleClassificationModel(models, n_splits=5,
-                                             ensemble_method=ensemble_method,
-                                             weights=weights,
-                                             meta_learner=None)  # Defaults to LogisticRegression
+    ensemble = EnsembleClassificationModel(
+        models,
+        n_splits=5,
+        ensemble_method=ensemble_method,
+        weights=weights,
+        meta_learner=None,
+    )  # Defaults to LogisticRegression
 
     # Fit the ensemble and predict on training data.
     ensemble.fit(X_train, y_train)

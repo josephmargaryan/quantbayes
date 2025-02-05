@@ -6,6 +6,7 @@ import optax
 import matplotlib.pyplot as plt
 from quantbayes.stochax.base import BaseModel
 
+
 # A simple binary classifier: a linear layer with sigmoid activation.
 class SimpleBinaryClassifier(eqx.Module):
     linear: eqx.nn.Linear
@@ -17,6 +18,7 @@ class SimpleBinaryClassifier(eqx.Module):
         # Compute logits then apply sigmoid.
         logits = self.linear(x)
         return jax.nn.sigmoid(jnp.squeeze(logits))
+
 
 # Binary classification model subclass inheriting from BaseModel.
 class BinaryClassificationModel(BaseModel):
@@ -43,6 +45,7 @@ class BinaryClassificationModel(BaseModel):
         @eqx.filter_value_and_grad(has_aux=False)
         def loss_fn(m):
             return BinaryClassificationModel.binary_cross_entropy_loss(m, X, y)
+
         loss, grads = loss_fn(model)
         updates, new_opt_state = self.optimizer.update(grads, self.opt_state)
         new_model = eqx.apply_updates(model, updates)
@@ -55,7 +58,14 @@ class BinaryClassificationModel(BaseModel):
         # Return class labels based on a 0.5 threshold.
         return (preds > 0.5).astype(jnp.int32)
 
-    def visualize(self, X_test, y_test, y_pred, feature_indices: tuple = (0, 1), title="Decision Boundary"):
+    def visualize(
+        self,
+        X_test,
+        y_test,
+        y_pred,
+        feature_indices: tuple = (0, 1),
+        title="Decision Boundary",
+    ):
         """
         Visualizes decision boundaries for binary classification.
         The user specifies which two features (by index) to use for the x and y axes.
@@ -65,8 +75,9 @@ class BinaryClassificationModel(BaseModel):
         x_min, x_max = X_test[:, f1].min() - 0.5, X_test[:, f1].max() + 0.5
         y_min, y_max = X_test[:, f2].min() - 0.5, X_test[:, f2].max() + 0.5
 
-        xx, yy = np.meshgrid(np.linspace(x_min, x_max, 200),
-                             np.linspace(y_min, y_max, 200))
+        xx, yy = np.meshgrid(
+            np.linspace(x_min, x_max, 200), np.linspace(y_min, y_max, 200)
+        )
         num_features = X_test.shape[1]
         # Build grid input where features not visualized are fixed to their mean.
         X_grid = []
@@ -83,18 +94,37 @@ class BinaryClassificationModel(BaseModel):
         # Use the model's forward pass (wrapped with sigmoid) to get predicted probabilities.
         # Here we assume that the model, when called, outputs the logit.
         # We apply jax.nn.sigmoid to convert logits to probabilities, then threshold.
-        preds_grid = jax.vmap(lambda x: (jax.nn.sigmoid(model(x)) > 0.5).astype(jnp.int32))(X_grid)
+        preds_grid = jax.vmap(
+            lambda x: (jax.nn.sigmoid(model(x)) > 0.5).astype(jnp.int32)
+        )(X_grid)
         preds_grid = np.array(preds_grid).reshape(xx.shape)
 
         plt.figure(figsize=(8, 6))
-        plt.contourf(xx, yy, preds_grid, alpha=0.3, levels=[-0.5, 0.5, 1.5], cmap=plt.cm.Paired)
-        plt.scatter(np.array(X_test[:, f1]), np.array(X_test[:, f2]), c=np.array(y_test), edgecolors='k')
+        plt.contourf(
+            xx, yy, preds_grid, alpha=0.3, levels=[-0.5, 0.5, 1.5], cmap=plt.cm.Paired
+        )
+        plt.scatter(
+            np.array(X_test[:, f1]),
+            np.array(X_test[:, f2]),
+            c=np.array(y_test),
+            edgecolors="k",
+        )
         plt.xlabel(f"Feature {f1}")
         plt.ylabel(f"Feature {f2}")
         plt.title(title)
         plt.show()
 
-    def fit(self, model, X_train, y_train, X_val, y_val, num_epochs=100, lr=1e-3, patience=10):
+    def fit(
+        self,
+        model,
+        X_train,
+        y_train,
+        X_val,
+        y_val,
+        num_epochs=100,
+        lr=1e-3,
+        patience=10,
+    ):
         """
         Trains the binary classification model using early stopping. Initializes the optimizer,
         runs the training loop, tracks losses, and plots the training curves.
@@ -123,8 +153,12 @@ class BinaryClassificationModel(BaseModel):
 
         for epoch in range(num_epochs):
             self.key, subkey = jax.random.split(self.key)
-            train_loss, model, self.opt_state = self.train_step(model, None, X_train, y_train, subkey)
-            val_loss = BinaryClassificationModel.binary_cross_entropy_loss(model, X_val, y_val)
+            train_loss, model, self.opt_state = self.train_step(
+                model, None, X_train, y_train, subkey
+            )
+            val_loss = BinaryClassificationModel.binary_cross_entropy_loss(
+                model, X_val, y_val
+            )
 
             self.train_losses.append(float(train_loss))
             self.val_losses.append(float(val_loss))
@@ -136,7 +170,9 @@ class BinaryClassificationModel(BaseModel):
                 patience_counter += 1
 
             if (epoch + 1) % 20 == 0:
-                print(f"Epoch {epoch+1}/{num_epochs} - Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
+                print(
+                    f"Epoch {epoch+1}/{num_epochs} - Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}"
+                )
 
             if patience_counter >= patience:
                 print("Early stopping triggered.")
@@ -154,6 +190,7 @@ class BinaryClassificationModel(BaseModel):
 
         return model
 
+
 if __name__ == "__main__":
     from sklearn.model_selection import train_test_split
     from quantbayes.fake_data import generate_binary_classification_data
@@ -162,7 +199,9 @@ if __name__ == "__main__":
     df = generate_binary_classification_data()
     X, y = df.drop("target", axis=1), df["target"]
     X, y = jnp.array(X), jnp.array(y)
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=24)
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=24
+    )
 
     key = jax.random.PRNGKey(42)
     in_features = X_train.shape[1]
@@ -181,7 +220,7 @@ if __name__ == "__main__":
         y_val=y_test,
         num_epochs=1000,
         lr=1e-3,
-        patience=10
+        patience=10,
     )
 
     # Make predictions on the test set.

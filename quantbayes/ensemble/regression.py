@@ -8,12 +8,19 @@ from sklearn.tree import DecisionTreeRegressor
 
 
 class EnsembleRegressionModel(BaseEstimator, RegressorMixin):
-    def __init__(self, models, n_splits=5, ensemble_method="weighted_average", weights=None, meta_learner=None):
+    def __init__(
+        self,
+        models,
+        n_splits=5,
+        ensemble_method="weighted_average",
+        weights=None,
+        meta_learner=None,
+    ):
         """
-        Ensemble Regression Model that supports two ensemble methods: 
+        Ensemble Regression Model that supports two ensemble methods:
             - "weighted_average": predictions are the weighted average of base model predictions.
             - "stacking": a meta-learner is trained on the out-of-fold predictions from base models.
-        
+
         Parameters:
             models (dict): Dictionary of base models. Keys are model names and values are model instances.
             n_splits (int): Number of folds for cross-validation (used in stacking).
@@ -25,12 +32,16 @@ class EnsembleRegressionModel(BaseEstimator, RegressorMixin):
         self.models = models
         self.n_splits = n_splits
         if ensemble_method not in ["weighted_average", "stacking"]:
-            raise ValueError("ensemble_method must be either 'weighted_average' or 'stacking'")
+            raise ValueError(
+                "ensemble_method must be either 'weighted_average' or 'stacking'"
+            )
         self.ensemble_method = ensemble_method
         self.weights = weights
         # For stacking, set up a meta learner
         if self.ensemble_method == "stacking":
-            self.meta_learner = meta_learner if meta_learner is not None else LinearRegression()
+            self.meta_learner = (
+                meta_learner if meta_learner is not None else LinearRegression()
+            )
         else:
             self.meta_learner = None
 
@@ -57,7 +68,7 @@ class EnsembleRegressionModel(BaseEstimator, RegressorMixin):
             oof_preds = np.zeros((n_samples, n_models))
             kf = KFold(n_splits=self.n_splits, shuffle=True, random_state=42)
             model_names = list(self.models.keys())
-            
+
             # For each base model, perform K-Fold CV to generate out-of-fold predictions
             for idx, model_name in enumerate(model_names):
                 model = self.models[model_name]
@@ -96,7 +107,9 @@ class EnsembleRegressionModel(BaseEstimator, RegressorMixin):
                 weights_arr = np.ones(len(model_names)) / len(model_names)
             else:
                 # Ensure the provided weights follow the order of model_names and sum to 1.
-                weights_arr = np.array([self.weights.get(name, 0) for name in model_names], dtype=float)
+                weights_arr = np.array(
+                    [self.weights.get(name, 0) for name in model_names], dtype=float
+                )
                 if np.sum(weights_arr) == 0:
                     raise ValueError("Sum of provided weights cannot be zero.")
                 weights_arr = weights_arr / np.sum(weights_arr)
@@ -139,7 +152,9 @@ class EnsembleRegressionModel(BaseEstimator, RegressorMixin):
             if self.weights is None:
                 weights_arr = np.ones(len(model_names)) / len(model_names)
             else:
-                weights_arr = np.array([self.weights.get(name, 0) for name in model_names], dtype=float)
+                weights_arr = np.array(
+                    [self.weights.get(name, 0) for name in model_names], dtype=float
+                )
                 weights_arr = weights_arr / np.sum(weights_arr)
             final_pred = np.dot(preds, weights_arr)
             return final_pred
@@ -156,8 +171,10 @@ class EnsembleRegressionModel(BaseEstimator, RegressorMixin):
         Print a summary of the ensemble model performance on the training data.
         """
         if not self.is_fitted_:
-            raise RuntimeError("The model has not been fitted yet. Call fit or fit_predict first.")
-        
+            raise RuntimeError(
+                "The model has not been fitted yet. Call fit or fit_predict first."
+            )
+
         print("Ensemble Regression Model Summary")
         print("---------------------------------")
         print(f"Ensemble Method: {self.ensemble_method}")
@@ -168,11 +185,17 @@ class EnsembleRegressionModel(BaseEstimator, RegressorMixin):
             print(f"Meta Learner: {self.meta_learner.__class__.__name__}")
         if self.train_predictions_ is not None:
             # Compute performance metrics on the training set
-            mse = mean_squared_error(self.train_predictions_, self.train_predictions_)  # Dummy example; normally you would compare against y
-            r2 = r2_score(self.train_predictions_, self.train_predictions_)  # This will be 1.0 by design.
+            mse = mean_squared_error(
+                self.train_predictions_, self.train_predictions_
+            )  # Dummy example; normally you would compare against y
+            r2 = r2_score(
+                self.train_predictions_, self.train_predictions_
+            )  # This will be 1.0 by design.
             # Instead, if we have stored y, we could compute performance; for demonstration, we simply note predictions are available.
             print("\nNote: Training predictions are stored in self.train_predictions_.")
-            print("You can compare these predictions with your true y values externally.")
+            print(
+                "You can compare these predictions with your true y values externally."
+            )
         print("---------------------------------")
 
     def plot_predictions(self, X=None, y_true=None):
@@ -190,11 +213,18 @@ class EnsembleRegressionModel(BaseEstimator, RegressorMixin):
             title = "Training Predictions (No true y provided)"
             print("Warning: True values not provided. Plot will show predictions only.")
         else:
-            raise ValueError("Either provide X and y_true, or call fit_predict first to use training predictions.")
+            raise ValueError(
+                "Either provide X and y_true, or call fit_predict first to use training predictions."
+            )
 
         plt.figure(figsize=(8, 6))
         plt.scatter(y_actual, y_pred, alpha=0.7, edgecolor="k")
-        plt.plot([y_actual.min(), y_actual.max()], [y_actual.min(), y_actual.max()], 'r--', lw=2)
+        plt.plot(
+            [y_actual.min(), y_actual.max()],
+            [y_actual.min(), y_actual.max()],
+            "r--",
+            lw=2,
+        )
         plt.xlabel("True Values")
         plt.ylabel("Predicted Values")
         plt.title(title)
@@ -209,7 +239,9 @@ if __name__ == "__main__":
 
     # Generate a synthetic regression dataset.
     X, y = make_regression(n_samples=500, n_features=10, noise=0.1, random_state=42)
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42
+    )
 
     # Define base models.
     models = {
@@ -220,19 +252,22 @@ if __name__ == "__main__":
     # Choose ensemble method: "weighted_average" or "stacking"
     ensemble_method = "stacking"
     weights = None  # Only used if ensemble_method=="weighted_average"
-    
+
     # Create ensemble instance.
-    ensemble = EnsembleRegressionModel(models, n_splits=5,
-                                         ensemble_method=ensemble_method,
-                                         weights=weights,
-                                         meta_learner=None)
-    
+    ensemble = EnsembleRegressionModel(
+        models,
+        n_splits=5,
+        ensemble_method=ensemble_method,
+        weights=weights,
+        meta_learner=None,
+    )
+
     # Fit the ensemble and predict on the training data.
     train_preds = ensemble.fit_predict(X_train, y_train)
-    
+
     # Print summary (you might extend this to include evaluation metrics comparing train_preds and y_train).
     ensemble.summary()
-    
+
     # Evaluate on test set.
     test_preds = ensemble.predict(X_test)
     test_r2 = r2_score(y_test, test_preds)

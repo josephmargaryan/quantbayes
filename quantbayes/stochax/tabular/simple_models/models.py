@@ -4,6 +4,7 @@ import equinox as eqx
 from typing import Callable, Sequence
 import jax.random as jr
 
+
 # -------------------------------------------------------------------
 # 1. Linear Regression Model
 #
@@ -47,7 +48,9 @@ class MLPClassifier(eqx.Module):
     layers: Sequence[eqx.nn.Linear]
     activation: Callable = eqx.field(static=True)
 
-    def __init__(self, input_dim: int, hidden_dims: Sequence[int], num_classes: int, *, key):
+    def __init__(
+        self, input_dim: int, hidden_dims: Sequence[int], num_classes: int, *, key
+    ):
         # Create a list of layers.
         # We use as many hidden layers as given in hidden_dims and a final layer mapping to num_classes.
         keys = jax.random.split(key, len(hidden_dims) + 1)

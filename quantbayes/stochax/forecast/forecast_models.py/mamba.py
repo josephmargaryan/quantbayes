@@ -3,6 +3,7 @@ import jax.numpy as jnp
 import jax.nn as jnn
 import equinox as eqx
 
+
 # --------------------------------------------------------------
 # MambaStateSpaceCell
 #
@@ -28,6 +29,7 @@ class MambaStateSpaceCell(eqx.Module):
         # Compute the new state.
         h_new = self.activation(jnp.dot(self.A, h) + jnp.dot(self.B, x) + self.bias)
         return h_new
+
 
 # --------------------------------------------------------------
 # MambaStateSpaceModel
@@ -59,14 +61,17 @@ class MambaStateSpaceModel(eqx.Module):
         seq_len = x.shape[0]
         # Initialize the state as zeros.
         h = jnp.zeros((self.hidden_size,))
+
         # Define the recurrence.
         def step(h, x_t):
             h_new = self.cell(x_t, h)
             return h_new, h_new
+
         # Use lax.scan to iterate over the sequence.
         _, hs = jax.lax.scan(step, h, x)
         final_state = hs[-1]  # shape: (hidden_size,)
         return self.out(final_state)  # shape: (1,)
+
 
 # --------------------------------------------------------------
 # MambaStateSpaceForecast
@@ -102,21 +107,22 @@ class MambaStateSpaceForecast(eqx.Module):
             batch_keys = [None] * x.shape[0]
         return jax.vmap(lambda x_sample, k: self.model(x_sample, key=k))(x, batch_keys)
 
+
 # --------------------------------------------------------------
 # Example usage
 # --------------------------------------------------------------
-if __name__ == '__main__':
+if __name__ == "__main__":
     # For example: a batch of 8 sequences, each of length 20, with 32 features.
     N, seq_len, D = 8, 20, 32
     key = jax.random.PRNGKey(42)
     x = jax.random.normal(key, (N, seq_len, D))
-    
+
     # Define hyperparameters.
     hidden_size = 64  # Size of the state.
-    
+
     # Create the MambaStateSpaceForecast model.
     model_key, run_key = jax.random.split(key)
     model = MambaStateSpaceForecast(seq_len, D, hidden_size, key=model_key)
-    
+
     preds = model(x, key=run_key)
     print("Predictions shape:", preds.shape)  # Expected: (8, 1)

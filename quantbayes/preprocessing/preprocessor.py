@@ -2,7 +2,12 @@ import numpy as np
 import pandas as pd
 import logging
 from typing import Optional, List, Dict, Tuple, Union
-from sklearn.preprocessing import StandardScaler, MinMaxScaler, LabelEncoder, OneHotEncoder
+from sklearn.preprocessing import (
+    StandardScaler,
+    MinMaxScaler,
+    LabelEncoder,
+    OneHotEncoder,
+)
 
 
 class Preprocessor:
@@ -52,7 +57,9 @@ class Preprocessor:
     ):
         self.task_type = task_type.lower()
         if self.task_type not in ["regression", "binary", "multiclass"]:
-            raise ValueError("task_type must be 'regression', 'binary', or 'multiclass'.")
+            raise ValueError(
+                "task_type must be 'regression', 'binary', or 'multiclass'."
+            )
 
         self.target_col = target_col
         self.categorical_cols = categorical_cols if categorical_cols else []
@@ -63,7 +70,9 @@ class Preprocessor:
 
         # Internal placeholders
         self.fitted_feature_scaler = None
-        self.fitted_target_scaler = None  # Used only if regression & target_scaler != None
+        self.fitted_target_scaler = (
+            None  # Used only if regression & target_scaler != None
+        )
 
         # For categorical encoding
         #   We'll do one-hot encoding for features
@@ -95,7 +104,9 @@ class Preprocessor:
             )
         return df
 
-    def _encode_categorical_features(self, df: pd.DataFrame, fit: bool = False) -> pd.DataFrame:
+    def _encode_categorical_features(
+        self, df: pd.DataFrame, fit: bool = False
+    ) -> pd.DataFrame:
         """
         One-hot encode each categorical column with a separate OneHotEncoder.
         """
@@ -108,18 +119,23 @@ class Preprocessor:
                 enc = OneHotEncoder(sparse_output=False, handle_unknown="ignore")
                 encoded_data = enc.fit_transform(df[[col]].astype(str))
                 self.fitted_onehot_encoders[col] = enc
-                self.logger.info(f"Fitted one-hot encoder on column '{col}'. "
-                                 f"Found categories: {enc.categories_}")
+                self.logger.info(
+                    f"Fitted one-hot encoder on column '{col}'. "
+                    f"Found categories: {enc.categories_}"
+                )
             else:
                 enc = self.fitted_onehot_encoders[col]
                 encoded_data = enc.transform(df[[col]].astype(str))
 
             # Construct the new column names
             new_col_names = [
-                f"{col}__{cat}" for cat in self.fitted_onehot_encoders[col].categories_[0]
+                f"{col}__{cat}"
+                for cat in self.fitted_onehot_encoders[col].categories_[0]
             ]
             # Convert to DataFrame
-            encoded_df = pd.DataFrame(encoded_data, columns=new_col_names, index=df.index)
+            encoded_df = pd.DataFrame(
+                encoded_data, columns=new_col_names, index=df.index
+            )
             # Drop original column
             df = pd.concat([df.drop(columns=[col]), encoded_df], axis=1)
         return df
@@ -159,8 +175,10 @@ class Preprocessor:
             # but only if distinct values > 2 we raise error
             unique_vals = np.unique(y)
             if len(unique_vals) > 2:
-                raise ValueError("Binary task has more than 2 unique target values. "
-                                 f"Found: {unique_vals}")
+                raise ValueError(
+                    "Binary task has more than 2 unique target values. "
+                    f"Found: {unique_vals}"
+                )
             # If the target is something like {'yes', 'no'} or {2, 5}, we map to {0, 1}
             if fit:
                 self.fitted_label_encoder = LabelEncoder().fit(y)
@@ -175,9 +193,9 @@ class Preprocessor:
 
             # One-hot the integer classes
             if fit:
-                self.fitted_target_onehot_encoder = OneHotEncoder(sparse_output=False).fit(
-                    y_int.reshape(-1, 1)
-                )
+                self.fitted_target_onehot_encoder = OneHotEncoder(
+                    sparse_output=False
+                ).fit(y_int.reshape(-1, 1))
             y_ohe = self.fitted_target_onehot_encoder.transform(y_int.reshape(-1, 1))
             return y_ohe
 
@@ -209,8 +227,12 @@ class Preprocessor:
         #   after encoding, numeric_cols might have changed. We'll retrieve them from df minus target col
         all_columns = df.columns.tolist()
         if self.target_col not in all_columns:
-            raise ValueError(f"Target column '{self.target_col}' not found in DataFrame.")
-        self.feature_columns_after_encoding = [c for c in all_columns if c != self.target_col]
+            raise ValueError(
+                f"Target column '{self.target_col}' not found in DataFrame."
+            )
+        self.feature_columns_after_encoding = [
+            c for c in all_columns if c != self.target_col
+        ]
 
         # Separate X, y
         X = df[self.feature_columns_after_encoding].values
@@ -294,11 +316,13 @@ if __name__ == "__main__":
     # 1) Regression scenario
     # -------------------------------------------------
     N = 100
-    df_reg = pd.DataFrame({
-        "feature1": np.random.randn(N),
-        "feature2": np.random.uniform(0, 100, size=N),
-        "target": np.random.randn(N) * 50 + 10  # some numeric target
-    })
+    df_reg = pd.DataFrame(
+        {
+            "feature1": np.random.randn(N),
+            "feature2": np.random.uniform(0, 100, size=N),
+            "target": np.random.randn(N) * 50 + 10,  # some numeric target
+        }
+    )
 
     print("=== Regression Demo ===")
     preprocessor_reg = Preprocessor(
@@ -308,7 +332,7 @@ if __name__ == "__main__":
         numeric_cols=["feature1", "feature2"],
         feature_scaler=StandardScaler(),
         target_scaler=MinMaxScaler(),
-        remove_na=True
+        remove_na=True,
     )
     X_reg, y_reg = preprocessor_reg.fit_transform(df_reg)
     print("Shapes:", X_reg.shape, y_reg.shape)
@@ -316,11 +340,13 @@ if __name__ == "__main__":
     print("y_reg (first 5):\n", y_reg[:5], "\n")
 
     # Simulate "test" or "new" data
-    df_reg_test = pd.DataFrame({
-        "feature1": np.random.randn(5),
-        "feature2": np.random.uniform(0, 100, size=5),
-        "target": np.random.randn(5) * 50 + 10  # some numeric target
-    })
+    df_reg_test = pd.DataFrame(
+        {
+            "feature1": np.random.randn(5),
+            "feature2": np.random.uniform(0, 100, size=5),
+            "target": np.random.randn(5) * 50 + 10,  # some numeric target
+        }
+    )
     X_reg_test, y_reg_test = preprocessor_reg.transform(df_reg_test)
     print("X_reg_test shape:", X_reg_test.shape, "y_reg_test shape:", y_reg_test.shape)
     print("X_reg_test:\n", X_reg_test)
@@ -330,11 +356,13 @@ if __name__ == "__main__":
     # 2) Binary classification scenario
     # -------------------------------------------------
     N = 100
-    df_bin = pd.DataFrame({
-        "feature_cat": np.random.choice(["A", "B", "C"], size=N),
-        "feature_num": np.random.randn(N),
-        "target": np.random.choice(["yes", "no"], size=N)  # or could be {0, 1}
-    })
+    df_bin = pd.DataFrame(
+        {
+            "feature_cat": np.random.choice(["A", "B", "C"], size=N),
+            "feature_num": np.random.randn(N),
+            "target": np.random.choice(["yes", "no"], size=N),  # or could be {0, 1}
+        }
+    )
 
     print("=== Binary Classification Demo ===")
     preprocessor_bin = Preprocessor(
@@ -344,7 +372,7 @@ if __name__ == "__main__":
         numeric_cols=["feature_num"],
         feature_scaler=StandardScaler(),
         target_scaler=None,  # not used for binary
-        remove_na=True
+        remove_na=True,
     )
     X_bin, y_bin = preprocessor_bin.fit_transform(df_bin)
     print("Shapes:", X_bin.shape, y_bin.shape)
@@ -353,11 +381,13 @@ if __name__ == "__main__":
     print("Unique target values after encoding:", np.unique(y_bin))
 
     # Simulate "new" data
-    df_bin_test = pd.DataFrame({
-        "feature_cat": np.random.choice(["A", "B", "C"], size=5),
-        "feature_num": np.random.randn(5),
-        "target": np.random.choice(["yes", "no"], size=5)
-    })
+    df_bin_test = pd.DataFrame(
+        {
+            "feature_cat": np.random.choice(["A", "B", "C"], size=5),
+            "feature_num": np.random.randn(5),
+            "target": np.random.choice(["yes", "no"], size=5),
+        }
+    )
     X_bin_test, y_bin_test = preprocessor_bin.transform(df_bin_test)
     print("X_bin_test shape:", X_bin_test.shape, "y_bin_test shape:", y_bin_test.shape)
     print("X_bin_test:\n", X_bin_test)
@@ -367,12 +397,14 @@ if __name__ == "__main__":
     # 3) Multiclass classification scenario
     # -------------------------------------------------
     N = 100
-    df_multi = pd.DataFrame({
-        "feat_a": np.random.randn(N),
-        "feat_b": np.random.uniform(0, 10, size=N),
-        "category": np.random.choice(["X", "Y"], size=N),
-        "target": np.random.choice(["cls1", "cls2", "cls3"], size=N)
-    })
+    df_multi = pd.DataFrame(
+        {
+            "feat_a": np.random.randn(N),
+            "feat_b": np.random.uniform(0, 10, size=N),
+            "category": np.random.choice(["X", "Y"], size=N),
+            "target": np.random.choice(["cls1", "cls2", "cls3"], size=N),
+        }
+    )
 
     print("=== Multiclass Classification Demo ===")
     preprocessor_multi = Preprocessor(
@@ -382,7 +414,7 @@ if __name__ == "__main__":
         numeric_cols=["feat_a", "feat_b"],
         feature_scaler=MinMaxScaler(),
         target_scaler=None,
-        remove_na=True
+        remove_na=True,
     )
     X_multi, y_multi = preprocessor_multi.fit_transform(df_multi)
     print("Shapes:", X_multi.shape, y_multi.shape)
@@ -392,14 +424,21 @@ if __name__ == "__main__":
     print("Sum of first row of y_multi (should be 1):", y_multi[0].sum())
 
     # "New" data
-    df_multi_test = pd.DataFrame({
-        "feat_a": np.random.randn(5),
-        "feat_b": np.random.uniform(0, 10, size=5),
-        "category": np.random.choice(["X", "Y"], size=5),
-        "target": np.random.choice(["cls1", "cls2", "cls3"], size=5)
-    })
+    df_multi_test = pd.DataFrame(
+        {
+            "feat_a": np.random.randn(5),
+            "feat_b": np.random.uniform(0, 10, size=5),
+            "category": np.random.choice(["X", "Y"], size=5),
+            "target": np.random.choice(["cls1", "cls2", "cls3"], size=5),
+        }
+    )
     X_multi_test, y_multi_test = preprocessor_multi.transform(df_multi_test)
-    print("X_multi_test shape:", X_multi_test.shape, "y_multi_test shape:", y_multi_test.shape)
+    print(
+        "X_multi_test shape:",
+        X_multi_test.shape,
+        "y_multi_test shape:",
+        y_multi_test.shape,
+    )
     print("X_multi_test:\n", X_multi_test)
     print("y_multi_test:\n", y_multi_test)
 

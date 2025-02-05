@@ -42,7 +42,9 @@ class MyOwnModel(Module):
 # 2️⃣ Create & Train Model
 # ------------------------------------------------------------------------------
 # Instantiate model
-model = MyOwnModel(task_type="image_segmentation", method="svi")  # Define inference method
+model = MyOwnModel(
+    task_type="image_segmentation", method="svi"
+)  # Define inference method
 
 # Compile (chooses between NUTS, SVI, or SteinVI)
 model.compile(num_samples=10, learning_rate=0.01)

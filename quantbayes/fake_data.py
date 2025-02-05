@@ -46,6 +46,7 @@ def generate_regression_data(n_samples=1000, n_features=1, random_seed=None):
 
     return df
 
+
 def generate_complex_regression_data(n_samples=1000, n_features=1, random_seed=None):
     """
     Generate more complex synthetic regression data with nonlinearities, interactions,
@@ -55,20 +56,20 @@ def generate_complex_regression_data(n_samples=1000, n_features=1, random_seed=N
         np.random.seed(random_seed)
 
     # Time index
-    t = np.linspace(0, 2 * np.pi * 10, n_samples)  
+    t = np.linspace(0, 2 * np.pi * 10, n_samples)
 
     # Generate features
     X = {}
     for i in range(n_features):
-        freq = 0.1 * (i + 1)  
-        phase = np.random.uniform(0, 2 * np.pi)  
-        amplitude = 1 + 0.5 * i  
-        
+        freq = 0.1 * (i + 1)
+        phase = np.random.uniform(0, 2 * np.pi)
+        amplitude = 1 + 0.5 * i
+
         # Mix sine and cosine for richer patterns
-        noise = np.random.normal(scale=0.1, size=n_samples)  
+        noise = np.random.normal(scale=0.1, size=n_samples)
         X[f"feature_{i+1}"] = (
-            amplitude * np.sin(freq * t + phase) 
-            + 0.5 * np.cos(0.5 * freq * t + phase)  
+            amplitude * np.sin(freq * t + phase)
+            + 0.5 * np.cos(0.5 * freq * t + phase)
             + noise
         )
 
@@ -81,15 +82,18 @@ def generate_complex_regression_data(n_samples=1000, n_features=1, random_seed=N
 
     # Generate target with multiple dependencies
     target = sum((i + 1) * X[f"feature_{i+1}"] for i in range(n_features))
-    target = target / n_features + rw_noise + np.random.normal(scale=0.2, size=n_samples)
+    target = (
+        target / n_features + rw_noise + np.random.normal(scale=0.2, size=n_samples)
+    )
 
     # Introduce a regime shift for more challenge
-    target[t > np.pi * 5] += 3  
+    target[t > np.pi * 5] += 3
 
     df = pd.DataFrame(X)
     df["target"] = target
 
     return df
+
 
 def generate_binary_classification_data(
     n_samples=500, n_features=5, class_sep=1.0, random_seed=42

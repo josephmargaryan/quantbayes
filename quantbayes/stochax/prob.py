@@ -7,13 +7,14 @@ import numpyro.distributions as dist
 from numpyro.infer import MCMC, NUTS, Predictive
 import matplotlib.pyplot as plt
 
+
 # ------------------------------------------------------------------------------
 # Helper: Bayesianize an Equinox module
 # ------------------------------------------------------------------------------
 def bayesianize(module: eqx.Module, prior_fn):
     """
-    Traverse the module's pytree and, for every array leaf, replace it with a 
-    NumPyro sample drawn from `prior_fn` (a function accepting a shape and 
+    Traverse the module's pytree and, for every array leaf, replace it with a
+    NumPyro sample drawn from `prior_fn` (a function accepting a shape and
     returning a distribution). Each sample is tagged with a unique name.
     """
     leaves, treedef = tree_util.tree_flatten(module)
@@ -27,11 +28,13 @@ def bayesianize(module: eqx.Module, prior_fn):
             new_leaves.append(leaf)
     return tree_util.tree_unflatten(treedef, new_leaves)
 
+
 # ------------------------------------------------------------------------------
 # Helper: Prior function defined as a normal distribution
 # ------------------------------------------------------------------------------
 def prior_fn(shape):
     return dist.Normal(0, 1).expand(shape).to_event(len(shape))
+
 
 # ------------------------------------------------------------------------------
 # Step 1: Define the Deterministic MLP Model with Equinox
@@ -40,16 +43,18 @@ class MLP(eqx.Module):
     layers: list
 
     def __init__(self, key, in_dim=1, hidden_dim=64, out_dim=1, depth=2):
-        keys = random.split(key, num=depth+1)
+        keys = random.split(key, num=depth + 1)
         self.layers = [eqx.nn.Linear(in_dim, hidden_dim, key=keys[0])]
-        self.layers += [eqx.nn.Linear(hidden_dim, hidden_dim, key=keys[i])
-                        for i in range(1, depth)]
+        self.layers += [
+            eqx.nn.Linear(hidden_dim, hidden_dim, key=keys[i]) for i in range(1, depth)
+        ]
         self.layers += [eqx.nn.Linear(hidden_dim, out_dim, key=keys[-1])]
 
     def __call__(self, x):
         for layer in self.layers[:-1]:
             x = jax.nn.relu(layer(x))
         return self.layers[-1](x)
+
 
 # ------------------------------------------------------------------------------
 # Step 2: Generate Synthetic Data
@@ -59,6 +64,7 @@ def generate_data(n_samples=100):
     x = random.uniform(key, shape=(n_samples, 1)) * 10 - 5  # Range: [-5,5]
     y = jnp.sin(x) + 0.1 * random.normal(key, shape=x.shape)  # Noisy sine wave
     return x, y
+
 
 # ------------------------------------------------------------------------------
 # Step 3: Define the Probabilistic Model in NumPyro using our Bayesianization
@@ -79,6 +85,7 @@ def model(x, y=None):
     # Likelihood: also put a prior on sigma.
     sigma = numpyro.sample("sigma", dist.Exponential(1.0))
     numpyro.sample("obs", dist.Normal(pred, sigma), obs=y)
+
 
 # ------------------------------------------------------------------------------
 # Step 4: Run Bayesian Inference (MCMC) and Visualize the Results
@@ -113,21 +120,34 @@ def main():
 
     # Plot the data and posterior predictions.
     plt.figure(figsize=(8, 5))
-    plt.scatter(x_train_sorted, y_train[sorted_indices], label="Train Data", color="blue", alpha=0.6)
-    plt.plot(x_train_sorted, y_pred_mean_sorted, label="Posterior Mean", color="red", linewidth=2)
+    plt.scatter(
+        x_train_sorted,
+        y_train[sorted_indices],
+        label="Train Data",
+        color="blue",
+        alpha=0.6,
+    )
+    plt.plot(
+        x_train_sorted,
+        y_pred_mean_sorted,
+        label="Posterior Mean",
+        color="red",
+        linewidth=2,
+    )
     plt.fill_between(
         x_train_sorted,
         y_pred_mean_sorted - 2 * y_pred_std_sorted,
         y_pred_mean_sorted + 2 * y_pred_std_sorted,
         color="red",
         alpha=0.3,
-        label="Uncertainty (±2σ)"
+        label="Uncertainty (±2σ)",
     )
     plt.xlabel("Feature (X)")
     plt.ylabel("Target (y)")
     plt.title("Bayesian Regression with Equinox & NumPyro")
     plt.legend()
     plt.show()
+
 
 if __name__ == "__main__":
     main()

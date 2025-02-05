@@ -15,6 +15,7 @@ import torch.nn.functional as F
 # For optional visualization
 try:
     import matplotlib.pyplot as plt
+
     HAVE_MPL = True
 except ImportError:
     HAVE_MPL = False
@@ -28,14 +29,12 @@ class PatchEmbedding(nn.Module):
         - stride=16
     So for an image of size (H, W), you get (H/16)*(W/16) patches, each of dimension embed_dim.
     """
+
     def __init__(self, in_channels=3, embed_dim=768, patch_size=16):
         super().__init__()
         self.patch_size = patch_size
         self.proj = nn.Conv2d(
-            in_channels,
-            embed_dim,
-            kernel_size=patch_size,
-            stride=patch_size
+            in_channels, embed_dim, kernel_size=patch_size, stride=patch_size
         )
 
     def forward(self, x):
@@ -60,6 +59,7 @@ class LearnablePositionalEncoding(nn.Module):
     """
     Simple learnable 1D positional embeddings for each patch index.
     """
+
     def __init__(self, num_positions=196, embed_dim=768):
         """
         num_positions should be equal to number of patches (+1 if using a class token).
@@ -81,14 +81,12 @@ class MultiHeadSelfAttention(nn.Module):
      - Operates in [B, N, D] format (batch_first=True).
      - Stores the attention maps for later inspection.
     """
+
     def __init__(self, embed_dim, num_heads, dropout=0.0):
         super().__init__()
         # IMPORTANT: We pass 'average_attn_weights=False' so we get shape [B, num_heads, N, N].
         self.mha = nn.MultiheadAttention(
-            embed_dim,
-            num_heads,
-            dropout=dropout,
-            batch_first=True
+            embed_dim, num_heads, dropout=dropout, batch_first=True
         )
         self.attn_dropout = nn.Dropout(dropout)
         # Will store the attention weights here after each forward
@@ -101,9 +99,7 @@ class MultiHeadSelfAttention(nn.Module):
         """
         # Self-attention: query=key=value=x
         attn_out, attn_weights = self.mha(
-            x, x, x,
-            need_weights=True,
-            average_attn_weights=False
+            x, x, x, need_weights=True, average_attn_weights=False
         )
         # attn_out: [B, N, D]
         # attn_weights: [B, num_heads, N, N]
@@ -117,6 +113,7 @@ class TransformerBlock(nn.Module):
     """
     A single Transformer block: MSA + MLP + skip/res connections + layer norms.
     """
+
     def __init__(self, embed_dim, num_heads, mlp_ratio=4.0, dropout=0.0):
         super().__init__()
         self.norm1 = nn.LayerNorm(embed_dim)
@@ -157,6 +154,7 @@ class VisionTransformer(nn.Module):
       - A final classification head
       - The ability to extract and store attention maps
     """
+
     def __init__(
         self,
         img_size=224,
@@ -168,7 +166,7 @@ class VisionTransformer(nn.Module):
         num_heads=12,
         mlp_ratio=4.0,
         dropout=0.0,
-        use_cls_token=True
+        use_cls_token=True,
     ):
         """
         img_size: input image dimension (assume square for simplicity).
@@ -208,15 +206,17 @@ class VisionTransformer(nn.Module):
         self.pos_drop = nn.Dropout(dropout)
 
         # Stacked transformer blocks
-        self.blocks = nn.ModuleList([
-            TransformerBlock(
-                embed_dim=embed_dim,
-                num_heads=num_heads,
-                mlp_ratio=mlp_ratio,
-                dropout=dropout
-            )
-            for _ in range(depth)
-        ])
+        self.blocks = nn.ModuleList(
+            [
+                TransformerBlock(
+                    embed_dim=embed_dim,
+                    num_heads=num_heads,
+                    mlp_ratio=mlp_ratio,
+                    dropout=dropout,
+                )
+                for _ in range(depth)
+            ]
+        )
 
         # Final normalization
         self.norm = nn.LayerNorm(embed_dim)
@@ -244,7 +244,7 @@ class VisionTransformer(nn.Module):
 
         if self.use_cls_token:
             cls_tokens = self.cls_token.expand(B, -1, -1)  # [B, 1, embed_dim]
-            x = torch.cat([cls_tokens, x], dim=1)          # [B, num_patches+1, embed_dim]
+            x = torch.cat([cls_tokens, x], dim=1)  # [B, num_patches+1, embed_dim]
 
         # Add learnable positional embedding
         x = self.pos_encoding(x)
@@ -295,8 +295,9 @@ def visualize_attention(attn_map, layer_idx=0, head_idx=0):
     attn_for_display = attn_map[0, head_idx].detach().cpu().numpy()  # shape [N, N]
 
     import matplotlib.pyplot as plt
+
     plt.figure(figsize=(5, 5))
-    plt.imshow(attn_for_display, cmap='viridis')
+    plt.imshow(attn_for_display, cmap="viridis")
     plt.colorbar()
     plt.title(f"Layer {layer_idx}, Head {head_idx}")
     plt.show()
@@ -310,12 +311,12 @@ if __name__ == "__main__":
         patch_size=16,
         in_channels=3,
         num_classes=10,
-        embed_dim=64,   # smaller embed dim for a quicker test
-        depth=4,        # fewer layers
-        num_heads=4,    # 4 heads
+        embed_dim=64,  # smaller embed dim for a quicker test
+        depth=4,  # fewer layers
+        num_heads=4,  # 4 heads
         mlp_ratio=2.0,
         dropout=0.1,
-        use_cls_token=True
+        use_cls_token=True,
     ).to(device)
 
     x = torch.randn(2, 3, 128, 128).to(device)

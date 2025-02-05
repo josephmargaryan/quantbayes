@@ -4,6 +4,7 @@ import jax.nn as jnn
 import equinox as eqx
 from functools import partial
 
+
 # -------------------------------------------------------------------
 # Helper Module: CausalConv1d
 # -------------------------------------------------------------------
@@ -12,17 +13,25 @@ class CausalConv1d(eqx.Module):
     kernel_size: int = eqx.field(static=True)
     dilation: int = eqx.field(static=True)
 
-    def __init__(self, in_channels: int, out_channels: int, kernel_size: int,
-                 dilation: int = 1, *, key):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: int,
+        dilation: int = 1,
+        *,
+        key
+    ):
         self.kernel_size = kernel_size
         self.dilation = dilation
         self.conv = eqx.nn.Conv1d(
-            in_channels, out_channels,
+            in_channels,
+            out_channels,
             kernel_size,
             stride=1,
             padding="VALID",  # We do manual padding.
             dilation=dilation,
-            key=key
+            key=key,
         )
 
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
@@ -31,6 +40,7 @@ class CausalConv1d(eqx.Module):
         x_padded = jnp.pad(x, ((0, 0), (0, 0), (pad, 0)))
         # vmap over the batch dimension so that each sample (of shape (in_channels, L)) is processed.
         return jax.vmap(self.conv)(x_padded)
+
 
 # -------------------------------------------------------------------
 # TCN Block (Residual Block)
@@ -42,18 +52,29 @@ class TCNBlock(eqx.Module):
     activation: callable = eqx.field(static=True)
     resample: eqx.Module = eqx.field(static=True, default=None)
 
-    def __init__(self, in_channels: int, out_channels: int, kernel_size: int,
-                 dilation: int, dropout_p: float, *, key):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: int,
+        dilation: int,
+        dropout_p: float,
+        *,
+        key
+    ):
         keys = jax.random.split(key, 4)
-        self.conv1 = CausalConv1d(in_channels, out_channels, kernel_size,
-                                  dilation=dilation, key=keys[0])
-        self.conv2 = CausalConv1d(out_channels, out_channels, kernel_size,
-                                  dilation=dilation, key=keys[1])
+        self.conv1 = CausalConv1d(
+            in_channels, out_channels, kernel_size, dilation=dilation, key=keys[0]
+        )
+        self.conv2 = CausalConv1d(
+            out_channels, out_channels, kernel_size, dilation=dilation, key=keys[1]
+        )
         self.dropout = eqx.nn.Dropout(p=dropout_p, inference=False)
         self.activation = jnn.relu
         if in_channels != out_channels:
-            self.resample = eqx.nn.Conv1d(in_channels, out_channels, kernel_size=1,
-                                          padding="SAME", key=keys[2])
+            self.resample = eqx.nn.Conv1d(
+                in_channels, out_channels, kernel_size=1, padding="SAME", key=keys[2]
+            )
         else:
             self.resample = None
 
@@ -75,20 +96,31 @@ class TCNBlock(eqx.Module):
             res = jax.vmap(self.resample)(x)
         return y + res
 
+
 # -------------------------------------------------------------------
 # Full TCN Module
 # -------------------------------------------------------------------
 class TCN(eqx.Module):
     blocks: list[TCNBlock]
 
-    def __init__(self, in_channels: int, num_filters: int, num_levels: int,
-                 kernel_size: int, dropout_p: float, *, key):
+    def __init__(
+        self,
+        in_channels: int,
+        num_filters: int,
+        num_levels: int,
+        kernel_size: int,
+        dropout_p: float,
+        *,
+        key
+    ):
         keys = jax.random.split(key, num_levels)
         blocks = []
         for i in range(num_levels):
-            dilation = 2 ** i
+            dilation = 2**i
             block_in = in_channels if i == 0 else num_filters
-            block = TCNBlock(block_in, num_filters, kernel_size, dilation, dropout_p, key=keys[i])
+            block = TCNBlock(
+                block_in, num_filters, kernel_size, dilation, dropout_p, key=keys[i]
+            )
             blocks.append(block)
         self.blocks = blocks
 
@@ -102,6 +134,7 @@ class TCN(eqx.Module):
             x = block(x, key=k)
         return x
 
+
 # -------------------------------------------------------------------
 # TCN Forecast Model
 # -------------------------------------------------------------------
@@ -110,10 +143,20 @@ class TCNForecast(eqx.Module):
     final_linear: eqx.nn.Linear
     in_channels: int = eqx.field(static=True)
 
-    def __init__(self, in_channels: int, num_filters: int, num_levels: int,
-                 kernel_size: int, dropout_p: float, *, key):
+    def __init__(
+        self,
+        in_channels: int,
+        num_filters: int,
+        num_levels: int,
+        kernel_size: int,
+        dropout_p: float,
+        *,
+        key
+    ):
         keys = jax.random.split(key, 2)
-        self.tcn = TCN(in_channels, num_filters, num_levels, kernel_size, dropout_p, key=keys[0])
+        self.tcn = TCN(
+            in_channels, num_filters, num_levels, kernel_size, dropout_p, key=keys[0]
+        )
         self.final_linear = eqx.nn.Linear(num_filters, 1, key=keys[1])
         self.in_channels = in_channels
 
@@ -133,23 +176,29 @@ class TCNForecast(eqx.Module):
         # Use vmap to apply final_linear to each sample.
         return jax.vmap(self.final_linear)(last)
 
+
 # -------------------------------------------------------------------
 # Example usage
 # -------------------------------------------------------------------
-if __name__ == '__main__':
+if __name__ == "__main__":
     N, seq_len, D = 8, 20, 32
     key = jax.random.PRNGKey(42)
     x = jax.random.normal(key, (N, seq_len, D))
-    
-    num_filters = 64      # Number of filters per block.
-    num_levels = 4        # Number of TCN blocks.
-    kernel_size = 3       # Kernel size for causal convolutions.
-    dropout_p = 0.1       # Dropout probability.
-    
+
+    num_filters = 64  # Number of filters per block.
+    num_levels = 4  # Number of TCN blocks.
+    kernel_size = 3  # Kernel size for causal convolutions.
+    dropout_p = 0.1  # Dropout probability.
+
     model_key, run_key = jax.random.split(key)
-    model = TCNForecast(in_channels=D, num_filters=num_filters,
-                        num_levels=num_levels, kernel_size=kernel_size,
-                        dropout_p=dropout_p, key=model_key)
-    
+    model = TCNForecast(
+        in_channels=D,
+        num_filters=num_filters,
+        num_levels=num_levels,
+        kernel_size=kernel_size,
+        dropout_p=dropout_p,
+        key=model_key,
+    )
+
     preds = model(x, key=run_key)
     print("Predictions shape:", preds.shape)  # Expected: (8, 1)

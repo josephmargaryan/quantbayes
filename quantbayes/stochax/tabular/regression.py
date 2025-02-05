@@ -6,6 +6,7 @@ import optax
 import matplotlib.pyplot as plt
 from quantbayes.stochax.base import BaseModel
 
+
 class SimpleRegressor(eqx.Module):
     linear: eqx.nn.Linear
 
@@ -15,6 +16,7 @@ class SimpleRegressor(eqx.Module):
     def __call__(self, x):
         out = self.linear(x)
         return jnp.squeeze(out)
+
 
 class RegressionModel(BaseModel):
     def __init__(self, batch_size=None, key=None):
@@ -41,6 +43,7 @@ class RegressionModel(BaseModel):
         @eqx.filter_value_and_grad(has_aux=False)
         def loss_fn(m):
             return RegressionModel.mse_loss(m, X, y)
+
         loss, grads = loss_fn(model)
         # Use the stored optimizer to update parameters.
         updates, new_opt_state = self.optimizer.update(grads, self.opt_state)
@@ -52,7 +55,14 @@ class RegressionModel(BaseModel):
     def predict_step(self, model, state, X, key):
         return jax.vmap(model)(X)
 
-    def visualize(self, X_test, y_test, y_pred, feature_index=0, title="Predictions vs Ground Truth"):
+    def visualize(
+        self,
+        X_test,
+        y_test,
+        y_pred,
+        feature_index=0,
+        title="Predictions vs Ground Truth",
+    ):
         """
         Visualizes predictions versus the ground truth by sorting according to one selected feature.
         """
@@ -63,15 +73,35 @@ class RegressionModel(BaseModel):
 
         plt.figure(figsize=(12, 5))
         plt.subplot(1, 2, 1)
-        plt.scatter(np.array(sorted_x[:, feature_index]), np.array(sorted_y), label="Ground Truth", alpha=0.7)
-        plt.scatter(np.array(sorted_x[:, feature_index]), np.array(sorted_preds), label="Predictions", alpha=0.7)
+        plt.scatter(
+            np.array(sorted_x[:, feature_index]),
+            np.array(sorted_y),
+            label="Ground Truth",
+            alpha=0.7,
+        )
+        plt.scatter(
+            np.array(sorted_x[:, feature_index]),
+            np.array(sorted_preds),
+            label="Predictions",
+            alpha=0.7,
+        )
         plt.xlabel(f"Feature {feature_index}")
         plt.ylabel("Target")
         plt.legend()
         plt.title(title)
         plt.show()
 
-    def fit(self, model, X_train, y_train, X_val, y_val, num_epochs=100, lr=1e-3, patience=10):
+    def fit(
+        self,
+        model,
+        X_train,
+        y_train,
+        X_val,
+        y_val,
+        num_epochs=100,
+        lr=1e-3,
+        patience=10,
+    ):
         """
         Trains the regression model using early stopping. This method initializes the optimizer,
         runs the training loop, tracks losses, and plots the training curves.
@@ -85,7 +115,7 @@ class RegressionModel(BaseModel):
             num_epochs (int): Maximum number of epochs.
             lr (float): Learning rate.
             patience (int): Number of epochs to wait for improvement before early stopping.
-        
+
         Returns:
             eqx.Module: The updated model after training.
         """
@@ -104,7 +134,9 @@ class RegressionModel(BaseModel):
             # For this example we assume full-batch training.
             # (You could also iterate over mini-batches if self.batch_size is specified.)
             self.key, subkey = jax.random.split(self.key)
-            train_loss, model, self.opt_state = self.train_step(model, None, X_train, y_train, subkey)
+            train_loss, model, self.opt_state = self.train_step(
+                model, None, X_train, y_train, subkey
+            )
             val_loss = RegressionModel.mse_loss(model, X_val, y_val)
 
             self.train_losses.append(float(train_loss))
@@ -118,7 +150,9 @@ class RegressionModel(BaseModel):
                 patience_counter += 1
 
             if (epoch + 1) % 20 == 0:
-                print(f"Epoch {epoch+1}/{num_epochs} - Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
+                print(
+                    f"Epoch {epoch+1}/{num_epochs} - Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}"
+                )
 
             if patience_counter >= patience:
                 print("Early stopping triggered.")
@@ -136,18 +170,21 @@ class RegressionModel(BaseModel):
 
         return model
 
+
 if __name__ == "__main__":
     from sklearn.model_selection import train_test_split
     from sklearn.preprocessing import MinMaxScaler
 
     from quantbayes.fake_data import generate_regression_data
-    
-    df = generate_regression_data() 
+
+    df = generate_regression_data()
     X, y = df.drop("target", axis=1), df["target"]
     X, y = jnp.array(X), jnp.array(y)
     scaler = MinMaxScaler()
     y = scaler.fit_transform(y.reshape(-1, 1)).reshape(-1)
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=24)
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=24
+    )
 
     key = jax.random.PRNGKey(42)
     in_features = X_train.shape[1]
@@ -165,7 +202,7 @@ if __name__ == "__main__":
         y_val=y_test,
         num_epochs=1000,
         lr=1e-3,
-        patience=10
+        patience=10,
     )
 
     # Use the trained model to make predictions on the test set.

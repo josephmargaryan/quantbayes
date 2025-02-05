@@ -3,7 +3,15 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from quantbayes.stochax.vae.components import ConvVAE, ResidualVAE, MLP_VAE, GRU_VAE, LSTM_VAE, MultiHeadAttentionVAE
+from quantbayes.stochax.vae.components import (
+    ConvVAE,
+    ResidualVAE,
+    MLP_VAE,
+    GRU_VAE,
+    LSTM_VAE,
+    MultiHeadAttentionVAE,
+    ViT_VAE,
+)
 
 
 def generate_sequence_data(rng_key, n=1000, seq_length=20, feature_dim=1):
@@ -14,6 +22,7 @@ def generate_sequence_data(rng_key, n=1000, seq_length=20, feature_dim=1):
     rng = jax.random.PRNGKey(int(rng_key[0]))
     data = jax.random.uniform(rng, shape=(n, seq_length, feature_dim))
     return data
+
 
 def generate_mixture_data(rng_key, n=1000, x_dim=2):
     rng = np.random.default_rng(int(rng_key[0]))
@@ -28,9 +37,10 @@ def generate_mixture_data(rng_key, n=1000, x_dim=2):
     X = np.array(X_list)
     return jnp.array(X)
 
+
 def generate_synthetic_images(rng_key, n=1000, image_size=28, channels=1):
     rng = jax.random.PRNGKey(int(rng_key[0]))
-    images = jax.random.uniform(rng, shape=(n, image_size, image_size, channels))
+    images = jax.random.uniform(rng, shape=(n, channels, image_size, image_size))
     return images
 
 
@@ -63,7 +73,9 @@ def test_conv_vae():
     image_size = 28
     channels = 1
 
-    data = generate_synthetic_images(rng_key, n=2000, image_size=image_size, channels=channels)
+    data = generate_synthetic_images(
+        rng_key, n=2000, image_size=image_size, channels=channels
+    )
     print("Data shape (ConvVAE):", data.shape)  # (2000, 28, 28, 1)
 
     hidden_channels = 32
@@ -75,7 +87,7 @@ def test_conv_vae():
     model = model.fit(data, batch_size=64, n_epochs=50, lr=1e-3, seed=42)
 
     rng, subkey = jax.random.split(rng_key)
-    recon, mu, logvar = model.reconstruct(data[:64], subkey, plot=True)
+    recon, mu, logvar = model.reconstruct(data[:4], subkey, plot=True)
     print("ConvVAE: Reconstruction shape:", recon.shape)
 
 
@@ -94,7 +106,9 @@ def test_residual_vae():
 
     key = jax.random.PRNGKey(21)
 
-    model = ResidualVAE(input_dim, hidden_dim, latent_dim, output_dim, num_layers, key=key)
+    model = ResidualVAE(
+        input_dim, hidden_dim, latent_dim, output_dim, num_layers, key=key
+    )
     model = model.fit(data, batch_size=64, n_epochs=50, lr=1e-3, seed=42)
 
     rng, subkey = jax.random.split(rng_key)
@@ -108,7 +122,9 @@ def test_gru_vae():
 
     seq_length = 20
     feature_dim = 1
-    data = generate_sequence_data(rng_key, n=1000, seq_length=seq_length, feature_dim=feature_dim)
+    data = generate_sequence_data(
+        rng_key, n=1000, seq_length=seq_length, feature_dim=feature_dim
+    )
     print("Data shape (GRU_VAE):", data.shape)
 
     input_dim = feature_dim
@@ -132,7 +148,9 @@ def test_lstm_vae():
 
     seq_length = 20
     feature_dim = 1
-    data = generate_sequence_data(rng_key, n=1000, seq_length=seq_length, feature_dim=feature_dim)
+    data = generate_sequence_data(
+        rng_key, n=1000, seq_length=seq_length, feature_dim=feature_dim
+    )
     print("Data shape (LSTM_VAE):", data.shape)
 
     input_dim = feature_dim
@@ -142,7 +160,9 @@ def test_lstm_vae():
 
     key = jax.random.PRNGKey(41)
 
-    model = LSTM_VAE(input_dim, hidden_size, latent_dim, output_dim, seq_length, key=key)
+    model = LSTM_VAE(
+        input_dim, hidden_size, latent_dim, output_dim, seq_length, key=key
+    )
     model = model.fit(data, batch_size=64, n_epochs=30, lr=1e-3, seed=42)
 
     rng, subkey = jax.random.split(rng_key)
@@ -156,7 +176,9 @@ def test_attention_vae():
 
     seq_length = 20
     feature_dim = 1
-    data = generate_sequence_data(rng_key, n=1000, seq_length=seq_length, feature_dim=feature_dim)
+    data = generate_sequence_data(
+        rng_key, n=1000, seq_length=seq_length, feature_dim=feature_dim
+    )
     print("Data shape (MultiHeadAttentionVAE):", data.shape)
 
     input_dim = feature_dim
@@ -167,21 +189,61 @@ def test_attention_vae():
 
     key = jax.random.PRNGKey(51)
 
-    model = MultiHeadAttentionVAE(input_dim, latent_dim, hidden_dim, output_dim, seq_length, num_heads, key=key)
-    model = model.fit(data, batch_size=64, n_epochs=30, lr=1e-3, seed=42)
+    model = MultiHeadAttentionVAE(
+        input_dim, latent_dim, hidden_dim, output_dim, seq_length, num_heads, key=key
+    )
+    model = model.fit(data, batch_size=64, n_epochs=300, lr=1e-3, seed=42)
 
     rng, subkey = jax.random.split(rng_key)
     recon, mu, logvar = model.reconstruct(data[:64], subkey, plot=True)
     print("MultiHeadAttentionVAE: Reconstruction shape:", recon.shape)
 
 
+def test_vit_vae():
+    print("=== Testing ViT_VAE on synthetic images ===")
+    rng_key = jax.random.PRNGKey(60)
+
+    image_size = 28
+    channels = 1
+    data = generate_synthetic_images(rng_key)
+    print("Data shape (ViT_VAE):", data.shape)
+
+    # ViT configuration
+    patch_size = 4
+    embedding_dim = 512
+    num_layers = 2
+    num_heads = 4
+    latent_dim = 62
+    dropout_rate = 0.1
+
+    key = jax.random.PRNGKey(61)
+    model = ViT_VAE(
+        image_size=image_size,
+        channels=channels,
+        patch_size=patch_size,
+        embedding_dim=embedding_dim,
+        num_layers=num_layers,
+        num_heads=num_heads,
+        latent_dim=latent_dim,
+        dropout_rate=dropout_rate,
+        key=key,
+    )
+
+    model = model.fit(data, batch_size=16, n_epochs=2, lr=1e-3, seed=42)
+
+    rng, subkey = jax.random.split(rng_key)
+    recon, mu, logvar = model.reconstruct(data[:16], subkey, plot=True)
+    print("ViT_VAE: Reconstruction shape:", recon.shape)
+
+
 def main():
-    test_mlp_vae()
-    test_conv_vae()
-    test_residual_vae()
-    test_gru_vae()
-    test_lstm_vae()
-    test_attention_vae()
+    # test_mlp_vae()
+    # test_conv_vae()
+    # test_residual_vae()
+    # test_gru_vae()
+    # test_lstm_vae()
+    # test_attention_vae()
+    test_vit_vae()
 
 
 if __name__ == "__main__":

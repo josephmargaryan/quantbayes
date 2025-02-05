@@ -16,7 +16,7 @@ setup(
         "flax",
         "pandas",
         "optax",
-        "funsor"
+        "funsor",
     ],
     python_requires=">=3.7",
 )

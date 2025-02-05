@@ -29,13 +29,16 @@ class AttentionGate(nn.Module):
     to focus on relevant features in the skip connection (from the encoder).
     We'll upsample 'g' to match 'x' spatial size, then do 1x1 convs so shapes match.
     """
+
     def __init__(self, in_channels, gating_channels, inter_channels=None):
         super(AttentionGate, self).__init__()
         if inter_channels is None:
             inter_channels = in_channels // 2
 
         # 1x1 conv to reduce skip feature dimensions
-        self.theta = nn.Conv2d(in_channels, inter_channels, kernel_size=1, stride=1, bias=False)
+        self.theta = nn.Conv2d(
+            in_channels, inter_channels, kernel_size=1, stride=1, bias=False
+        )
 
         # 1x1 conv to reduce gating feature dimensions
         self.phi = nn.Conv2d(gating_channels, inter_channels, kernel_size=1, bias=True)
@@ -56,7 +59,9 @@ class AttentionGate(nn.Module):
         theta_x = self.theta(x)  # shape: (B, inter_channels, H, W)
 
         # 2) Upsample gating to match skip's spatial size
-        g_upsampled = F.interpolate(g, size=x.shape[2:], mode='bilinear', align_corners=True)
+        g_upsampled = F.interpolate(
+            g, size=x.shape[2:], mode="bilinear", align_corners=True
+        )
         phi_g = self.phi(g_upsampled)  # shape: (B, inter_channels, H, W)
 
         # 3) Add and activate
@@ -73,6 +78,7 @@ class Down(nn.Module):
     """
     Downsampling by maxpool + double conv.
     """
+
     def __init__(self, in_channels, out_channels):
         super(Down, self).__init__()
         self.pool = nn.MaxPool2d(2)
@@ -89,17 +95,15 @@ class UpAtt(nn.Module):
     Up-sampling, then apply an attention gate to the skip connection,
     then concatenate, then double conv.
     """
+
     def __init__(self, in_channels, out_channels, bilinear=True):
         super(UpAtt, self).__init__()
         if bilinear:
-            self.up = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
+            self.up = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=True)
         else:
             # If using transposed conv, in_channels//2 => the intended # of filters
             self.up = nn.ConvTranspose2d(
-                in_channels // 2,
-                in_channels // 2,
-                kernel_size=2,
-                stride=2
+                in_channels // 2, in_channels // 2, kernel_size=2, stride=2
             )
 
         # The attention gate:
@@ -126,8 +130,7 @@ class UpAtt(nn.Module):
         # 3) If there's any misalignment, pad x1
         diffY = x2_att.size()[2] - x1.size()[2]
         diffX = x2_att.size()[3] - x1.size()[3]
-        x1 = F.pad(x1, [diffX // 2, diffX - diffX // 2,
-                        diffY // 2, diffY - diffY // 2])
+        x1 = F.pad(x1, [diffX // 2, diffX - diffX // 2, diffY // 2, diffY - diffY // 2])
 
         # 4) Concatenate
         x = torch.cat([x2_att, x1], dim=1)
@@ -172,34 +175,36 @@ class AttentionUNet(nn.Module):
         self.features = {}
 
         # Encoder
-        x1 = self.inc(x)        # (B,64,H,W)
-        x2 = self.down1(x1)     # (B,128,H/2,W/2)
-        x3 = self.down2(x2)     # (B,256,H/4,W/4)
-        x4 = self.down3(x3)     # (B,512,H/8,W/8)
-        x5 = self.down4(x4)     # (B,1024//factor,H/16,W/16) if bilinear= True => 512 channels
+        x1 = self.inc(x)  # (B,64,H,W)
+        x2 = self.down1(x1)  # (B,128,H/2,W/2)
+        x3 = self.down2(x2)  # (B,256,H/4,W/4)
+        x4 = self.down3(x3)  # (B,512,H/8,W/8)
+        x5 = self.down4(
+            x4
+        )  # (B,1024//factor,H/16,W/16) if bilinear= True => 512 channels
 
-        self.features['enc1'] = x1
-        self.features['enc2'] = x2
-        self.features['enc3'] = x3
-        self.features['enc4'] = x4
-        self.features['enc5'] = x5
+        self.features["enc1"] = x1
+        self.features["enc2"] = x2
+        self.features["enc3"] = x3
+        self.features["enc4"] = x4
+        self.features["enc5"] = x5
 
         # Decoder (with attention gates)
         # up1 expects in_channels=1024 => gating is x5, skip is x4
         x = self.up1(x5, x4)
-        self.features['dec1'] = x
+        self.features["dec1"] = x
 
         x = self.up2(x, x3)
-        self.features['dec2'] = x
+        self.features["dec2"] = x
 
         x = self.up3(x, x2)
-        self.features['dec3'] = x
+        self.features["dec3"] = x
 
         x = self.up4(x, x1)
-        self.features['dec4'] = x
+        self.features["dec4"] = x
 
         logits = self.outc(x)
-        self.features['out'] = logits
+        self.features["out"] = logits
         return logits
 
 
