@@ -5,7 +5,7 @@ import jax.numpy as jnp
 import optax
 import matplotlib.pyplot as plt
 import numpy as np
-from quantbayes.newest.base import BaseModel  # Ensure your BaseModel is in the PYTHONPATH
+from quantbayes.stochax.base import BaseModel 
 
 # Define a simple vision classifier.
 class SimpleVisionClassifier(eqx.Module):

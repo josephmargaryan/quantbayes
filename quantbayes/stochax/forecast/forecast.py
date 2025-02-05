@@ -1,12 +1,11 @@
 # forecasting.py
-import math
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import optax
 import matplotlib.pyplot as plt
 import numpy as np
-from quantbayes.newest.base import BaseModel
+from quantbayes.stochax.base import BaseModel
 
 # Define a simple forecasting network using a GRU cell.
 class ForecastNet(eqx.Module):
