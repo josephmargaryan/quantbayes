@@ -4,7 +4,7 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 import matplotlib.pyplot as plt
-from quantbayes.newest.base import BaseModel
+from quantbayes.stochax.base import BaseModel
 
 # A simple multiclass classifier: a linear layer returning logits.
 class SimpleMulticlassClassifier(eqx.Module):
