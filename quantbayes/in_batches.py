@@ -1,17 +1,32 @@
 import asyncio
 import inspect
+from collections.abc import Generator, Iterable
 from functools import wraps
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 
-def in_batches(batch_size: int, async_mode: bool = False):
+def _get_batches(iterable: Iterable[Any], batch_size: int) -> Generator[list[Any], None, None]:
+    """
+    Helper function that yields batches (as lists) from an iterable.
+    """
+    batch = []
+    for item in iterable:
+        batch.append(item)
+        if len(batch) == batch_size:
+            yield list(batch)
+            batch.clear()
+    if batch:
+        yield list(batch)
+
+
+def in_batches(batch_size: int, async_mode: bool = False, param: Optional[str] = None) -> Callable:
     """
     A decorator that splits an input iterable (e.g. list of sentences)
     into batches and calls the decorated function once per batch.
 
     The decorated function is expected to have one parameter that receives the iterable.
     For methods (instance or class), if the first parameter is named "self" or "cls",
-    the second parameter is assumed to be the input iterable.
+    second parameter is assumed to be the input iterable unless overridden the `param` argument.
 
     If async_mode is True then the wrapper becomes an async function. In that case, if the
     decorated function is a coroutine function it is awaited; otherwise it is run in a thread
@@ -20,6 +35,8 @@ def in_batches(batch_size: int, async_mode: bool = False):
     Args:
         batch_size (int): The size of each batch.
         async_mode (bool): If True, the wrapper is asynchronous and uses asyncio.
+        param (Optional[str]): Explicitly specify the parameter name that holds the iterable.
+                               If not provided, a heuristic based on the function signature is used.
 
     Raises:
         ValueError: If batch_size is not a positive integer or if the function has no parameters.
@@ -35,7 +52,9 @@ def in_batches(batch_size: int, async_mode: bool = False):
             raise ValueError("The decorated function must have at least one parameter.")
 
         # Determine which parameter is expected to be the input iterable.
-        if len(param_names) == 1:
+        if param is not None:
+            iterable_param = param
+        elif len(param_names) == 1:
             iterable_param = param_names[0]
         elif param_names[0] in ("self", "cls"):
             iterable_param = param_names[1]
@@ -55,20 +74,9 @@ def in_batches(batch_size: int, async_mode: bool = False):
                     raise TypeError("The input must be an iterable.")
 
                 tasks = []
-                batch = []
-                for item in original_iterable:
-                    batch.append(item)
-                    if len(batch) == batch_size:
-                        call_args = dict(base_args)
-                        call_args[iterable_param] = list(batch)
-                        if asyncio.iscoroutinefunction(func):
-                            tasks.append(func(**call_args))
-                        else:
-                            tasks.append(asyncio.to_thread(func, **call_args))
-                        batch = []
-                if batch:
+                for batch in _get_batches(original_iterable, batch_size):
                     call_args = dict(base_args)
-                    call_args[iterable_param] = list(batch)
+                    call_args[iterable_param] = batch
                     if asyncio.iscoroutinefunction(func):
                         tasks.append(func(**call_args))
                     else:
@@ -76,6 +84,7 @@ def in_batches(batch_size: int, async_mode: bool = False):
                 return await asyncio.gather(*tasks)
 
             return async_wrapper
+
         else:
 
             @wraps(func)
@@ -89,20 +98,13 @@ def in_batches(batch_size: int, async_mode: bool = False):
                     raise TypeError("The input must be an iterable.")
 
                 results = []
-                batch = []
-                for item in original_iterable:
-                    batch.append(item)
-                    if len(batch) == batch_size:
-                        call_args = dict(base_args)
-                        call_args[iterable_param] = list(batch)
-                        results.append(func(**call_args))
-                        batch = []
-                if batch:
+                for batch in _get_batches(original_iterable, batch_size):
                     call_args = dict(base_args)
-                    call_args[iterable_param] = list(batch)
+                    call_args[iterable_param] = batch
                     results.append(func(**call_args))
                 return results
 
             return sync_wrapper
 
     return decorator
+
