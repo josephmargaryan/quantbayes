@@ -6,6 +6,7 @@ import equinox as eqx
 import optax
 from quantbayes.stochax.diffusion.sde import batch_loss_fn
 
+
 @eqx.filter_jit
 def make_step(model, weight, int_beta, data, t1, key, opt_state, opt_update):
     loss_fn = eqx.filter_value_and_grad(batch_loss_fn)

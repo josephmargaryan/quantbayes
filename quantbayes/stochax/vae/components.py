@@ -9,6 +9,16 @@ from jaxtyping import Array, Float, PRNGKeyArray
 
 from quantbayes.stochax.vae.base import BaseDecoder, BaseEncoder, BaseVAE
 
+__all__ = [
+    "MLP_VAE",
+    "ConvVAE",
+    "ResidualVAE",
+    "GRU_VAE",
+    "LSTM_VAE",
+    "MultiHeadAttentionVAE",
+    "ViT_VAE",
+]
+
 #############################
 # 1. Standard MLP Versions  #
 #############################

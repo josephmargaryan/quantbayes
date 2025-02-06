@@ -5,12 +5,14 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 
+
 # Helper: key splitting function.
 def key_split_allowing_none(key):
     if key is None:
         return key, None
     else:
         return jr.split(key)
+
 
 ########################################
 # A 1D time-embedding (sinusoidal)
@@ -27,6 +29,7 @@ class SinusoidalTimeEmb(eqx.Module):
         # x: scalar (or shape ())
         emb = x * self.emb
         return jnp.concatenate([jnp.sin(emb), jnp.cos(emb)], axis=-1)
+
 
 ########################################
 # 1D Residual Block for Time-Series with Dropout
@@ -75,7 +78,11 @@ class TimeResBlock1d(eqx.Module):
         self.time_proj = eqx.nn.Linear(time_emb_dim, dim_out, key=k3)
         self.skip_conv = eqx.nn.Conv1d(dim_in, dim_out, kernel_size=1, key=k4)
         # Setup dropout (if dropout > 0, otherwise use Identity)
-        self.dropout = eqx.nn.Dropout(p=dropout, inference=False) if dropout > 0 else eqx.nn.Identity()
+        self.dropout = (
+            eqx.nn.Dropout(p=dropout, inference=False)
+            if dropout > 0
+            else eqx.nn.Identity()
+        )
 
     def __call__(self, x: jnp.ndarray, t_emb: jnp.ndarray, *, key=None) -> jnp.ndarray:
         """
@@ -104,6 +111,7 @@ class TimeResBlock1d(eqx.Module):
             x = self.skip_conv(x)
         return (x + h) / jnp.sqrt(2)
 
+
 ########################################
 # 1D Convolutional UNet for Time-Series with Dropout support
 ########################################
@@ -112,6 +120,7 @@ class ConvTimeUNet(eqx.Module):
     A 1D UNet-style model for time-series diffusion.
     The model expects inputs of shape (L,) or (batch, L) and returns outputs of the same shape.
     """
+
     time_emb: SinusoidalTimeEmb
     time_mlp: eqx.nn.MLP
     first_conv: eqx.nn.Conv1d
@@ -156,7 +165,9 @@ class ConvTimeUNet(eqx.Module):
         )
 
         # First convolution: input shape will be (in_channels, L)
-        self.first_conv = eqx.nn.Conv1d(in_channels, hidden_dim, kernel_size=3, padding=1, key=keys[1])
+        self.first_conv = eqx.nn.Conv1d(
+            in_channels, hidden_dim, kernel_size=3, padding=1, key=keys[1]
+        )
 
         # Downsampling blocks
         dims = [hidden_dim] + [hidden_dim * m for m in dim_mults]
@@ -183,8 +194,12 @@ class ConvTimeUNet(eqx.Module):
             self.down_blocks.append(level_blocks)
 
         # Middle (bottleneck) blocks
-        self.mid_block1 = TimeResBlock1d(current_dim, current_dim, time_emb_dim, dropout=dropout, key=keys[3])
-        self.mid_block2 = TimeResBlock1d(current_dim, current_dim, time_emb_dim, dropout=dropout, key=keys[4])
+        self.mid_block1 = TimeResBlock1d(
+            current_dim, current_dim, time_emb_dim, dropout=dropout, key=keys[3]
+        )
+        self.mid_block2 = TimeResBlock1d(
+            current_dim, current_dim, time_emb_dim, dropout=dropout, key=keys[4]
+        )
 
         # Upsampling blocks (for simplicity, we mirror the down blocks but without skip concatenation)
         self.up_blocks = []
@@ -211,7 +226,9 @@ class ConvTimeUNet(eqx.Module):
 
         # Final normalization and conv to map back to original in_channels.
         self.final_norm = eqx.nn.GroupNorm(1, hidden_dim)
-        self.final_conv = eqx.nn.Conv1d(hidden_dim, in_channels, kernel_size=1, key=jr.PRNGKey(999))
+        self.final_conv = eqx.nn.Conv1d(
+            hidden_dim, in_channels, kernel_size=1, key=jr.PRNGKey(999)
+        )
 
     def _forward(self, t: jnp.ndarray, x: jnp.ndarray, *, key=None) -> jnp.ndarray:
         """
@@ -254,11 +271,12 @@ class ConvTimeUNet(eqx.Module):
     def __call__(self, t: jnp.ndarray, y: jnp.ndarray, *, key=None) -> jnp.ndarray:
         """
         Accepts time series data in various shapes and returns output with the same shape.
-        
+
         If y.ndim == 1: shape (L,) is treated as a single sample (converted to (1, L)).
         If y.ndim == 2: interpreted as either (batch, L) or (C, L).
         If y.ndim == 3: interpreted as (batch, C, L).
         """
+
         # Ensure that single-sample inputs have a channel dimension.
         def single_sample_forward(sample, k):
             if sample.ndim == 1:
@@ -274,14 +292,18 @@ class ConvTimeUNet(eqx.Module):
             # so vmap over batch dimension.
             if key is not None:
                 keys = jr.split(key, y.shape[0])
-                return jax.vmap(lambda sample, k: single_sample_forward(sample, k))(y, keys)
+                return jax.vmap(lambda sample, k: single_sample_forward(sample, k))(
+                    y, keys
+                )
             else:
                 return jax.vmap(lambda sample: single_sample_forward(sample, None))(y)
         elif y.ndim == 3:
             # (B, C, L)
             if key is not None:
                 keys = jr.split(key, y.shape[0])
-                return jax.vmap(lambda sample, k: self._forward(t, sample, key=k))(y, keys)
+                return jax.vmap(lambda sample, k: self._forward(t, sample, key=k))(
+                    y, keys
+                )
             else:
                 return jax.vmap(lambda sample: self._forward(t, sample, key=None))(y)
         else:

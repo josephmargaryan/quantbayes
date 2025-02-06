@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 
+
 @dataclass
 class DiffusionConfig:
     # Common config for both image and time-series
@@ -13,6 +14,7 @@ class DiffusionConfig:
     dt0: float = 0.1
     seed: int = 42
 
+
 @dataclass
 class ImageConfig(DiffusionConfig):
     patch_size: int = 4
@@ -20,6 +22,7 @@ class ImageConfig(DiffusionConfig):
     mix_patch_size: int = 512
     mix_hidden_size: int = 512
     num_blocks: int = 4
+
 
 @dataclass
 class TimeSeriesConfig(DiffusionConfig):

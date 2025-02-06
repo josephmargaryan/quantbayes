@@ -114,7 +114,9 @@ def train_model(
         val_losses.append(val_loss)
 
         if epoch % max(1, (num_epochs // 5)) == 0:
-            print(f"Epoch {epoch}/{num_epochs} - Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
+            print(
+                f"Epoch {epoch}/{num_epochs} - Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}"
+            )
 
     # Plot training & validation loss
     plt.figure()
@@ -133,7 +135,9 @@ def train_model(
 # ----------------------------------------------------------------------------
 # 3. Deterministic Evaluation (Compute IoU)
 # ----------------------------------------------------------------------------
-def compute_iou(pred_mask: torch.Tensor, true_mask: torch.Tensor, threshold=0.5) -> float:
+def compute_iou(
+    pred_mask: torch.Tensor, true_mask: torch.Tensor, threshold=0.5
+) -> float:
     """
     pred_mask, true_mask: shape (batch, H, W), values in [0,1]
     Threshold pred_mask, then compute intersection and union.
@@ -200,13 +204,13 @@ def visualize_segmentation(
     plt.figure(figsize=(12, 4 * num_plots))
 
     for i, idx in enumerate(idxs):
-        img = X_samples[idx]       # shape: (3, H, W)
-        gt_mask = Y_samples[idx]   # shape: (1, H, W)
+        img = X_samples[idx]  # shape: (3, H, W)
+        gt_mask = Y_samples[idx]  # shape: (1, H, W)
 
         model.eval()  # Deterministic inference
         with torch.no_grad():
             img_t = torch.tensor(img[None], dtype=torch.float32).to(device)
-            logits = model(img_t)         # (1, 1, H, W)
+            logits = model(img_t)  # (1, 1, H, W)
             pred_prob = torch.sigmoid(logits)[0, 0].cpu().numpy()  # (H, W)
         pred_mask = (pred_prob > threshold).astype(np.float32)
 

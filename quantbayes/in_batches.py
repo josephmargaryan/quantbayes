@@ -5,7 +5,9 @@ from functools import wraps
 from typing import Any, Callable, Optional
 
 
-def _get_batches(iterable: Iterable[Any], batch_size: int) -> Generator[list[Any], None, None]:
+def _get_batches(
+    iterable: Iterable[Any], batch_size: int
+) -> Generator[list[Any], None, None]:
     """
     Helper function that yields batches (as lists) from an iterable.
     """
@@ -19,7 +21,9 @@ def _get_batches(iterable: Iterable[Any], batch_size: int) -> Generator[list[Any
         yield list(batch)
 
 
-def in_batches(batch_size: int, async_mode: bool = False, param: Optional[str] = None) -> Callable:
+def in_batches(
+    batch_size: int, async_mode: bool = False, param: Optional[str] = None
+) -> Callable:
     """
     A decorator that splits an input iterable (e.g. list of sentences)
     into batches and calls the decorated function once per batch.
@@ -107,4 +111,3 @@ def in_batches(batch_size: int, async_mode: bool = False, param: Optional[str] =
             return sync_wrapper
 
     return decorator
-

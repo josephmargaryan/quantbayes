@@ -5,26 +5,27 @@ import diffrax
 
 from quantbayes.stochax.gan_sde import run_sde
 
+
 def fake_data_test(key=None):
     """
     Generates synthetic time-series data based on a stochastic differential equation (SDE).
-    
+
     This function simulates multiple independent trajectories of a stochastic process
     using an Ornstein-Uhlenbeck-like SDE with drift and diffusion.
 
     Returns:
         tuple (numpy.ndarray, numpy.ndarray):
-            - ts (shape: (num_trajectories, t_size)): 
+            - ts (shape: (num_trajectories, t_size)):
               Represents discrete time steps, duplicated across all trajectories.
-              In real-world applications, this could correspond to timestamps in 
-              financial, weather, or biomedical datasets (e.g., stock prices over time, 
+              In real-world applications, this could correspond to timestamps in
+              financial, weather, or biomedical datasets (e.g., stock prices over time,
               temperature readings, or physiological signals).
 
-            - ys (shape: (num_trajectories, t_size, 1)): 
+            - ys (shape: (num_trajectories, t_size, 1)):
               The actual observed values at each time step for each trajectory.
-              Examples include multiple stock prices evolving stochastically, 
+              Examples include multiple stock prices evolving stochastically,
               temperature fluctuations, or biological signal variations.
-    
+
     Example:
         >>> ts, ys = fake_data_test()
         >>> print(ts.shape)  # (100, 64)
@@ -35,9 +36,9 @@ def fake_data_test(key=None):
         key = jr.PRNGKey(42)  # Default seed for reproducibility
 
     # Define SDE parameters
-    mu = 0.02     # Mean reversion level
-    theta = 0.1   # Strength of reversion
-    sigma = 0.4   # Volatility
+    mu = 0.02  # Mean reversion level
+    theta = 0.1  # Strength of reversion
+    sigma = 0.4  # Volatility
 
     t0, t1 = 0, 63  # Start and end times
     t_size = 64  # Number of time steps
@@ -73,7 +74,14 @@ def fake_data_test(key=None):
 
         # Solve SDE
         sol = diffrax.diffeqsolve(
-            terms, solver, t0, t1, dt0=0.1, y0=y0, saveat=saveat, adjoint=diffrax.DirectAdjoint()
+            terms,
+            solver,
+            t0,
+            t1,
+            dt0=0.1,
+            y0=y0,
+            saveat=saveat,
+            adjoint=diffrax.DirectAdjoint(),
         )
 
         # Store trajectory
@@ -84,8 +92,6 @@ def fake_data_test(key=None):
     ys = trajectories[:, :, None]  # Shape: (100, 64, 1)
 
     return ts, ys
-
-
 
 
 fake_data = fake_data_test()

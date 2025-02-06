@@ -6,11 +6,14 @@ import jax.numpy as jnp
 import jax.random as jr
 import diffrax as dfx
 
+
 def int_beta_linear(t):
     return t  # simple integral of beta(t)=1 => t
 
+
 def weight_fn(t):
     return 1 - jnp.exp(-t)
+
 
 def single_loss_fn(model, weight, int_beta, data, t, key):
     mean = data * jnp.exp(-0.5 * int_beta(t))
@@ -27,19 +30,21 @@ def batch_loss_fn(model, weight, int_beta, data, t1, key):
     tkey, losskey = jr.split(key)
     losskeys = jr.split(losskey, batch_size)
     # Low-discrepancy sampling over t
-    t = jr.uniform(tkey, (batch_size,), minval=0, maxval=t1/batch_size)
-    t = t + (t1/batch_size)*jnp.arange(batch_size)
+    t = jr.uniform(tkey, (batch_size,), minval=0, maxval=t1 / batch_size)
+    t = t + (t1 / batch_size) * jnp.arange(batch_size)
     loss_fn = ft.partial(single_loss_fn, model, weight, int_beta)
     loss_fn = jax.vmap(loss_fn, in_axes=(None, 0, 0))
     # shape => [batch_size]
     losses = loss_fn(data, t, losskeys)
     return jnp.mean(losses)
 
+
 @jax.jit
 def single_sample_fn(model, int_beta, data_shape, dt0, t1, key):
     """
     The reverse-time SDE as ODE approach for sampling (using Diffrax).
     """
+
     def drift(t, y, args):
         # derivative of int_beta wrt t is beta(t)=1 for int_beta(t)=t
         _, beta = jax.jvp(int_beta, (t,), (jnp.ones_like(t),))

@@ -209,9 +209,7 @@ if __name__ == "__main__":
     X_c2 = np.random.normal(loc=[-2, 2], scale=1.0, size=(N // 3, 2))
 
     X_all = np.vstack([X_c0, X_c1, X_c2]).astype(np.float32)
-    y_all = np.array(
-        [0] * (N // 3) + [1] * (N // 3) + [2] * (N // 3), dtype=np.int32
-    )
+    y_all = np.array([0] * (N // 3) + [1] * (N // 3) + [2] * (N // 3), dtype=np.int32)
 
     # Shuffle the dataset
     perm = np.random.permutation(N)

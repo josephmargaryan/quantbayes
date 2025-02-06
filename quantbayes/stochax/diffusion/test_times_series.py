@@ -6,8 +6,15 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 
 from quantbayes.stochax.diffusion.config import TimeSeriesConfig
-from quantbayes.stochax.diffusion.dataloaders import generate_synthetic_time_series, dataloader
-from quantbayes.stochax.diffusion.sde import int_beta_linear, weight_fn, single_sample_fn 
+from quantbayes.stochax.diffusion.dataloaders import (
+    generate_synthetic_time_series,
+    dataloader,
+)
+from quantbayes.stochax.diffusion.sde import (
+    int_beta_linear,
+    weight_fn,
+    single_sample_fn,
+)
 from quantbayes.stochax.diffusion.trainer import train_model
 from quantbayes.stochax.diffusion.models.times_series_1d import ConvTimeUNet
 from quantbayes.stochax.diffusion.models.transformer_1d import DiffusionTransformer1D
@@ -18,7 +25,9 @@ def test_conv_time_unet_diffusion():
     key = jr.PRNGKey(cfg.seed)
 
     # Generate time-series data: shape [num_samples, seq_length]
-    data = generate_synthetic_time_series(num_samples=10, seq_length=cfg.seq_length, key=key)
+    data = generate_synthetic_time_series(
+        num_samples=10, seq_length=cfg.seq_length, key=key
+    )
     data_mean = jnp.mean(data)
     data_std = jnp.std(data)
     data_min, data_max = jnp.min(data), jnp.max(data)
@@ -31,7 +40,7 @@ def test_conv_time_unet_diffusion():
     num_res_blocks = 2
     model = ConvTimeUNet(
         seq_length=cfg.seq_length,
-        in_channels=1,      # e.g. treat each TS as [1, seq_length]
+        in_channels=1,  # e.g. treat each TS as [1, seq_length]
         hidden_dim=hidden_dim,
         dim_mults=dim_mults,
         num_res_blocks=num_res_blocks,
@@ -46,7 +55,7 @@ def test_conv_time_unet_diffusion():
     # Train
     trained_model = train_model(
         model=model,
-        dataset=data,      # shape [N, seq_length]
+        dataset=data,  # shape [N, seq_length]
         t1=cfg.t1,
         lr=cfg.lr,
         num_steps=cfg.num_steps,
@@ -61,8 +70,12 @@ def test_conv_time_unet_diffusion():
     # Sampling: pick a sample_size=4 for demonstration
     sample_size = 4
     sample_keys = jr.split(sample_key, sample_size)
+
     def sample_fn(k):
-        return single_sample_fn(trained_model, int_beta_linear, (cfg.seq_length,), cfg.dt0, cfg.t1, k)
+        return single_sample_fn(
+            trained_model, int_beta_linear, (cfg.seq_length,), cfg.dt0, cfg.t1, k
+        )
+
     samples = jax.vmap(sample_fn)(sample_keys)  # shape [4, seq_length]
 
     # Denormalize
@@ -79,7 +92,9 @@ def test_diffusion_transformer_1d():
     key = jr.PRNGKey(cfg.seed)
 
     # Generate synthetic data of shape [num_samples, seq_length]
-    data = generate_synthetic_time_series(num_samples=16, seq_length=cfg.seq_length, key=key)
+    data = generate_synthetic_time_series(
+        num_samples=16, seq_length=cfg.seq_length, key=key
+    )
     data_mean = jnp.mean(data)
     data_std = jnp.std(data)
     data_min, data_max = jnp.min(data), jnp.max(data)
@@ -126,9 +141,12 @@ def test_diffusion_transformer_1d():
     # Sample
     sample_size = 4
     sample_keys = jr.split(sample_key, sample_size)
+
     def sample_fn(k):
         # shape => (seq_length,)
-        return single_sample_fn(trained_model, int_beta_linear, (cfg.seq_length,), cfg.dt0, cfg.t1, k)
+        return single_sample_fn(
+            trained_model, int_beta_linear, (cfg.seq_length,), cfg.dt0, cfg.t1, k
+        )
 
     samples = jax.vmap(sample_fn)(sample_keys)  # (sample_size, seq_length)
     samples = samples * data_std + data_mean
@@ -140,6 +158,7 @@ def test_diffusion_transformer_1d():
     plt.plot(samples[0])
     plt.title("DiffusionTransformer1D Sample")
     plt.show()
+
 
 if __name__ == "__main__":
     # test_conv_time_unet_diffusion()

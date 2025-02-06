@@ -16,6 +16,8 @@ from quantbayes.stochax.dmm.base import (
     BaseTransition,
 )
 
+__all__ = ["DeepMarkovModel"]
+
 #######################################
 # 1. TRANSITION COMPONENTS
 #######################################

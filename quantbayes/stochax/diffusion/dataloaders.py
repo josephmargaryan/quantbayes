@@ -4,6 +4,7 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 
+
 def dataloader(dataset, batch_size, *, key):
     """
     Yields batches of data from a JAX array dataset.
@@ -17,6 +18,7 @@ def dataloader(dataset, batch_size, *, key):
             batch_indices = perm[i : i + batch_size]
             yield dataset[batch_indices]
 
+
 def generate_synthetic_time_series(num_samples=10000, seq_length=128, key=None):
     """
     Creates a simple synthetic sinusoidal or random time-series dataset.
@@ -24,17 +26,16 @@ def generate_synthetic_time_series(num_samples=10000, seq_length=128, key=None):
     if key is None:
         key = jr.PRNGKey(0)
     key_sin, key_noise = jr.split(key)
-    t = jnp.linspace(0, 2*jnp.pi, seq_length)
+    t = jnp.linspace(0, 2 * jnp.pi, seq_length)
     sin_freq = jr.uniform(key_sin, shape=[num_samples], minval=1, maxval=5)
     # shape: [num_samples, seq_length]
-    data = jnp.stack(
-        [jnp.sin(freq * t) for freq in sin_freq], axis=0
-    )
+    data = jnp.stack([jnp.sin(freq * t) for freq in sin_freq], axis=0)
     # add some noise
     noise = 0.1 * jr.normal(key_noise, shape=data.shape)
     data = data + noise
     # data shape: [num_samples, seq_length]
     return data
+
 
 def generate_synthetic_image_dataset(num_samples=60000, shape=(1, 28, 28), key=None):
     """

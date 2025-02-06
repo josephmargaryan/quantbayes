@@ -8,6 +8,7 @@ import jax.numpy as jnp
 import jax.random as jr
 from einops import rearrange
 
+
 class SinusoidalPosEmb(eqx.Module):
     emb: jax.Array
 
@@ -471,7 +472,9 @@ class UNet(eqx.Module):
             # When a key is provided, split it across the batch
             if key is not None:
                 keys = jr.split(key, y.shape[0])
-                return jax.vmap(lambda sample, sample_key: self._forward(t, sample, key=sample_key))(y, keys)
+                return jax.vmap(
+                    lambda sample, sample_key: self._forward(t, sample, key=sample_key)
+                )(y, keys)
             else:
                 return jax.vmap(lambda sample: self._forward(t, sample, key=None))(y)
         else:

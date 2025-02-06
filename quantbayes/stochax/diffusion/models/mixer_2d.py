@@ -6,6 +6,7 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 
+
 class MixerBlock(eqx.Module):
     patch_mixer: eqx.nn.MLP
     hidden_mixer: eqx.nn.MLP
@@ -97,9 +98,9 @@ class Mixer2d(eqx.Module):
             if key is not None:
                 # Split key for each sample in the batch.
                 keys = jr.split(key, y.shape[0])
-                return jax.vmap(lambda sample, sample_key: self._forward(t, sample, key=sample_key))(
-                    y, keys
-                )
+                return jax.vmap(
+                    lambda sample, sample_key: self._forward(t, sample, key=sample_key)
+                )(y, keys)
             else:
                 return jax.vmap(lambda sample: self._forward(t, sample, key=None))(y)
         else:

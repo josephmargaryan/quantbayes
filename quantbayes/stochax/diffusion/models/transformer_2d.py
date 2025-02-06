@@ -9,6 +9,7 @@ import jax.numpy as jnp
 import jax.random as jr
 from einops import rearrange
 
+
 ############################################################
 # SinusoidalTimeEmb + MLP for the diffusion time embedding
 ############################################################
@@ -25,24 +26,29 @@ class SinusoidalTimeEmb(eqx.Module):
         emb = x * self.emb
         return jnp.concatenate([jnp.sin(emb), jnp.cos(emb)], axis=-1)
 
+
 def key_split_allowing_none(key):
     if key is None:
         return key, None
     else:
         return jr.split(key)
 
+
 ############################################################
 # Patch Embedding + Un-Patching
 ############################################################
 class PatchEmbed(eqx.Module):
     """Split image (C,H,W) into non-overlapping patches and project to tokens."""
+
     patch_size: int
     proj: eqx.nn.Linear
     num_patches: int
     embed_dim: int
     channels: int
 
-    def __init__(self, channels: int, embed_dim: int, patch_size: int, img_size: tuple, *, key):
+    def __init__(
+        self, channels: int, embed_dim: int, patch_size: int, img_size: tuple, *, key
+    ):
         """img_size = (C, H, W). We'll embed patches into shape (num_patches, embed_dim)."""
         # We'll flatten each patch into a vector of size patch_size*patch_size*C.
         # Then project into embed_dim with a linear layer.
@@ -81,6 +87,7 @@ class PatchEmbed(eqx.Module):
 
 class PatchUnembed(eqx.Module):
     """Reverse of PatchEmbed: convert tokens to (C,H,W)."""
+
     patch_size: int
     proj: eqx.nn.Linear
     num_patches: int
@@ -89,7 +96,9 @@ class PatchUnembed(eqx.Module):
     h: int
     w: int
 
-    def __init__(self, channels: int, embed_dim: int, patch_size: int, img_size: tuple, *, key):
+    def __init__(
+        self, channels: int, embed_dim: int, patch_size: int, img_size: tuple, *, key
+    ):
         self.channels = channels
         self.patch_size = patch_size
         c, h, w = img_size
@@ -110,7 +119,9 @@ class PatchUnembed(eqx.Module):
         returns x: shape (C,H,W)
         """
         # reverse the linear
-        patches = jax.vmap(self.proj)(tokens)  # shape (num_patches, patch_size*patch_size*C)
+        patches = jax.vmap(self.proj)(
+            tokens
+        )  # shape (num_patches, patch_size*patch_size*C)
         # rearrange patches back to (C,H,W)
         ph = pw = self.patch_size
         c = self.channels
@@ -125,6 +136,7 @@ class PatchUnembed(eqx.Module):
             pw=pw,
         )
         return x
+
 
 ############################################################
 # Learnable Positional Embedding
@@ -147,6 +159,7 @@ class LearnablePositionalEmb(eqx.Module):
         pe = self.pos_emb[:n]
         return x + pe
 
+
 ############################################################
 # A single Transformer block
 ############################################################
@@ -157,7 +170,15 @@ class TransformerBlock(eqx.Module):
     ff: eqx.nn.MLP
     dropout_rate: float
 
-    def __init__(self, embed_dim: int, n_heads: int, mlp_ratio: float, dropout_rate: float, *, key):
+    def __init__(
+        self,
+        embed_dim: int,
+        n_heads: int,
+        mlp_ratio: float,
+        dropout_rate: float,
+        *,
+        key,
+    ):
         k1, k2, k3 = jr.split(key, 3)
         self.norm1 = eqx.nn.LayerNorm(embed_dim)
         self.attn = eqx.nn.MultiheadAttention(
@@ -205,6 +226,7 @@ class TransformerBlock(eqx.Module):
         x = x + ff_out
 
         return x
+
 
 ############################################################
 # Diffusion Transformer for Images
@@ -279,8 +301,8 @@ class DiffusionTransformer2D(eqx.Module):
 
     def _forward(self, t, x, *, key=None):
         # 1) time embedding
-        t_emb = self.time_emb_fn(t)        # shape (time_emb_dim,)
-        t_emb = self.time_proj(t_emb)      # shape (embed_dim,) not (1, embed_dim)
+        t_emb = self.time_emb_fn(t)  # shape (time_emb_dim,)
+        t_emb = self.time_proj(t_emb)  # shape (embed_dim,) not (1, embed_dim)
 
         # 2) patchify
         tokens = self.patch_embed(x)
@@ -310,7 +332,9 @@ class DiffusionTransformer2D(eqx.Module):
         if y.ndim == 4:
             if key is not None:
                 keys = jr.split(key, y.shape[0])
-                return jax.vmap(lambda sample, kk: self._forward(t, sample, key=kk))(y, keys)
+                return jax.vmap(lambda sample, kk: self._forward(t, sample, key=kk))(
+                    y, keys
+                )
             else:
                 return jax.vmap(lambda sample: self._forward(t, sample, key=None))(y)
         else:

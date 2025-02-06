@@ -16,9 +16,13 @@ class SimpleCNN(nn.Module):
     def __init__(self, num_classes: int):
         super().__init__()
         self.conv1 = nn.Conv2d(in_channels=3, out_channels=32, kernel_size=3, padding=1)
-        self.conv2 = nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv2d(
+            in_channels=32, out_channels=64, kernel_size=3, padding=1
+        )
         self.pool = nn.AvgPool2d(kernel_size=2, stride=2)
-        self.fc1 = nn.Linear(64 * 8 * 8, 128)  # if input is 32x32 -> after 2 pools -> 8x8
+        self.fc1 = nn.Linear(
+            64 * 8 * 8, 128
+        )  # if input is 32x32 -> after 2 pools -> 8x8
         self.dropout = nn.Dropout(p=0.3)
         self.fc2 = nn.Linear(128, num_classes)
 
@@ -28,13 +32,13 @@ class SimpleCNN(nn.Module):
         output: (batch_size, num_classes)
         """
         x = torch.relu(self.conv1(x))  # (batch_size, 32, h, w)
-        x = self.pool(x)               # (batch_size, 32, h/2, w/2)
+        x = self.pool(x)  # (batch_size, 32, h/2, w/2)
         x = torch.relu(self.conv2(x))  # (batch_size, 64, h/2, w/2)
-        x = self.pool(x)               # (batch_size, 64, h/4, w/4)
-        x = x.view(x.size(0), -1)      # flatten
-        x = torch.relu(self.fc1(x))    # (batch_size, 128)
-        x = self.dropout(x)            # dropout (only active during training)
-        logits = self.fc2(x)           # (batch_size, num_classes)
+        x = self.pool(x)  # (batch_size, 64, h/4, w/4)
+        x = x.view(x.size(0), -1)  # flatten
+        x = torch.relu(self.fc1(x))  # (batch_size, 128)
+        x = self.dropout(x)  # dropout (only active during training)
+        logits = self.fc2(x)  # (batch_size, num_classes)
         return logits
 
 

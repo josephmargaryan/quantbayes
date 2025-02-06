@@ -132,7 +132,7 @@ def evaluate_model(
     with torch.no_grad():
         preds = model(X_val_t).squeeze(-1)  # shape: (N,)
     mean_preds = preds.cpu().numpy()
-    
+
     # Since we're doing a single forward pass, uncertainty is not estimated.
     std_preds = np.zeros_like(mean_preds)
 

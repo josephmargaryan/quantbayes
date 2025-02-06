@@ -5,6 +5,7 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 
+
 # Helper: key splitting function.
 def key_split_allowing_none(key):
     if key is None:
@@ -28,11 +29,13 @@ class SinusoidalTimeEmb(eqx.Module):
         emb = x * self.emb
         return jnp.concatenate([jnp.sin(emb), jnp.cos(emb)], axis=-1)
 
+
 ########################################
 # Basic 1D token embedding
 ########################################
 class TokenEmbed(eqx.Module):
     """Embed a 1D sequence (length,) into (length, embed_dim)."""
+
     proj: eqx.nn.Linear
     seq_length: int
     embed_dim: int
@@ -50,13 +53,17 @@ class TokenEmbed(eqx.Module):
         if x.shape[0] != self.seq_length:
             # for simplicity assume x is exactly seq_length
             pass
+
         # expand each scalar to shape (1,) then vmap
         def embed_scalar(scalar):
             return self.proj(scalar[None])  # shape (embed_dim,)
+
         return jax.vmap(embed_scalar)(x)  # shape (seq_length, embed_dim)
+
 
 class TokenUnembed(eqx.Module):
     """Reverse of TokenEmbed: convert (seq_length, embed_dim) back to shape (seq_length,)."""
+
     unproj: eqx.nn.Linear
     seq_length: int
     embed_dim: int
@@ -70,11 +77,14 @@ class TokenUnembed(eqx.Module):
         """
         x: shape (seq_length, embed_dim) => returns shape (seq_length,)
         """
+
         def unproj_token(token):
             scalar = self.unproj(token)
             return scalar[0]  # shape ()
+
         scalars = jax.vmap(unproj_token)(x)  # shape (seq_length,)
         return scalars
+
 
 ########################################
 # Learned positional embedding
@@ -97,6 +107,7 @@ class LearnablePositionalEmb(eqx.Module):
         pe = self.pos_emb[:seq_len]
         return x + pe
 
+
 ########################################
 # A TransformerBlock for 1D tokens
 ########################################
@@ -108,7 +119,15 @@ class TransformerBlock(eqx.Module):
     embed_dim: int
     dropout_rate: float
 
-    def __init__(self, embed_dim: int, n_heads: int, mlp_ratio: float, dropout_rate: float, *, key):
+    def __init__(
+        self,
+        embed_dim: int,
+        n_heads: int,
+        mlp_ratio: float,
+        dropout_rate: float,
+        *,
+        key,
+    ):
         k1, k2, k3 = jr.split(key, 3)
         self.embed_dim = embed_dim
         self.dropout_rate = dropout_rate
@@ -152,6 +171,7 @@ class TransformerBlock(eqx.Module):
         x = x + ff_out
 
         return x
+
 
 ########################################
 # Diffusion Transformer for 1D Time-Series
@@ -221,15 +241,17 @@ class DiffusionTransformer1D(eqx.Module):
 
     def _forward(self, t, x, *, key=None):
         # 1) time embedding
-        t_emb = self.time_emb_fn(t)       # shape (time_emb_dim,)
-        t_emb = self.time_proj(t_emb)     # shape (embed_dim,) not (1, embed_dim)
+        t_emb = self.time_emb_fn(t)  # shape (time_emb_dim,)
+        t_emb = self.time_proj(t_emb)  # shape (embed_dim,) not (1, embed_dim)
 
         # 2) token embed
         tokens = self.token_embed(x)
         # 3) pos embed
         tokens = self.pos_embed(tokens)
         # 4) broadcast t_emb
-        t_map = jnp.broadcast_to(t_emb, tokens.shape)  # shape => (seq_length, embed_dim)
+        t_map = jnp.broadcast_to(
+            t_emb, tokens.shape
+        )  # shape => (seq_length, embed_dim)
         tokens = tokens + t_map
 
         # 5) blocks
@@ -252,7 +274,9 @@ class DiffusionTransformer1D(eqx.Module):
             # batch
             if key is not None:
                 keys = jr.split(key, y.shape[0])
-                return jax.vmap(lambda sample, kk: self._forward(t, sample, key=kk))(y, keys)
+                return jax.vmap(lambda sample, kk: self._forward(t, sample, key=kk))(
+                    y, keys
+                )
             else:
                 return jax.vmap(lambda sample: self._forward(t, sample, key=None))(y)
         else:

@@ -8,23 +8,28 @@ from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
 import numpy as np
 
+
 # -----------------------
 # 1) Define Beta Schedule and Diffusion Class
 # -----------------------
 def linear_beta_schedule(timesteps, beta_start=1e-4, beta_end=0.02):
     return torch.linspace(beta_start, beta_end, timesteps)
 
+
 class GaussianDiffusion:
     """
     Diffusion process for images. The forward (q) process gradually adds Gaussian noise,
     and the reverse (p) process denoises the image.
     """
+
     def __init__(self, timesteps=1000, beta_start=1e-4, beta_end=0.02):
         self.timesteps = timesteps
         self.betas = linear_beta_schedule(timesteps, beta_start, beta_end)
         self.alphas = 1.0 - self.betas
         self.alphas_cumprod = torch.cumprod(self.alphas, dim=0)
-        self.alphas_cumprod_prev = torch.cat([torch.tensor([1.0]), self.alphas_cumprod[:-1]], dim=0)
+        self.alphas_cumprod_prev = torch.cat(
+            [torch.tensor([1.0]), self.alphas_cumprod[:-1]], dim=0
+        )
 
         # For images, we will later reshape these scalars to (batch, 1, 1, 1)
         self.sqrt_alphas_cumprod = torch.sqrt(self.alphas_cumprod)
@@ -34,11 +39,25 @@ class GaussianDiffusion:
         self.sqrt_recipm1_alphas_cumprod = torch.sqrt(1.0 / self.alphas_cumprod - 1)
 
         # Posterior (reverse) process parameters
-        self.posterior_variance = self.betas * (1.0 - self.alphas_cumprod_prev) / (1.0 - self.alphas_cumprod)
-        self.posterior_log_variance_clipped = torch.log(torch.cat(
-            [self.posterior_variance[1:2], self.posterior_variance[1:]], dim=0) + 1e-8)
-        self.posterior_mean_coef1 = self.betas * torch.sqrt(self.alphas_cumprod_prev) / (1.0 - self.alphas_cumprod)
-        self.posterior_mean_coef2 = (1.0 - self.alphas_cumprod_prev) * torch.sqrt(self.alphas) / (1.0 - self.alphas_cumprod)
+        self.posterior_variance = (
+            self.betas * (1.0 - self.alphas_cumprod_prev) / (1.0 - self.alphas_cumprod)
+        )
+        self.posterior_log_variance_clipped = torch.log(
+            torch.cat(
+                [self.posterior_variance[1:2], self.posterior_variance[1:]], dim=0
+            )
+            + 1e-8
+        )
+        self.posterior_mean_coef1 = (
+            self.betas
+            * torch.sqrt(self.alphas_cumprod_prev)
+            / (1.0 - self.alphas_cumprod)
+        )
+        self.posterior_mean_coef2 = (
+            (1.0 - self.alphas_cumprod_prev)
+            * torch.sqrt(self.alphas)
+            / (1.0 - self.alphas_cumprod)
+        )
 
     def q_sample(self, x0, t, noise=None):
         """
@@ -62,7 +81,9 @@ class GaussianDiffusion:
         coef2 = self.posterior_mean_coef2[t].to(device).view(-1, 1, 1, 1)
         posterior_mean = coef1 * x0 + coef2 * x_t
         variance = self.posterior_variance[t].to(device).view(-1, 1, 1, 1)
-        log_variance = self.posterior_log_variance_clipped[t].to(device).view(-1, 1, 1, 1)
+        log_variance = (
+            self.posterior_log_variance_clipped[t].to(device).view(-1, 1, 1, 1)
+        )
         return posterior_mean, variance, log_variance
 
     def p_mean_variance(self, model, x, t, clip_denoised=True, model_kwargs=None):
@@ -79,20 +100,24 @@ class GaussianDiffusion:
         sqrt_recipm1 = self.sqrt_recipm1_alphas_cumprod[t].to(device).view(-1, 1, 1, 1)
         x0_pred = sqrt_recip * x - sqrt_recipm1 * eps
         if clip_denoised:
-            x0_pred = torch.clamp(x0_pred, -1., 1.)
-        posterior_mean, posterior_variance, posterior_log_variance = self.q_posterior_mean_variance(x0_pred, x, t)
+            x0_pred = torch.clamp(x0_pred, -1.0, 1.0)
+        posterior_mean, posterior_variance, posterior_log_variance = (
+            self.q_posterior_mean_variance(x0_pred, x, t)
+        )
         return {
             "mean": posterior_mean,
             "variance": posterior_variance,
             "log_variance": posterior_log_variance,
-            "pred_x0": x0_pred
+            "pred_x0": x0_pred,
         }
 
     def p_sample(self, model, x, t, clip_denoised=True, model_kwargs=None):
         """
         Sample x_{t-1} from p(x_{t-1}|x_t) using the reverse process.
         """
-        out = self.p_mean_variance(model, x, t, clip_denoised=clip_denoised, model_kwargs=model_kwargs)
+        out = self.p_mean_variance(
+            model, x, t, clip_denoised=clip_denoised, model_kwargs=model_kwargs
+        )
         noise = torch.randn_like(x)
         nonzero_mask = (t != 0).float().view(-1, 1, 1, 1)  # no noise when t == 0
         # Ensure log_variance has same dimensions as x
@@ -124,6 +149,7 @@ class GaussianDiffusion:
         model_output = model(x_t, t, **(model_kwargs or {}))
         return F.mse_loss(model_output, noise)
 
+
 # -----------------------
 # 2) Define a Simple Convolutional Diffusion Model for MNIST
 # -----------------------
@@ -132,13 +158,18 @@ class SimpleCNN(nn.Module):
     A small CNN that takes an image and a naive time embedding and predicts noise.
     The input image shape is (batch, 1, 28, 28) and the model outputs noise of the same shape.
     """
+
     def __init__(self, hidden_channels=32):
         super(SimpleCNN, self).__init__()
         # We'll embed t as an extra channel (after scaling)
         # The input will then have 2 channels (1 for the image and 1 for the time embedding)
         self.conv1 = nn.Conv2d(2, hidden_channels, kernel_size=3, padding=1)
-        self.conv2 = nn.Conv2d(hidden_channels, hidden_channels, kernel_size=3, padding=1)
-        self.conv3 = nn.Conv2d(hidden_channels, hidden_channels, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv2d(
+            hidden_channels, hidden_channels, kernel_size=3, padding=1
+        )
+        self.conv3 = nn.Conv2d(
+            hidden_channels, hidden_channels, kernel_size=3, padding=1
+        )
         self.conv_out = nn.Conv2d(hidden_channels, 1, kernel_size=3, padding=1)
 
     def forward(self, x, t):
@@ -148,9 +179,13 @@ class SimpleCNN(nn.Module):
         We create a naive time embedding by normalizing t and replicating it to match spatial dimensions.
         """
         # Normalize t (assume timesteps=1000)
-        t_emb = t.float().unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)  # shape (batch, 1, 1, 1)
+        t_emb = (
+            t.float().unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
+        )  # shape (batch, 1, 1, 1)
         t_emb = t_emb / 1000.0
-        t_emb = t_emb.expand(x.size(0), 1, x.size(2), x.size(3))  # shape (batch, 1, 28, 28)
+        t_emb = t_emb.expand(
+            x.size(0), 1, x.size(2), x.size(3)
+        )  # shape (batch, 1, 28, 28)
         # Concatenate the image and time embedding along the channel dimension.
         inp = torch.cat([x, t_emb], dim=1)  # shape (batch, 2, 28, 28)
         h = F.relu(self.conv1(inp))
@@ -159,15 +194,18 @@ class SimpleCNN(nn.Module):
         out = self.conv_out(h)  # shape (batch, 1, 28, 28)
         return out
 
+
 # -----------------------
 # 3) Training Loop for MNIST
 # -----------------------
-def train_diffusion(model, diffusion, data_loader, optimizer, timesteps=1000, device="cpu", epochs=5):
+def train_diffusion(
+    model, diffusion, data_loader, optimizer, timesteps=1000, device="cpu", epochs=5
+):
     model.to(device)
     model.train()
     for epoch in range(epochs):
         total_loss = 0.0
-        for (real_data, _) in data_loader:
+        for real_data, _ in data_loader:
             # real_data: (batch, 1, 28, 28), in range [0,1]
             # Scale to [-1,1]
             real_data = real_data.to(device) * 2 - 1
@@ -180,15 +218,20 @@ def train_diffusion(model, diffusion, data_loader, optimizer, timesteps=1000, de
             total_loss += loss.item()
         print(f"Epoch [{epoch+1}/{epochs}], Loss: {total_loss/len(data_loader):.4f}")
 
+
 # -----------------------
 # 4) Main: Load MNIST, Train, and Sample
 # -----------------------
 if __name__ == "__main__":
     # Load MNIST dataset
-    transform = transforms.Compose([
-        transforms.ToTensor(),  # images in [0,1]
-    ])
-    mnist_train = datasets.MNIST(root="./data", train=True, download=True, transform=transform)
+    transform = transforms.Compose(
+        [
+            transforms.ToTensor(),  # images in [0,1]
+        ]
+    )
+    mnist_train = datasets.MNIST(
+        root="./data", train=True, download=True, transform=transform
+    )
     train_loader = DataLoader(mnist_train, batch_size=64, shuffle=True)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -198,7 +241,15 @@ if __name__ == "__main__":
     optimizer = optim.Adam(model.parameters(), lr=1e-3)
 
     print("Training diffusion model on MNIST...")
-    train_diffusion(model, diffusion, train_loader, optimizer, timesteps=timesteps, device=device, epochs=5)
+    train_diffusion(
+        model,
+        diffusion,
+        train_loader,
+        optimizer,
+        timesteps=timesteps,
+        device=device,
+        epochs=5,
+    )
 
     print("Generating samples...")
     samples = diffusion.p_sample_loop(model, shape=(64, 1, 28, 28), device=device)
@@ -207,8 +258,11 @@ if __name__ == "__main__":
     samples = samples.clamp(0, 1).detach().cpu()
 
     # Plot a grid of generated samples
-    grid = np.transpose(torchvision.utils.make_grid(samples, nrow=8, padding=2, normalize=True).numpy(), (1,2,0))
-    plt.figure(figsize=(8,8))
+    grid = np.transpose(
+        torchvision.utils.make_grid(samples, nrow=8, padding=2, normalize=True).numpy(),
+        (1, 2, 0),
+    )
+    plt.figure(figsize=(8, 8))
     plt.imshow(grid)
     plt.axis("off")
     plt.title("Generated MNIST Samples")
