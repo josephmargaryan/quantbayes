@@ -1,4 +1,4 @@
-from typing import Optional, Typing, Tuple
+from typing import Optional, Tuple
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
