@@ -9,6 +9,7 @@ from . import similarity_tools
 from . import stochax
 from . import var
 from . import torch_based
+from . import fake_data
 
 __all__ = [
     "bnn",
@@ -22,4 +23,5 @@ __all__ = [
     "stochax",
     "var",
     "torch_based",
+    "fake_data",
 ]

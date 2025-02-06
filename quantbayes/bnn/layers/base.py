@@ -1,3 +1,4 @@
+from typing import Optional, Typing, Tuple
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
@@ -197,79 +198,81 @@ class Module:
         elif self.task_type == "regression":
             self._visualize_regression(X, y, feature_index, posterior)
         elif self.task_type == "image_classification":
-            assert (
-                num_classes is not None
-            ), "num_classes must be provided for image classification visualization."
             self._visualize_image_classification(X, y, num_classes, posterior)
         elif self.task_type == "image_segmentation":
-            self._visualize_image_segmentation(
-                X, y, posterior
-            )  # Automatically handle segmentation
+            self._visualize_image_segmentation(X, y, posterior)
         else:
             raise ValueError(f"Unknown task type: {self.task_type}")
 
-    def _visualize_image_classification(self, X, y, num_classes, posterior):
+    def visualize_image_classification(
+        self,
+        X,
+        y,
+        posterior: str = "logits",
+        image_size: Optional[int] = None,
+        in_channels: Optional[int] = None,
+    ):
         """
-        Visualizes predictions for image classification tasks.
+        Visualizes predictions for image classification tasks in a general way.
 
-        :param X: jnp.ndarray
-            Input images (batch_size, channels, height, width) or preprocessed patches.
-        :param y: jnp.ndarray
-            True labels (optional, for comparison).
-        :param num_classes: int
-            Number of output classes.
+        Args:
+            X (jnp.ndarray): Input images (batch_size, channels, height, width)
+                            or preprocessed patches.
+            y (jnp.ndarray): True labels (optional, for comparison).
+            num_classes (int): Number of output classes.
+            predict_fn (callable): A function that takes (X, rng_key, posterior) and returns
+                                posterior samples. For instance, this can be `self.predict`.
+            posterior (str): The posterior to use (default: "logits").
+            image_size (Optional[int]): If X is not 4D, a fallback image size for a placeholder.
+            in_channels (Optional[int]): If X is not 4D, a fallback number of channels for a placeholder.
         """
-        # Handle input shape
-        if X.ndim == 4:  # Image shape: (batch_size, channels, height, width)
-            patches = self.patchify(X)  # Convert to patches
-        elif X.ndim == 3:  # Already patchified: (batch_size, num_patches, patch_dim)
-            patches = X
-        else:
-            raise ValueError(
-                f"Unexpected input shape: {X.shape}. Expected 4D images or 3D patches."
-            )
-
-        # Predict on patches
-        pred_samples = self.predict(
-            patches, jax.random.PRNGKey(0), posterior=posterior
-        )  # [num_samples, batch_size, num_classes]
+        # Get predictions from the provided function.
+        pred_samples = self.predict(X, jax.random.PRNGKey(0), posterior=posterior)
+        # Compute mean predictions using softmax.
         mean_preds = jax.nn.softmax(
             pred_samples.mean(axis=0), axis=-1
         )  # [batch_size, num_classes]
         predicted_classes = jnp.argmax(mean_preds, axis=-1)  # [batch_size]
 
-        # Visualization
+        # Set up the visualization grid.
         batch_size = X.shape[0]
-        rows = int(jnp.ceil(batch_size / 4))  # 4 images per row
+        rows = int(jnp.ceil(batch_size / 4))
         fig, axes = plt.subplots(rows, 4, figsize=(12, rows * 3))
 
+        # Ensure axes is 2D.
         if rows == 1:
-            axes = axes[np.newaxis, :]  # Ensure axes is 2D for consistency
+            axes = axes[np.newaxis, :]
 
         for i, ax in enumerate(axes.flatten()):
             if i >= batch_size:
                 ax.axis("off")
                 continue
 
-            # Select image and predictions
-            if X.ndim == 4:  # If input is image data
-                img = X[i].transpose(1, 2, 0)  # Convert to (H, W, C) for visualization
-            else:  # If input is patches, visualization may be harder
-                img = jnp.zeros(
-                    (self.image_size, self.image_size, self.in_channels)
-                )  # Placeholder blank image
+            # If input is image data (4D), assume it is in the format (batch, channels, height, width)
+            if X.ndim == 4:
+                # Transpose to (height, width, channels) for visualization.
+                img = X[i].transpose(1, 2, 0)
+            else:
+                # If not, try to use provided image_size and in_channels to create a placeholder.
+                if image_size is not None and in_channels is not None:
+                    img = jnp.zeros((image_size, image_size, in_channels))
+                else:
+                    raise ValueError(
+                        "Input X is not 4D and no fallback image_size/in_channels provided."
+                    )
 
             true_label = y[i] if y is not None else None
             pred_label = predicted_classes[i]
             pred_probs = mean_preds[i]
 
-            # Display image
+            # Display the image.
             ax.imshow(
-                img.squeeze(), cmap="gray" if X.ndim == 4 and X.shape[1] == 1 else None
+                img.squeeze(),
+                cmap="gray" if (X.ndim == 4 and X.shape[1] == 1) else None,
             )
             ax.axis("off")
 
-            # Title with predictions and uncertainty
+            # Title with prediction and probability.
             title = f"Pred: {pred_label} ({pred_probs[pred_label]:.2f})"
             if y is not None:
                 title += f"\nTrue: {true_label}"
@@ -278,7 +281,15 @@ class Module:
         plt.tight_layout()
         plt.show()
 
-    def _visualize_multiclass(self, X, y, num_classes, features, resolution, posterior):
+    def _visualize_multiclass(
+        self,
+        X,
+        y,
+        num_classes: int,
+        features: Tuple[int, int] = (0, 1),
+        resolution: int = 100,
+        posterior: str = "logits",
+    ):
         feature_1, feature_2 = features
         X_selected = X[:, [feature_1, feature_2]]
         x_min, x_max = X_selected[:, 0].min() - 1, X_selected[:, 0].max() + 1
@@ -335,7 +346,14 @@ class Module:
         plt.grid(True)
         plt.show()
 
-    def _visualize_binary(self, X, y, features, resolution, posterior):
+    def _visualize_binary(
+        self,
+        X,
+        y,
+        features: Tuple[int, int] = (0, 1),
+        resolution: int = 100,
+        posterior: str = "logits",
+    ):
         feature_1, feature_2 = features
         X_selected = X[:, [feature_1, feature_2]]
         x_min, x_max = X_selected[:, 0].min() - 1, X_selected[:, 0].max() + 1
@@ -389,19 +407,16 @@ class Module:
         plt.grid(True)
         plt.show()
 
-    def _visualize_regression(self, X, y, feature_index, posterior):
+    def _visualize_regression(
+        self, X, y, feature_index: int = 0, posterior: str = "logits"
+    ):
         preds = self.predict(X, jax.random.PRNGKey(0), posterior=posterior)
-        mean_preds = preds.mean(axis=0).squeeze()  # Ensure the mean is 1D
-        lower_bound = jnp.percentile(
-            preds, 2.5, axis=0
-        ).squeeze()  # Ensure lower bound is 1D
-        upper_bound = jnp.percentile(
-            preds, 97.5, axis=0
-        ).squeeze()  # Ensure upper bound is 1D
-        feature = X[:, feature_index].squeeze()  # Ensure the feature is 1D
-        y = y.squeeze()  # Ensure the target is 1D
+        mean_preds = preds.mean(axis=0).squeeze()
+        lower_bound = jnp.percentile(preds, 2.5, axis=0).squeeze()
+        upper_bound = jnp.percentile(preds, 97.5, axis=0).squeeze()
+        feature = X[:, feature_index].squeeze()
+        y = y.squeeze()
 
-        # Sort by feature values for a smooth plot
         sorted_indices = jnp.argsort(feature)
         feature = feature[sorted_indices]
         mean_preds = mean_preds[sorted_indices]
@@ -427,7 +442,7 @@ class Module:
         plt.title("Regression Visualization with Uncertainty Bounds")
         plt.show()
 
-    def _visualize_image_segmentation(self, X, y=None, posterior="logits"):
+    def _visualize_image_segmentation(self, X, y=None, posterior: str = "logits"):
         """
         Visualizes predictions for image segmentation tasks.
 
