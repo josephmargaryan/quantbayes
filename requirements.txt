@@ -6,4 +6,5 @@ torch
 scikit-learn
 matplotlib
 funsor
+diffrax
 optax
