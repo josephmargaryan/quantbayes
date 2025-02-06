@@ -10,6 +10,9 @@ from . import stochax
 from . import var
 from . import torch_based
 from . import fake_data
+from . import preprocessing
+from . import ensemble
+from .in_batches import in_batches
 
 __all__ = [
     "bnn",
@@ -24,4 +27,7 @@ __all__ = [
     "var",
     "torch_based",
     "fake_data",
+    "preprocessing",
+    "ensemble",
+    "in_batches"
 ]
