@@ -74,21 +74,33 @@ class Mixer2d(eqx.Module):
         self.norm = eqx.nn.LayerNorm((hidden_size, num_patches))
         self.t1 = t1
 
-    def __call__(self, t, y):
-        # y shape: (channels, height, width)
+    def _forward(self, t, y, *, key=None):
+        # Now y is assumed to have shape (C, H, W)
         t_scaled = jnp.array(t / self.t1)
-        _, height, width = y.shape
+        _, height, width = y.shape  # now works because y is (C, H, W)
         t_map = jnp.broadcast_to(t_scaled, (height, width))
         t_map = t_map[None, ...]  # shape (1, H, W)
-        # Cat time channel
+        # Concatenate time channel
         y = jnp.concatenate([y, t_map], axis=0)
         y = self.conv_in(y)
-        # shape => [hidden_size, patch_height, patch_width]
         c, patch_h, patch_w = y.shape
         y = einops.rearrange(y, "c h w -> c (h w)")
         for block in self.blocks:
             y = block(y)
         y = self.norm(y)
         y = einops.rearrange(y, "c (h w) -> c h w", h=patch_h, w=patch_w)
-        y = self.conv_out(y)
-        return y
+        return self.conv_out(y)
+
+    def __call__(self, t, y, *, key=None):
+        # Accept an optional key so that our overall training framework works.
+        if y.ndim == 4:  # batched input
+            if key is not None:
+                # Split key for each sample in the batch.
+                keys = jr.split(key, y.shape[0])
+                return jax.vmap(lambda sample, sample_key: self._forward(t, sample, key=sample_key))(
+                    y, keys
+                )
+            else:
+                return jax.vmap(lambda sample: self._forward(t, sample, key=None))(y)
+        else:
+            return self._forward(t, y, key=key)

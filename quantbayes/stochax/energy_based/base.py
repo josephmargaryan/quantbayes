@@ -6,7 +6,6 @@ import jax.random as jrandom
 import equinox as eqx
 import jax.nn as jnn
 import jax.numpy as jnp
-import equinox as eqx
 
 
 class BaseEBM(eqx.Module, ABC):

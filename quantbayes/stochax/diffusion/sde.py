@@ -18,8 +18,9 @@ def single_loss_fn(model, weight, int_beta, data, t, key):
     std = jnp.sqrt(var)
     noise = jr.normal(key, data.shape)
     y = mean + std * noise
-    pred = model(t, y)
+    pred = model(t, y, key=key)
     return weight(t) * jnp.mean((pred + noise / std) ** 2)
+
 
 def batch_loss_fn(model, weight, int_beta, data, t1, key):
     batch_size = data.shape[0]
