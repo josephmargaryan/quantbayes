@@ -57,7 +57,22 @@ Please see the notebooks in `examples/`
 
 
 
-![Descriptive Caption](path_to_image.png)
+<table>
+  <tr>
+    <td align="center">
+      <img src="images/bnn_regression.png" alt="BNN Regression" width="300"><br>
+      BNN Regression
+    </td>
+    <td align="center">
+      <img src="images/reg_interval.png" alt="Regression Interval" width="300"><br>
+      Regression Interval
+    </td>
+    <td align="center">
+      <img src="images/vae.png" alt="VAE" width="300"><br>
+      VAE
+    </td>
+  </tr>
+</table>
 
 
 ### Pac Analysis Bound 
@@ -187,6 +202,19 @@ dX_t = f_{\text{drift}}(X_t, t)\,dt + f_{\text{diffusion}}(X_t, t)\,dW_t,
 $$
 
 where $f_{\text{drift}}$ and $f_{\text{diffusion}}$ are linear functions learned during training. This allows the model to capture more complex dynamics while retaining interpretability.
+
+<table>
+  <tr>
+    <td align="center">
+      <img src="images/sde.png" alt="SDE" width="300"><br>
+      SDE
+    </td>
+    <td align="center">
+      <img src="images/stock_price_forecasting.png" alt="Stock Price Forecasting" width="300"><br>
+      Stock Price Forecasting
+    </td>
+  </tr>
+</table>
 
 ---
 
