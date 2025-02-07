@@ -28,11 +28,11 @@ def main():
         y[i] = y[i - 1] + true_mu * y[i - 1] * dt + true_sigma * y[i - 1] * dW
 
     # 2) Create and fit the model
-    gbm = BayesianHestonModel()
+    gbm = MertonJumpDiffusion()
     model = StochasticModel(gbm)
     model.fit(t, y)
     predicted_trajectories = gbm.predict(
-        t0=t[-1], y0=y[-1], T=5.0, n_paths=5, n_steps=50
+        t0=t[-1], y0=y[-1], T=5.0, n_paths=10, n_steps=50
     )
 
     print(predicted_trajectories.shape)
@@ -42,7 +42,7 @@ def main():
     print("Fitted sigma:", gbm.sigma)
 
     # 4) Visualize future paths
-    model.visualize_simulation(future_horizon=0.5, n_paths=5, n_steps=50)
+    model.visualize_simulation(future_horizon=0.5, n_paths=30, n_steps=50)
 
 
 if __name__ == "__main__":

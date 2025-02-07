@@ -49,5 +49,5 @@ class LinearNeuralSDE(NeuralSDE):
             loss.backward()
             optimizer.step()
 
-            if (epoch + 1) % 10 == 0:
+            if (epoch + 1) % max(1, epochs // 10) == 0:
                 print(f"Epoch {epoch + 1}/{epochs}, Loss: {loss.item()}")
