@@ -92,8 +92,9 @@ class VisionClassificationModel(BaseModel):
     ):
         """
         Visualizes a grid of sample images with the predicted and ground truth labels.
+        
         Args:
-            X_test: (batch, H, W, C) array of images.
+            X_test: (batch, C, H, W) array of images.
             y_test: (batch,) ground truth integer labels.
             y_pred: (batch,) predicted labels.
             rows: Number of rows in the grid.
@@ -108,12 +109,21 @@ class VisionClassificationModel(BaseModel):
 
         plt.figure(figsize=(cols * 3, rows * 3))
         for i in range(num_samples):
+            # Get the image in (C, H, W) format.
+            img = images[i]
+            # Convert to (H, W, C) if needed.
+            if img.ndim == 3:
+                if img.shape[0] == 1:
+                    img = img.squeeze(0)  # Grayscale image becomes (H, W)
+                elif img.shape[0] == 3:
+                    img = np.transpose(img, (1, 2, 0))  # RGB image
             plt.subplot(rows, cols, i + 1)
-            plt.imshow(images[i])
+            plt.imshow(img)
             plt.title(f"GT: {true_labels[i]}\nPred: {pred_labels[i]}")
             plt.axis("off")
         plt.suptitle(title)
         plt.show()
+
 
     def fit(
         self,

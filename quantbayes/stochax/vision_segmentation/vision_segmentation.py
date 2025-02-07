@@ -55,13 +55,14 @@ def bce_loss(pred, target, eps=1e-7):
 
 # Define overall segmentation loss functions.
 def segmentation_loss_dice(model, X, Y):
-    # X: (batch, H, W, C), Y: (batch, H, W)
+    preds = jax.nn.sigmoid(preds)
     preds = jax.vmap(model)(X)
     losses = jax.vmap(dice_loss)(preds, Y)
     return jnp.mean(losses)
 
 
 def segmentation_loss_bce(model, X, Y):
+    preds = jax.nn.sigmoid(preds)
     preds = jax.vmap(model)(X)
     losses = jax.vmap(lambda pred, target: bce_loss(pred, target))(preds, Y)
     return jnp.mean(losses)
@@ -120,8 +121,9 @@ class SegmentationModel(BaseModel):
     def visualize(self, X_test, Y_test, Y_pred, title="Segmentation Results"):
         """
         Visualizes segmentation results for one sample.
+        
         Args:
-            X_test: (batch, H, W, C) original images.
+            X_test: (batch, C, H, W) original images.
             Y_test: (batch, H, W) true masks.
             Y_pred: (batch, H, W) predicted masks.
             title (str): Plot title.
@@ -130,8 +132,18 @@ class SegmentationModel(BaseModel):
         orig = np.array(X_test[0])
         true_mask = np.array(Y_test[0])
         pred_mask = np.array(Y_pred[0])
-
+        
+        # Convert the image from (C, H, W) to (H, W, C) if necessary.
+        if orig.ndim == 3:
+            if orig.shape[0] == 1:
+                # If grayscale, squeeze out the channel dimension.
+                orig = orig.squeeze(0)
+            elif orig.shape[0] == 3:
+                # Convert from channels-first to channels-last.
+                orig = np.transpose(orig, (1, 2, 0))
+        
         plt.figure(figsize=(12, 4))
+        
         plt.subplot(1, 3, 1)
         plt.imshow(orig)
         plt.title("Original Image")
