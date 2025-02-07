@@ -7,6 +7,7 @@ from .bayesian_jump_diffusion import BayesianMertonJumpDiffusion
 from .bayesian_ornstein import BayesianOrnsteinUhlenbeck
 from .bayesian_brownian import BayesianGeometricBrownianMotion
 from .bayesian_heston import BayesianHestonModel
+from .linear_neural_sde import LinearNeuralSDE
 
 __all__ = [
     "StochasticModel",
@@ -18,4 +19,5 @@ __all__ = [
     "BayesianOrnsteinUhlenbeck",
     "BayesianGeometricBrownianMotion",
     "BayesianHestonModel",
+    "LinearNeuralSDE"
 ]
