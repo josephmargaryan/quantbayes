@@ -5,5 +5,5 @@ from .regression import EnsembleRegressionModel
 __all__ = [
     "EnsembleClassificationModel",
     "EnsembleMulticlassClassificationModel",
-    "EnsembleRegressionModel"
+    "EnsembleRegressionModel",
 ]

@@ -29,5 +29,5 @@ __all__ = [
     "fake_data",
     "preprocessing",
     "ensemble",
-    "in_batches"
+    "in_batches",
 ]

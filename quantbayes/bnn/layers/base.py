@@ -132,9 +132,7 @@ class Module:
 
         preds = predictive(rng_key, X_test)
         if posterior not in preds:
-            raise ValueError(
-                f"The posterior '{posterior}' is not available. "
-            )
+            raise ValueError(f"The posterior '{posterior}' is not available. ")
         return preds.get(posterior, preds)
 
     @property
