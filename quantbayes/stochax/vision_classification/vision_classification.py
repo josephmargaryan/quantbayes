@@ -198,27 +198,33 @@ class VisionClassificationModel(BaseModel):
 
 
 if __name__ == "__main__":
+    import numpy as np
+    import jax
+    import jax.numpy as jnp
     from sklearn.model_selection import train_test_split
 
     # For demonstration purposes, generate synthetic image classification data.
-    # Here we generate N random images of shape (32, 32, 3) and random integer labels.
+    # Generate N random images of shape (32, 32, 3) and random integer labels.
     N = 200
     H, W, C = 32, 32, 3
     num_classes = 5
-    # Create synthetic images (values in [0, 1]).
+    # Create synthetic images (values in [0, 1]) and convert to [B, H, W, C].
     X_np = np.random.rand(N, H, W, C)
     # Create synthetic labels (integers in [0, num_classes-1]).
     y_np = np.random.randint(0, num_classes, size=(N,))
 
+    # Convert to JAX arrays.
     X = jnp.array(X_np)
     y = jnp.array(y_np)
 
+    # Split into training and test sets.
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42
     )
 
     key = jax.random.PRNGKey(42)
     # Instantiate the simple vision classifier.
+    # SimpleVisionClassifier should be defined to accept a key, number of input channels, and number of classes.
     model = SimpleVisionClassifier(key, in_channels=C, num_classes=num_classes)
 
     # Create an instance of our VisionClassificationModel subclass.
@@ -238,4 +244,5 @@ if __name__ == "__main__":
 
     # Get predictions on the test set using the predict_step.
     preds = vision_model.predict_step(trained_model, None, X_test, None)
-    vision_model.visualize(X_test, y_test, preds, rows=3, cols=3)
+    # Visualize the results (note that the visualize function converts from [C, H, W] to [H, W, C]).
+    vision_model.visualize(X_test, y_test, preds, rows=3, cols=3, title="Classification Results")

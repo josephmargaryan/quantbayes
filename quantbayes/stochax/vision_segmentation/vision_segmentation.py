@@ -32,9 +32,6 @@ class SimpleSegmentationNet(eqx.Module):
         x = self.conv1(x)
         x = jax.nn.relu(x)
         x = self.conv2(x)
-        x = jax.nn.sigmoid(x)  # output in [0,1]
-        # Squeeze the channel dimension (assumed to be 1) -> (H, W)
-        x = jnp.squeeze(x, axis=0)
         return x
 
 
@@ -55,15 +52,15 @@ def bce_loss(pred, target, eps=1e-7):
 
 # Define overall segmentation loss functions.
 def segmentation_loss_dice(model, X, Y):
-    preds = jax.nn.sigmoid(preds)
     preds = jax.vmap(model)(X)
+    preds = jax.nn.sigmoid(preds)
     losses = jax.vmap(dice_loss)(preds, Y)
     return jnp.mean(losses)
 
 
 def segmentation_loss_bce(model, X, Y):
-    preds = jax.nn.sigmoid(preds)
     preds = jax.vmap(model)(X)
+    preds = jax.nn.sigmoid(preds)
     losses = jax.vmap(lambda pred, target: bce_loss(pred, target))(preds, Y)
     return jnp.mean(losses)
 
@@ -121,27 +118,31 @@ class SegmentationModel(BaseModel):
     def visualize(self, X_test, Y_test, Y_pred, title="Segmentation Results"):
         """
         Visualizes segmentation results for one sample.
-        
+
         Args:
             X_test: (batch, C, H, W) original images.
-            Y_test: (batch, H, W) true masks.
-            Y_pred: (batch, H, W) predicted masks.
+            Y_test: (batch, H, W) or (batch, 1, H, W) true masks.
+            Y_pred: (batch, H, W) or (batch, 1, H, W) predicted masks.
             title (str): Plot title.
         """
         # For simplicity, display the first sample.
         orig = np.array(X_test[0])
         true_mask = np.array(Y_test[0])
         pred_mask = np.array(Y_pred[0])
-        
-        # Convert the image from (C, H, W) to (H, W, C) if necessary.
+
+        # Convert the original image from (C, H, W) to (H, W, C) if necessary.
         if orig.ndim == 3:
-            if orig.shape[0] == 1:
-                # If grayscale, squeeze out the channel dimension.
+            if orig.shape[0] == 1:  # Grayscale image
                 orig = orig.squeeze(0)
-            elif orig.shape[0] == 3:
-                # Convert from channels-first to channels-last.
+            elif orig.shape[0] == 3:  # RGB image in channels-first format
                 orig = np.transpose(orig, (1, 2, 0))
         
+        # For masks, if they have a singleton channel dimension, squeeze it.
+        if true_mask.ndim == 3 and true_mask.shape[0] == 1:
+            true_mask = true_mask.squeeze(0)
+        if pred_mask.ndim == 3 and pred_mask.shape[0] == 1:
+            pred_mask = pred_mask.squeeze(0)
+
         plt.figure(figsize=(12, 4))
         
         plt.subplot(1, 3, 1)
@@ -161,6 +162,7 @@ class SegmentationModel(BaseModel):
 
         plt.suptitle(title)
         plt.show()
+
 
     def fit(
         self,
@@ -235,20 +237,25 @@ class SegmentationModel(BaseModel):
 
 
 if __name__ == "__main__":
+    import numpy as np
+    import jax
+    import jax.numpy as jnp
     from sklearn.model_selection import train_test_split
 
     # For demonstration, create synthetic segmentation data.
-    # Let’s assume images of shape (64, 64, 3) and binary masks of shape (64, 64).
+    # Assume images of shape (64, 64, 3) and binary masks of shape (64, 64).
     N = 100
     H, W, C = 64, 64, 3
-    X_np = np.random.rand(N, H, W, C)  # synthetic images
-    # Create synthetic masks, e.g., by thresholding a grayscale conversion.
+    X_np = np.random.rand(N, H, W, C)  # synthetic images in [H,W,C]
+    # Create synthetic masks by thresholding the grayscale conversion of the images.
     gray = np.mean(X_np, axis=-1)
-    Y_np = (gray > 0.5).astype(np.float32)  # binary mask
+    Y_np = (gray > 0.5).astype(np.float32)  # binary masks
 
+    # Convert to JAX arrays.
     X = jnp.array(X_np)
     Y = jnp.array(Y_np)
 
+    # Split into training and validation sets.
     X_train, X_val, Y_train, Y_val = train_test_split(
         X, Y, test_size=0.2, random_state=42
     )
@@ -256,14 +263,18 @@ if __name__ == "__main__":
     key = jax.random.PRNGKey(42)
     in_channels = C
     # Instantiate the segmentation network.
+    # Here, SimpleSegmentationNet should be defined to accept a key, number of input channels, and out_channels.
     seg_net = SimpleSegmentationNet(key, in_channels, out_channels=1)
 
-    # Create an instance of our SegmentationModel subclass; choose loss_type "dice" or "bce"
+    # Create an instance of our SegmentationModel subclass; choose loss_type "dice" (or "bce")
     seg_model = SegmentationModel(key=key, loss_type="dice")
+
+    # Train the model.
     trained_model = seg_model.fit(
         seg_net, X_train, Y_train, X_val, Y_val, num_epochs=100, lr=1e-3, patience=10
     )
 
     # Get predictions on the validation set.
     preds = seg_model.predict_step(trained_model, None, X_val, None)
-    seg_model.visualize(X_val, Y_val, preds)
+    # Visualize the results.
+    seg_model.visualize(X_val, Y_val, preds, title="Segmentation Results")
