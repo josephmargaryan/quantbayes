@@ -242,14 +242,12 @@ if __name__ == "__main__":
     import jax.numpy as jnp
     from sklearn.model_selection import train_test_split
 
-    # For demonstration, create synthetic segmentation data.
-    # Assume images of shape (64, 64, 3) and binary masks of shape (64, 64).
-    N = 100
-    H, W, C = 64, 64, 3
-    X_np = np.random.rand(N, H, W, C)  # synthetic images in [H,W,C]
-    # Create synthetic masks by thresholding the grayscale conversion of the images.
-    gray = np.mean(X_np, axis=-1)
-    Y_np = (gray > 0.5).astype(np.float32)  # binary masks
+    N = 3
+    C, H, W = 3, 64, 64
+    X_np = np.random.rand(N, C, H, W)  
+    gray = np.mean(X_np, axis=1)  # Now gray has shape (N, H, W)
+    Y_np = (gray > 0.5).astype(np.float32)  # binary masks with shape (N, H, W)
+
 
     # Convert to JAX arrays.
     X = jnp.array(X_np)
@@ -264,7 +262,8 @@ if __name__ == "__main__":
     in_channels = C
     # Instantiate the segmentation network.
     # Here, SimpleSegmentationNet should be defined to accept a key, number of input channels, and out_channels.
-    seg_net = SimpleSegmentationNet(key, in_channels, out_channels=1)
+    from quantbayes.stochax.vision_segmentation import UNet
+    seg_net = UNet(3, 1, key=key)
 
     # Create an instance of our SegmentationModel subclass; choose loss_type "dice" (or "bce")
     seg_model = SegmentationModel(key=key, loss_type="dice")
