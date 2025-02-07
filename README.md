@@ -5,7 +5,7 @@ QuantBayes is an advanced probabilistic machine learning library integrating **B
 ## Features
 
 ### **1. Deterministic & Bayesian Learning**
-- Unified support for **PyTorch** and **Flax (JAX)** architectures.
+- Unified support for **PyTorch** and **equinox (JAX)** architectures.
 - Probabilistic inference with:
   - **NUTS (No-U-Turn Sampler)**
   - **SVI (Stochastic Variational Inference)**
@@ -16,12 +16,16 @@ QuantBayes is an advanced probabilistic machine learning library integrating **B
   - **Image Classification, Segmentation**
 
 ### **2. Stochastic & Probabilistic Models**
-- **Stochastic Differential Equations (SDEs)**: Euler-Maruyama, Milstein schemes.
-- **Bayesian Deep Learning**: GANs, VAEs, Deep Markov Models.
+- **Stochastic Differential Equations (SDEs)**: 
+- **Bayesian Deep Learning**:
+- **Diffusion Models**
+- **Variational Autoencoders**
+- **Deep Markov Models**
+- **Energy Based Models**
 - **Time Series Forecasting**: Bayesian LSTMs, Transformers, Gaussian Processes.
 
 ### **3. Efficient Computation**
-- **FFT-based Bayesian Layers** for fast inference.
+- **FFT-based Bayesian Layers** Custom layers for both deterministic neural networks and Bayesian probabilistic sampling
 - **Quantitative Finance Applications**: Volatility modeling, probabilistic forecasting.
 - **Visualization**: Calibration plots, posterior distributions, uncertainty estimation.
 
@@ -32,49 +36,11 @@ QuantBayes is an advanced probabilistic machine learning library integrating **B
 QuantBayes can be cloned and, in the future,e installed using pip:
 `git clone https://github.com/josephmargaryan/quantbayes.git`
 ## Getting Started
-
-### Example: Building a Custom Bayesian Neural Network
-
-    import jax
-    import jax.numpy as jnp
-    from quantbayes.nn import Linear, BaseModel, FFTLinear
-    
-    class CustomBNN(BaseModel):
-        def __init__(self):
-            super().__init__(task_type="regression", method="nuts")    # takes method: str ("nuts", "svi", "steinvi") 
-        def __call__(self, x, y=None):                                 # task_type: str ("regression", "multiclass", "binary", "image_segmentation", "image_classification")
-            n, in_features = x.shape
-            x = FFTLinear(in_features, name="fft layer")(x)
-            x = jax.nn.tanh(x)
-            mean = Linear(in_features, 1)(x)
-            mean = mean.squeeze()
-            sigma = numpyro.sample("sigma", dist.Exponential(1.0))
-            numpyro.deterministic("logits", mean.squeeze()) 
-            numpyro.sample("obs", dist.Normal(mean, sigma), obs=y)
-            
-          
-    # Initialize train, predict and visualize performance
-    key = jax.random.key(0)
-    model = CustomBNN()
-    model.compile()
-    model.fit(X, y, key, num_warmups=500, num_samples=1000, num_chains=1)
-    preds = model.predict(X_test, key) # Full posterior preds (logits)
-    model.visualize(X, y, feature_index=0) 
-    
-    ### Get Pac-Bayes Bound
-    from bnn.utils import BayesianAnalysis
-    bound = BayesianAnalysis(len(X_train), 
-        delta=0.05, 
-        task_type="regression", 
-        inference_type="mcmc", 
-        posterior_samples=model.get_samples,
-    )
-    bound.compute_pac_bayesian_bound(preds, y)
-
+Please see the notebooks in `examples/`
 
 ### Example: Using Prebuilt AutoML Models
 
-    from quantbayes.bnn import DenseBinaryiSteinVI
+    from quantbayes.bnn.AutoML import DenseBinaryiSteinVI
     
     # Initialize a prebuilt model for binary classification
     model = DenseBinaryiSteinVI(num_particles=10, 
@@ -90,21 +56,8 @@ QuantBayes can be cloned and, in the future,e installed using pip:
 
 
 
-### Highlights
-
--   **Bayesian Neural Networks:** Fine-tuned pipelines for uncertainty estimation and robust predictions.
-    
--   **FFT Layers:** Efficient, frequency-domain computations for fast and scalable modeling.
-    
--   **Visualization Tools:** Calibration plots, uncertainty visualization, and more to evaluate models effectively.
 
 ![Descriptive Caption](path_to_image.png)
-
-### Reinforcement Learning
-- **Classification**: Predictions sampled from a categorical distribution, optimizing rewards based on correctness.
-- **Regression**: Probabilistic outputs modeled via normal distributions, with rewards linked to error minimization.
-- **Image Segmentation**: Pixel-wise classification treated as an action space for structured decision-making.
-- **Time-Series Forecasting**: LSTM-based policies leverage temporal dependencies and predict directional movements.
 
 
 ### Pac Analysis Bound 
@@ -140,16 +93,102 @@ $$
 
 where $L(Q)$ is the true risk, $\delta$ is the confidence level, and $n$ is the number of training samples.
 
-## Why QuantBayes?
+# Stochastic Differential Equations Module
 
-QuantBayes stands out for its:
+This module implements several stochastic differential equations (SDE) models — classical and Bayesian variants — and a neural SDE. These models are applicable in fields such as quantitative finance and physics for simulating processes subject to randomness.
 
--   **Breadth and Depth:** Combining Bayesian, stochastic, and deep learning techniques in one library.
-    
--   **Modularity:** Flexible components for custom architectures or quick-start prebuilt pipelines.
-    
--   **Efficiency:** Optimized with FFT and probabilistic methods for cutting-edge performance.
-    
+## 1. Geometric Brownian Motion (GBM)
+
+GBM is widely used to model asset prices. Its dynamics are given by:
+
+$$
+dX_t = \mu X_t\,dt + \sigma X_t\,dW_t,
+$$
+
+where  
+- $\mu$ is the drift,  
+- $\sigma$ is the volatility, and  
+- $ dW_t $ represents increments of a Wiener process.
+
+The closed-form solution is:
+
+$$
+X_t = X_0 \exp\!\left[\left(\mu - \tfrac{1}{2}\sigma^2\right)t + \sigma W_t\right].
+$$
+
+Our implementation estimates parameters via log returns and simulates paths using the Euler-Maruyama scheme.
+
+## 2. Heston Model
+
+The Heston model captures stochastic volatility through two coupled SDEs:
+
+$$
+\begin{aligned}
+dS_t &= \mu S_t\,dt + \sqrt{v_t}\,S_t\,dW_t^{(1)},\\
+dv_t &= \kappa (\theta - v_t)\,dt + \sigma \sqrt{v_t}\,dW_t^{(2)},
+\end{aligned}
+$$
+
+with  
+- $S_t$ as the asset price,  
+- $v_t$ as the instantaneous variance,  
+- $\kappa$ the rate of mean reversion,  
+- $\theta$ the long-term variance, and  
+- $\rho$ the correlation between the two Brownian motions $dW_t^{(1)}$ and $dW_t^{(2)}$.
+
+Simulation is performed using a correlated Euler scheme.
+
+## 3. Merton Jump Diffusion
+
+To model sudden price changes (jumps), Merton’s jump-diffusion model augments GBM with a jump component:
+
+$$
+dS_t = S_t \left(\mu\,dt + \sigma\,dW_t\right) + S_t (J - 1)\,dN_t,
+$$
+
+where  
+- $dN_t$ is a Poisson process with intensity $\lambda$, and  
+- $J$ (typically log-normally distributed) represents the jump multiplier.
+
+This allows the model to capture both continuous fluctuations and discrete jumps.
+
+## 4. Ornstein-Uhlenbeck Process (OU)
+
+The OU process is a mean-reverting process described by:
+
+$$
+dX_t = \theta (\mu - X_t)\,dt + \sigma\,dW_t,
+$$
+
+where  
+- $\theta$ is the speed of mean reversion,  
+- $\mu$ is the long-term mean, and  
+- $\sigma$ is the volatility.
+
+We estimate parameters using a method-of-moments approach and simulate using Euler-Maruyama.
+
+## 5. Bayesian Variants
+
+For GBM, Heston, Merton Jump Diffusion, and OU, Bayesian versions are provided. In these models, parameters (e.g., $\mu$, $\sigma$, $\theta$) are treated as random variables with specified priors. For example, in Bayesian GBM:
+
+- **Drift Prior:**  
+  $\mu \sim \mathcal{N}(\hat{\mu}, \tau_\mu^2)$,
+- **Volatility Prior:**  
+  $\sigma \sim \text{LogNormal}(\log(\hat{\sigma}), \tau_\sigma)$,
+
+The posterior inference uses MCMC (specifically the No-U-Turn Sampler, NUTS) to obtain a distribution over the parameters.
+
+## 6. Linear Neural SDE (LSDE)
+
+The LSDE extends the traditional SDE framework by parameterizing the drift and diffusion terms with linear neural networks. The SDE is expressed as:
+
+$$
+dX_t = f_{\text{drift}}(X_t, t)\,dt + f_{\text{diffusion}}(X_t, t)\,dW_t,
+$$
+
+where $f_{\text{drift}}$ and $f_{\text{diffusion}}$ are linear functions learned during training. This allows the model to capture more complex dynamics while retaining interpretability.
+
+---
 
 ## Contributing
 
@@ -165,5 +204,5 @@ This project is licensed under the GPL v3. For proprietary licensing options, co
 
 ## Acknowledgments
 
-QuantBayes began as a project to advance Bayesian machine learning for academia and industry, combining rigorous research with practical tools—special thanks to the bioinformatics and machine learning communities for their inspiration and support.
+QuantBayes began as a project to advance Bayesian machine learning for academia and industry, combining rigorous research with practical tools—thanks to the bioinformatics and machine learning communities' inspiration and support.
 
