@@ -257,7 +257,7 @@ class AttentionBasedEBM(BaseEBM):
             use_value_bias=False,
             use_output_bias=False,
             dropout_p=0.0,
-            inference=True,  # disable dropout during evaluation
+            inference=False,
             key=k1,
         )
         self.linear = eqx.nn.Linear(input_size, 1, use_bias=True, key=k2)

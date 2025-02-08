@@ -11,6 +11,7 @@ class ConvBlock(eqx.Module):
     approach of storing batchnorm parameters in the module but the running
     stats in the separate 'state' object.
     """
+
     conv1: eqx.nn.Conv2d
     bn1: eqx.nn.BatchNorm
     conv2: eqx.nn.Conv2d
@@ -28,7 +29,8 @@ class ConvBlock(eqx.Module):
         )
         self.bn2 = eqx.nn.BatchNorm(out_channels, axis_name="batch", inference=False)
 
-    def __call__(self, x: jnp.ndarray, state: eqx.nn.State, *, key: jnp.ndarray
+    def __call__(
+        self, x: jnp.ndarray, state: eqx.nn.State, *, key: jnp.ndarray
     ) -> Tuple[jnp.ndarray, eqx.nn.State]:
         # We'll split the provided `key` to feed each conv separately if we want
         k1, k2 = jr.split(key, 2)
@@ -48,6 +50,7 @@ class AttentionGate(eqx.Module):
     Attention Gate for the skip connection in Attention U-Net.
     Uses 1x1 convolutions to compute a gating coefficient.
     """
+
     conv_g: eqx.nn.Conv2d  # gating signal conv
     conv_x: eqx.nn.Conv2d  # skip connection conv
     conv_psi: eqx.nn.Conv2d
@@ -76,6 +79,7 @@ class UpConvAttentionBlock(eqx.Module):
     """
     Similar to UpConvBlock, but uses an AttentionGate to refine skip connections.
     """
+
     upconv: eqx.nn.ConvTranspose2d
     att_gate: AttentionGate
     conv: ConvBlock
@@ -91,7 +95,12 @@ class UpConvAttentionBlock(eqx.Module):
         self.conv = ConvBlock(out_channels + skip_channels, out_channels, key=k3)
 
     def __call__(
-        self, x: jnp.ndarray, skip: jnp.ndarray, state: eqx.nn.State, *, key: jnp.ndarray
+        self,
+        x: jnp.ndarray,
+        skip: jnp.ndarray,
+        state: eqx.nn.State,
+        *,
+        key: jnp.ndarray
     ) -> Tuple[jnp.ndarray, eqx.nn.State]:
         k1, k2, k3 = jr.split(key, 3)
         x = self.upconv(x, key=k1)
@@ -108,6 +117,7 @@ class AttentionUNet(eqx.Module):
     Full Attention U-Net: same structure as UNet,
     but the decoder uses UpConvAttentionBlock.
     """
+
     enc1: ConvBlock
     enc2: ConvBlock
     enc3: ConvBlock

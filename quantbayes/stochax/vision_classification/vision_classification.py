@@ -1,11 +1,12 @@
 from typing import Tuple
 import numpy as np
-import optax 
+import optax
 import jax
 import jax.random as jr
 import matplotlib.pyplot as plt
-import jax.numpy as jnp 
+import jax.numpy as jnp
 import equinox as eqx
+
 
 class VisionClassificationModel:
     """
@@ -22,7 +23,9 @@ class VisionClassificationModel:
 
     def _loss_function(self, logits: jnp.ndarray, labels: jnp.ndarray) -> jnp.ndarray:
         if self.problem_type == "multiclass":
-            return optax.softmax_cross_entropy_with_integer_labels(logits, labels).mean()
+            return optax.softmax_cross_entropy_with_integer_labels(
+                logits, labels
+            ).mean()
         elif self.problem_type == "binary":
             return jnp.mean(optax.sigmoid_binary_cross_entropy(logits, labels))
         else:
@@ -81,11 +84,12 @@ class VisionClassificationModel:
         loss_val = self._loss_function(logits, y)
         return loss_val, new_state, logits
 
-
     @eqx.filter_jit
     def _train_step(self, model, state, x, y, key):
         def _loss_wrapper(m, s):
-            loss_val, new_s, _ = self._compute_batch_loss(m, s, x, y, key, training=True)
+            loss_val, new_s, _ = self._compute_batch_loss(
+                m, s, x, y, key, training=True
+            )
             return loss_val, new_s
 
         (loss_val, new_state), grads = eqx.filter_value_and_grad(
@@ -96,7 +100,9 @@ class VisionClassificationModel:
         return new_model, new_state, new_opt_state, loss_val
 
     def _eval_step(self, model, state, x, y, key):
-        loss_val, _, _ = self._compute_batch_loss(model, state, x, y, key, training=False)
+        loss_val, _, _ = self._compute_batch_loss(
+            model, state, x, y, key, training=False
+        )
         return loss_val
 
     def fit(
@@ -133,7 +139,9 @@ class VisionClassificationModel:
                 patience_counter += 1
 
             if (epoch + 1) % 5 == 0:
-                print(f"Epoch {epoch+1}/{num_epochs} - Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
+                print(
+                    f"Epoch {epoch+1}/{num_epochs} - Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}"
+                )
 
             if patience_counter >= patience:
                 print("Early stopping triggered.")
@@ -143,7 +151,7 @@ class VisionClassificationModel:
 
     def predict(self, model, state, X, key=jr.PRNGKey(123)):
         logits, _ = self._batch_forward_inference(model, state, X, key)
-        
+
         if self.problem_type == "multiclass":
             # No need to apply softmax; argmax on logits gives the predicted class.
             return jnp.argmax(logits, axis=-1)
@@ -154,8 +162,9 @@ class VisionClassificationModel:
         else:
             raise ValueError("Unsupported problem type")
 
-
-    def visualize(self, X, y_true, y_pred, rows=2, cols=3, title="Classification Results"):
+    def visualize(
+        self, X, y_true, y_pred, rows=2, cols=3, title="Classification Results"
+    ):
         """
         Visualize a grid of images + (true_label, pred_label).
         X is assumed (B, C, H, W) or (B, H, W, C). Adapt as needed.

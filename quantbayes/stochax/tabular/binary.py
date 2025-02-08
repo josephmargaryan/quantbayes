@@ -6,12 +6,14 @@ import optax
 import matplotlib.pyplot as plt
 import numpy as np
 
+
 class BinaryClassificationModel:
     """
     Trains a model that outputs raw logits for binary classification.
     Uses BCE loss with a sigmoid inside the loss function.
     Allows BN/Dropout if your model includes them.
     """
+
     def __init__(self, lr=1e-3):
         self.lr = lr
         self.optimizer = optax.adam(lr)
@@ -43,7 +45,7 @@ class BinaryClassificationModel:
 
         # Split the key so that each sample gets a subkey.
         keys = jr.split(key, X.shape[0])
-        
+
         def forward_one(x, subkey):
             # Model should return raw logits.
             logits, new_state = mod(x, state=state, key=subkey)
@@ -52,7 +54,6 @@ class BinaryClassificationModel:
         all_logits = jax.vmap(forward_one, in_axes=(0, 0))(X, keys)  # shape [batch]
         loss_val = self.bce_loss_with_logits(all_logits, y)
         return loss_val, all_logits  # new_state is ignored for brevity
-
 
     @eqx.filter_jit
     def _train_step(self, model, state, X, y, key):
@@ -70,7 +71,16 @@ class BinaryClassificationModel:
         return loss_val
 
     def fit(
-        self, model, state, X_train, y_train, X_val, y_val, num_epochs=100, patience=10, key=None
+        self,
+        model,
+        state,
+        X_train,
+        y_train,
+        X_val,
+        y_val,
+        num_epochs=100,
+        patience=10,
+        key=None,
     ):
         if key is not None:
             self.key = key
@@ -83,9 +93,11 @@ class BinaryClassificationModel:
 
         for epoch in range(num_epochs):
             self.key, subkey = jax.random.split(self.key)
-            train_loss, model, self.opt_state, state = self._train_step(model, state, X_train, y_train, subkey)
+            train_loss, model, self.opt_state, state = self._train_step(
+                model, state, X_train, y_train, subkey
+            )
             self.train_losses.append(float(train_loss))
-            
+
             self.key, subkey = jax.random.split(self.key)
             val_loss = self._eval_step(model, state, X_val, y_val, subkey)
             self.val_losses.append(float(val_loss))
@@ -97,7 +109,9 @@ class BinaryClassificationModel:
                 patience_counter += 1
 
             if (epoch + 1) % 10 == 0:
-                print(f"Epoch {epoch+1}/{num_epochs} - Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
+                print(
+                    f"Epoch {epoch+1}/{num_epochs} - Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}"
+                )
 
             if patience_counter >= patience:
                 print("Early stopping triggered.")
@@ -116,15 +130,14 @@ class BinaryClassificationModel:
     def predict(self, model, state, X, key=jr.PRNGKey(123)):
         inf_model = eqx.tree_inference(model, value=True)
         keys = jr.split(key, X.shape[0])
-        
+
         def forward_one(x, subkey):
             logits, _ = inf_model(x, state=state, key=subkey)
             # Apply sigmoid to get probabilities.
             return logits
-        
+
         probs = jax.vmap(forward_one, in_axes=(0, 0))(X, keys)
         return probs
-
 
     def visualize(
         self,
@@ -133,7 +146,7 @@ class BinaryClassificationModel:
         X_test,
         y_test,
         feature_indices=(0, 1),
-        title="Decision Boundary"
+        title="Decision Boundary",
     ):
         """
         Illustrate a 2D decision boundary by scanning across a grid for feature_indices.
@@ -143,7 +156,9 @@ class BinaryClassificationModel:
         x_min, x_max = X_test[:, f1].min() - 0.5, X_test[:, f1].max() + 0.5
         y_min, y_max = X_test[:, f2].min() - 0.5, X_test[:, f2].max() + 0.5
 
-        xx, yy = np.meshgrid(np.linspace(x_min, x_max, 200), np.linspace(y_min, y_max, 200))
+        xx, yy = np.meshgrid(
+            np.linspace(x_min, x_max, 200), np.linspace(y_min, y_max, 200)
+        )
         num_features = X_test.shape[1]
 
         # Build grid input
@@ -171,12 +186,20 @@ class BinaryClassificationModel:
 
         # Plot decision boundary
         plt.figure(figsize=(8, 6))
-        plt.contourf(xx, yy, preds_grid, alpha=0.3, levels=[-0.5,0.5,1.5], cmap=plt.cm.Paired)
-        plt.scatter(np.array(X_test[:, f1]), np.array(X_test[:, f2]), c=np.array(y_test), edgecolors='k')
+        plt.contourf(
+            xx, yy, preds_grid, alpha=0.3, levels=[-0.5, 0.5, 1.5], cmap=plt.cm.Paired
+        )
+        plt.scatter(
+            np.array(X_test[:, f1]),
+            np.array(X_test[:, f2]),
+            c=np.array(y_test),
+            edgecolors="k",
+        )
         plt.xlabel(f"Feature {f1}")
         plt.ylabel(f"Feature {f2}")
         plt.title(title)
         plt.show()
+
 
 if __name__ == "__main__":
     import jax
@@ -186,21 +209,25 @@ if __name__ == "__main__":
     from sklearn.model_selection import train_test_split
     from sklearn.metrics import log_loss
 
-    from quantbayes.fake_data import generate_binary_classification_data 
+    from quantbayes.fake_data import generate_binary_classification_data
 
     df = generate_binary_classification_data()
     X, y = df.drop("target", axis=1), df["target"]
     X, y = jnp.array(X), jnp.array(y)
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=24)
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=24
+    )
 
     # Simple eqx model that outputs raw logits
     class SimpleBinaryModel(eqx.Module):
         w: jnp.ndarray
         b: jnp.ndarray
+
         def __init__(self, in_features, key):
             k1, _ = jr.split(key)
             self.w = jr.normal(k1, (in_features,))
             self.b = jnp.array(0.0)
+
         def __call__(self, x, state=None, *, key=None):
             # Return raw logits (scalar) => shape ()
             logits = jnp.dot(self.w, x) + self.b
@@ -212,9 +239,12 @@ if __name__ == "__main__":
     # Create the training wrapper
     trainer = BinaryClassificationModel(lr=1e-2)
     model, state = trainer.fit(
-        model, state,
-        X_train, y_train,
-        X_test, y_test,
+        model,
+        state,
+        X_train,
+        y_train,
+        X_test,
+        y_test,
         num_epochs=1000,
         patience=5,
         key=jr.PRNGKey(123),
@@ -227,11 +257,14 @@ if __name__ == "__main__":
     print(f"Log loss for jax model: {loss}")
 
     # Visualize 2D decision boundary
-    trainer.visualize(model, state, X_test, y_test, feature_indices=(0,1), title="Binary Class Demo")
+    trainer.visualize(
+        model, state, X_test, y_test, feature_indices=(0, 1), title="Binary Class Demo"
+    )
 
     ############
-    # Test scikit learn 
-    from sklearn.linear_model import LogisticRegression 
+    # Test scikit learn
+    from sklearn.linear_model import LogisticRegression
+
     model = LogisticRegression().fit(np.array(X_train), np.array(y_train))
     preds = model.predict_proba(X_test)
     print(f"Log loss for scikit learns model: {log_loss(np.array(y_test), preds)}")

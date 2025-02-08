@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import jax
+import equinox as eqx
 import jax.numpy as jnp
 import numpy as np
 
@@ -232,8 +233,17 @@ def test_vit_vae():
     model = model.fit(data, batch_size=16, n_epochs=2, lr=1e-3, seed=42)
 
     rng, subkey = jax.random.split(rng_key)
+    model = eqx.tree_inference(model, value=True)
     recon, mu, logvar = model.reconstruct(data[:16], subkey, plot=True)
     print("ViT_VAE: Reconstruction shape:", recon.shape)
+
+    # Compute reconstruction error (MSE)
+    recon_error = jnp.mean((recon - data[:16]) ** 2)
+    # Compute KL divergence
+    kl_div = -0.5 * jnp.mean(jnp.sum(1 + logvar - mu**2 - jnp.exp(logvar), axis=-1))
+
+    print(f"Reconstruction Error: {recon_error:.4f}")
+    print(f"KL Divergence: {kl_div:.4f}")
 
 
 def main():

@@ -1,11 +1,12 @@
 from typing import Tuple
 import numpy as np
-import optax 
+import optax
 import jax
 import jax.random as jr
 import matplotlib.pyplot as plt
-import jax.numpy as jnp 
+import jax.numpy as jnp
 import equinox as eqx
+
 
 class SegmentationModel:
     """
@@ -15,6 +16,7 @@ class SegmentationModel:
       - usage of eqx.nn.State for BatchNorm
       - usage of eqx.inference_mode to toggle training vs. inference
     """
+
     def __init__(self, loss_type="dice", lr=1e-3):
         self.loss_type = loss_type
         self.lr = lr
@@ -27,6 +29,7 @@ class SegmentationModel:
         """
         pred, target in [0,1], same shape => dice or BCE
         """
+
         # Example placeholders, see your original dice_loss/bce_loss
         def dice_loss(pred, target, eps=1e-6):
             pred = pred.reshape(-1)
@@ -46,14 +49,12 @@ class SegmentationModel:
         else:
             raise ValueError(f"Invalid loss type: {self.loss_type}")
 
-    def _batch_forward_train(
-        self, model, state, x, key
-    ):
+    def _batch_forward_train(self, model, state, x, key):
         """
         Forward pass for an entire batch in "training mode" => BN updates
         """
         # Toggle model to training mode
-        train_model = eqx.tree_inference(model, value=False)  
+        train_model = eqx.tree_inference(model, value=False)
         keys = jax.random.split(key, x.shape[0])
 
         # We'll create a function that handles a single sample:
@@ -63,7 +64,10 @@ class SegmentationModel:
 
         # vmap across the batch dimension
         batch_out, new_state = jax.vmap(
-            _single_forward, axis_name="batch", in_axes=(None, None, 0, 0), out_axes=(0, None)
+            _single_forward,
+            axis_name="batch",
+            in_axes=(None, None, 0, 0),
+            out_axes=(0, None),
         )(train_model, state, x, keys)
 
         return batch_out, new_state
@@ -79,7 +83,10 @@ class SegmentationModel:
             return out, new_s
 
         batch_out, new_state = jax.vmap(
-            _single_forward, axis_name="batch", in_axes=(None, None, 0), out_axes=(0, None)
+            _single_forward,
+            axis_name="batch",
+            in_axes=(None, None, 0),
+            out_axes=(0, None),
         )(inf_model, state, x)
 
         return batch_out, new_state
@@ -96,9 +103,7 @@ class SegmentationModel:
         return loss, new_state
 
     @eqx.filter_jit
-    def _train_step(
-        self, model, state, x, y, key
-    ):
+    def _train_step(self, model, state, x, y, key):
         def _loss_wrapper(m, s):
             loss_val, new_s = self._compute_batch_loss(m, s, x, y, key, training=True)
             return loss_val, new_s
@@ -112,9 +117,7 @@ class SegmentationModel:
         return new_model, new_state, new_opt_state, loss_val
 
     def _eval_step(self, model, state, x, y, key):
-        loss_val, _ = self._compute_batch_loss(
-            model, state, x, y, key, training=False
-        )
+        loss_val, _ = self._compute_batch_loss(model, state, x, y, key, training=False)
         return loss_val
 
     def fit(
@@ -152,7 +155,9 @@ class SegmentationModel:
                 patience_counter += 1
 
             if (epoch + 1) % 5 == 0:
-                print(f"Epoch {epoch+1}/{num_epochs}: train_loss={train_loss:.4f}, val_loss={val_loss:.4f}")
+                print(
+                    f"Epoch {epoch+1}/{num_epochs}: train_loss={train_loss:.4f}, val_loss={val_loss:.4f}"
+                )
 
             if patience_counter >= patience:
                 print("Early stopping triggered.")
@@ -168,7 +173,9 @@ class SegmentationModel:
         preds = jax.nn.sigmoid(preds)
         return (preds > 0.5).astype(jnp.float32)
 
-    def visualize(self, X, Y_true, Y_pred, title="Segmentation Visualization", num_samples=3):
+    def visualize(
+        self, X, Y_true, Y_pred, title="Segmentation Visualization", num_samples=3
+    ):
 
         samples = min(num_samples, X.shape[0])
         plt.figure(figsize=(5 * samples, 6))

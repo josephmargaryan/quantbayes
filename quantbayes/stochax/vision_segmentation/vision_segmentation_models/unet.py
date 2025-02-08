@@ -11,6 +11,7 @@ class ConvBlock(eqx.Module):
     approach of storing batchnorm parameters in the module but the running
     stats in the separate 'state' object.
     """
+
     conv1: eqx.nn.Conv2d
     bn1: eqx.nn.BatchNorm
     conv2: eqx.nn.Conv2d
@@ -28,7 +29,8 @@ class ConvBlock(eqx.Module):
         )
         self.bn2 = eqx.nn.BatchNorm(out_channels, axis_name="batch", inference=False)
 
-    def __call__(self, x: jnp.ndarray, state: eqx.nn.State, *, key: jnp.ndarray
+    def __call__(
+        self, x: jnp.ndarray, state: eqx.nn.State, *, key: jnp.ndarray
     ) -> Tuple[jnp.ndarray, eqx.nn.State]:
         # We'll split the provided `key` to feed each conv separately if we want
         k1, k2 = jr.split(key, 2)
@@ -48,6 +50,7 @@ class UpConvBlock(eqx.Module):
     Upsample with ConvTranspose2D, concatenate skip connection,
     then apply a ConvBlock.
     """
+
     upconv: eqx.nn.ConvTranspose2d
     conv: ConvBlock
 
@@ -59,7 +62,12 @@ class UpConvBlock(eqx.Module):
         self.conv = ConvBlock(out_channels + skip_channels, out_channels, key=k2)
 
     def __call__(
-        self, x: jnp.ndarray, skip: jnp.ndarray, state: eqx.nn.State, *, key: jnp.ndarray
+        self,
+        x: jnp.ndarray,
+        skip: jnp.ndarray,
+        state: eqx.nn.State,
+        *,
+        key: jnp.ndarray
     ) -> Tuple[jnp.ndarray, eqx.nn.State]:
         k1, k2 = jr.split(key, 2)
         x = self.upconv(x, key=k1)
@@ -76,6 +84,7 @@ class UNet(eqx.Module):
     """
     Standard UNet for segmentation: 4 levels down, bottleneck, then 4 up.
     """
+
     # Encoder blocks
     enc1: ConvBlock
     enc2: ConvBlock
@@ -104,12 +113,22 @@ class UNet(eqx.Module):
 
         self.bottleneck = ConvBlock(base_channels * 8, base_channels * 16, key=keys[4])
 
-        self.dec1 = UpConvBlock(base_channels * 16, base_channels * 8, base_channels * 8, key=keys[5])
-        self.dec2 = UpConvBlock(base_channels * 8, base_channels * 4, base_channels * 4, key=keys[6])
-        self.dec3 = UpConvBlock(base_channels * 4, base_channels * 2, base_channels * 2, key=keys[7])
-        self.dec4 = UpConvBlock(base_channels * 2, base_channels, base_channels, key=keys[8])
+        self.dec1 = UpConvBlock(
+            base_channels * 16, base_channels * 8, base_channels * 8, key=keys[5]
+        )
+        self.dec2 = UpConvBlock(
+            base_channels * 8, base_channels * 4, base_channels * 4, key=keys[6]
+        )
+        self.dec3 = UpConvBlock(
+            base_channels * 4, base_channels * 2, base_channels * 2, key=keys[7]
+        )
+        self.dec4 = UpConvBlock(
+            base_channels * 2, base_channels, base_channels, key=keys[8]
+        )
 
-        self.final_conv = eqx.nn.Conv2d(base_channels, out_channels, kernel_size=1, key=keys[9])
+        self.final_conv = eqx.nn.Conv2d(
+            base_channels, out_channels, kernel_size=1, key=keys[9]
+        )
         self.pool = eqx.nn.MaxPool2d(kernel_size=2, stride=2)
 
     def __call__(

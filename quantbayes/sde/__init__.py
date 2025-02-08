@@ -19,5 +19,5 @@ __all__ = [
     "BayesianOrnsteinUhlenbeck",
     "BayesianGeometricBrownianMotion",
     "BayesianHestonModel",
-    "LinearNeuralSDE"
+    "LinearNeuralSDE",
 ]

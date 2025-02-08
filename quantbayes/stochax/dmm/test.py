@@ -44,24 +44,44 @@ if __name__ == "__main__":
     print("z_data shape (DMM):", z_data.shape)  # Expected: (64, 15, 2)
 
     observation_dim = 1
-    latent_dim = 2
-    hidden_dim = 16
+    latent_dim = 4
+    hidden_dim = 28
     key = jax.random.PRNGKey(1)
 
-    # Instantiate the enhanced DMM.
+    # Instantiate and train the model.
     model = DeepMarkovModel(
         observation_dim,
         latent_dim,
         hidden_dim,
-        transition_type="mlp",  # or "mlp", "linear"
+        transition_type="mlp",  # or "linear"
         key=key,
     )
+    model = model.fit(x_data, n_epochs=1000, batch_size=8, lr=1e-3, seed=42, patience=5)
 
-    # Train the model.
-    model = model.fit(x_data, n_epochs=100, batch_size=8, lr=1e-3, seed=42)
-
+    ### Reconstruction Test ###
     # Reconstruct one sequence (assume batch size 1).
-    test_seq = x_data[0:1]  # shape (1, T, observation_dim)
+    test_seq = x_data[0:1]  # shape: (1, T, observation_dim)
     rng, rec_key = jax.random.split(rng_key)
     recon_seq = model.reconstruct(test_seq, rec_key, plot=True)
     print("Reconstructed sequence shape:", recon_seq.shape)
+
+    ### Prediction (Forecasting) Test ###
+    # Define the observation and prediction horizons.
+    T_obs = 10  # Use first 10 time steps as observed data.
+    T_pred = 5  # Forecast the next 5 time steps.
+    n_samples = 5  # Number of predicted trajectories to sample.
+
+    # For demonstration, pick one sequence from the dataset.
+    full_seq = x_data[0:1]  # shape: (1, 15, 1)
+    observed_seq = full_seq[:, :T_obs, :]  # shape: (1, 10, 1)
+    true_future = full_seq[:, T_obs:, :]  # shape: (1, 5, 1)
+
+    # Call the predict method to forecast the future (the plot is now generated inside predict).
+    rng, pred_key = jax.random.split(rng)
+    predicted_future = model.predict(
+        observed_seq, n_steps=T_pred, rng_key=pred_key, n_samples=n_samples, plot=True
+    )
+
+    # Compute the Mean Squared Error for the prediction for the first sample.
+    mse = jnp.mean((predicted_future[0] - true_future[0]) ** 2)
+    print("Forecasting MSE (first sample):", mse)
