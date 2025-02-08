@@ -207,9 +207,9 @@ class DenseMultiClassMCMC(BaseTask, BaseInference):
 if __name__ == "__main__":
 
     ############# Example Usage #############
-    from bnn.AutoML import DenseMultiClassMCMC
-    from bnn.utils import EntropyAndMutualInformation, BayesianAnalysis
-    from fake_data import generate_multiclass_classification_data
+    from quantbayes.bnn.AutoML import DenseMultiClassMCMC
+    from quantbayes.bnn.utils import EntropyAndMutualInformation, BayesianAnalysis
+    from quantbayes.fake_data import generate_multiclass_classification_data
     from sklearn.model_selection import train_test_split
     from sklearn.metrics import log_loss
     import jax.random as jr
