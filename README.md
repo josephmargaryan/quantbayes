@@ -77,7 +77,7 @@ Please see the notebooks in `examples/`
 <table>
   <tr>
     <td align="center">
-      <img src="images/vae" alt="Variational AutoEncoder" width="300"><br>
+      <img src="images/vae.png" alt="Variational AutoEncoder" width="300"><br>
       Variational AutoEncoder
     </td>
     <td align="center">
