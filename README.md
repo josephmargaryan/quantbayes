@@ -127,6 +127,18 @@ where $L(Q)$ is the true risk, $\delta$ is the confidence level, and $n$ is the 
 # Stochastic Differential Equations Module
 
 This module implements several stochastic differential equations (SDE) models — classical and Bayesian variants — and a neural SDE. These models are applicable in fields such as quantitative finance and physics for simulating processes subject to randomness.
+<table>
+  <tr>
+    <td align="center">
+      <img src="images/sde.png" alt="SDE" width="300"><br>
+      SDE
+    </td>
+    <td align="center">
+      <img src="images/stock_price_forecasting.png" alt="Stock Price Forecasting" width="300"><br>
+      Stock Price Forecasting
+    </td>
+  </tr>
+</table>
 
 ## 1. Geometric Brownian Motion (GBM)
 
@@ -139,7 +151,7 @@ $$
 where  
 - $\mu$ is the drift,  
 - $\sigma$ is the volatility, and  
-- $ dW_t $ represents increments of a Wiener process.
+- $dW_t$ represents increments of a Wiener process.
 
 The closed-form solution is:
 
