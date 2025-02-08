@@ -1,6 +1,6 @@
 # QuantBayes
 
-QuantBayes is an advanced probabilistic machine learning library integrating **Bayesian inference, stochastic differential equations (SDEs), and deep learning**. It provides utilities for **training deterministic and probabilistic models in PyTorch (`torch.nn`) and Flax (`flax.linen`)**, supporting tasks such as classification, regression, segmentation, and generative modeling.
+QuantBayes is an advanced probabilistic machine learning library integrating **Bayesian inference, stochastic differential equations (SDEs), and deep learning**. It provides utilities for **training deterministic and probabilistic models in PyTorch (`torch.nn`) and JAX (`equinox`)** (by Patrick Kidger et al), supporting classification, regression, segmentation, and generative modeling tasks.
 
 ## Features
 
