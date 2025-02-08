@@ -64,16 +64,32 @@ Please see the notebooks in `examples/`
       BNN Regression
     </td>
     <td align="center">
-      <img src="images/reg_interval.png" alt="Regression Interval" width="300"><br>
-      Regression Interval
+      <img src="images/binary_boundary.png" alt="Binary Decision Boundary" width="300"><br>
+      Binary Decision Boundary
     </td>
     <td align="center">
-      <img src="images/vae.png" alt="VAE" width="300"><br>
-      VAE
+      <img src="images/multiclass_boundary.png" alt="Multiclass Decision Boundary" width="300"><br>
+      Multiclass Decision Boundary
     </td>
   </tr>
 </table>
 
+<table>
+  <tr>
+    <td align="center">
+      <img src="images/vae" alt="Variational AutoEncoder" width="300"><br>
+      Variational AutoEncoder
+    </td>
+    <td align="center">
+      <img src="images/dmm_reconstruct.png" alt="Deep Markov Model Reconstruction" width="300"><br>
+      Deep Markov Model Reconstruction
+    </td>
+    <td align="center">
+      <img src="images/dmm_forecast.png" alt="Deep Markov Model Forecast Predictions" width="300"><br>
+      Deep Markov Model Forecast Predictions
+    </td>
+  </tr>
+</table>
 
 ### Pac Analysis Bound 
 To evaluate the generalization capabilities of Bayesian Neural Networks (BNNs), we compute the PAC-Bayesian bound:
