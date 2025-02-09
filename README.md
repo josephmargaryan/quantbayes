@@ -91,6 +91,23 @@ Please see the notebooks in `examples/`
   </tr>
 </table>
 
+<table>
+  <tr>
+    <td align="center">
+      <img src="images/1000_epoch_diffusion.png" alt="Score-Based Diffusion model trained on 1000 steps" width="300"><br>
+      Score-based Diffusion model trained on 1000 steps
+    </td>
+    <td align="center">
+      <img src="images/comming_tommorrow.png" alt="Score-Based Diffusion model trained on 10000 steps" width="300"><br>
+      Score-based diffusion model trained on 10000 steps
+    </td>
+    <td align="center">
+      <img src="images/comming_tommorrow.png" alt="Score-Based Diffusion model trained on 100000 steps" width="300"><br>
+      Score-based Diffusion model trained on 100000 steps
+    </td>
+  </tr>
+</table>
+
 ### Pac Analysis Bound 
 To evaluate the generalization capabilities of Bayesian Neural Networks (BNNs), we compute the PAC-Bayesian bound:
 
