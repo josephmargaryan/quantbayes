@@ -17,47 +17,36 @@ def linear_beta_schedule(timesteps, beta_start=1e-4, beta_end=0.02):
 
 
 class GaussianDiffusion:
-    """
-    Diffusion process for images. The forward (q) process gradually adds Gaussian noise,
-    and the reverse (p) process denoises the image.
-    """
-
-    def __init__(self, timesteps=1000, beta_start=1e-4, beta_end=0.02):
+    def __init__(self, timesteps=1000, beta_start=1e-4, beta_end=0.02, device="cpu"):
         self.timesteps = timesteps
-        self.betas = linear_beta_schedule(timesteps, beta_start, beta_end)
-        self.alphas = 1.0 - self.betas
-        self.alphas_cumprod = torch.cumprod(self.alphas, dim=0)
+        self.device = device  # Store device
+
+        self.betas = linear_beta_schedule(timesteps, beta_start, beta_end).to(device)
+        self.alphas = (1.0 - self.betas).to(device)
+        self.alphas_cumprod = torch.cumprod(self.alphas, dim=0).to(device)
         self.alphas_cumprod_prev = torch.cat(
-            [torch.tensor([1.0]), self.alphas_cumprod[:-1]], dim=0
+            [torch.tensor([1.0], device=device), self.alphas_cumprod[:-1]], dim=0
         )
 
-        # For images, we will later reshape these scalars to (batch, 1, 1, 1)
-        self.sqrt_alphas_cumprod = torch.sqrt(self.alphas_cumprod)
-        self.sqrt_one_minus_alphas_cumprod = torch.sqrt(1 - self.alphas_cumprod)
-        self.log_one_minus_alphas_cumprod = torch.log(1 - self.alphas_cumprod + 1e-8)
-        self.sqrt_recip_alphas_cumprod = torch.sqrt(1.0 / self.alphas_cumprod)
-        self.sqrt_recipm1_alphas_cumprod = torch.sqrt(1.0 / self.alphas_cumprod - 1)
+        # Precompute and store on `device`
+        self.sqrt_alphas_cumprod = torch.sqrt(self.alphas_cumprod).to(device)
+        self.sqrt_one_minus_alphas_cumprod = torch.sqrt(1 - self.alphas_cumprod).to(device)
+        self.log_one_minus_alphas_cumprod = torch.log(1 - self.alphas_cumprod + 1e-8).to(device)
+        self.sqrt_recip_alphas_cumprod = torch.sqrt(1.0 / self.alphas_cumprod).to(device)
+        self.sqrt_recipm1_alphas_cumprod = torch.sqrt(1.0 / self.alphas_cumprod - 1).to(device)
 
-        # Posterior (reverse) process parameters
         self.posterior_variance = (
             self.betas * (1.0 - self.alphas_cumprod_prev) / (1.0 - self.alphas_cumprod)
-        )
+        ).to(device)
         self.posterior_log_variance_clipped = torch.log(
-            torch.cat(
-                [self.posterior_variance[1:2], self.posterior_variance[1:]], dim=0
-            )
-            + 1e-8
-        )
+            torch.cat([self.posterior_variance[1:2], self.posterior_variance[1:]], dim=0) + 1e-8
+        ).to(device)
         self.posterior_mean_coef1 = (
-            self.betas
-            * torch.sqrt(self.alphas_cumprod_prev)
-            / (1.0 - self.alphas_cumprod)
-        )
+            self.betas * torch.sqrt(self.alphas_cumprod_prev) / (1.0 - self.alphas_cumprod)
+        ).to(device)
         self.posterior_mean_coef2 = (
-            (1.0 - self.alphas_cumprod_prev)
-            * torch.sqrt(self.alphas)
-            / (1.0 - self.alphas_cumprod)
-        )
+            (1.0 - self.alphas_cumprod_prev) * torch.sqrt(self.alphas) / (1.0 - self.alphas_cumprod)
+        ).to(device)
 
     def q_sample(self, x0, t, noise=None):
         """
@@ -66,11 +55,14 @@ class GaussianDiffusion:
         """
         if noise is None:
             noise = torch.randn_like(x0)
-        device = x0.device
-        # Reshape coefficients to broadcast over images:
+        device = x0.device  # Ensure tensors match the device of input x0
+
+        # ✅ Move precomputed tensors to the same device as `x0`
         sqrt_ac = self.sqrt_alphas_cumprod[t].to(device).view(-1, 1, 1, 1)
         sqrt_1m_ac = self.sqrt_one_minus_alphas_cumprod[t].to(device).view(-1, 1, 1, 1)
+
         return sqrt_ac * x0 + sqrt_1m_ac * noise
+
 
     def q_posterior_mean_variance(self, x0, x_t, t):
         """
@@ -143,11 +135,16 @@ class GaussianDiffusion:
         Compute MSE loss between predicted noise and the actual noise used to
         produce x_t from x0.
         """
+        x0 = x0.to(self.device)  # Ensure x0 is on correct device
+        t = t.to(self.device)  # Ensure t is on correct device
         if noise is None:
-            noise = torch.randn_like(x0)
-        x_t = self.q_sample(x0, t, noise=noise)
+            noise = torch.randn_like(x0, device=self.device)
+
+        x_t = self.q_sample(x0, t, noise=noise)  # ✅ Now all tensors are on the same device
         model_output = model(x_t, t, **(model_kwargs or {}))
+
         return F.mse_loss(model_output, noise)
+
 
 
 # -----------------------
