@@ -4,6 +4,7 @@ import functools as ft
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import equinox as eqx
 import diffrax as dfx
 
 
@@ -39,7 +40,7 @@ def batch_loss_fn(model, weight, int_beta, data, t1, key):
     return jnp.mean(losses)
 
 
-@jax.jit
+@eqx.filter_jit
 def single_sample_fn(model, int_beta, data_shape, dt0, t1, key):
     """
     The reverse-time SDE as ODE approach for sampling (using Diffrax).

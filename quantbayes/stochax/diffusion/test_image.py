@@ -60,7 +60,7 @@ def test_mixer2d_image_diffusion():
         dataset=data,
         t1=cfg.t1,
         lr=cfg.lr,
-        num_steps=cfg.num_steps,
+        num_steps=10,
         batch_size=cfg.batch_size,
         weight_fn=weight_fn,
         int_beta_fn=int_beta_linear,
@@ -85,12 +85,14 @@ def test_mixer2d_image_diffusion():
     samples = jnp.clip(samples, data_min, data_max)
     # Visualize
     grid = einops.rearrange(
-        samples, "(n1 n2) c h w -> (n1 h) (n2 w)", n1=sample_size, n2=sample_size
+        samples, "(n1 n2) c h w -> c (n1 h) (n2 w)", n1=sample_size, n2=sample_size
     )
+    grid = grid.squeeze(0)  # Remove the channel dimension for grayscale images.
     plt.imshow(grid, cmap="gray")
     plt.title("Mixer2D Diffusion Samples")
     plt.axis("off")
     plt.show()
+
 
 
 def test_unet_diffusion():
@@ -249,6 +251,6 @@ def test_diffusion_transformer_2d():
 
 
 if __name__ == "__main__":
-    # test_unet_diffusion()
+    test_unet_diffusion()
     # test_mixer2d_image_diffusion()
-    test_diffusion_transformer_2d()
+    # test_diffusion_transformer_2d()
