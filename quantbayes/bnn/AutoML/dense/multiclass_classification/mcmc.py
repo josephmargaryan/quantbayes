@@ -208,7 +208,7 @@ if __name__ == "__main__":
 
     ############# Example Usage #############
     from quantbayes.bnn.AutoML import DenseMultiClassMCMC
-    from quantbayes.bnn.utils import EntropyAndMutualInformation, BayesianAnalysis
+    from quantbayes.bnn.utils import BayesianAnalysis
     from quantbayes.fake_data import generate_multiclass_classification_data
     from sklearn.model_selection import train_test_split
     from sklearn.metrics import log_loss
@@ -248,26 +248,10 @@ if __name__ == "__main__":
     loss = log_loss(np.array(y_test), np.array(mean_preds))
     print(f"loss: {loss}")
     classifier.visualize(X=X_test, y=y_test, num_classes=3, features=(0, 1))
-    analysis = BayesianAnalysis(len(X_train), delta=0.05, task_type="multiclass")
     # Compute PAC-Bayesian bound for MCMC
-
-    bound = analysis.compute_pac_bayesian_bound(
-        predictions=probabilities,
-        y_true=y_test,
-        posterior_samples=mcmc,
-        layer_names=[name for name in mcmc.keys() if name != "logits"],
-        inference_type="mcmc",
-        prior_mean=0,
-        prior_std=1,
-    )
-
-    print("PAC-Bayesian Bound (MCMC):", bound)
-    mi = analysis.compute_mutual_information_bound(
-        posterior_samples=mcmc,
-        layer_names=[name for name in mcmc if name != "logits"],
-        inference_type="mcmc",
-    )
-    print(f"Mutual Information bound: {mi}")
-    uncertainty_quantification = EntropyAndMutualInformation("multiclass")
-    mi, mi1 = uncertainty_quantification.compute_mutual_information(probabilities)
-    uncertainty_quantification.visualize(mi, mi1)
+    bound = BayesianAnalysis(len(X_train), delta=0.05, 
+                             task_type="multiclass", inference_type="mcmc",
+                             posterior_samples=mcmc)
+    bound.compute_pac_bayesian_bound(predictions=probabilities,
+                                     y_true=y_test
+                                     )

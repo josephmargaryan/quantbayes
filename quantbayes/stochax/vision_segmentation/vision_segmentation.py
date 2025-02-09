@@ -25,29 +25,27 @@ class SegmentationModel:
         self.train_losses = []
         self.val_losses = []
 
-    def _loss_function(self, pred, target):
-        """
-        pred, target in [0,1], same shape => dice or BCE
-        """
-
-        # Example placeholders, see your original dice_loss/bce_loss
-        def dice_loss(pred, target, eps=1e-6):
-            pred = pred.reshape(-1)
-            target = target.reshape(-1)
-            intersection = jnp.sum(pred * target)
-            union = jnp.sum(pred) + jnp.sum(target)
-            return 1.0 - (2.0 * intersection + eps) / (union + eps)
-
-        def bce_loss(pred, target, eps=1e-7):
-            pred = jnp.clip(pred, eps, 1 - eps)
-            return -jnp.mean(target * jnp.log(pred) + (1 - target) * jnp.log(1 - pred))
-
+    def _loss_function(self, logits, labels):
         if self.loss_type == "dice":
-            return dice_loss(pred, target)
+            # Convert logits to probabilities for dice loss.
+            probs = jax.nn.sigmoid(logits)
+            # Your custom dice loss function.
+            def dice_loss(pred, target, eps=1e-6):
+                pred = pred.reshape(-1)
+                target = target.reshape(-1)
+                intersection = jnp.sum(pred * target)
+                union = jnp.sum(pred) + jnp.sum(target)
+                return 1.0 - (2.0 * intersection + eps) / (union + eps)
+            return dice_loss(probs, labels)
         elif self.loss_type == "bce":
-            return bce_loss(pred, target)
+            # Use optax's BCE loss on logits.
+            return jnp.mean(optax.sigmoid_binary_cross_entropy(logits, labels))
+        elif self.loss_type == "focal":
+            # Use optax's focal loss on logits.
+            return jnp.mean(optax.sigmoid_focal_loss(logits, labels, alpha=0.25, gamma=2.0))
         else:
             raise ValueError(f"Invalid loss type: {self.loss_type}")
+
 
     def _batch_forward_train(self, model, state, x, key):
         """
@@ -97,7 +95,6 @@ class SegmentationModel:
         else:
             preds, new_state = self._batch_forward_inference(model, state, x, key)
 
-        preds = jax.nn.sigmoid(preds)
         loss_vec = jax.vmap(self._loss_function)(preds, y)
         loss = jnp.mean(loss_vec)
         return loss, new_state
@@ -212,3 +209,43 @@ class SegmentationModel:
 
         plt.suptitle(title)
         plt.show()
+
+if __name__ == "__main__":
+    from quantbayes.stochax.vision_segmentation import UNet
+    print("=== Demo: SegmentationModel with UNet ===")
+    key = jr.PRNGKey(42)
+
+    # Suppose we create a UNet
+    unet_init_key, data_key = jr.split(key, 2)
+    # eqx.nn.make_with_state(...) will create (model, state) from a constructor
+    model_unet, state_unet = eqx.nn.make_with_state(UNet)(
+        in_channels=3, out_channels=1, base_channels=8, key=unet_init_key
+    )
+
+    # Create synthetic data for segmentation
+    # We'll do a small "batch" of images  => shape (B, C, H, W)
+    N = 16
+    B, C, H, W = N, 3, 32, 32
+    X_seg = jr.uniform(data_key, (B, C, H, W))
+    # Synthetic ground-truth masks: threshold the image
+    Y_seg = (X_seg.mean(axis=1, keepdims=True) > 0.5).astype(jnp.float32)
+
+    # Split into train/val
+    X_train_seg, X_val_seg = X_seg[:8], X_seg[8:]
+    Y_train_seg, Y_val_seg = Y_seg[:8], Y_seg[8:]
+
+    seg_model = SegmentationModel(loss_type="dice", lr=1e-3)
+    # Fit
+    model_unet, state_unet = seg_model.fit(
+        model_unet, state_unet,
+        X_train_seg, Y_train_seg,
+        X_val_seg, Y_val_seg,
+        num_epochs=20,
+        patience=5,
+        key=jr.PRNGKey(999),
+    )
+
+    # Predict
+    preds_seg = seg_model.predict(model_unet, state_unet, X_val_seg)
+    # Visualize
+    seg_model.visualize(X_val_seg, Y_val_seg, preds_seg, title="Segmentation Demo", num_samples=3)

@@ -191,6 +191,7 @@ class BayesianAnalysis:
         Computes the PAC-Bayesian Bound.
 
         :param predictions, 2D array of full posteriors (probs)
+        :param y_true, jax.Array of ground truth
         """
         loss_fn = self.get_loss_function()
         empirical_risk = self.compute_empirical_risk(predictions, y_true, loss_fn)
