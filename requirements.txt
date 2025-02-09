@@ -8,3 +8,4 @@ matplotlib
 funsor
 diffrax
 optax
+einops

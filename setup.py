@@ -18,6 +18,7 @@ setup(
         "optax",
         "diffrax",
         "funsor",
+        "einops"
     ],
     python_requires=">=3.7",
 )
