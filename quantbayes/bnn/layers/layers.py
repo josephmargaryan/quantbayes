@@ -2,7 +2,6 @@ import jax
 import jax.numpy as jnp
 import numpyro
 import numpyro.distributions as dist
-from jax.scipy.signal import fftconvolve
 
 __all__ = [
     "Linear",
@@ -190,6 +189,61 @@ class FFTLinear:
         hidden = fft_matmul(first_row, X) + bias_circulant[None, :]
 
         return hidden
+    
+class FFTDirectPriorLinear:
+    """
+    FFT-based linear layer that directly samples its Fourier coefficients.
+    The idea is to place a prior directly in Fourier space to define the circulant matrix.
+    """
+    def __init__(self, in_features: int, name: str = "fft_direct_layer"):
+        self.in_features = in_features
+        self.name = name
+        # Number of independent Fourier coefficients:
+        self.k = in_features // 2 + 1  # Works for both odd and even dimensions
+
+    def __call__(self, X: jnp.ndarray) -> jnp.ndarray:
+        """
+        X: Input array of shape (batch_size, in_features)
+        Returns: Output array of shape (batch_size, in_features)
+        """
+        # Sample the independent Fourier coefficients:
+        real_coeff = numpyro.sample(f"{self.name}_real",
+                                    dist.Normal(0, 1).expand([self.k]).to_event(1))
+        # For frequencies 0 and (if applicable) n/2, the imaginary part is zero.
+        # Sample imaginary parts for the rest.
+        if self.k > 1:
+            # For indices 1 to k-1, sample imaginary parts
+            imag_coeff = numpyro.sample(f"{self.name}_imag",
+                                        dist.Normal(0, 1).expand([self.k - 1]).to_event(1))
+            # Construct the independent complex coefficients:
+            independent_fft = jnp.concatenate(
+                [real_coeff[:1],
+                 real_coeff[1:] + 1j * imag_coeff]
+            )
+        else:
+            independent_fft = real_coeff  # Only one coefficient
+
+        # Reconstruct the full Fourier spectrum with Hermitian symmetry:
+        # For n even, the full spectrum is: [F[0], F[1], ..., F[k-1], conj(F[k-2]), ..., conj(F[1])]
+        # For n odd, similar logic applies.
+        if self.in_features % 2 == 0:
+            # Even case: include the Nyquist frequency as real.
+            nyquist = independent_fft[-1].real[None]  # Force it to be real
+            fft_full = jnp.concatenate(
+                [independent_fft[:-1], nyquist, jnp.conj(independent_fft[1:-1])[::-1]]
+            )
+        else:
+            fft_full = jnp.concatenate(
+                [independent_fft, jnp.conj(independent_fft[1:])[::-1]]
+            )
+
+        # Compute the FFT of the input:
+        X_fft = jnp.fft.fft(X, axis=-1)
+        # Elementwise multiplication in Fourier space:
+        result_fft = fft_full[None, :] * X_fft
+        # Inverse FFT to get back to the time domain:
+        result = jnp.fft.ifft(result_fft, axis=-1).real
+        return result
 
 
 class ParticleLinear:
