@@ -148,12 +148,12 @@ class BinaryClassificationModel:
         feature_indices: tuple = (0, 1),
         unique_threshold: int = 10,
         resolution: int = 200,
-        title: str = "Binary Decision Boundary"
+        title: str = "Binary Decision Boundary",
     ):
         """
         Visualize the decision boundary for a binary classifier.
         Automatically checks if the two selected features are continuous or categorical.
-        
+
         Parameters
         ----------
         model : Equinox model
@@ -188,9 +188,11 @@ class BinaryClassificationModel:
         def predict_batch(X_input, key):
             # Split the key for each sample.
             keys = jr.split(key, X_input.shape[0])
+
             def forward_one(x, subkey):
                 logits, _ = inf_model(x, state=state, key=subkey)
                 return logits
+
             logits = jax.vmap(forward_one, in_axes=(0, 0))(X_input, keys)
             # Apply sigmoid to get probabilities.
             probs = jax.nn.sigmoid(logits)
@@ -202,7 +204,7 @@ class BinaryClassificationModel:
             y_min, y_max = X_np[:, f2].min() - 0.5, X_np[:, f2].max() + 0.5
             xx, yy = np.meshgrid(
                 np.linspace(x_min, x_max, resolution),
-                np.linspace(y_min, y_max, resolution)
+                np.linspace(y_min, y_max, resolution),
             )
             n_features = X_np.shape[1]
             grid_list = []
@@ -220,7 +222,9 @@ class BinaryClassificationModel:
             class_preds = (np.array(probs) > 0.5).astype(np.int32).reshape(xx.shape)
             plt.figure(figsize=(8, 6))
             plt.contourf(xx, yy, class_preds, alpha=0.3, cmap=plt.cm.Paired)
-            plt.scatter(X_np[:, f1], X_np[:, f2], c=y_np, edgecolor="k", cmap=plt.cm.Paired)
+            plt.scatter(
+                X_np[:, f1], X_np[:, f2], c=y_np, edgecolor="k", cmap=plt.cm.Paired
+            )
             plt.xlabel(f"Feature {f1}")
             plt.ylabel(f"Feature {f2}")
             plt.title(title)
@@ -236,7 +240,9 @@ class BinaryClassificationModel:
                 cat_idx, cont_idx = f2, f1
             unique_cats = np.unique(X_np[:, cat_idx])
             num_cats = len(unique_cats)
-            fig, axes = plt.subplots(1, num_cats, figsize=(5 * num_cats, 5), squeeze=False)
+            fig, axes = plt.subplots(
+                1, num_cats, figsize=(5 * num_cats, 5), squeeze=False
+            )
             for j, cat in enumerate(unique_cats):
                 ax = axes[0, j]
                 mask = X_np[:, cat_idx] == cat
@@ -257,7 +263,13 @@ class BinaryClassificationModel:
                 probs = predict_batch(jnp.array(grid_arr), grid_key)
                 class_preds = (np.array(probs) > 0.5).astype(np.int32)
                 ax.plot(cont_grid, class_preds, label="Decision boundary")
-                ax.scatter(X_np[mask, cont_idx], y_np[mask], c="k", edgecolors="w", label="Data")
+                ax.scatter(
+                    X_np[mask, cont_idx],
+                    y_np[mask],
+                    c="k",
+                    edgecolors="w",
+                    label="Data",
+                )
                 ax.set_title(f"Feature {cat_idx} = {cat}")
                 ax.set_xlabel(f"Feature {cont_idx}")
                 ax.set_ylabel("Predicted class")
@@ -268,12 +280,15 @@ class BinaryClassificationModel:
         # --- Case 3: Both features categorical ---
         else:
             plt.figure(figsize=(8, 6))
-            plt.scatter(X_np[:, f1], X_np[:, f2], c=y_np, cmap=plt.cm.Paired, edgecolors="k")
+            plt.scatter(
+                X_np[:, f1], X_np[:, f2], c=y_np, cmap=plt.cm.Paired, edgecolors="k"
+            )
             plt.xlabel(f"Feature {f1}")
             plt.ylabel(f"Feature {f2}")
             plt.title(title + " (Both features categorical)")
             plt.grid(True)
             plt.show()
+
 
 if __name__ == "__main__":
     import jax

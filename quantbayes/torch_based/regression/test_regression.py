@@ -108,7 +108,6 @@ def train_model(
     return model
 
 
-
 def visualize_regression(
     model,
     X: np.ndarray,
@@ -241,13 +240,15 @@ def visualize_regression(
         # Categorical ICE: box plot.
         cat_predictions = {}
         for cat in unique_cats:
-            mask = (cat_vals == cat)
+            mask = cat_vals == cat
             X_cat = X_np[mask, :]
             if X_cat.shape[0] > 0:
                 preds_cat = model_predict(X_cat)
                 cat_predictions[cat] = preds_cat
         ax_ice_cat = axes[1, 1] if nrows == 2 else axes[0, 1]
-        box_data = [cat_predictions[cat] for cat in unique_cats if cat in cat_predictions]
+        box_data = [
+            cat_predictions[cat] for cat in unique_cats if cat in cat_predictions
+        ]
         ax_ice_cat.boxplot(box_data, tick_labels=unique_cats)
         ax_ice_cat.set_xlabel(f"Feature {cat_idx} (Categorical)")
         ax_ice_cat.set_ylabel("Predicted Target")
@@ -272,8 +273,12 @@ if __name__ == "__main__":
     df = generate_regression_data(n_categorical=1, n_continuous=2)
 
     X, y = df.drop("target", axis=1), df["target"]
-    X, y = torch.tensor(X.values, dtype=torch.float32), torch.tensor(y.values, dtype=torch.long)
-    X_train, X_val, y_train, y_val = train_test_split(X.clone(), y.clone(), test_size=0.2, random_state=24)
+    X, y = torch.tensor(X.values, dtype=torch.float32), torch.tensor(
+        y.values, dtype=torch.long
+    )
+    X_train, X_val, y_train, y_val = train_test_split(
+        X.clone(), y.clone(), test_size=0.2, random_state=24
+    )
 
     # Define model
     model = MLPRegression(input_dim=X_train.shape[-1], hidden_dim=32)

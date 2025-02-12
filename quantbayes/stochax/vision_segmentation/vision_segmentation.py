@@ -36,16 +36,18 @@ class SegmentationModel:
                 intersection = jnp.sum(pred * target)
                 union = jnp.sum(pred) + jnp.sum(target)
                 return 1.0 - (2.0 * intersection + eps) / (union + eps)
+
             return dice_loss(probs, labels)
         elif self.loss_type == "bce":
             # Use optax's BCE loss on logits.
             return jnp.mean(optax.sigmoid_binary_cross_entropy(logits, labels))
         elif self.loss_type == "focal":
             # Use optax's focal loss on logits.
-            return jnp.mean(optax.sigmoid_focal_loss(logits, labels, alpha=0.25, gamma=2.0))
+            return jnp.mean(
+                optax.sigmoid_focal_loss(logits, labels, alpha=0.25, gamma=2.0)
+            )
         else:
             raise ValueError(f"Invalid loss type: {self.loss_type}")
-
 
     def _batch_forward_train(self, model, state, x, key):
         """
@@ -210,8 +212,10 @@ class SegmentationModel:
         plt.suptitle(title)
         plt.show()
 
+
 if __name__ == "__main__":
     from quantbayes.stochax.vision_segmentation import UNet
+
     print("=== Demo: SegmentationModel with UNet ===")
     key = jr.PRNGKey(42)
 
@@ -237,9 +241,12 @@ if __name__ == "__main__":
     seg_model = SegmentationModel(loss_type="dice", lr=1e-3)
     # Fit
     model_unet, state_unet = seg_model.fit(
-        model_unet, state_unet,
-        X_train_seg, Y_train_seg,
-        X_val_seg, Y_val_seg,
+        model_unet,
+        state_unet,
+        X_train_seg,
+        Y_train_seg,
+        X_val_seg,
+        Y_val_seg,
         num_epochs=20,
         patience=5,
         key=jr.PRNGKey(999),
@@ -248,4 +255,6 @@ if __name__ == "__main__":
     # Predict
     preds_seg = seg_model.predict(model_unet, state_unet, X_val_seg)
     # Visualize
-    seg_model.visualize(X_val_seg, Y_val_seg, preds_seg, title="Segmentation Demo", num_samples=3)
+    seg_model.visualize(
+        X_val_seg, Y_val_seg, preds_seg, title="Segmentation Demo", num_samples=3
+    )

@@ -6,7 +6,9 @@ import jax
 import jax.numpy as jnp
 
 
-def generate_regression_data(n_samples=1000, n_continuous=1, n_categorical=0, random_seed=None):
+def generate_regression_data(
+    n_samples=1000, n_continuous=1, n_categorical=0, random_seed=None
+):
     """
     Generate synthetic regression data with a mix of continuous and categorical features.
 
@@ -28,7 +30,7 @@ def generate_regression_data(n_samples=1000, n_continuous=1, n_categorical=0, ra
     """
     if random_seed is not None:
         np.random.seed(random_seed)
-    
+
     df = pd.DataFrame()
 
     # Generate continuous features (e.g., sinusoidal waves with noise)
@@ -69,7 +71,7 @@ def generate_binary_classification_data(
 ):
     """
     Generate synthetic binary classification data with both continuous and categorical features.
-    
+
     Args:
         n_samples (int): Number of samples.
         n_continuous (int): Number of continuous features.
@@ -79,22 +81,22 @@ def generate_binary_classification_data(
         n_categories (int): Number of categories for each categorical feature.
         n_clusters_per_class (int, optional): Number of clusters per class for continuous features.
                                               If not provided, it will be set based on n_continuous.
-    
+
     Returns:
         pd.DataFrame: DataFrame with continuous features, categorical features, and target.
     """
     np.random.seed(random_seed)
-    
+
     # Adjust n_informative: if n_continuous is very low, use all features as informative.
     if n_continuous < 4:
         n_informative = n_continuous
     else:
         n_informative = n_continuous // 2
-    
+
     # Automatically adjust n_clusters_per_class if not provided.
     if n_clusters_per_class is None:
         n_clusters_per_class = 1 if n_continuous == 1 else 2
-    
+
     # Generate continuous features.
     X_cont, y = make_classification(
         n_samples=n_samples,
@@ -106,23 +108,28 @@ def generate_binary_classification_data(
         flip_y=0.1,
         random_state=random_seed,
     )
-    
+
     # Generate categorical features.
     X_cat = np.random.randint(0, n_categories, size=(n_samples, n_categorical))
-    
+
     # Create DataFrames.
-    df_cont = pd.DataFrame(X_cont, columns=[f"cont_feature_{i+1}" for i in range(n_continuous)])
-    df_cat = pd.DataFrame(X_cat, columns=[f"cat_feature_{i+1}" for i in range(n_categorical)])
-    
+    df_cont = pd.DataFrame(
+        X_cont, columns=[f"cont_feature_{i+1}" for i in range(n_continuous)]
+    )
+    df_cat = pd.DataFrame(
+        X_cat, columns=[f"cat_feature_{i+1}" for i in range(n_categorical)]
+    )
+
     # Convert categorical columns to type 'category'.
     for col in df_cat.columns:
-        df_cat[col] = df_cat[col].astype('category')
-    
+        df_cat[col] = df_cat[col].astype("category")
+
     # Combine the features and add the target column.
     df = pd.concat([df_cont, df_cat], axis=1)
     df["target"] = y
-    
+
     return df
+
 
 def generate_multiclass_classification_data(
     n_samples=500,
@@ -135,7 +142,7 @@ def generate_multiclass_classification_data(
 ):
     """
     Generate synthetic multiclass classification data with both continuous and categorical features.
-    
+
     Args:
         n_samples (int): Number of samples (rows).
         n_continuous (int): Number of continuous features.
@@ -144,12 +151,12 @@ def generate_multiclass_classification_data(
         cluster_std (float): Standard deviation of clusters (controls difficulty).
         random_seed (int): Random seed for reproducibility.
         n_categories (int): Number of distinct categories for each categorical feature.
-    
+
     Returns:
         pd.DataFrame: DataFrame containing continuous features, categorical features, and target (y).
     """
     np.random.seed(random_seed)
-    
+
     # Generate continuous features using make_blobs.
     X_cont, y = make_blobs(
         n_samples=n_samples,
@@ -158,24 +165,28 @@ def generate_multiclass_classification_data(
         cluster_std=cluster_std,
         random_state=random_seed,
     )
-    
+
     # Add noise to the continuous features.
     noise = np.random.normal(0, 0.5, size=X_cont.shape)
     X_cont = X_cont + noise
-    
+
     # Generate categorical features by sampling random integers.
     X_cat = np.random.randint(0, n_categories, size=(n_samples, n_categorical))
-    
+
     # Create DataFrames.
-    df_cont = pd.DataFrame(X_cont, columns=[f"cont_feature_{i+1}" for i in range(n_continuous)])
-    df_cat = pd.DataFrame(X_cat, columns=[f"cat_feature_{i+1}" for i in range(n_categorical)])
+    df_cont = pd.DataFrame(
+        X_cont, columns=[f"cont_feature_{i+1}" for i in range(n_continuous)]
+    )
+    df_cat = pd.DataFrame(
+        X_cat, columns=[f"cat_feature_{i+1}" for i in range(n_categorical)]
+    )
     for col in df_cat.columns:
-        df_cat[col] = df_cat[col].astype('category')
-    
+        df_cat[col] = df_cat[col].astype("category")
+
     # Combine continuous and categorical features and add the target.
     df = pd.concat([df_cont, df_cat], axis=1)
     df["target"] = y
-    
+
     return df
 
 

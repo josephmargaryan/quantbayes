@@ -94,7 +94,6 @@ def test_mixer2d_image_diffusion():
     plt.show()
 
 
-
 def test_unet_diffusion():
     # Load configuration and initialize key
     cfg = ImageConfig()

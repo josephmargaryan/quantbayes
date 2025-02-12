@@ -112,7 +112,7 @@ def visualize_multiclass_torch(
     feature_indices: tuple = (0, 1),
     unique_threshold: int = 10,
     resolution: int = 100,
-    title: str = "Multiclass Decision Boundary"
+    title: str = "Multiclass Decision Boundary",
 ):
     """
     Visualize a multiclass classification decision boundary with automatic checks for
@@ -159,8 +159,7 @@ def visualize_multiclass_torch(
         x_min, x_max = X_np[:, f1].min() - 0.5, X_np[:, f1].max() + 0.5
         y_min, y_max = X_np[:, f2].min() - 0.5, X_np[:, f2].max() + 0.5
         xx, yy = np.meshgrid(
-            np.linspace(x_min, x_max, resolution),
-            np.linspace(y_min, y_max, resolution)
+            np.linspace(x_min, x_max, resolution), np.linspace(y_min, y_max, resolution)
         )
         n_features = X_np.shape[1]
         grid_list = []
@@ -177,7 +176,7 @@ def visualize_multiclass_torch(
 
         plt.figure(figsize=(8, 6))
         plt.contourf(xx, yy, class_preds, alpha=0.3, cmap=plt.cm.Paired)
-        plt.scatter(X_np[:, f1], X_np[:, f2], c=y_np, edgecolor='k', cmap=plt.cm.Paired)
+        plt.scatter(X_np[:, f1], X_np[:, f2], c=y_np, edgecolor="k", cmap=plt.cm.Paired)
         plt.xlabel(f"Feature {f1}")
         plt.ylabel(f"Feature {f2}")
         plt.title(title)
@@ -213,7 +212,9 @@ def visualize_multiclass_torch(
             probs = model_predict(grid_arr)
             class_preds = np.argmax(probs, axis=-1)
             ax.plot(cont_grid, class_preds, label="Decision boundary")
-            ax.scatter(X_np[mask, cont_idx], y_np[mask], c='k', edgecolors='w', label="Data")
+            ax.scatter(
+                X_np[mask, cont_idx], y_np[mask], c="k", edgecolors="w", label="Data"
+            )
             ax.set_title(f"Feature {cat_idx} = {cat}")
             ax.set_xlabel(f"Feature {cont_idx}")
             ax.set_ylabel("Predicted class")
@@ -224,7 +225,9 @@ def visualize_multiclass_torch(
     # --- Case 3: Both features categorical ---
     else:
         plt.figure(figsize=(8, 6))
-        plt.scatter(X_np[:, f1], X_np[:, f2], c=y_np, cmap=plt.cm.Paired, edgecolors='k')
+        plt.scatter(
+            X_np[:, f1], X_np[:, f2], c=y_np, cmap=plt.cm.Paired, edgecolors="k"
+        )
         plt.xlabel(f"Feature {f1}")
         plt.ylabel(f"Feature {f2}")
         plt.title(title + " (Both features categorical)")
@@ -242,9 +245,12 @@ if __name__ == "__main__":
     df = generate_multiclass_classification_data(n_categorical=1, n_continuous=2)
 
     X, y = df.drop("target", axis=1), df["target"]
-    X, y = torch.tensor(X.values, dtype=torch.float32), torch.tensor(y.values, dtype=torch.long)
-    X_train, X_val, y_train, y_val = train_test_split(X.clone(), y.clone(), test_size=0.2, random_state=24)
-
+    X, y = torch.tensor(X.values, dtype=torch.float32), torch.tensor(
+        y.values, dtype=torch.long
+    )
+    X_train, X_val, y_train, y_val = train_test_split(
+        X.clone(), y.clone(), test_size=0.2, random_state=24
+    )
 
     num_classes = 3
     model = MLPClassifier(input_dim=X.shape[-1], num_classes=num_classes, hidden_dim=32)

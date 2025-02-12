@@ -131,11 +131,10 @@ class Linear:
             Output array of shape `(batch_size, out_features)`.
         """
         w = numpyro.sample(
-            f"{self.name}_w", self.weight_prior_fn([self.in_features, self.out_features])
+            f"{self.name}_w",
+            self.weight_prior_fn([self.in_features, self.out_features]),
         )
-        b = numpyro.sample(
-            f"{self.name}_b", self.bias_prior_fn([self.out_features])
-        )
+        b = numpyro.sample(f"{self.name}_b", self.bias_prior_fn([self.out_features]))
         return jnp.dot(X, w) + b
 
 
@@ -213,6 +212,7 @@ class FFTLinear:
         hidden = fft_matmul(first_row, X) + bias_circulant[None, :]
         return hidden
 
+
 class FFTDirectPriorLinear:
     """
     FFT-based linear layer that directly samples its Fourier coefficients.
@@ -257,12 +257,13 @@ class FFTDirectPriorLinear:
         # 2) If k>1, sample imaginary part for [1..k-1].
         #    freq=0 is purely real. If in_features is even, freq=n/2 is real too.
         if self.k > 1:
-            imag_coeff = numpyro.sample(f"{self.name}_imag", self.prior_fn([self.k - 1]))
+            imag_coeff = numpyro.sample(
+                f"{self.name}_imag", self.prior_fn([self.k - 1])
+            )
             # Construct the half-spectrum as a complex vector
             # freq=0 -> real_coeff[0], freq=1..(k-1) -> real + i*imag
             independent_fft = jnp.concatenate(
-                [real_coeff[:1],  # frequency 0
-                 real_coeff[1:] + 1j * imag_coeff]
+                [real_coeff[:1], real_coeff[1:] + 1j * imag_coeff]  # frequency 0
             )
         else:
             # Edge case: in_features=1 => k=1
@@ -275,17 +276,18 @@ class FFTDirectPriorLinear:
             # even n, so freq n/2 is real; that is independent_fft[-1].real
             nyquist = independent_fft[-1].real[None]  # forcibly real
             # everything else is mirrored
-            fft_full = jnp.concatenate([
-                independent_fft[:-1],
-                nyquist,  # freq = n/2
-                jnp.conj(independent_fft[1:-1])[::-1],  # mirror of freq=1..(k-2)
-            ])
+            fft_full = jnp.concatenate(
+                [
+                    independent_fft[:-1],
+                    nyquist,  # freq = n/2
+                    jnp.conj(independent_fft[1:-1])[::-1],  # mirror of freq=1..(k-2)
+                ]
+            )
         else:
             # odd n, or n=2 (k=2) edge case
-            fft_full = jnp.concatenate([
-                independent_fft,
-                jnp.conj(independent_fft[1:])[::-1]
-            ])
+            fft_full = jnp.concatenate(
+                [independent_fft, jnp.conj(independent_fft[1:])[::-1]]
+            )
 
         # 4) Multiply in freq domain: FFT(X) * fft_full
         X_fft = jnp.fft.fft(X, axis=-1)
@@ -315,7 +317,6 @@ class FFTDirectPriorLinear:
         with numpyro.handlers.seed(rng_seed=rng_key):
             _, fft_full = self._forward_and_get_coeffs(X)
         return jax.lax.stop_gradient(fft_full)
-
 
 
 class ParticleLinear:

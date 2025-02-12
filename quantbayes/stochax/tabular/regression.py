@@ -160,16 +160,16 @@ class RegressionModel:
     ):
         """
         Unified visualization for regression tasks in Equinox.
-        
+
         This function inspects the input data `X` and target `y` to decide whether to
         generate single-feature plots (using either continuous or categorical PDP/ICE)
         or multi-feature plots. For each feature it automatically determines if it is
         continuous (many unique values) or categorical (few unique values), and it plots:
-        
+
         - For continuous features: a Partial Dependence Plot (PDP) with a KDE overlay
             and Individual Conditional Expectation (ICE) curves.
         - For categorical features: a bar plot PDP and a box-plot ICE.
-        
+
         Parameters
         ----------
         model : Equinox model
@@ -222,7 +222,7 @@ class RegressionModel:
                 # --- Categorical ICE (box plot) ---
                 cat_preds = {}
                 for cat in unique_vals:
-                    mask = (X_np[:, 0] == cat)
+                    mask = X_np[:, 0] == cat
                     if np.sum(mask) > 0:
                         preds = model_predict(X_np[mask, :])
                         # If predictions are sampled multiple times, average over them.
@@ -253,8 +253,12 @@ class RegressionModel:
                     pdp_mean = pdp_preds.squeeze()
 
                 plt.figure(figsize=(10, 6))
-                sns.kdeplot(x=cont_vals, y=y_np, cmap="Blues", fill=True, alpha=0.5, thresh=0.05)
-                plt.plot(cont_grid, pdp_mean, color="red", label="Mean Prediction (PDP)")
+                sns.kdeplot(
+                    x=cont_vals, y=y_np, cmap="Blues", fill=True, alpha=0.5, thresh=0.05
+                )
+                plt.plot(
+                    cont_grid, pdp_mean, color="red", label="Mean Prediction (PDP)"
+                )
                 plt.xlabel("Feature (Continuous)")
                 plt.ylabel("Target")
                 plt.title("Continuous PDP")
@@ -263,7 +267,9 @@ class RegressionModel:
 
                 # --- Continuous ICE ---
                 rng = np.random.default_rng(42)
-                ice_indices = rng.choice(n_samples, size=min(20, n_samples), replace=False)
+                ice_indices = rng.choice(
+                    n_samples, size=min(20, n_samples), replace=False
+                )
                 plt.figure(figsize=(10, 6))
                 for idx in ice_indices:
                     sample = X_np[idx, :].copy()
@@ -272,9 +278,21 @@ class RegressionModel:
                     ice_preds = model_predict(X_ice)
                     if ice_preds.ndim > 1:
                         for curve in ice_preds:
-                            plt.plot(cont_grid, curve, color="dodgerblue", linewidth=0.5, alpha=0.7)
+                            plt.plot(
+                                cont_grid,
+                                curve,
+                                color="dodgerblue",
+                                linewidth=0.5,
+                                alpha=0.7,
+                            )
                     else:
-                        plt.plot(cont_grid, ice_preds, color="dodgerblue", linewidth=0.5, alpha=0.7)
+                        plt.plot(
+                            cont_grid,
+                            ice_preds,
+                            color="dodgerblue",
+                            linewidth=0.5,
+                            alpha=0.7,
+                        )
                 plt.xlabel("Feature (Continuous)")
                 plt.ylabel("Target")
                 plt.title("Continuous ICE")
@@ -303,7 +321,9 @@ class RegressionModel:
 
             # --- Continuous Feature Visualization ---
             if continuous_features:
-                cont_idx = continuous_features[0]  # visualize the first continuous feature
+                cont_idx = continuous_features[
+                    0
+                ]  # visualize the first continuous feature
                 cont_vals = X_np[:, cont_idx]
                 cont_min, cont_max = float(np.min(cont_vals)), float(np.max(cont_vals))
                 cont_grid = np.linspace(cont_min, cont_max, grid_points)
@@ -317,8 +337,18 @@ class RegressionModel:
                     pdp_mean = pdp_preds.squeeze()
 
                 ax_cont_pdp = axes[0, 0]
-                sns.kdeplot(x=cont_vals, y=y_np, ax=ax_cont_pdp, cmap="Blues", fill=True, alpha=0.5, thresh=0.05)
-                ax_cont_pdp.plot(cont_grid, pdp_mean, color="red", label="Mean Prediction")
+                sns.kdeplot(
+                    x=cont_vals,
+                    y=y_np,
+                    ax=ax_cont_pdp,
+                    cmap="Blues",
+                    fill=True,
+                    alpha=0.5,
+                    thresh=0.05,
+                )
+                ax_cont_pdp.plot(
+                    cont_grid, pdp_mean, color="red", label="Mean Prediction"
+                )
                 ax_cont_pdp.set_xlabel(f"Feature {cont_idx} (Continuous)")
                 ax_cont_pdp.set_ylabel("Target")
                 ax_cont_pdp.set_title("Continuous PDP")
@@ -326,7 +356,9 @@ class RegressionModel:
 
                 # ICE for the continuous feature.
                 rng = np.random.default_rng(42)
-                ice_indices = rng.choice(n_samples, size=min(20, n_samples), replace=False)
+                ice_indices = rng.choice(
+                    n_samples, size=min(20, n_samples), replace=False
+                )
                 ax_cont_ice = axes[0, 1]
                 for idx in ice_indices:
                     sample = X_np[idx, :].copy()
@@ -335,9 +367,21 @@ class RegressionModel:
                     ice_preds = model_predict(X_ice)
                     if ice_preds.ndim > 1:
                         for curve in ice_preds:
-                            ax_cont_ice.plot(cont_grid, curve, color="dodgerblue", linewidth=0.5, alpha=0.7)
+                            ax_cont_ice.plot(
+                                cont_grid,
+                                curve,
+                                color="dodgerblue",
+                                linewidth=0.5,
+                                alpha=0.7,
+                            )
                     else:
-                        ax_cont_ice.plot(cont_grid, ice_preds, color="dodgerblue", linewidth=0.5, alpha=0.7)
+                        ax_cont_ice.plot(
+                            cont_grid,
+                            ice_preds,
+                            color="dodgerblue",
+                            linewidth=0.5,
+                            alpha=0.7,
+                        )
                 ax_cont_ice.set_xlabel(f"Feature {cont_idx} (Continuous)")
                 ax_cont_ice.set_ylabel("Target")
                 ax_cont_ice.set_title("Continuous ICE")
@@ -348,7 +392,9 @@ class RegressionModel:
 
             # --- Categorical Feature Visualization ---
             if categorical_features:
-                cat_idx = categorical_features[0]  # visualize the first categorical feature
+                cat_idx = categorical_features[
+                    0
+                ]  # visualize the first categorical feature
                 cat_vals = X_np[:, cat_idx]
                 unique_cats = np.unique(cat_vals)
                 baseline = np.mean(X_np, axis=0)
@@ -369,7 +415,7 @@ class RegressionModel:
                 # ICE for categorical features via box plots.
                 cat_predictions = {}
                 for cat in unique_cats:
-                    mask = (cat_vals == cat)
+                    mask = cat_vals == cat
                     X_cat = X_np[mask, :]
                     if X_cat.shape[0] > 0:
                         preds_cat = model_predict(X_cat)
@@ -377,7 +423,11 @@ class RegressionModel:
                             preds_cat = preds_cat.mean(axis=0).squeeze()
                         cat_predictions[cat] = preds_cat
                 ax_cat_ice = axes[cat_row, 1]
-                boxplot_data = [cat_predictions[cat] for cat in unique_cats if cat in cat_predictions]
+                boxplot_data = [
+                    cat_predictions[cat]
+                    for cat in unique_cats
+                    if cat in cat_predictions
+                ]
                 ax_cat_ice.boxplot(boxplot_data, tick_labels=unique_cats)
                 ax_cat_ice.set_xlabel(f"Feature {cat_idx} (Categorical)")
                 ax_cat_ice.set_ylabel("Predicted Target")
@@ -390,7 +440,6 @@ class RegressionModel:
 
             plt.tight_layout()
             plt.show()
-
 
 
 if __name__ == "__main__":

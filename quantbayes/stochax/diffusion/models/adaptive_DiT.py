@@ -37,7 +37,9 @@ class PatchEmbed(eqx.Module):
     embed_dim: int
     channels: int
 
-    def __init__(self, channels: int, embed_dim: int, patch_size: int, img_size: tuple, *, key):
+    def __init__(
+        self, channels: int, embed_dim: int, patch_size: int, img_size: tuple, *, key
+    ):
         self.channels = channels
         self.patch_size = patch_size
         c, h, w = img_size
@@ -86,7 +88,14 @@ class PatchUnembed(eqx.Module):
         ph = pw = self.patch_size
         num_h = self.h // ph
         num_w = self.w // pw
-        x = rearrange(tokens, "(nh nw) (c ph pw) -> c (nh ph) (nw pw)", nh=num_h, nw=num_w, ph=ph, pw=pw)
+        x = rearrange(
+            tokens,
+            "(nh nw) (c ph pw) -> c (nh ph) (nw pw)",
+            nh=num_h,
+            nw=num_w,
+            ph=ph,
+            pw=pw,
+        )
         return x
 
 
@@ -116,7 +125,13 @@ class LabelEmbedder(eqx.Module):
         self.embedding = eqx.nn.Embedding(num_classes + 1, embed_dim, key=key)
         self.dropout_prob = dropout_prob
 
-    def __call__(self, labels: jnp.ndarray, train: bool, *, key: Optional[jax.random.PRNGKey]=None) -> jnp.ndarray:
+    def __call__(
+        self,
+        labels: jnp.ndarray,
+        train: bool,
+        *,
+        key: Optional[jax.random.PRNGKey] = None,
+    ) -> jnp.ndarray:
         if train and self.dropout_prob > 0 and key is not None:
             drop = jr.uniform(key, labels.shape) < self.dropout_prob
             labels = jnp.where(drop, self.embedding.num_embeddings - 1, labels)
@@ -144,7 +159,15 @@ class DiTBlock(eqx.Module):
 
     dropout_rate: float
 
-    def __init__(self, embed_dim: int, n_heads: int, mlp_ratio: float, dropout_rate: float, *, key):
+    def __init__(
+        self,
+        embed_dim: int,
+        n_heads: int,
+        mlp_ratio: float,
+        dropout_rate: float,
+        *,
+        key,
+    ):
         k1, k2, k3, k4 = jr.split(key, 4)
         self.norm1 = eqx.nn.LayerNorm((embed_dim,))
         self.attn = eqx.nn.MultiheadAttention(
@@ -159,13 +182,27 @@ class DiTBlock(eqx.Module):
         )
         self.norm2 = eqx.nn.LayerNorm((embed_dim,))
         hidden_dim = int(embed_dim * mlp_ratio)
-        self.mlp = eqx.nn.MLP(in_size=embed_dim, out_size=embed_dim, width_size=hidden_dim, depth=2, key=k2)
-        self.adaLN_modulation = eqx.nn.MLP(in_size=embed_dim, out_size=6 * embed_dim, width_size=embed_dim * 2, depth=1, key=k3)
+        self.mlp = eqx.nn.MLP(
+            in_size=embed_dim,
+            out_size=embed_dim,
+            width_size=hidden_dim,
+            depth=2,
+            key=k2,
+        )
+        self.adaLN_modulation = eqx.nn.MLP(
+            in_size=embed_dim,
+            out_size=6 * embed_dim,
+            width_size=embed_dim * 2,
+            depth=1,
+            key=k3,
+        )
         self.dropout_rate = dropout_rate
 
     def __call__(self, x: jnp.ndarray, cond: jnp.ndarray, *, key=None) -> jnp.ndarray:
         mod_params = self.adaLN_modulation(cond)  # shape (6*embed_dim,)
-        shift_attn, scale_attn, gate_attn, shift_mlp, scale_mlp, gate_mlp = jnp.split(mod_params, 6, axis=-1)
+        shift_attn, scale_attn, gate_attn, shift_mlp, scale_mlp, gate_mlp = jnp.split(
+            mod_params, 6, axis=-1
+        )
         # Attention branch
         x_norm = jax.vmap(self.norm1)(x)
         x_mod = modulate(x_norm, shift_attn, scale_attn)
@@ -194,8 +231,16 @@ class DiTFinalLayer(eqx.Module):
         k1, k2 = jr.split(key, 2)
         self.norm = eqx.nn.LayerNorm((embed_dim,))
         # Map from embed_dim to patch_size*patch_size*out_channels.
-        self.linear = eqx.nn.Linear(embed_dim, patch_size * patch_size * out_channels, key=k1)
-        self.adaLN_modulation = eqx.nn.MLP(in_size=embed_dim, out_size=2 * embed_dim, width_size=embed_dim, depth=1, key=k2)
+        self.linear = eqx.nn.Linear(
+            embed_dim, patch_size * patch_size * out_channels, key=k1
+        )
+        self.adaLN_modulation = eqx.nn.MLP(
+            in_size=embed_dim,
+            out_size=2 * embed_dim,
+            width_size=embed_dim,
+            depth=1,
+            key=k2,
+        )
         self.patch_size = patch_size
         self.out_channels = out_channels
 
@@ -242,36 +287,69 @@ class DiT(eqx.Module):
         num_classes: int,
         learn_sigma: bool,
         *,
-        key
+        key,
     ):
         # img_size: (C, H, W)
         c, h, w = img_size
-        total_keys = depth + 6  # keys for time_proj, patch_embed, pos_embed, patch_unembed, label_embed, final_layer, plus one per block.
+        total_keys = (
+            depth + 6
+        )  # keys for time_proj, patch_embed, pos_embed, patch_unembed, label_embed, final_layer, plus one per block.
         keys = jr.split(key, total_keys)
-        k_time, k_patch_embed, k_pos, k_patch_unembed, k_label, k_final, *k_blocks = keys
+        (
+            k_time,
+            k_patch_embed,
+            k_pos,
+            k_patch_unembed,
+            k_label,
+            k_final,
+            *k_blocks,
+        ) = keys
 
-        self.patch_embed = PatchEmbed(channels=c, embed_dim=embed_dim, patch_size=patch_size, img_size=img_size, key=k_patch_embed)
+        self.patch_embed = PatchEmbed(
+            channels=c,
+            embed_dim=embed_dim,
+            patch_size=patch_size,
+            img_size=img_size,
+            key=k_patch_embed,
+        )
         # When learn_sigma is True, effective out_channels = in_channels * 2.
         effective_channels = in_channels * 2 if learn_sigma else in_channels
         # Use the modified PatchUnembed (which simply rearranges tokens) with effective channels.
-        self.patch_unembed = PatchUnembed(channels=effective_channels, patch_size=patch_size, img_size=img_size)
+        self.patch_unembed = PatchUnembed(
+            channels=effective_channels, patch_size=patch_size, img_size=img_size
+        )
         self.num_patches = self.patch_embed.num_patches
         self.pos_embed = LearnablePositionalEmb(self.num_patches, embed_dim, key=k_pos)
 
         self.time_emb = SinusoidalTimeEmb(time_emb_dim)
-        self.time_proj = eqx.nn.MLP(in_size=time_emb_dim, out_size=embed_dim, width_size=2 * embed_dim, depth=2, key=k_time)
+        self.time_proj = eqx.nn.MLP(
+            in_size=time_emb_dim,
+            out_size=embed_dim,
+            width_size=2 * embed_dim,
+            depth=2,
+            key=k_time,
+        )
 
-        self.label_embed = LabelEmbedder(num_classes, embed_dim, dropout_rate, key=k_label)
+        self.label_embed = LabelEmbedder(
+            num_classes, embed_dim, dropout_rate, key=k_label
+        )
 
         # Build transformer blocks.
-        self.blocks = [DiTBlock(embed_dim, n_heads, mlp_ratio, dropout_rate, key=k_blocks[i]) for i in range(depth)]
-        self.final_layer = DiTFinalLayer(embed_dim, patch_size, effective_channels, key=k_final)
+        self.blocks = [
+            DiTBlock(embed_dim, n_heads, mlp_ratio, dropout_rate, key=k_blocks[i])
+            for i in range(depth)
+        ]
+        self.final_layer = DiTFinalLayer(
+            embed_dim, patch_size, effective_channels, key=k_final
+        )
 
         self.embed_dim = embed_dim
         self.patch_size = patch_size
         self.out_channels = effective_channels
 
-    def _forward(self, t: float, x: jnp.ndarray, label: jnp.ndarray, train: bool, *, key=None) -> jnp.ndarray:
+    def _forward(
+        self, t: float, x: jnp.ndarray, label: jnp.ndarray, train: bool, *, key=None
+    ) -> jnp.ndarray:
         tokens = self.patch_embed(x)  # (num_patches, embed_dim)
         tokens = self.pos_embed(tokens)  # add positional information
 
@@ -295,13 +373,17 @@ class DiT(eqx.Module):
         out_tokens = self.final_layer(tokens, cond)
         return out_tokens
 
-    def __call__(self, t: float, x: jnp.ndarray, label: jnp.ndarray, train: bool, *, key=None) -> jnp.ndarray:
+    def __call__(
+        self, t: float, x: jnp.ndarray, label: jnp.ndarray, train: bool, *, key=None
+    ) -> jnp.ndarray:
         """
         If x is batched (shape (B, C, H, W)), vectorize over the batch dimension.
         """
         if x.ndim == 4:
+
             def single_forward(sample, lab, key):
                 return self._forward(t, sample, lab, train, key=key)
+
             if key is not None:
                 keys = jr.split(key, x.shape[0])
                 out_tokens = jax.vmap(single_forward)(x, label, keys)
@@ -343,7 +425,7 @@ def test_dit_forward():
         time_emb_dim=time_emb_dim,
         num_classes=num_classes,
         learn_sigma=learn_sigma,
-        key=key
+        key=key,
     )
 
     # Create a dummy input image (C, H, W)
@@ -355,8 +437,10 @@ def test_dit_forward():
     out = model(t, dummy_img, dummy_label, train=False, key=jr.PRNGKey(42))
     expected_channels = in_channels * 2 if learn_sigma else in_channels
     expected_shape = (expected_channels, img_size[1], img_size[2])
-    assert out.shape == expected_shape, f"Expected shape {expected_shape}, got {out.shape}"
+    assert (
+        out.shape == expected_shape
+    ), f"Expected shape {expected_shape}, got {out.shape}"
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     test_dit_forward()

@@ -42,5 +42,5 @@ __all__ = [
     "generate_synthetic_time_series",
     "ConvTimeUNet",
     "DiffusionTransformer1D",
-    "DiT"
+    "DiT",
 ]

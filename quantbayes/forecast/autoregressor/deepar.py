@@ -61,7 +61,9 @@ class DeepAR(nn.Module):
         """
         mu, sigma = self.forward(x)  # each (B, T)
         # Gaussian NLL
-        loss = 0.5 * torch.log(2 * torch.pi * sigma**2) + (y - mu) ** 2 / (2 * sigma**2)
+        loss = 0.5 * torch.log(2 * torch.pi * sigma**2) + (y - mu) ** 2 / (
+            2 * sigma**2
+        )
         return loss.mean()
 
     def predict(self, x, pred_steps=1):

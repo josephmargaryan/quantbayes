@@ -249,9 +249,11 @@ if __name__ == "__main__":
     print(f"loss: {loss}")
     classifier.visualize(X=X_test, y=y_test, num_classes=3, features=(0, 1))
     # Compute PAC-Bayesian bound for MCMC
-    bound = BayesianAnalysis(len(X_train), delta=0.05, 
-                             task_type="multiclass", inference_type="mcmc",
-                             posterior_samples=mcmc)
-    bound.compute_pac_bayesian_bound(predictions=probabilities,
-                                     y_true=y_test
-                                     )
+    bound = BayesianAnalysis(
+        len(X_train),
+        delta=0.05,
+        task_type="multiclass",
+        inference_type="mcmc",
+        posterior_samples=mcmc,
+    )
+    bound.compute_pac_bayesian_bound(predictions=probabilities, y_true=y_test)

@@ -1,6 +1,6 @@
 from .base import Module
 
-from .layers import (  
+from .layers import (
     Linear,
     FFTLinear,
     FFTDirectPriorLinear,

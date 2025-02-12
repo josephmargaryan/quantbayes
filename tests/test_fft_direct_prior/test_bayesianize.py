@@ -4,7 +4,13 @@ import jax.numpy as jnp
 import equinox as eqx
 import numpyro
 import numpyro.distributions as dist
-from quantbayes.stochax.utils import bayesianize, prior_fn, plot_fft_spectrum, visualize_circulant_kernel, FFTDirectPriorLinear
+from quantbayes.stochax.utils import (
+    bayesianize,
+    prior_fn,
+    plot_fft_spectrum,
+    visualize_circulant_kernel,
+    FFTDirectPriorLinear,
+)
 from quantbayes.bnn.utils import BayesianAnalysis
 from quantbayes import bnn, fake_data
 from sklearn.model_selection import train_test_split
@@ -16,13 +22,16 @@ class MyDeterministicNet(eqx.Module):
 
     def __init__(self, in_features, *, key):
         k1, k2 = jr.split(key, 2)
-        self.layer1 = FFTDirectPriorLinear(in_features=in_features, key=k1, init_scale=1.0)
+        self.layer1 = FFTDirectPriorLinear(
+            in_features=in_features, key=k1, init_scale=1.0
+        )
         self.layer2 = eqx.nn.Linear(in_features=in_features, out_features=1, key=k2)
-    
+
     def __call__(self, x):
         x = self.layer1(x)
         x = jax.nn.tanh(x)
         return self.layer2(x)
+
 
 # --- Bayesian network that bayesianizes the deterministic network ---
 class MyBayesianNet(bnn.Module):
@@ -65,18 +74,21 @@ model.visualize(X_test, y_test, posterior="likelihood", feature_index=0)
 # Obtain predictions and compute bounds.
 posterior_preds = model.predict(X_test, val_key, posterior="logits")
 posterior_samples = model.get_samples
-bound = BayesianAnalysis(num_samples=len(X_train), 
-                         delta=0.05,
-                         task_type="regression",
-                         inference_type="mcmc",
-                         posterior_samples=posterior_samples)
-bound.compute_pac_bayesian_bound(predictions=posterior_preds,
-                                 y_true=y_test,
-                                 prior_mean=0.0,
-                                 prior_std=1.0)
+bound = BayesianAnalysis(
+    num_samples=len(X_train),
+    delta=0.05,
+    task_type="regression",
+    inference_type="mcmc",
+    posterior_samples=posterior_samples,
+)
+bound.compute_pac_bayesian_bound(
+    predictions=posterior_preds, y_true=y_test, prior_mean=0.0, prior_std=1.0
+)
 
 # --- Trigger a forward pass on the FFT layer ---
-_ = model.fft_layer(X_test[:1])  # Ensure the FFT layer computes and stores its Fourier coefficients.
+_ = model.fft_layer(
+    X_test[:1]
+)  # Ensure the FFT layer computes and stores its Fourier coefficients.
 fft_full = model.fft_layer.get_fourier_coeffs()  # Now this should be concrete.
 fig1 = plot_fft_spectrum(fft_full, show=True)
 fig2 = visualize_circulant_kernel(fft_full, show=True)

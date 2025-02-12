@@ -113,7 +113,7 @@ def visualize_binary_torch(
     feature_indices: tuple = (0, 1),
     unique_threshold: int = 10,
     resolution: int = 100,
-    title: str = "Binary Decision Boundary"
+    title: str = "Binary Decision Boundary",
 ):
     """
     Visualize a binary classification decision boundary with automatic checks for
@@ -164,8 +164,7 @@ def visualize_binary_torch(
         x_min, x_max = X_np[:, f1].min() - 0.5, X_np[:, f1].max() + 0.5
         y_min, y_max = X_np[:, f2].min() - 0.5, X_np[:, f2].max() + 0.5
         xx, yy = np.meshgrid(
-            np.linspace(x_min, x_max, resolution),
-            np.linspace(y_min, y_max, resolution)
+            np.linspace(x_min, x_max, resolution), np.linspace(y_min, y_max, resolution)
         )
         n_features = X_np.shape[1]
         # Build grid: for the two visualized features use the mesh grid; for others use their mean.
@@ -184,7 +183,7 @@ def visualize_binary_torch(
 
         plt.figure(figsize=(8, 6))
         plt.contourf(xx, yy, class_preds, alpha=0.3, cmap=plt.cm.Paired)
-        plt.scatter(X_np[:, f1], X_np[:, f2], c=y_np, edgecolor='k', cmap=plt.cm.Paired)
+        plt.scatter(X_np[:, f1], X_np[:, f2], c=y_np, edgecolor="k", cmap=plt.cm.Paired)
         plt.xlabel(f"Feature {f1}")
         plt.ylabel(f"Feature {f2}")
         plt.title(title)
@@ -222,7 +221,9 @@ def visualize_binary_torch(
             probs = model_predict(grid_arr)
             class_preds = (probs > 0.5).astype(np.int32)
             ax.plot(cont_grid, class_preds, label="Decision boundary")
-            ax.scatter(X_np[mask, cont_idx], y_np[mask], c='k', edgecolors='w', label="Data")
+            ax.scatter(
+                X_np[mask, cont_idx], y_np[mask], c="k", edgecolors="w", label="Data"
+            )
             ax.set_title(f"Feature {cat_idx} = {cat}")
             ax.set_xlabel(f"Feature {cont_idx}")
             ax.set_ylabel("Predicted class")
@@ -233,7 +234,9 @@ def visualize_binary_torch(
     # --- Case 3: Both features categorical ---
     else:
         plt.figure(figsize=(8, 6))
-        plt.scatter(X_np[:, f1], X_np[:, f2], c=y_np, cmap=plt.cm.Paired, edgecolors='k')
+        plt.scatter(
+            X_np[:, f1], X_np[:, f2], c=y_np, cmap=plt.cm.Paired, edgecolors="k"
+        )
         plt.xlabel(f"Feature {f1}")
         plt.ylabel(f"Feature {f2}")
         plt.title(title + " (Both features categorical)")

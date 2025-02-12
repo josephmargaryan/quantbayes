@@ -4,7 +4,11 @@ import jax.random as jr
 import jax.numpy as jnp
 import numpyro.distributions as dist
 
-from quantbayes.fake_data import generate_regression_data, generate_binary_classification_data, generate_multiclass_classification_data
+from quantbayes.fake_data import (
+    generate_regression_data,
+    generate_binary_classification_data,
+    generate_multiclass_classification_data,
+)
 from sklearn.model_selection import train_test_split
 from quantbayes import bnn
 
@@ -80,7 +84,9 @@ model.visualize(X_test, y_test, posterior="logits", features=(1, 2))
 # MULTICLASS
 ##############################################################
 
-df = generate_multiclass_classification_data(n_categorical=1, n_continuous=2, n_classes=3)
+df = generate_multiclass_classification_data(
+    n_categorical=1, n_continuous=2, n_classes=3
+)
 X, y = df.drop("target", axis=1), df["target"]
 X, y = jnp.array(X), jnp.array(y)
 X_train, X_test, y_train, y_test = train_test_split(
