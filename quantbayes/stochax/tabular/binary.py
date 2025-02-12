@@ -143,63 +143,137 @@ class BinaryClassificationModel:
         self,
         model,
         state,
-        X_test,
-        y_test,
-        feature_indices=(0, 1),
-        title="Decision Boundary",
+        X_test: jnp.ndarray,
+        y_test: jnp.ndarray,
+        feature_indices: tuple = (0, 1),
+        unique_threshold: int = 10,
+        resolution: int = 200,
+        title: str = "Binary Decision Boundary"
     ):
         """
-        Illustrate a 2D decision boundary by scanning across a grid for feature_indices.
-        Expects the model to output raw logits, which we convert to a predicted class.
+        Visualize the decision boundary for a binary classifier.
+        Automatically checks if the two selected features are continuous or categorical.
+        
+        Parameters
+        ----------
+        model : Equinox model
+            A trained binary classifier whose forward pass returns raw logits.
+        state : any
+            The model's state.
+        X_test : jnp.ndarray
+            Input features of shape (n_samples, n_features).
+        y_test : jnp.ndarray
+            Binary labels (n_samples,).
+        feature_indices : tuple, optional
+            The two feature indices to visualize.
+        unique_threshold : int, optional
+            Maximum number of unique values for a feature to be considered categorical.
+        resolution : int, optional
+            Grid resolution for continuous features.
+        title : str, optional
+            Plot title.
         """
+        # Convert inputs to NumPy for plotting and inspection.
+        X_np = np.array(X_test)
+        y_np = np.array(y_test)
         f1, f2 = feature_indices
-        x_min, x_max = X_test[:, f1].min() - 0.5, X_test[:, f1].max() + 0.5
-        y_min, y_max = X_test[:, f2].min() - 0.5, X_test[:, f2].max() + 0.5
+        unique_f1 = np.unique(X_np[:, f1])
+        unique_f2 = np.unique(X_np[:, f2])
+        is_f1_cat = len(unique_f1) < unique_threshold
+        is_f2_cat = len(unique_f2) < unique_threshold
 
-        xx, yy = np.meshgrid(
-            np.linspace(x_min, x_max, 200), np.linspace(y_min, y_max, 200)
-        )
-        num_features = X_test.shape[1]
-
-        # Build grid input
-        X_grid = []
-        for i in range(num_features):
-            if i == f1:
-                X_grid.append(xx.ravel())
-            elif i == f2:
-                X_grid.append(yy.ravel())
-            else:
-                X_grid.append(np.full(xx.ravel().shape, float(X_test[:, i].mean())))
-        X_grid = np.stack(X_grid, axis=1)
-        X_grid_jnp = jnp.array(X_grid)
-
-        # Evaluate model in inference mode
+        # Create an inference version of the model.
         inf_model = eqx.tree_inference(model, value=True)
 
-        def forward_one(x):
-            logits, _ = inf_model(x, state=state, key=None)
-            p = jax.nn.sigmoid(logits)
-            return (p > 0.5).astype(jnp.int32)
+        def predict_batch(X_input, key):
+            # Split the key for each sample.
+            keys = jr.split(key, X_input.shape[0])
+            def forward_one(x, subkey):
+                logits, _ = inf_model(x, state=state, key=subkey)
+                return logits
+            logits = jax.vmap(forward_one, in_axes=(0, 0))(X_input, keys)
+            # Apply sigmoid to get probabilities.
+            probs = jax.nn.sigmoid(logits)
+            return probs
 
-        preds_grid = jax.vmap(forward_one)(X_grid_jnp)
-        preds_grid = np.array(preds_grid).reshape(xx.shape)
+        # --- Case 1: Both features continuous ---
+        if not is_f1_cat and not is_f2_cat:
+            x_min, x_max = X_np[:, f1].min() - 0.5, X_np[:, f1].max() + 0.5
+            y_min, y_max = X_np[:, f2].min() - 0.5, X_np[:, f2].max() + 0.5
+            xx, yy = np.meshgrid(
+                np.linspace(x_min, x_max, resolution),
+                np.linspace(y_min, y_max, resolution)
+            )
+            n_features = X_np.shape[1]
+            grid_list = []
+            for i in range(n_features):
+                if i == f1:
+                    grid_list.append(xx.ravel())
+                elif i == f2:
+                    grid_list.append(yy.ravel())
+                else:
+                    grid_list.append(np.full(xx.ravel().shape, X_np[:, i].mean()))
+            grid_arr = np.stack(grid_list, axis=1)
+            grid_key = jr.PRNGKey(42)
+            probs = predict_batch(jnp.array(grid_arr), grid_key)
+            # For binary classification, threshold probability at 0.5.
+            class_preds = (np.array(probs) > 0.5).astype(np.int32).reshape(xx.shape)
+            plt.figure(figsize=(8, 6))
+            plt.contourf(xx, yy, class_preds, alpha=0.3, cmap=plt.cm.Paired)
+            plt.scatter(X_np[:, f1], X_np[:, f2], c=y_np, edgecolor="k", cmap=plt.cm.Paired)
+            plt.xlabel(f"Feature {f1}")
+            plt.ylabel(f"Feature {f2}")
+            plt.title(title)
+            plt.grid(True)
+            plt.show()
 
-        # Plot decision boundary
-        plt.figure(figsize=(8, 6))
-        plt.contourf(
-            xx, yy, preds_grid, alpha=0.3, levels=[-0.5, 0.5, 1.5], cmap=plt.cm.Paired
-        )
-        plt.scatter(
-            np.array(X_test[:, f1]),
-            np.array(X_test[:, f2]),
-            c=np.array(y_test),
-            edgecolors="k",
-        )
-        plt.xlabel(f"Feature {f1}")
-        plt.ylabel(f"Feature {f2}")
-        plt.title(title)
-        plt.show()
+        # --- Case 2: One feature categorical, one continuous ---
+        elif (is_f1_cat and not is_f2_cat) or (not is_f1_cat and is_f2_cat):
+            # Let the categorical feature be the one with fewer unique values.
+            if is_f1_cat:
+                cat_idx, cont_idx = f1, f2
+            else:
+                cat_idx, cont_idx = f2, f1
+            unique_cats = np.unique(X_np[:, cat_idx])
+            num_cats = len(unique_cats)
+            fig, axes = plt.subplots(1, num_cats, figsize=(5 * num_cats, 5), squeeze=False)
+            for j, cat in enumerate(unique_cats):
+                ax = axes[0, j]
+                mask = X_np[:, cat_idx] == cat
+                cont_vals = X_np[:, cont_idx]
+                c_min, c_max = cont_vals.min() - 0.5, cont_vals.max() + 0.5
+                cont_grid = np.linspace(c_min, c_max, resolution)
+                n_features = X_np.shape[1]
+                grid_list = []
+                for i in range(n_features):
+                    if i == cont_idx:
+                        grid_list.append(cont_grid)
+                    elif i == cat_idx:
+                        grid_list.append(np.full(cont_grid.shape, cat))
+                    else:
+                        grid_list.append(np.full(cont_grid.shape, X_np[:, i].mean()))
+                grid_arr = np.stack(grid_list, axis=1)
+                grid_key = jr.PRNGKey(42)
+                probs = predict_batch(jnp.array(grid_arr), grid_key)
+                class_preds = (np.array(probs) > 0.5).astype(np.int32)
+                ax.plot(cont_grid, class_preds, label="Decision boundary")
+                ax.scatter(X_np[mask, cont_idx], y_np[mask], c="k", edgecolors="w", label="Data")
+                ax.set_title(f"Feature {cat_idx} = {cat}")
+                ax.set_xlabel(f"Feature {cont_idx}")
+                ax.set_ylabel("Predicted class")
+                ax.legend()
+            plt.suptitle(title)
+            plt.show()
 
+        # --- Case 3: Both features categorical ---
+        else:
+            plt.figure(figsize=(8, 6))
+            plt.scatter(X_np[:, f1], X_np[:, f2], c=y_np, cmap=plt.cm.Paired, edgecolors="k")
+            plt.xlabel(f"Feature {f1}")
+            plt.ylabel(f"Feature {f2}")
+            plt.title(title + " (Both features categorical)")
+            plt.grid(True)
+            plt.show()
 
 if __name__ == "__main__":
     import jax
@@ -211,7 +285,7 @@ if __name__ == "__main__":
 
     from quantbayes.fake_data import generate_binary_classification_data
 
-    df = generate_binary_classification_data()
+    df = generate_binary_classification_data(n_categorical=1, n_continuous=1)
     X, y = df.drop("target", axis=1), df["target"]
     X, y = jnp.array(X), jnp.array(y)
     X_train, X_test, y_train, y_test = train_test_split(
@@ -220,20 +294,23 @@ if __name__ == "__main__":
 
     # Simple eqx model that outputs raw logits
     class SimpleBinaryModel(eqx.Module):
-        w: jnp.ndarray
-        b: jnp.ndarray
+        fc1: eqx.nn.Linear
+        fc2: eqx.nn.Linear
+        fc3: eqx.nn.Linear
 
-        def __init__(self, in_features, key):
-            k1, _ = jr.split(key)
-            self.w = jr.normal(k1, (in_features,))
-            self.b = jnp.array(0.0)
+        def __init__(self, input_dim, hidden_dim, key):
+            k1, k2, k3 = jr.split(key, 3)
+            self.fc1 = eqx.nn.Linear(input_dim, hidden_dim, key=k1)
+            self.fc2 = eqx.nn.Linear(hidden_dim, hidden_dim, key=k2)
+            self.fc3 = eqx.nn.Linear(hidden_dim, 1, key=k3)
 
         def __call__(self, x, state=None, *, key=None):
-            # Return raw logits (scalar) => shape ()
-            logits = jnp.dot(self.w, x) + self.b
-            return logits, state
+            x = jax.nn.relu(self.fc1(x))
+            x = jax.nn.relu(self.fc2(x))
+            pred = self.fc3(x).squeeze()
+            return pred, state
 
-    model = SimpleBinaryModel(X.shape[1], jr.PRNGKey(1))
+    model = SimpleBinaryModel(X.shape[1], 32, jr.PRNGKey(1))
     state = None  # no BN/Dropout => no eqx.nn.State
 
     # Create the training wrapper

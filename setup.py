@@ -13,6 +13,7 @@ setup(
         "numpyro",
         "torch",
         "matplotlib",
+        "seaborn",
         "flax",
         "pandas",
         "optax",

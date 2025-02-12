@@ -5,6 +5,7 @@ jax
 torch
 scikit-learn
 matplotlib
+seaborn
 funsor
 diffrax
 optax

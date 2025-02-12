@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import matplotlib.pyplot as plt
-from typing import Optional
+import seaborn as sns
 
 
 # ----------------------------------------------------------------
@@ -24,7 +24,7 @@ class MLPRegression(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)  # shape: (batch_size, 1)
+        return self.net(x).squeeze()  # shape: (batch_size, 1)
 
 
 # ----------------------------------------------------------------
@@ -108,79 +108,175 @@ def train_model(
     return model
 
 
-# ----------------------------------------------------------------
-# 3. Deterministic Evaluation
-# ----------------------------------------------------------------
-def evaluate_model(
-    model: nn.Module,
-    X_val: np.ndarray,
-    y_val: np.ndarray,
-    feature: Optional[int] = 0,
-) -> dict:
+
+def visualize_regression(
+    model,
+    X: np.ndarray,
+    y: np.ndarray,
+    grid_points: int = 100,
+    unique_threshold: int = 10,
+):
     """
-    Perform deterministic evaluation for regression.
-    Plots predictions vs. one specified feature (x-axis).
-
-    Returns a dictionary with predictions, MSE, etc.
+    Unified visualization for deterministic regression models.
+    Produces separate visualizations for a continuous feature and a categorical feature
+    if both are available. Otherwise, visualizes the available type.
     """
-    # Convert validation data to torch Tensors
-    X_val_t = torch.tensor(X_val, dtype=torch.float32)
-    y_val_t = torch.tensor(y_val, dtype=torch.float32).squeeze(-1)  # shape: (N,)
 
-    # Deterministic forward pass
-    model.eval()
-    with torch.no_grad():
-        preds = model(X_val_t).squeeze(-1)  # shape: (N,)
-    mean_preds = preds.cpu().numpy()
+    # Ensure X and y are NumPy arrays.
+    X_np = np.asarray(X)
+    y_np = np.asarray(y).squeeze()
+    n_samples, n_features = X_np.shape
 
-    # Since we're doing a single forward pass, uncertainty is not estimated.
-    std_preds = np.zeros_like(mean_preds)
+    # Classify features.
+    continuous_features = []
+    categorical_features = []
+    for i in range(n_features):
+        unique_vals = np.unique(X_np[:, i])
+        if len(unique_vals) < unique_threshold:
+            categorical_features.append(i)
+        else:
+            continuous_features.append(i)
 
-    # Compute MSE with respect to predictions
-    mse_val = np.mean((mean_preds - y_val_t.cpu().numpy()) ** 2)
+    # Helper function for model prediction.
+    def model_predict(x_np):
+        # x_np should be of shape (n_samples, n_features)
+        x_tensor = torch.tensor(x_np, dtype=torch.float32)
+        model.eval()
+        with torch.no_grad():
+            preds = model(x_tensor).squeeze(-1).cpu().numpy()
+        return np.atleast_1d(preds)
 
-    # Visualization: Plot predictions vs. one feature
-    X_feature = X_val[:, feature]  # (N,)
-    idx_sorted = np.argsort(X_feature)
-    sorted_x = X_feature[idx_sorted]
-    sorted_mean = mean_preds[idx_sorted]
-    sorted_y = y_val_t.cpu().numpy()[idx_sorted]
+    # Decide on which features to visualize.
+    cont_idx = continuous_features[0] if continuous_features else None
+    cat_idx = categorical_features[0] if categorical_features else None
 
-    plt.figure(figsize=(8, 5))
-    plt.scatter(sorted_x, sorted_y, alpha=0.6, label="True", color="black")
-    plt.plot(sorted_x, sorted_mean, label="Prediction", color="blue")
-    # Optionally, you could fill a zero-width band for std; here it is omitted since std is zero.
-    plt.xlabel(f"Feature {feature}")
-    plt.ylabel("Target")
-    plt.title("Regression Predictions")
-    plt.legend()
-    plt.grid(True)
+    # Decide on subplot grid.
+    # Cases:
+    #   - Both types: use 2 rows, 2 columns (each feature gets its own PDP and ICE).
+    #   - Only one type: use 1 row, 2 columns.
+    if cont_idx is not None and cat_idx is not None:
+        nrows = 2
+    else:
+        nrows = 1
+    ncols = 2
+
+    fig, axes = plt.subplots(nrows, ncols, figsize=(ncols * 6, nrows * 5))
+    # If axes is 1D, convert it to 2D for consistent indexing.
+    if nrows == 1:
+        axes = np.expand_dims(axes, axis=0)
+
+    # -------------------------------
+    # Continuous Feature Visualization
+    # -------------------------------
+    if cont_idx is not None:
+        cont_vals = X_np[:, cont_idx]
+        cont_min = np.min(cont_vals)
+        cont_max = np.max(cont_vals)
+        cont_grid = np.linspace(cont_min, cont_max, grid_points)
+
+        # PDP for continuous feature.
+        baseline = np.mean(X_np, axis=0)
+        X_pdp = np.tile(baseline, (grid_points, 1))
+        X_pdp[:, cont_idx] = cont_grid
+        pdp_preds = model_predict(X_pdp)
+
+        ax_pdp = axes[0, 0]
+        # KDE plot for data density.
+        sns.kdeplot(
+            x=cont_vals,
+            y=y_np,
+            ax=ax_pdp,
+            cmap="Blues",
+            fill=True,
+            alpha=0.5,
+            thresh=0.05,
+        )
+        ax_pdp.plot(cont_grid, pdp_preds, color="red", label="PDP")
+        ax_pdp.set_xlabel(f"Feature {cont_idx} (Continuous)")
+        ax_pdp.set_ylabel("Target")
+        ax_pdp.set_title("Continuous PDP")
+        ax_pdp.legend()
+
+        # ICE plot for continuous feature.
+        rng = np.random.default_rng(42)
+        ice_indices = rng.choice(n_samples, size=min(20, n_samples), replace=False)
+        ax_ice = axes[0, 1]
+        for idx in ice_indices:
+            sample = X_np[idx, :].copy()
+            X_ice = np.tile(sample, (grid_points, 1))
+            X_ice[:, cont_idx] = cont_grid
+            ice_preds = model_predict(X_ice)
+            ax_ice.plot(cont_grid, ice_preds, alpha=0.5)
+        ax_ice.set_xlabel(f"Feature {cont_idx} (Continuous)")
+        ax_ice.set_ylabel("Target")
+        ax_ice.set_title("Continuous ICE")
+    else:
+        # Hide continuous subplots if no continuous feature exists.
+        for ax in axes[0]:
+            ax.axis("off")
+
+    # -------------------------------
+    # Categorical Feature Visualization
+    # -------------------------------
+    if cat_idx is not None:
+        cat_vals = X_np[:, cat_idx]
+        unique_cats = np.unique(cat_vals)
+
+        # Categorical PDP: bar plot.
+        baseline = np.mean(X_np, axis=0)
+        cat_pdp_means = []
+        for cat in unique_cats:
+            sample = baseline.copy()
+            sample[cat_idx] = cat
+            pred = model_predict(sample[None, :])[0]
+            cat_pdp_means.append(pred)
+        # Place categorical PDP in second row, first column (if both types exist)
+        # or first row if only categorical exists.
+        ax_pdp_cat = axes[1, 0] if nrows == 2 else axes[0, 0]
+        ax_pdp_cat.bar(unique_cats, cat_pdp_means, alpha=0.7)
+        ax_pdp_cat.set_xlabel(f"Feature {cat_idx} (Categorical)")
+        ax_pdp_cat.set_ylabel("Predicted Target")
+        ax_pdp_cat.set_title("Categorical PDP")
+
+        # Categorical ICE: box plot.
+        cat_predictions = {}
+        for cat in unique_cats:
+            mask = (cat_vals == cat)
+            X_cat = X_np[mask, :]
+            if X_cat.shape[0] > 0:
+                preds_cat = model_predict(X_cat)
+                cat_predictions[cat] = preds_cat
+        ax_ice_cat = axes[1, 1] if nrows == 2 else axes[0, 1]
+        box_data = [cat_predictions[cat] for cat in unique_cats if cat in cat_predictions]
+        ax_ice_cat.boxplot(box_data, tick_labels=unique_cats)
+        ax_ice_cat.set_xlabel(f"Feature {cat_idx} (Categorical)")
+        ax_ice_cat.set_ylabel("Predicted Target")
+        ax_ice_cat.set_title("Categorical ICE")
+    else:
+        # Hide categorical subplots if no categorical feature exists.
+        if nrows == 2:
+            for ax in axes[1]:
+                ax.axis("off")
+
+    plt.tight_layout()
     plt.show()
-
-    return {
-        "mean_predictions": mean_preds,
-        "std_predictions": std_preds,
-        "mse": mse_val,
-    }
 
 
 # ----------------------------------------------------------------
 # 4. Example Test
 # ----------------------------------------------------------------
 if __name__ == "__main__":
-    # Synthetic Data: y = 3x + noise
-    np.random.seed(42)
-    N = 200
-    X_all = np.random.uniform(-5, 5, (N, 1)).astype(np.float32)
-    y_all = (3.0 * X_all + np.random.normal(0, 2, (N, 1))).astype(np.float32)
+    from quantbayes.fake_data import generate_regression_data
+    from sklearn.model_selection import train_test_split
 
-    # Split
-    train_size = int(0.8 * N)
-    X_train, X_val = X_all[:train_size], X_all[train_size:]
-    y_train, y_val = y_all[:train_size], y_all[train_size:]
+    df = generate_regression_data(n_categorical=1, n_continuous=2)
+
+    X, y = df.drop("target", axis=1), df["target"]
+    X, y = torch.tensor(X.values, dtype=torch.float32), torch.tensor(y.values, dtype=torch.long)
+    X_train, X_val, y_train, y_val = train_test_split(X.clone(), y.clone(), test_size=0.2, random_state=24)
 
     # Define model
-    model = MLPRegression(input_dim=1, hidden_dim=32)
+    model = MLPRegression(input_dim=X_train.shape[-1], hidden_dim=32)
 
     # Train
     model = train_model(
@@ -194,6 +290,4 @@ if __name__ == "__main__":
         learning_rate=1e-3,
     )
 
-    # Evaluate deterministically
-    results = evaluate_model(model, X_val, y_val, feature=0)
-    print("Final Regression MSE:", results["mse"])
+    visualize_regression(model, X_val, y_val)

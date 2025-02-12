@@ -5,7 +5,6 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import matplotlib.pyplot as plt
-from typing import Optional, Tuple
 
 
 # ----------------------------------------------------------------
@@ -106,123 +105,149 @@ def train_model(
     return model
 
 
-# ----------------------------------------------------------------
-# 3. Deterministic Evaluation and Decision Boundary Visualization
-# ----------------------------------------------------------------
-def evaluate_model(
-    model: nn.Module,
-    X_val: np.ndarray,
-    y_val: np.ndarray,
-    num_classes: int,
-    features: Optional[Tuple[int, int]] = (0, 1),
+def visualize_multiclass_torch(
+    model: torch.nn.Module,
+    X: np.ndarray,
+    y: np.ndarray,
+    feature_indices: tuple = (0, 1),
+    unique_threshold: int = 10,
+    resolution: int = 100,
+    title: str = "Multiclass Decision Boundary"
 ):
     """
-    Perform deterministic evaluation for multiclass classification.
-    Plots 2D decision boundary and an uncertainty measure (predictive entropy).
+    Visualize a multiclass classification decision boundary with automatic checks for
+    continuous vs. categorical features.
+
+    Parameters
+    ----------
+    model : torch.nn.Module
+        A trained multiclass classifier that outputs raw logits.
+    X : np.ndarray
+        Input features of shape (n_samples, n_features).
+    y : np.ndarray
+        True class labels (n_samples,).
+    feature_indices : tuple of int, optional
+        Indices of the two features to visualize.
+    unique_threshold : int, optional
+        Maximum number of unique values for a feature to be considered categorical.
+    resolution : int, optional
+        Number of points in the grid (for continuous features).
+    title : str, optional
+        Title for the plot.
     """
-    X_val_t = torch.tensor(X_val, dtype=torch.float32)
+    X_np = np.asarray(X)
+    y_np = np.asarray(y)
+    f1, f2 = feature_indices
 
-    # Set model to evaluation mode for deterministic predictions
+    unique_f1 = np.unique(X_np[:, f1])
+    unique_f2 = np.unique(X_np[:, f2])
+    is_f1_cat = len(unique_f1) < unique_threshold
+    is_f2_cat = len(unique_f2) < unique_threshold
+
     model.eval()
-    with torch.no_grad():
-        logits = model(X_val_t)
-        probs = torch.softmax(logits, dim=-1)  # (N, num_classes)
-        mean_probs = probs.cpu().numpy()
+    device = next(model.parameters()).device
 
-    pred_classes = np.argmax(mean_probs, axis=-1)
-    accuracy = np.mean(pred_classes == y_val)
+    def model_predict(X_input):
+        with torch.no_grad():
+            X_tensor = torch.tensor(X_input, dtype=torch.float32, device=device)
+            logits = model(X_tensor)  # shape: (n_samples, num_classes)
+            probs = torch.softmax(logits, dim=-1)
+        return probs.cpu().numpy()
 
-    # Create grid for decision boundary visualization (2D)
-    f1, f2 = features
-    x_min, x_max = X_val[:, f1].min() - 0.5, X_val[:, f1].max() + 0.5
-    y_min, y_max = X_val[:, f2].min() - 0.5, X_val[:, f2].max() + 0.5
+    # --- Case 1: Both features continuous ---
+    if not is_f1_cat and not is_f2_cat:
+        x_min, x_max = X_np[:, f1].min() - 0.5, X_np[:, f1].max() + 0.5
+        y_min, y_max = X_np[:, f2].min() - 0.5, X_np[:, f2].max() + 0.5
+        xx, yy = np.meshgrid(
+            np.linspace(x_min, x_max, resolution),
+            np.linspace(y_min, y_max, resolution)
+        )
+        n_features = X_np.shape[1]
+        grid_list = []
+        for i in range(n_features):
+            if i == f1:
+                grid_list.append(xx.ravel())
+            elif i == f2:
+                grid_list.append(yy.ravel())
+            else:
+                grid_list.append(np.full(xx.ravel().shape, X_np[:, i].mean()))
+        grid_arr = np.stack(grid_list, axis=1)
+        probs = model_predict(grid_arr)
+        class_preds = np.argmax(probs, axis=-1).reshape(xx.shape)
 
-    xx, yy = np.meshgrid(
-        np.linspace(x_min, x_max, 100),
-        np.linspace(y_min, y_max, 100),
-    )
-    grid_points = np.column_stack([xx.ravel(), yy.ravel()]).astype(np.float32)
-    gp_t = torch.tensor(grid_points, dtype=torch.float32)
+        plt.figure(figsize=(8, 6))
+        plt.contourf(xx, yy, class_preds, alpha=0.3, cmap=plt.cm.Paired)
+        plt.scatter(X_np[:, f1], X_np[:, f2], c=y_np, edgecolor='k', cmap=plt.cm.Paired)
+        plt.xlabel(f"Feature {f1}")
+        plt.ylabel(f"Feature {f2}")
+        plt.title(title)
+        plt.grid(True)
+        plt.show()
 
-    with torch.no_grad():
-        logits_grid = model(gp_t)
-        probs_grid = torch.softmax(logits_grid, dim=-1).cpu().numpy()
+    # --- Case 2: One feature categorical, one continuous ---
+    elif (is_f1_cat and not is_f2_cat) or (not is_f1_cat and is_f2_cat):
+        if is_f1_cat:
+            cat_idx, cont_idx = f1, f2
+        else:
+            cat_idx, cont_idx = f2, f1
 
-    grid_pred_classes = np.argmax(probs_grid, axis=-1)
-    Z = grid_pred_classes.reshape(xx.shape)
+        unique_cats = np.unique(X_np[:, cat_idx])
+        num_cats = len(unique_cats)
+        fig, axes = plt.subplots(1, num_cats, figsize=(5 * num_cats, 5), squeeze=False)
+        for j, cat in enumerate(unique_cats):
+            ax = axes[0, j]
+            mask = X_np[:, cat_idx] == cat
+            cont_vals = X_np[:, cont_idx]
+            c_min, c_max = cont_vals.min() - 0.5, cont_vals.max() + 0.5
+            cont_grid = np.linspace(c_min, c_max, resolution)
+            n_features = X_np.shape[1]
+            grid_list = []
+            for i in range(n_features):
+                if i == cont_idx:
+                    grid_list.append(cont_grid)
+                elif i == cat_idx:
+                    grid_list.append(np.full(cont_grid.shape, cat))
+                else:
+                    grid_list.append(np.full(cont_grid.shape, X_np[:, i].mean()))
+            grid_arr = np.stack(grid_list, axis=1)
+            probs = model_predict(grid_arr)
+            class_preds = np.argmax(probs, axis=-1)
+            ax.plot(cont_grid, class_preds, label="Decision boundary")
+            ax.scatter(X_np[mask, cont_idx], y_np[mask], c='k', edgecolors='w', label="Data")
+            ax.set_title(f"Feature {cat_idx} = {cat}")
+            ax.set_xlabel(f"Feature {cont_idx}")
+            ax.set_ylabel("Predicted class")
+            ax.legend()
+        plt.suptitle(title)
+        plt.show()
 
-    # Plot decision boundary
-    plt.figure(figsize=(8, 6))
-    plt.contourf(xx, yy, Z, alpha=0.3, cmap=plt.cm.tab10)
-    plt.scatter(
-        X_val[:, f1],
-        X_val[:, f2],
-        c=y_val,
-        cmap=plt.cm.tab10,
-        edgecolor="k",
-        alpha=0.7,
-    )
-    plt.colorbar()
-    plt.title(f"Multiclass Decision Boundary (Accuracy={accuracy:.2f})")
-    plt.xlabel(f"Feature {f1}")
-    plt.ylabel(f"Feature {f2}")
-    plt.show()
-
-    # Uncertainty visualization via predictive entropy
-    # entropy = -sum(p * log(p))
-    eps = 1e-9
-    mean_entropy = -np.sum(mean_probs * np.log(mean_probs + eps), axis=-1)
-
-    plt.figure(figsize=(8, 6))
-    sc = plt.scatter(
-        X_val[:, f1],
-        X_val[:, f2],
-        c=mean_entropy,
-        cmap="viridis",
-        edgecolor="k",
-    )
-    plt.colorbar(sc, label="Predictive Entropy")
-    plt.title("Uncertainty (Entropy) in Predictions")
-    plt.xlabel(f"Feature {f1}")
-    plt.ylabel(f"Feature {f2}")
-    plt.grid(True)
-    plt.show()
-
-    return {
-        "predicted_classes": pred_classes,
-        "accuracy": accuracy,
-        "mean_probs": mean_probs,
-        "entropy": mean_entropy,
-    }
+    # --- Case 3: Both features categorical ---
+    else:
+        plt.figure(figsize=(8, 6))
+        plt.scatter(X_np[:, f1], X_np[:, f2], c=y_np, cmap=plt.cm.Paired, edgecolors='k')
+        plt.xlabel(f"Feature {f1}")
+        plt.ylabel(f"Feature {f2}")
+        plt.title(title + " (Both features categorical)")
+        plt.grid(True)
+        plt.show()
 
 
 # ----------------------------------------------------------------
 # 4. Example Test
 # ----------------------------------------------------------------
 if __name__ == "__main__":
-    # Synthetic data for 3 classes in 2D
-    np.random.seed(42)
-    N = 300
-    # Create 3 clusters
-    X_c0 = np.random.normal(loc=[-2, -2], scale=1.0, size=(N // 3, 2))
-    X_c1 = np.random.normal(loc=[2, 2], scale=1.0, size=(N // 3, 2))
-    X_c2 = np.random.normal(loc=[-2, 2], scale=1.0, size=(N // 3, 2))
+    from quantbayes.fake_data import generate_multiclass_classification_data
+    from sklearn.model_selection import train_test_split
 
-    X_all = np.vstack([X_c0, X_c1, X_c2]).astype(np.float32)
-    y_all = np.array([0] * (N // 3) + [1] * (N // 3) + [2] * (N // 3), dtype=np.int32)
+    df = generate_multiclass_classification_data(n_categorical=1, n_continuous=2)
 
-    # Shuffle the dataset
-    perm = np.random.permutation(N)
-    X_all = X_all[perm]
-    y_all = y_all[perm]
+    X, y = df.drop("target", axis=1), df["target"]
+    X, y = torch.tensor(X.values, dtype=torch.float32), torch.tensor(y.values, dtype=torch.long)
+    X_train, X_val, y_train, y_val = train_test_split(X.clone(), y.clone(), test_size=0.2, random_state=24)
 
-    # Split into training and validation sets
-    train_size = int(0.8 * N)
-    X_train, X_val = X_all[:train_size], X_all[train_size:]
-    y_train, y_val = y_all[:train_size], y_all[train_size:]
 
     num_classes = 3
-    model = MLPClassifier(input_dim=2, num_classes=num_classes, hidden_dim=32)
+    model = MLPClassifier(input_dim=X.shape[-1], num_classes=num_classes, hidden_dim=32)
 
     # Train the model
     model = train_model(
@@ -236,12 +261,4 @@ if __name__ == "__main__":
         learning_rate=1e-3,
     )
 
-    # Evaluate the model deterministically
-    results = evaluate_model(
-        model,
-        X_val,
-        y_val,
-        num_classes=num_classes,
-        features=(0, 1),
-    )
-    print("Final Accuracy:", results["accuracy"])
+    visualize_multiclass_torch(model, X_val, y_val)

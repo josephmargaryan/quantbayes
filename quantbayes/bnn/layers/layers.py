@@ -6,6 +6,7 @@ import numpyro.distributions as dist
 __all__ = [
     "Linear",
     "FFTLinear",
+    "FFTDirectPriorLinear",
     "ParticleLinear",
     "FFTParticleLinear",
     "Conv1d",
@@ -87,25 +88,38 @@ class MaxPool2d:
 
 class Linear:
     """
-    A fully connected layer with weights and biases sampled from Normal distributions.
+    A fully connected layer with weights and biases sampled from specified distributions.
 
     Transforms inputs via a linear operation: `output = X @ weights + biases`.
     """
 
-    def __init__(self, in_features: int, out_features: int, name: str = "layer"):
+    def __init__(
+        self,
+        in_features: int,
+        out_features: int,
+        name: str = "layer",
+        weight_prior_fn=lambda shape: dist.Normal(0, 1).expand(shape),
+        bias_prior_fn=lambda shape: dist.Normal(0, 1).expand(shape),
+    ):
         """
         Initializes the Linear layer.
 
         :param in_features: int
-            Number of input features (columns in the input matrix).
+            Number of input features.
         :param out_features: int
-            Number of output features (columns in the output matrix).
+            Number of output features.
         :param name: str
             Name of the layer for parameter tracking (default: "layer").
+        :param weight_prior_fn: function
+            A function that takes a shape and returns a NumPyro distribution for the weights.
+        :param bias_prior_fn: function
+            A function that takes a shape and returns a NumPyro distribution for the biases.
         """
         self.in_features = in_features
         self.out_features = out_features
         self.name = name
+        self.weight_prior_fn = weight_prior_fn
+        self.bias_prior_fn = bias_prior_fn
 
     def __call__(self, X: jnp.ndarray) -> jnp.ndarray:
         """
@@ -113,16 +127,14 @@ class Linear:
 
         :param X: jnp.ndarray
             Input array of shape `(batch_size, in_features)`.
-
         :returns: jnp.ndarray
             Output array of shape `(batch_size, out_features)`.
         """
         w = numpyro.sample(
-            f"{self.name}_w",
-            dist.Normal(0, 1).expand([self.in_features, self.out_features]),
+            f"{self.name}_w", self.weight_prior_fn([self.in_features, self.out_features])
         )
         b = numpyro.sample(
-            f"{self.name}_b", dist.Normal(0, 1).expand([self.out_features])
+            f"{self.name}_b", self.bias_prior_fn([self.out_features])
         )
         return jnp.dot(X, w) + b
 
@@ -157,7 +169,13 @@ class FFTLinear:
     applies FFT-based matrix multiplication for computational efficiency.
     """
 
-    def __init__(self, in_features: int, name: str = "fft_layer"):
+    def __init__(
+        self,
+        in_features: int,
+        name: str = "fft_layer",
+        first_row_prior_fn=lambda shape: dist.Normal(0, 1).expand(shape),
+        bias_prior_fn=lambda shape: dist.Normal(0, 1).expand(shape),
+    ):
         """
         Initialize the FFTLinear layer.
 
@@ -165,9 +183,17 @@ class FFTLinear:
             Number of input features.
         :param name: str
             Name of the layer, used for parameter naming (default: "fft_layer").
+        :param first_row_prior_fn: function
+            A function that takes a shape and returns a NumPyro distribution for the
+            circulant matrix's first row.
+        :param bias_prior_fn: function
+            A function that takes a shape and returns a NumPyro distribution for the
+            bias.
         """
         self.in_features = in_features
         self.name = name
+        self.first_row_prior_fn = first_row_prior_fn
+        self.bias_prior_fn = bias_prior_fn
 
     def __call__(self, X: jnp.ndarray) -> jnp.ndarray:
         """
@@ -175,75 +201,121 @@ class FFTLinear:
 
         :param X: jnp.ndarray
             Input data, shape `(batch_size, in_features)`.
-
         :returns: jnp.ndarray
             Output of the FFT-based linear layer, shape `(batch_size, in_features)`.
         """
-
         first_row = numpyro.sample(
-            f"{self.name}_first_row", dist.Normal(0, 1).expand([self.in_features])
+            f"{self.name}_first_row", self.first_row_prior_fn([self.in_features])
         )
         bias_circulant = numpyro.sample(
-            f"{self.name}_bias_circulant", dist.Normal(0, 1).expand([self.in_features])
+            f"{self.name}_bias_circulant", self.bias_prior_fn([self.in_features])
         )
         hidden = fft_matmul(first_row, X) + bias_circulant[None, :]
-
         return hidden
-    
+
 class FFTDirectPriorLinear:
     """
     FFT-based linear layer that directly samples its Fourier coefficients.
-    The idea is to place a prior directly in Fourier space to define the circulant matrix.
+    The idea is to place a prior in Fourier space, ensuring real outputs
+    via Hermitian symmetry.
+
+    - in_features: size of the input dimension.
+    - name: prefix for NumPyro sample sites (e.g. "fft_direct_layer_real", "fft_direct_layer_imag").
+    - prior_fn: a function taking a shape and returning a NumPyro distribution
+      (default: Normal(0,1) on each real component).
+    - We store the last computed "fft_full" for visualization after a forward pass.
     """
-    def __init__(self, in_features: int, name: str = "fft_direct_layer"):
+
+    def __init__(
+        self,
+        in_features: int,
+        name: str = "fft_direct_layer",
+        prior_fn=lambda shape: dist.Normal(0, 1).expand(shape).to_event(1),
+    ):
         self.in_features = in_features
         self.name = name
-        # Number of independent Fourier coefficients:
-        self.k = in_features // 2 + 1  # Works for both odd and even dimensions
+        self.prior_fn = prior_fn
+        # k = number of "independent" frequencies for real signals
+        self.k = in_features // 2 + 1
+        self.last_fourier_coeffs = None  # for optional later visualization
 
     def __call__(self, X: jnp.ndarray) -> jnp.ndarray:
         """
-        X: Input array of shape (batch_size, in_features)
-        Returns: Output array of shape (batch_size, in_features)
+        Forward pass: samples real/imag parts in half-spectrum, reconstructs
+        the full FFT (with Hermitian symmetry), multiplies input in freq domain,
+        and returns the inverse transform (real part).
         """
-        # Sample the independent Fourier coefficients:
-        real_coeff = numpyro.sample(f"{self.name}_real",
-                                    dist.Normal(0, 1).expand([self.k]).to_event(1))
-        # For frequencies 0 and (if applicable) n/2, the imaginary part is zero.
-        # Sample imaginary parts for the rest.
+        result, fft_full = self._forward_and_get_coeffs(X)
+        # Keep a copy for visualization
+        self.last_fourier_coeffs = jax.lax.stop_gradient(fft_full)
+        return result
+
+    def _forward_and_get_coeffs(self, X: jnp.ndarray):
+        # 1) Sample real part for frequencies [0..k-1].
+        real_coeff = numpyro.sample(f"{self.name}_real", self.prior_fn([self.k]))
+
+        # 2) If k>1, sample imaginary part for [1..k-1].
+        #    freq=0 is purely real. If in_features is even, freq=n/2 is real too.
         if self.k > 1:
-            # For indices 1 to k-1, sample imaginary parts
-            imag_coeff = numpyro.sample(f"{self.name}_imag",
-                                        dist.Normal(0, 1).expand([self.k - 1]).to_event(1))
-            # Construct the independent complex coefficients:
+            imag_coeff = numpyro.sample(f"{self.name}_imag", self.prior_fn([self.k - 1]))
+            # Construct the half-spectrum as a complex vector
+            # freq=0 -> real_coeff[0], freq=1..(k-1) -> real + i*imag
             independent_fft = jnp.concatenate(
-                [real_coeff[:1],
+                [real_coeff[:1],  # frequency 0
                  real_coeff[1:] + 1j * imag_coeff]
             )
         else:
-            independent_fft = real_coeff  # Only one coefficient
+            # Edge case: in_features=1 => k=1
+            independent_fft = real_coeff
 
-        # Reconstruct the full Fourier spectrum with Hermitian symmetry:
-        # For n even, the full spectrum is: [F[0], F[1], ..., F[k-1], conj(F[k-2]), ..., conj(F[1])]
-        # For n odd, similar logic applies.
-        if self.in_features % 2 == 0:
-            # Even case: include the Nyquist frequency as real.
-            nyquist = independent_fft[-1].real[None]  # Force it to be real
-            fft_full = jnp.concatenate(
-                [independent_fft[:-1], nyquist, jnp.conj(independent_fft[1:-1])[::-1]]
-            )
+        # 3) Enforce Hermitian symmetry to get the "full" spectrum of length `in_features`.
+        #    If in_features is even, the last frequency (Nyquist) is real => handle that carefully.
+        n = self.in_features
+        if n % 2 == 0 and self.k > 1:
+            # even n, so freq n/2 is real; that is independent_fft[-1].real
+            nyquist = independent_fft[-1].real[None]  # forcibly real
+            # everything else is mirrored
+            fft_full = jnp.concatenate([
+                independent_fft[:-1],
+                nyquist,  # freq = n/2
+                jnp.conj(independent_fft[1:-1])[::-1],  # mirror of freq=1..(k-2)
+            ])
         else:
-            fft_full = jnp.concatenate(
-                [independent_fft, jnp.conj(independent_fft[1:])[::-1]]
-            )
+            # odd n, or n=2 (k=2) edge case
+            fft_full = jnp.concatenate([
+                independent_fft,
+                jnp.conj(independent_fft[1:])[::-1]
+            ])
 
-        # Compute the FFT of the input:
+        # 4) Multiply in freq domain: FFT(X) * fft_full
         X_fft = jnp.fft.fft(X, axis=-1)
-        # Elementwise multiplication in Fourier space:
-        result_fft = fft_full[None, :] * X_fft
-        # Inverse FFT to get back to the time domain:
+        result_fft = X_fft * fft_full[None, ...]  # broadcast over batch
         result = jnp.fft.ifft(result_fft, axis=-1).real
-        return result
+
+        return result, fft_full
+
+    def get_fourier_coeffs(self) -> jnp.ndarray:
+        """
+        Return the last computed *full* Fourier spectrum (complex, length `in_features`).
+        Raises ValueError if no forward pass was done yet.
+        """
+        if self.last_fourier_coeffs is None:
+            raise ValueError(
+                f"No Fourier coefficients available for layer {self.name}. "
+                "Call the layer once on some input to store them."
+            )
+        return self.last_fourier_coeffs
+
+    def compute_fourier_coeffs(self, X: jnp.ndarray, rng_key):
+        """
+        Computes the Fourier coefficients in an eager (non-transformed) context.
+        Accepts an RNG key so that numpyro.sample has one.
+        """
+        # Use a seed handler to supply the key.
+        with numpyro.handlers.seed(rng_seed=rng_key):
+            _, fft_full = self._forward_and_get_coeffs(X)
+        return jax.lax.stop_gradient(fft_full)
+
 
 
 class ParticleLinear:

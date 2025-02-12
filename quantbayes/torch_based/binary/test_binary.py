@@ -5,7 +5,6 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import matplotlib.pyplot as plt
-from typing import Optional, Tuple
 
 
 # ----------------------------------------------------------------
@@ -107,85 +106,139 @@ def train_model(
     return model
 
 
-# ----------------------------------------------------------------
-# 3. Evaluation and Decision Boundary Visualization
-# ----------------------------------------------------------------
-def evaluate_model(
-    model: nn.Module,
-    X_val: np.ndarray,
-    y_val: np.ndarray,
-    features: Optional[Tuple[int, int]] = (0, 1),
-) -> dict:
+def visualize_binary_torch(
+    model: torch.nn.Module,
+    X: np.ndarray,
+    y: np.ndarray,
+    feature_indices: tuple = (0, 1),
+    unique_threshold: int = 10,
+    resolution: int = 100,
+    title: str = "Binary Decision Boundary"
+):
     """
-    Perform deterministic evaluation for binary classification.
-    Plots the decision boundary based on chosen features.
+    Visualize a binary classification decision boundary with automatic checks for
+    continuous vs. categorical features.
 
-    Returns a dictionary with final predictions, accuracy, etc.
+    Parameters
+    ----------
+    model : torch.nn.Module
+        A trained binary classifier that outputs raw logits.
+    X : np.ndarray
+        Input features of shape (n_samples, n_features).
+    y : np.ndarray
+        Binary class labels (n_samples,).
+    feature_indices : tuple of int, optional
+        Indices of the two features to visualize.
+    unique_threshold : int, optional
+        Maximum number of unique values for a feature to be considered categorical.
+    resolution : int, optional
+        Number of points in the grid (for continuous features).
+    title : str, optional
+        Title for the plot.
     """
-    X_val_t = torch.tensor(X_val, dtype=torch.float32)
+    # Ensure data are numpy arrays.
+    X_np = np.asarray(X)
+    y_np = np.asarray(y)
+    f1, f2 = feature_indices
 
-    # Set model to evaluation mode for deterministic predictions
+    # Determine if features are categorical.
+    unique_f1 = np.unique(X_np[:, f1])
+    unique_f2 = np.unique(X_np[:, f2])
+    is_f1_cat = len(unique_f1) < unique_threshold
+    is_f2_cat = len(unique_f2) < unique_threshold
+
+    # Put model in evaluation mode and get its device.
     model.eval()
+    device = next(model.parameters()).device
 
-    with torch.no_grad():
-        logits = model(X_val_t).squeeze(-1)
-        probs = torch.sigmoid(logits)  # shape: (batch_size,)
-        mean_preds = probs.cpu().numpy()
+    # Helper: given a numpy array of inputs, predict probabilities.
+    def model_predict(X_input):
+        with torch.no_grad():
+            X_tensor = torch.tensor(X_input, dtype=torch.float32, device=device)
+            logits = model(X_tensor).squeeze(-1)  # shape: (n_samples,)
+            probs = torch.sigmoid(logits)
+        return probs.cpu().numpy()
 
-    # Accuracy (threshold at 0.5)
-    y_pred_binary = (mean_preds > 0.5).astype(float)
-    acc = np.mean(y_pred_binary == y_val)
+    # --- Case 1: Both features are continuous ---
+    if not is_f1_cat and not is_f2_cat:
+        x_min, x_max = X_np[:, f1].min() - 0.5, X_np[:, f1].max() + 0.5
+        y_min, y_max = X_np[:, f2].min() - 0.5, X_np[:, f2].max() + 0.5
+        xx, yy = np.meshgrid(
+            np.linspace(x_min, x_max, resolution),
+            np.linspace(y_min, y_max, resolution)
+        )
+        n_features = X_np.shape[1]
+        # Build grid: for the two visualized features use the mesh grid; for others use their mean.
+        grid_list = []
+        for i in range(n_features):
+            if i == f1:
+                grid_list.append(xx.ravel())
+            elif i == f2:
+                grid_list.append(yy.ravel())
+            else:
+                grid_list.append(np.full(xx.ravel().shape, X_np[:, i].mean()))
+        grid_arr = np.stack(grid_list, axis=1)
+        probs = model_predict(grid_arr)
+        # Predict class (using 0.5 threshold)
+        class_preds = (probs > 0.5).astype(np.int32).reshape(xx.shape)
 
-    # Decision boundary for 2D data (features f1, f2)
-    f1, f2 = features
-    x_min, x_max = X_val[:, f1].min() - 0.5, X_val[:, f1].max() + 0.5
-    y_min, y_max = X_val[:, f2].min() - 0.5, X_val[:, f2].max() + 0.5
+        plt.figure(figsize=(8, 6))
+        plt.contourf(xx, yy, class_preds, alpha=0.3, cmap=plt.cm.Paired)
+        plt.scatter(X_np[:, f1], X_np[:, f2], c=y_np, edgecolor='k', cmap=plt.cm.Paired)
+        plt.xlabel(f"Feature {f1}")
+        plt.ylabel(f"Feature {f2}")
+        plt.title(title)
+        plt.grid(True)
+        plt.show()
 
-    xx, yy = np.meshgrid(
-        np.linspace(x_min, x_max, 100),
-        np.linspace(y_min, y_max, 100),
-    )
-    grid_points = np.column_stack([xx.ravel(), yy.ravel()]).astype(np.float32)
-    gp_t = torch.tensor(grid_points, dtype=torch.float32)
+    # --- Case 2: One feature categorical, one continuous ---
+    elif (is_f1_cat and not is_f2_cat) or (not is_f1_cat and is_f2_cat):
+        # Let the categorical feature be the one with fewer unique values.
+        if is_f1_cat:
+            cat_idx, cont_idx = f1, f2
+        else:
+            cat_idx, cont_idx = f2, f1
 
-    # Use a single forward pass on the grid for predictions
-    with torch.no_grad():
-        grid_logits = model(gp_t).squeeze(-1)
-        grid_probs = torch.sigmoid(grid_logits).cpu().numpy()
+        unique_cats = np.unique(X_np[:, cat_idx])
+        num_cats = len(unique_cats)
+        fig, axes = plt.subplots(1, num_cats, figsize=(5 * num_cats, 5), squeeze=False)
+        for j, cat in enumerate(unique_cats):
+            ax = axes[0, j]
+            mask = X_np[:, cat_idx] == cat
+            # Define grid along the continuous feature.
+            cont_vals = X_np[:, cont_idx]
+            c_min, c_max = cont_vals.min() - 0.5, cont_vals.max() + 0.5
+            cont_grid = np.linspace(c_min, c_max, resolution)
+            n_features = X_np.shape[1]
+            grid_list = []
+            for i in range(n_features):
+                if i == cont_idx:
+                    grid_list.append(cont_grid)
+                elif i == cat_idx:
+                    grid_list.append(np.full(cont_grid.shape, cat))
+                else:
+                    grid_list.append(np.full(cont_grid.shape, X_np[:, i].mean()))
+            grid_arr = np.stack(grid_list, axis=1)
+            probs = model_predict(grid_arr)
+            class_preds = (probs > 0.5).astype(np.int32)
+            ax.plot(cont_grid, class_preds, label="Decision boundary")
+            ax.scatter(X_np[mask, cont_idx], y_np[mask], c='k', edgecolors='w', label="Data")
+            ax.set_title(f"Feature {cat_idx} = {cat}")
+            ax.set_xlabel(f"Feature {cont_idx}")
+            ax.set_ylabel("Predicted class")
+            ax.legend()
+        plt.suptitle(title)
+        plt.show()
 
-    # Reshape for contour plotting
-    Z = grid_probs.reshape(xx.shape)
-
-    # Plot decision boundary
-    plt.figure(figsize=(8, 6))
-    # Contour where probability is 0.5
-    plt.contourf(xx, yy, Z, levels=[0.0, 0.5, 1.0], alpha=0.3, colors=["red", "blue"])
-
-    # Plot the validation points
-    plt.scatter(
-        X_val[y_val == 0, f1],
-        X_val[y_val == 0, f2],
-        c="red",
-        edgecolor="k",
-        label="Class 0",
-    )
-    plt.scatter(
-        X_val[y_val == 1, f1],
-        X_val[y_val == 1, f2],
-        c="blue",
-        edgecolor="k",
-        label="Class 1",
-    )
-    plt.title(f"Binary Classification - Decision Boundary (Accuracy={acc:.2f})")
-    plt.xlabel(f"Feature {f1}")
-    plt.ylabel(f"Feature {f2}")
-    plt.legend()
-    plt.show()
-
-    return {
-        "mean_probs": mean_preds,
-        "accuracy": acc,
-    }
+    # --- Case 3: Both features categorical ---
+    else:
+        plt.figure(figsize=(8, 6))
+        plt.scatter(X_np[:, f1], X_np[:, f2], c=y_np, cmap=plt.cm.Paired, edgecolors='k')
+        plt.xlabel(f"Feature {f1}")
+        plt.ylabel(f"Feature {f2}")
+        plt.title(title + " (Both features categorical)")
+        plt.grid(True)
+        plt.show()
 
 
 # ----------------------------------------------------------------
@@ -226,5 +279,4 @@ if __name__ == "__main__":
     )
 
     # Evaluate model
-    results = evaluate_model(model, X_val, y_val, features=(0, 1))
-    print("Final Accuracy on Val:", results["accuracy"])
+    visualize_binary_torch(model, X_val, y_val)

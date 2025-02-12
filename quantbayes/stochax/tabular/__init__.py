@@ -9,5 +9,5 @@ __all__ = [
     "RegressionModel",
     "LinearRegression",
     "LogisticRegression",
-    "MLPClassifier",
+    "MLPClassifier"
 ]
