@@ -1,0 +1,895 @@
+Title: \section{Mixture-of-Expert Circulant BNN}
+Content: <div><b><h1>\section{Mixture-of-Expert Circulant BNN}</h1></b></div>
+<div><br></div>
+<div><h2>Housing</h2></div>
+<div>Overall Results:</div>
+<div>RMSE: 2.44 ± 0.09</div>
+<div>Time: 499.72 ± 36.02 s</div>
+<div><br></div>
+<div>Diagnostic Summary (averages ± std):</div>
+<div>elpd_waic: 570.29 ± 31.24</div>
+<div>p_waic: 139.40 ± 28.78</div>
+<div>waic_se: 0.07 ± 0.02</div>
+<div>elpd_loo: 569.46 ± 20.77</div>
+<div>p_loo: 140.22 ± 17.34</div>
+<div>loo_se: 0.06 ± 0.01</div>
+<div>avg_rhat: 1.86 ± 0.06</div>
+<div>avg_ess: 195.74 ± 54.00</div>
+<div>total_params: 57.00 ± 0.00</div>
+<div><br></div>
+<div><h2>Concrete</h2></div>
+<div>Overall Results:</div>
+<div>RMSE: 6.37 ± 0.08</div>
+<div>Time: 173.47 ± 22.08 s</div>
+<div><br></div>
+<div>Diagnostic Summary (averages ± std):</div>
+<div>elpd_waic: 918.57 ± 16.64</div>
+<div>p_waic: 167.36 ± 13.64</div>
+<div>waic_se: 0.03 ± 0.00</div>
+<div>elpd_loo: 927.44 ± 15.77</div>
+<div>p_loo: 158.50 ± 13.08</div>
+<div>loo_se: 0.03 ± 0.00</div>
+<div>avg_rhat: 2.00 ± 0.09</div>
+<div>avg_ess: 506.15 ± 28.56</div>
+<div>total_params: 39.00 ± 0.00</div>
+<div><br></div>
+<div><br></div>
+<div><h2>Kin8nm</h2></div>
+<div>Overall Results:</div>
+<div>RMSE: 0.16 ± 0.00</div>
+<div>Time: 996.95 ± 46.62 s</div>
+<div><br></div>
+<div>Diagnostic Summary (averages ± std):</div>
+<div>elpd_waic: 5916.64 ± 36.12</div>
+<div>p_waic: 122.79 ± 40.20</div>
+<div>waic_se: 0.01 ± 0.00</div>
+<div>elpd_loo: 5917.76 ± 35.52</div>
+<div>p_loo: 121.68 ± 39.61</div>
+<div>loo_se: 0.01 ± 0.00</div>
+<div>avg_rhat: 1.91 ± 0.10</div>
+<div>avg_ess: 578.08 ± 406.84</div>
+<div>total_params: 39.00 ± 0.00</div>
+<div><br></div>
+<div><h2>Energy</h2></div>
+<div>RMSE: 0.90 ± 0.05</div>
+<div>Time: 824.89 ± 94.15 s</div>
+<div><br></div>
+<div>Diagnostic Summary (averages ± std):</div>
+<div>elpd_waic: 1386.08 ± 13.62</div>
+<div>p_waic: 184.31 ± 41.84</div>
+<div>waic_se: 0.04 ± 0.00</div>
+<div>elpd_loo: 1400.39 ± 14.80</div>
+<div>p_loo: 169.99 ± 36.13</div>
+<div>loo_se: 0.03 ± 0.00</div>
+<div>avg_rhat: 2.34 ± 0.10</div>
+<div>avg_ess: 195.64 ± 118.95</div>
+<div>total_params: 39.00 ± 0.00</div>
+<div><br></div>
+<div><h2>Naval-Propulsion-Plant </h2></div>
+<div>TBD</div>
+<div><br></div>
+<div><h2>Power Plant</h2></div>
+<div>TBD</div>
+<div><br></div>
+<div><h2>Protein</h2></div>
+<div>TBD</div>
+<div><br></div>
+<div><h2>Wine</h2></div>
+<div>Overall Results:</div>
+<div>RMSE: 0.63 ± 0.00</div>
+<div>Time: 459.13 ± 45.22 s</div>
+<div><br></div>
+<div>Diagnostic Summary (averages ± std):</div>
+<div>elpd_waic: 951.99 ± 0.31</div>
+<div>p_waic: 70.81 ± 0.53</div>
+<div>waic_se: 0.02 ± 0.00</div>
+<div>elpd_loo: 949.99 ± 0.37</div>
+<div>p_loo: 72.82 ± 0.60</div>
+<div>loo_se: 0.02 ± 0.00</div>
+<div>avg_rhat: 1.23 ± 0.06</div>
+<div>avg_ess: 579.60 ± 80.91</div>
+<div>total_params: 49.00 ± 0.00</div>
+<div><br></div>
+<div><h2>Yacht</h2></div>
+<div>Overall Results:</div>
+<div>RMSE: 0.37 ± 0.04</div>
+<div>Time: 770.66 ± 35.62 s</div>
+<div><br></div>
+<div>Diagnostic Summary (averages ± std):</div>
+<div>elpd_waic: 842.65 ± 13.14</div>
+<div>p_waic: 110.36 ± 11.23</div>
+<div>waic_se: 0.14 ± 0.02</div>
+<div>elpd_loo: 840.63 ± 14.15</div>
+<div>p_loo: 112.39 ± 10.52</div>
+<div>loo_se: 0.13 ± 0.00</div>
+<div>avg_rhat: 1.83 ± 0.20</div>
+<div>avg_ess: 353.25 ± 140.67</div>
+<div>total_params: 31.00 ± 0.00</div>
+
+
+Title: \section{Deep Spectral Circulant BNN}
+Content: <div><b><h1>\section{Deep Spectral Circulant BNN}</h1></b></div>
+<div><br></div>
+<div><h2>Housing</h2></div>
+<div>Overall Results:</div>
+<div>RMSE: 2.49 ± 0.09</div>
+<div>Time: 955.01 ± 132.33 s</div>
+<div><br></div>
+<div>Diagnostic Summary (averages ± std):</div>
+<div>elpd_waic: 514.22 ± 17.03</div>
+<div>p_waic: 118.68 ± 14.99</div>
+<div>waic_se: 0.07 ± 0.01</div>
+<div>elpd_loo: 509.38 ± 20.18</div>
+<div>p_loo: 123.51 ± 18.50</div>
+<div>loo_se: 0.07 ± 0.00</div>
+<div>avg_rhat: 1.66 ± 0.07</div>
+<div>avg_ess: 306.54 ± 140.45</div>
+<div>total_params: 69.00 ± 0.00</div>
+<div><br></div>
+<div><h2>Concrete</h2></div>
+<div>Overall Results:</div>
+<div>RMSE: 6.91 ± 0.27</div>
+<div>Time: 1530.54 ± 373.13 s</div>
+<div><br></div>
+<div>Diagnostic Summary (averages ± std):</div>
+<div>elpd_waic: 827.63 ± 29.46</div>
+<div>p_waic: 162.27 ± 29.15</div>
+<div>waic_se: 0.03 ± 0.00</div>
+<div>elpd_loo: 837.69 ± 21.37</div>
+<div>p_loo: 152.21 ± 20.43</div>
+<div>loo_se: 0.03 ± 0.00</div>
+<div>avg_rhat: 1.91 ± 0.06</div>
+<div>avg_ess: 456.90 ± 23.54</div>
+<div>total_params: 62.00 ± 0.00</div>
+<div><br></div>
+<div><h2>Kin8nm</h2></div>
+<div>Overall Results:</div>
+<div>RMSE: 0.16 ± 0.00Time: 26027.08 ± 102.15 s</div>
+<div><b>Diagnostic Summary (averages ± std):</b>elpd_waic: 4873.88 ± 28.33p_waic: 572.50 ± 83.30waic_se: 0.01 ± 0.00elpd_loo: 4898.93 ± 41.66p_loo: 547.45 ± 69.98loo_se: 0.01 ± 0.00avg_rhat: 2.36 ± 0.14avg_ess: 8.83 ± 1.41total_params: 62.00 ± 0.00</div>
+<div><br></div>
+<div><br></div>
+<div><h2>Energy</h2></div>
+<div>Overall Results:</div>
+<div>RMSE: 0.69 ± 0.04</div>
+<div>Time: 2281.28 ± 26.12 s</div>
+<div><br></div>
+<div>Diagnostic Summary (averages ± std):</div>
+<div>elpd_waic: 1447.84 ± 99.38</div>
+<div>p_waic: 288.89 ± 60.20</div>
+<div>waic_se: 0.07 ± 0.04</div>
+<div>elpd_loo: 1486.78 ± 65.75</div>
+<div>p_loo: 249.95 ± 20.95</div>
+<div>loo_se: 0.05 ± 0.01</div>
+<div>avg_rhat: 2.37 ± 0.06</div>
+<div>avg_ess: 78.43 ± 85.61</div>
+<div>total_params: 62.00 ± 0.00</div>
+<div><br></div>
+<div><h2>Naval-Propulsion-Plant </h2></div>
+<div>TBD</div>
+<div><br></div>
+<div><h2>Power Plant</h2></div>
+<div>TBD</div>
+<div><br></div>
+<div><h2>Protein</h2></div>
+<div>TBD</div>
+<div><br></div>
+<div><h2>Wine</h2></div>
+<div>Overall Results:</div>
+<div>Deep Spectral Circulant</div>
+<div>Overall Results:</div>
+<div>RMSE: 0.63 ± 0.00</div>
+<div>Time: 3523.31 ± 136.65 s</div>
+<div><br></div>
+<div>Diagnostic Summary (averages ± std):</div>
+<div>elpd_waic: 923.02 ± 5.54</div>
+<div>p_waic: 88.26 ± 2.98</div>
+<div>waic_se: 0.02 ± 0.00</div>
+<div>elpd_loo: 921.94 ± 5.47</div>
+<div>p_loo: 89.34 ± 2.98</div>
+<div>loo_se: 0.02 ± 0.00</div>
+<div>avg_rhat: 1.28 ± 0.03</div>
+<div>avg_ess: 152.35 ± 89.08</div>
+<div>total_params: 81.00 ± 0.00</div>
+<div><br></div>
+<div><h2>Yacht</h2></div>
+<div>TBD</div>
+
+
+Title: \section{Block Spectral Circulant BNN}
+Content: <div><b><h1>\section{Block Spectral Circulant BNN}</h1></b></div>
+<div><br></div>
+<div><h2>Housing</h2></div>
+<div>Overall Results:</div>
+<div>RMSE: 2.09 ± 0.05</div>
+<div>Time: 2827.26 ± 132.69 s</div>
+<div><br></div>
+<div>Diagnostic Summary (averages ± std):</div>
+<div>elpd_waic: 696.16 ± 5.03</div>
+<div>p_waic: 131.30 ± 3.25</div>
+<div>waic_se: 0.04 ± 0.00</div>
+<div>elpd_loo: 672.93 ± 5.64</div>
+<div>p_loo: 154.52 ± 3.60</div>
+<div>loo_se: 0.05 ± 0.00</div>
+<div>avg_rhat: 1.54 ± 0.04</div>
+<div>avg_ess: 11.93 ± 1.83</div>
+<div>total_params: 111.00 ± 0.00</div>
+<div><br></div>
+<div><h2>Concrete</h2></div>
+<div>Overall Results:</div>
+<div>RMSE: 7.70 ± 0.22</div>
+<div>Time: 1581.18 ± 41.85 s</div>
+<div><br></div>
+<div>Diagnostic Summary (averages ± std):</div>
+<div>elpd_waic: 760.92 ± 16.66</div>
+<div>p_waic: 137.87 ± 13.90</div>
+<div>waic_se: 0.03 ± 0.00</div>
+<div>elpd_loo: 772.11 ± 12.88</div>
+<div>p_loo: 126.68 ± 10.74</div>
+<div>loo_se: 0.03 ± 0.00</div>
+<div>avg_rhat: 3.02 ± 0.07</div>
+<div>avg_ess: 4.70 ± 0.09</div>
+<div>total_params: 58.00 ± 0.00</div>
+<div><br></div>
+<div><br></div>
+<div><h2>Kin8nm</h2></div>
+<div><b>Overall Results:</b>RMSE: 0.19 ± 0.01Time: 19246.74 ± 805.00 s</div>
+<div><b>Diagnostic Summary (averages ± std):</b>elpd_waic: 3472.58 ± 206.20p_waic: 564.56 ± 12.76waic_se: 0.01 ± 0.00elpd_loo: 3488.90 ± 208.70p_loo: 545.23 ± 11.70loo_se: 0.01 ± 0.00avg_rhat: 3.51 ± 0.12avg_ess: 4.43 ± 0.03total_params: 70.00 ± 0.00</div>
+<div><br></div>
+<div><br></div>
+<div><br></div>
+<div><h2>Energy</h2></div>
+<div>Overall Results:</div>
+<div>RMSE: 2.43 ± 0.23</div>
+<div>Time: 177.48 ± 22.21 s</div>
+<div><br></div>
+<div>Diagnostic Summary (averages ± std):</div>
+<div>elpd_waic: 810.24 ± 3.25</div>
+<div>p_waic: 41.55 ± 6.74</div>
+<div>waic_se: 0.03 ± 0.00</div>
+<div>elpd_loo: 841.90 ± 2.05</div>
+<div>p_loo: 41.14 ± 6.64</div>
+<div>loo_se: 0.03 ± 0.00</div>
+<div>avg_rhat: 1.93 ± 0.11</div>
+<div>avg_ess: 205.35 ± 116.92</div>
+<div>total_params: 20.00 ± 0.00</div>
+<div><br></div>
+<div><br></div>
+<div><h2>Naval-Propulsion-Plant </h2></div>
+<div>Overall Results:</div>
+<div>RMSE: 0.00 ± 0.00Time: 32164.11 ± 50.00 s</div>
+<div><b>Diagnostic Summary (averages ± std):</b>elpd_waic: 20058.61 ± 2.03p_waic: 7430.81 ± 10.00waic_se: 0.03 ± 0.00elpd_loo: 21897.12 ± 2.50p_loo: 5592.31 ± 8.02loo_se: 0.01 ± 0.00avg_rhat: 3.13 ± 0.10avg_ess: 4.57 ± 0.20total_params: 37.00 ± 0.00</div>
+<div><br></div>
+<div><h2>Power Plant</h2></div>
+<div>Overall Results:</div>
+<div>RMSE: 4.59 ± 0.05</div>
+<div>Time: 1405.15 ± 216.07 s</div>
+<div><br></div>
+<div>Diagnostic Summary (averages ± std):</div>
+<div>elpd_waic: 12083.70 ± 122.72</div>
+<div>p_waic: 282.16 ± 48.32</div>
+<div>waic_se: 0.01 ± 0.00</div>
+<div>elpd_loo: 12144.35 ± 113.48</div>
+<div>p_loo: 237.51 ± 31.12</div>
+<div>loo_se: 0.01 ± 0.00</div>
+<div>avg_rhat: 1.92 ± 0.10</div>
+<div>avg_ess: 419783 ± 15.13</div>
+<div>total_params: 12.00 ± 0.00</div>
+<div><br></div>
+<div><h2>Protein</h2></div>
+<div>TBD</div>
+<div><br></div>
+<div><h2>Wine</h2></div>
+<div>Overall Results:</div>
+<div>RMSE: 0.66 ± 0.07</div>
+<div>Time: 4594.23 ± 120.00 s</div>
+<div><br></div>
+<div>Diagnostic Summary (averages ± std):</div>
+<div>elpd_waic: 856.38 ± 42.82</div>
+<div>p_waic: 68.15 ± 6.82</div>
+<div>waic_se: 0.02 ± 0.01</div>
+<div>elpd_loo: 857.21 ± 41.98</div>
+<div>p_loo: 67.32 ± 6.73</div>
+<div>loo_se: 0.02 ± 0.01</div>
+<div>avg_rhat: 2.96 ± 0.15</div>
+<div>avg_ess: 4.69 ± 0.50</div>
+<div>total_params: 84.00 ± 0.00</div>
+<div><br></div>
+<div><br></div>
+<div><h2>Yacht</h2></div>
+<div>Overall Results:</div>
+<div>RMSE: 2.64 ± 0.84</div>
+<div>Time: 775.58 ± 25.83 s</div>
+<div><br></div>
+<div>Diagnostic Summary (averages ± std):</div>
+<div>elpd_waic: 342.57 ± 103.31</div>
+<div>p_waic: 171.53 ± 54.20</div>
+<div>waic_se: 0.08 ± 0.01</div>
+<div>elpd_loo: 359.86 ± 98.01</div>
+<div>p_loo: 154.24 ± 46.62</div>
+<div>loo_se: 0.07 ± 0.01</div>
+<div>avg_rhat: 3.30 ± 0.06</div>
+<div>avg_ess: 4.51 ± 0.05</div>
+<div>total_params: 42.00 ± 0.00</div>
+
+
+Title: \section{Baseline BNN}
+Content: <div><b><h1>\section{Baseline BNN}</h1></b></div>
+<div><br></div>
+<div><h2>Housing</h2></div>
+<div>Overall Results:</div>
+<div>RMSE: 2.36 ± 0.06</div>
+<div>Time: 406.00 ± 35.11 s</div>
+<div><br></div>
+<div>Diagnostic Summary (averages ± std):</div>
+<div>elpd_waic: 713.13 ± 12.89</div>
+<div>p_waic: 149.16 ± 7.93</div>
+<div>waic_se: 0.04 ± 0.00</div>
+<div>elpd_loo: 686.00 ± 14.52</div>
+<div>p_loo: 176.29 ± 9.51</div>
+<div>loo_se: 0.05 ± 0.00</div>
+<div>avg_rhat: 1.56 ± 0.09</div>
+<div>avg_ess: 35.75 ± 17.35</div>
+<div>total_params: 152.00 ± 0.00</div>
+<div><br></div>
+<div><h2>Concrete</h2></div>
+<div>Overall Results:</div>
+<div>RMSE: 5.10 ± 0.20</div>
+<div>Time: 579.58 ± 7.99 s</div>
+<div><br></div>
+<div>Diagnostic Summary (averages ± std):</div>
+<div>elpd_waic: 1273.33 ± 6.65</div>
+<div>p_waic: 255.65 ± 6.88</div>
+<div>waic_se: 0.04 ± 0.00</div>
+<div>elpd_loo: 1266.65 ± 10.39</div>
+<div>p_loo: 262.33 ± 9.72</div>
+<div>loo_se: 0.04 ± 0.00</div>
+<div>avg_rhat: 1.85 ± 0.03</div>
+<div>avg_ess: 76.72 ± 114.95</div>
+<div>total_params: 102.00 ± 0.00</div>
+<div><br></div>
+<div><br></div>
+<div><h2>Kin8nm</h2></div>
+<div><b>Overall Results:</b>RMSE: 0.09 ± 0.00Time: 4401.27 ± 342.09 s</div>
+<div><b>Diagnostic Summary (averages ± std):</b>elpd_waic: 8930.13 ± 201.73p_waic: 1381.06 ± 251.06waic_se: 0.01 ± 0.01elpd_loo: 9137.69 ± 144.32p_loo: 1173.51 ± 196.28loo_se: 0.01 ± 0.00avg_rhat: 2.32 ± 0.21avg_ess: 5.49 ± 0.78total_params: 102.00 ± 0.00</div>
+<div><br></div>
+<div><br></div>
+<div><br></div>
+<div><h2>Energy</h2></div>
+<div>Overall Results:</div>
+<div>RMSE: 0.37 ± 0.01</div>
+<div>Time: 452.95 ± 4.64 s</div>
+<div><br></div>
+<div>Diagnostic Summary (averages ± std):</div>
+<div>elpd_waic: 2071.77 ± 13.24</div>
+<div>p_waic: 140.42 ± 13.41</div>
+<div>waic_se: 0.06 ± 0.00</div>
+<div>elpd_loo: 2068.49 ± 13.18</div>
+<div>p_loo: 143.69 ± 13.17</div>
+<div>loo_se: 0.06 ± 0.00</div>
+<div>avg_rhat: 2.04 ± 0.14</div>
+<div>avg_ess: 7.51 ± 1.48</div>
+<div>total_params: 102.00 ± 0.00</div>
+<div><br></div>
+<div><h2>Naval-Propulsion-Plant </h2></div>
+<div><b>Overall Results:</b>RMSE: 0.00 ± 0.00Time: 9405.82 ± 50.00 s</div>
+<div><b>Diagnostic Summary (averages ± std):</b>elpd_waic: 32721.14 ± 5.00p_waic: 8639.92 ± 10.00waic_se: 0.07 ± 0.00elpd_loo: 36355.46 ± 5.00p_loo: 5005.60 ± 8.00loo_se: 0.02 ± 0.00avg_rhat: 3.73 ± 0.05avg_ess: 4.38 ± 0.05total_params: 192.00 ± 0.00</div>
+<div><br></div>
+<div><br></div>
+<div><h2>Power Plant</h2></div>
+<div><b>Overall Results:</b><br></div>
+<div>RMSE: 4.21 ± 0.01Time: 5083.84 ± 684.32 s</div>
+<div><b>Diagnostic Summary (averages ± std):</b>elpd_waic: 12964.45 ± 60.00p_waic: 237.76 ± 60.82waic_se: 0.02 ± 0.00elpd_loo: 12971.74 ± 55.28p_loo: 230.47 ± 56.36loo_se: 0.02 ± 0.00avg_rhat: 2.16 ± 0.06avg_ess: 16.64 ± 12.64total_params: 62.00 ± 0.00</div>
+<div><br></div>
+<div><br></div>
+<div><h2>Protein</h2></div>
+<div><b>Overall Results:</b>RMSE: 4.54 ± 0.05Time: 13674.68 ± 50.00 s</div>
+<div><b>Diagnostic Summary (averages ± std):</b>elpd_waic: 3526.21 ± 5.00p_waic: 2192.83 ± 10.00waic_se: 0.00 ± 0.00elpd_loo: 3618.22 ± 5.00p_loo: 2100.82 ± 10.00loo_se: 0.00 ± 0.00avg_rhat: 2.37 ± 0.05avg_ess: 6.06 ± 0.10total_params: 112.00 ± 0.00</div>
+<div><br></div>
+<div><br></div>
+<div><br></div>
+<div><h2>Wine</h2></div>
+<div>Overall Results:</div>
+<div>RMSE: 0.62 ± 0.00</div>
+<div>Time: 252.77 ± 8.87 s</div>
+<div><br></div>
+<div>Diagnostic Summary (averages ± std):</div>
+<div>elpd_waic: 967.17 ± 0.99</div>
+<div>p_waic: 163.84 ± 2.08</div>
+<div>waic_se: 0.02 ± 0.00</div>
+<div>elpd_loo: 963.76 ± 1.03</div>
+<div>p_loo: 167.25 ± 2.27</div>
+<div>loo_se: 0.02 ± 0.00</div>
+<div>avg_rhat: 1.08 ± 0.00</div>
+<div>avg_ess: 162.42 ± 21.93</div>
+<div>total_params: 132.00 ± 0.00</div>
+<div><br></div>
+<div><br></div>
+<div><h2>Yacht</h2></div>
+<div>Overall Results:</div>
+<div>RMSE: 0.28 ± 0.03</div>
+<div>Time: 241.79 ± 1.50 s</div>
+<div><br></div>
+<div>Diagnostic Summary (averages ± std):</div>
+<div>elpd_waic: 1131.72 ± 50.47</div>
+<div>p_waic: 154.32 ± 22.48</div>
+<div>waic_se: 0.09 ± 0.01</div>
+<div>elpd_loo: 1095.63 ± 54.95</div>
+<div>p_loo: 190.40 ± 27.12</div>
+<div>loo_se: 0.10 ± 0.01</div>
+<div>avg_rhat: 2.45 ± 0.16</div>
+<div>avg_ess: 5.52 ± 0.70</div>
+<div>total_params: 82.00 ± 0.00</div>
+
+
+Title: \section{Circulant BNN}
+Content: <div><b><h1>\section{Circulant BNN}</h1></b></div>
+<div><br></div>
+<div><br></div>
+<div><h2>Housing</h2></div>
+<div>Overall Results:</div>
+<div>RMSE: 2.46 ± 0.10</div>
+<div>Time: 411.91 ± 25.34 s</div>
+<div><br></div>
+<div>Diagnostic Summary (averages ± std):</div>
+<div>elpd_waic: 498.96 ± 9.28</div>
+<div>p_waic: 147.55 ± 7.57</div>
+<div>waic_se: 0.08 ± 0.02</div>
+<div>elpd_loo: 495.25 ± 7.21</div>
+<div>p_loo: 151.26 ± 8.07</div>
+<div>loo_se: 0.07 ± 0.01</div>
+<div>avg_rhat: 1.83 ± 0.04</div>
+<div>avg_ess: 15.51 ± 4.93</div>
+<div>total_params: 41.00 ± 0.00</div>
+<div><br></div>
+<div><h2>Concrete</h2></div>
+<div>Overall Results:</div>
+<div>RMSE: 6.52 ± 0.01</div>
+<div>Time: 443.15 ± 5.96 s</div>
+<div><br></div>
+<div>Diagnostic Summary (averages ± std):</div>
+<div>elpd_waic: 980.68 ± 0.27</div>
+<div>p_waic: 32.05 ± 0.36</div>
+<div>waic_se: 0.03 ± 0.00</div>
+<div>elpd_loo: 980.53 ± 0.29</div>
+<div>p_loo: 32.20 ± 0.37</div>
+<div>loo_se: 0.03 ± 0.00</div>
+<div>avg_rhat: 1.56 ± 0.15</div>
+<div>avg_ess: 1224.03 ± 136.26</div>
+<div>total_params: 26.00 ± 0.00</div>
+<div><br></div>
+<div><h2>Kin8nm</h2></div>
+<div>Overall Results:</div>
+<div>RMSE: 0.17 ± 0.00</div>
+<div>Time: 3412.47 ± 440.15 s</div>
+<div><br></div>
+<div>Diagnostic Summary (averages ± std):</div>
+<div>elpd_waic: 4392.76 ± 126.38</div>
+<div>p_waic: 777.09 ± 110.51</div>
+<div>waic_se: 0.01 ± 0.00</div>
+<div>elpd_loo: 4543.93 ± 119.80</div>
+<div>p_loo: 625.92 ± 97.60</div>
+<div>loo_se: 0.01 ± 0.00</div>
+<div>avg_rhat: 2.39 ± 0.11</div>
+<div>avg_ess: 5.33 ± 0.29</div>
+<div>total_params: 26.00 ± 0.00</div>
+<div><br></div>
+<div><h2>Energy</h2></div>
+<div>Overall Results:</div>
+<div>RMSE: 1.22 ± 0.23</div>
+<div>Time: 796.07 ± 69.27 s</div>
+<div><br></div>
+<div>Diagnostic Summary (averages ± std):</div>
+<div>elpd_waic: 1070.52 ± 63.20</div>
+<div>p_waic: 356.40 ± 78.20</div>
+<div>waic_se: 0.05 ± 0.02</div>
+<div>elpd_loo: 1117.35 ± 65.72</div>
+<div>p_loo: 309.57 ± 54.55</div>
+<div>loo_se: 0.04 ± 0.01</div>
+<div>avg_rhat: 2.61 ± 0.09</div>
+<div>avg_ess: 5.22 ± 0.81</div>
+<div>total_params: 26.00 ± 0.00</div>
+<div><br></div>
+<div><h2>Naval-Propulsion-Plant </h2></div>
+<div><b>Overall Results:</b>RMSE: 0.00 ± 0.00Time: 27793.59 ± 82.70 s</div>
+<div><b>Diagnostic Summary (averages ± std):</b>elpd_waic: 21037.70 ± 2.01p_waic: 8060.91 ± 8.32waic_se: 0.03 ± 0.00elpd_loo: 23716.18 ± 2.50p_loo: 5382.43 ± 7.00loo_se: 0.02 ± 0.00avg_rhat: 3.73 ± 0.10avg_ess: 4.37 ± 0.20total_params: 53.00 ± 0.00</div>
+<div><br></div>
+<div><br></div>
+<div><h2>Power Plant</h2></div>
+<div>Overall Results:</div>
+<div>RMSE: 4.48 ± 0.03</div>
+<div>Time: 4209.77 ± 1027.33 s</div>
+<div><br></div>
+<div>Diagnostic Summary (averages ± std):</div>
+<div>elpd_waic: 12435.18 ± 83.32</div>
+<div>p_waic: 177.42 ± 48.51</div>
+<div>waic_se: 0.01 ± 0.00</div>
+<div>elpd_loo: 12445.82 ± 79.40</div>
+<div>p_loo: 166.77 ± 44.02</div>
+<div>loo_se: 0.01 ± 0.00</div>
+<div>avg_rhat: 2.25 ± 0.21</div>
+<div>avg_ess: 6.26 ± 0.96</div>
+<div>total_params: 14.00 ± 0.00</div>
+<div><br></div>
+<div><h2>Protein</h2></div>
+<div>Overall Results:</div>
+<div>RMSE: 4.92 ± 0.02</div>
+<div>Time: 3892.11 ± 770.62 s</div>
+<div><br></div>
+<div>Diagnostic Summary (averages ± std):</div>
+<div>elpd_waic: 553.97 ± 177.83</div>
+<div>p_waic: 1465.34 ± 302.84</div>
+<div>waic_se: 0.00 ± 0.00</div>
+<div>elpd_loo: 620.48 ± 163.09</div>
+<div>p_loo: 1398.83 ± 286.38</div>
+<div>loo_se: 0.00 ± 0.00</div>
+<div>avg_rhat: 2.31 ± 0.09</div>
+<div>avg_ess: 5.72 ± 0.52</div>
+<div>total_params: 29.00 ± 0.00</div>
+<div><br></div>
+<div><h2>Wine</h2></div>
+<div>Overall Results:</div>
+<div>RMSE: 0.64 ± 0.00</div>
+<div>Time: 878.48 ± 30.98 s</div>
+<div><br></div>
+<div>Diagnostic Summary (averages ± std):</div>
+<div>elpd_waic: 933.41 ± 6.06</div>
+<div>p_waic: 54.72 ± 9.96</div>
+<div>waic_se: 0.02 ± 0.00</div>
+<div>elpd_loo: 932.29 ± 6.01</div>
+<div>p_loo: 55.84 ± 9.92</div>
+<div>loo_se: 0.02 ± 0.00</div>
+<div>avg_rhat: 1.34 ± 0.03</div>
+<div>avg_ess: 855.57 ± 137.09</div>
+<div>total_params: 35.00 ± 0.00</div>
+<div><br></div>
+<div><h2>Yacht</h2></div>
+<div>Overall Results:</div>
+<div>RMSE: 0.87 ± 0.00</div>
+<div>Time: 213.87 ± 2.26 s</div>
+<div><br></div>
+<div>Diagnostic Summary (averages ± std):</div>
+<div>elpd_waic: 748.83 ± 0.37</div>
+<div>p_waic: 31.01 ± 0.47</div>
+<div>waic_se: 0.09 ± 0.00</div>
+<div>elpd_loo: 747.69 ± 0.29</div>
+<div>p_loo: 32.15 ± 0.30</div>
+<div>loo_se: 0.09 ± 0.00</div>
+<div>avg_rhat: 1.39 ± 0.11</div>
+<div>avg_ess: 550.60 ± 25.47</div>
+<div>total_params: 20.00 ± 0.00</div>
+<div><br></div>
+<div><br></div>
+
+
+Title: \section{Block-Circulant BNN}
+Content: <div><b><h1>\section{Block-Circulant BNN}</h1></b></div>
+<div><br></div>
+<div><br></div>
+<div><h2>Housing</h2></div>
+<div>Overall Results:</div>
+<div>RMSE: 2.47 ± 0.09</div>
+<div>Time: 890.95 ± 93.33 s</div>
+<div><br></div>
+<div>Diagnostic Summary (averages ± std):</div>
+<div>elpd_waic: 489.04 ± 12.73</div>
+<div>p_waic: 152.54 ± 16.63</div>
+<div>waic_se: 0.11 ± 0.02</div>
+<div>elpd_loo: 499.95 ± 12.61</div>
+<div>p_loo: 141.62 ± 14.87</div>
+<div>loo_se: 0.08 ± 0.00</div>
+<div>avg_rhat: 1.76 ± 0.05</div>
+<div>avg_ess: 9.48 ± 1.41</div>
+<div>total_params: 41.00 ± 0.00</div>
+<div><br></div>
+<div><h2>Concrete</h2></div>
+<div><b>Overall Results:</b>RMSE: 6.53 ± 0.05Time: 832.47 ± 10.00 s</div>
+<div><b>Diagnostic Summary (averages ± std):</b>elpd_waic: 981.22 ± 2.00p_waic: 31.35 ± 0.50waic_se: 0.03 ± 0.00elpd_loo: 981.10 ± 2.00p_loo: 31.46 ± 0.50loo_se: 0.03 ± 0.00avg_rhat: 1.71 ± 0.05avg_ess: 1143.90 ± 20.00total_params: 26.00 ± 0.00</div>
+<div><br></div>
+<div><br></div>
+<div><br></div>
+<div><h2>Kin8nm</h2></div>
+<div><b>Overall Results:</b>RMSE: 0.18 ± 0.01Time: 22311.22 ± 1308.00 s</div>
+<div><b>Diagnostic Summary (averages ± std):</b>elpd_waic: 2363.20 ± 1206.90p_waic: 2931.03 ± 938.80waic_se: 0.01 ± 0.00elpd_loo: 2689.88 ± 1138.22p_loo: 2604.35 ± 876.75loo_se: 0.01 ± 0.00avg_rhat: 3.48 ± 0.16avg_ess: 4.44 ± 0.05total_params: 58.00 ± 0.00</div>
+<div><br></div>
+<div><br></div>
+<div><h2>Energy</h2></div>
+<div>Overall Results:</div>
+<div>RMSE: 2.04 ± 0.13</div>
+<div>Time: 1949.87 ± 9.78 s</div>
+<div><br></div>
+<div>Diagnostic Summary (averages ± std):</div>
+<div>elpd_waic: 749.55 ± 139.86</div>
+<div>p_waic: 283.68 ± 104.00</div>
+<div>waic_se: 0.04 ± 0.01</div>
+<div>elpd_loo: 775.95 ± 132.87</div>
+<div>p_loo: 257.28 ± 92.79</div>
+<div>loo_se: 0.03 ± 0.00</div>
+<div>avg_rhat: 3.40 ± 0.05</div>
+<div>avg_ess: 4.48 ± 0.01</div>
+<div>total_params: 58.00 ± 0.00</div>
+<div><br></div>
+<div><h2>Naval-Propulsion-Plant </h2></div>
+<div>TBD</div>
+<div><br></div>
+<div><h2>Power Plant</h2></div>
+<div>TBD</div>
+<div><br></div>
+<div><h2>Protein</h2></div>
+<div>TBD</div>
+<div><br></div>
+<div><h2>Wine</h2></div>
+<div>Overall Results:</div>
+<div>RMSE: 0.62 ± 0.02Time: 4343.25 ± 20.00 s</div>
+<div><b>Diagnostic Summary (averages ± std):</b>elpd_waic: 923.89 ± 1.50p_waic: 71.53 ± 2.00waic_se: 0.02 ± 0.00elpd_loo: 928.46 ± 1.50p_loo: 66.95 ± 2.00loo_se: 0.02 ± 0.00avg_rhat: 2.62 ± 0.10avg_ess: 6.15 ± 0.30total_params: 69.00 ± 0.00</div>
+<div><br></div>
+<div><br></div>
+<div><h2>Yacht</h2></div>
+<div>Overall Results:</div>
+<div>RMSE: 0.40 ± 0.04</div>
+<div>Time: 661.45 ± 11.44 s</div>
+<div><br></div>
+<div>Diagnostic Summary (averages ± std):</div>
+<div>elpd_waic: 793.80 ± 20.89</div>
+<div>p_waic: 126.86 ± 17.53</div>
+<div>waic_se: 0.18 ± 0.04</div>
+<div>elpd_loo: 807.62 ± 12.13</div>
+<div>p_loo: 113.04 ± 8.51</div>
+<div>loo_se: 0.13 ± 0.01</div>
+<div>avg_rhat: 1.96 ± 0.11</div>
+<div>avg_ess: 12.82 ± 9.19</div>
+<div>total_params: 38.00 ± 0.00</div>
+
+
+Title: \section{Deep Circulant BNN}
+Content: <div><b><h1>\section{Deep Circulant BNN}</h1></b></div>
+<div><br></div>
+<div><h2>Housing</h2></div>
+<div>Overall Results:</div>
+<div>RMSE: 2.36 ± 0.14</div>
+<div>Time: 2756.17 ± 21.03 s</div>
+<div><br></div>
+<div>Diagnostic Summary (averages ± std):</div>
+<div>elpd_waic: 611.32 ± 11.31</div>
+<div>p_waic: 136.95 ± 5.87</div>
+<div>waic_se: 0.05 ± 0.00</div>
+<div>elpd_loo: 594.70 ± 11.69</div>
+<div>p_loo: 153.57 ± 8.57</div>
+<div>loo_se: 0.05 ± 0.00</div>
+<div>avg_rhat: 1.90 ± 0.04</div>
+<div>avg_ess: 13.45 ± 9.98</div>
+<div>total_params: 67.00 ± 0.00</div>
+<div><br></div>
+<div><h2>Concrete</h2></div>
+<div>Overall Results:</div>
+<div>RMSE: 5.87 ± 0.18</div>
+<div>Time: 2162.38 ± 28.47 s</div>
+<div><br></div>
+<div>Diagnostic Summary (averages ± std):</div>
+<div>elpd_waic: 995.30 ± 9.26</div>
+<div>p_waic: 198.16 ± 10.92</div>
+<div>waic_se: 0.04 ± 0.00</div>
+<div>elpd_loo: 1006.33 ± 10.87</div>
+<div>p_loo: 187.13 ± 13.01</div>
+<div>loo_se: 0.03 ± 0.00</div>
+<div>avg_rhat: 2.11 ± 0.08</div>
+<div>avg_ess: 6.85 ± 1.42</div>
+<div>total_params: 42.00 ± 0.00</div>
+<div><br></div>
+<div><h2>Kin8nm</h2></div>
+<div>Overall Results:</div>
+<div>RMSE: 0.14 ± 0.02</div>
+<div>Time: 20453.84 ± 500.00 s</div>
+<div><br></div>
+<div>Diagnostic Summary (averages ± std):</div>
+<div>elpd_waic: 5162.50 ± 258.13</div>
+<div>p_waic: 1579.95 ± 78.99</div>
+<div>waic_se: 0.02 ± 0.01</div>
+<div>elpd_loo: 5443.61 ± 272.18</div>
+<div>p_loo: 1298.84 ± 64.94</div>
+<div>loo_se: 0.01 ± 0.01</div>
+<div>avg_rhat: 2.48 ± 0.12</div>
+<div>avg_ess: 5.25 ± 0.50</div>
+<div>total_params: 42.00 ± 0.00</div>
+<div><br></div>
+<div><h2>Energy</h2></div>
+<div>Overall Results:</div>
+<div>RMSE: 0.56 ± 0.06</div>
+<div>Time: 1798.81 ± 87.87 s</div>
+<div><br></div>
+<div>Diagnostic Summary (averages ± std):</div>
+<div>elpd_waic: 1540.22 ± 91.50</div>
+<div>p_waic: 366.47 ± 52.56</div>
+<div>waic_se: 0.09 ± 0.01</div>
+<div>elpd_loo: 1602.51 ± 86.22</div>
+<div>p_loo: 304.19 ± 43.49</div>
+<div>loo_se: 0.05 ± 0.00</div>
+<div>avg_rhat: 2.53 ± 0.04</div>
+<div>avg_ess: 5.18 ± 0.13</div>
+<div>total_params: 42.00 ± 0.00</div>
+<div><br></div>
+<div><h2>Naval-Propulsion-Plant </h2></div>
+<div>TBD</div>
+<div><br></div>
+<div><h2>Power Plant</h2></div>
+<div>TBD</div>
+<div><br></div>
+<div><h2>Protein</h2></div>
+<div>TBD</div>
+<div><br></div>
+<div><h2>Wine</h2></div>
+<div>Overall Results:</div>
+<div>RMSE: 0.62 ± 0.00</div>
+<div>Time: 2241.16 ± 522.89 s</div>
+<div><br></div>
+<div>Diagnostic Summary (averages ± std):</div>
+<div>elpd_waic: 948.42 ± 2.54</div>
+<div>p_waic: 118.90 ± 3.06</div>
+<div>waic_se: 0.02 ± 0.00</div>
+<div>elpd_loo: 948.92 ± 2.83</div>
+<div>p_loo: 118.40 ± 1.64</div>
+<div>loo_se: 0.02 ± 0.00</div>
+<div>avg_rhat: 1.63 ± 0.05</div>
+<div>avg_ess: 14.80 ± 4.82</div>
+<div>total_params: 57.00 ± 0.00</div>
+<div><br></div>
+<div><h2>Yacht</h2></div>
+<div>Overall Results:</div>
+<div>RMSE: 0.60 ± 0.46</div>
+<div>Time: 811.16 ± 25.24 s</div>
+<div><br></div>
+<div>Diagnostic Summary (averages ± std):</div>
+<div>elpd_waic: 722.19 ± 124.58</div>
+<div>p_waic: 214.62 ± 101.21</div>
+<div>waic_se: 0.19 ± 0.04</div>
+<div>elpd_loo: 745.98 ± 118.28</div>
+<div>p_loo: 190.83 ± 94.76</div>
+<div>loo_se: 0.13 ± 0.02</div>
+<div>avg_rhat: 2.22 ± 0.10</div>
+<div>avg_ess: 6.52 ± 0.52</div>
+<div>total_params: 32.00 ± 0.00</div>
+
+
+Title: \section{Spectral Circulant BNN}
+Content: <div><b><h1>\section{Spectral Circulant BNN}</h1></b></div>
+<div><br></div>
+<div><h2>Housing</h2></div>
+<div>Overall Results:</div>
+<div>RMSE: 2.82 ± 0.03</div>
+<div>Time: 143.68 ± 4.44 s</div>
+<div><br></div>
+<div>Diagnostic Summary (averages ± std):</div>
+<div>elpd_waic: 479.00 ± 4.10</div>
+<div>p_waic: 62.47 ± 5.48</div>
+<div>waic_se: 0.08 ± 0.00</div>
+<div>elpd_loo: 478.06 ± 2.21</div>
+<div>p_loo: 63.42 ± 3.58</div>
+<div>loo_se: 0.08 ± 0.00</div>
+<div>avg_rhat: 1.52 ± 0.08</div>
+<div>avg_ess: 871.29 ± 79.12</div>
+<div>total_params: 29.00 ± 0.00</div>
+<div><br></div>
+<div><br></div>
+<div><h2>Concrete</h2></div>
+<div>Overall Results:</div>
+<div>RMSE: 7.64 ± 0.01</div>
+<div>Time: 74.42 ± 3.61 s</div>
+<div><br></div>
+<div>Diagnostic Summary (averages ± std):</div>
+<div>elpd_waic: 871.86 ± 0.20</div>
+<div>p_waic: 26.80 ± 0.34</div>
+<div>waic_se: 0.03 ± 0.00</div>
+<div>elpd_loo: 871.78 ± 0.20</div>
+<div>p_loo: 26.88 ± 0.34</div>
+<div>loo_se: 0.03 ± 0.00</div>
+<div>avg_rhat: 1.59 ± 0.13</div>
+<div>avg_ess: 1392.66 ± 36.80</div>
+<div>total_params: 20.00 ± 0.00</div>
+<div><br></div>
+<div><br></div>
+<div><h2>Kin8nm</h2></div>
+<div>Overall Results:</div>
+<div>RMSE: 0.19 ± 0.00</div>
+<div>Time: 1346.83 ± 71.46 s</div>
+<div><br></div>
+<div>Diagnostic Summary (averages ± std):</div>
+<div>elpd_waic: 4008.96 ± 35.99</div>
+<div>p_waic: 237.49 ± 22.48</div>
+<div>waic_se: 0.01 ± 0.00</div>
+<div>elpd_loo: 4018.77 ± 31.01</div>
+<div>p_loo: 227.69 ± 18.07</div>
+<div>loo_se: 0.01 ± 0.00</div>
+<div>avg_rhat: 1.86 ± 0.05</div>
+<div>avg_ess: 1304.98 ± 117.25</div>
+<div>total_params: 20.00 ± 0.00</div>
+<div><br></div>
+<div><br></div>
+<div><h2>Energy</h2></div>
+<div>Overall Results:</div>
+<div>RMSE: 2.39 ± 0.03</div>
+<div>Time: 170.48 ± 20.11 s</div>
+<div><br></div>
+<div>Diagnostic Summary (averages ± std):</div>
+<div>elpd_waic: 841.49 ± 2.04</div>
+<div>p_waic: 41.55 ± 6.74</div>
+<div>waic_se: 0.03 ± 0.00</div>
+<div>elpd_loo: 841.90 ± 2.05</div>
+<div>p_loo: 41.14 ± 6.64</div>
+<div>loo_se: 0.03 ± 0.00</div>
+<div>avg_rhat: 1.93 ± 0.11</div>
+<div>avg_ess: 205.35 ± 116.92</div>
+<div>total_params: 20.00 ± 0.00</div>
+<div><br></div>
+<div><h2>Naval-Propulsion-Plant </h2></div>
+<div><b>Overall Results:</b>RMSE: 0.00 ± 0.00Time: 32164.11 ± 78.30 s</div>
+<div><b>Diagnostic Summary (averages ± std):</b>elpd_waic: 20058.61 ± 2.03p_waic: 7430.81 ± 10.70waic_se: 0.03 ± 0.00elpd_loo: 21897.12 ± 2.50p_loo: 5592.31 ± 8.00loo_se: 0.01 ± 0.00avg_rhat: 3.13 ± 0.10avg_ess: 4.57 ± 0.20total_params: 37.00 ± 0.00</div>
+<div><br></div>
+<div><br></div>
+<div><h2>Power Plant</h2></div>
+<div>Overall Results:</div>
+<div>RMSE: 4.58 ± 0.04</div>
+<div>Time: 1318.15 ± 226.07 s</div>
+<div><br></div>
+<div>Diagnostic Summary (averages ± std):</div>
+<div>elpd_waic: 12103.70 ± 126.92</div>
+<div>p_waic: 283.16 ± 48.38</div>
+<div>waic_se: 0.01 ± 0.00</div>
+<div>elpd_loo: 12148.35 ± 116.48</div>
+<div>p_loo: 238.51 ± 32.14</div>
+<div>loo_se: 0.01 ± 0.00</div>
+<div>avg_rhat: 1.92 ± 0.10</div>
+<div>avg_ess: 419.83 ± 15.18</div>
+<div>total_params: 12.00 ± 0.00</div>
+<div><br></div>
+<div><h2>Protein</h2></div>
+<div>Overall Results:</div>
+<div>RMSE: 5.07 ± 0.01</div>
+<div>Time: 3971.38 ± 1231.74 s</div>
+<div><br></div>
+<div>Diagnostic Summary (averages ± std):</div>
+<div>elpd_waic: 27.38 ± 148.42</div>
+<div>p_waic: 690.25 ± 119.27</div>
+<div>waic_se: 0.00 ± 0.00</div>
+<div>elpd_loo: 56.67 ± 141.03</div>
+<div>p_loo: 660.96 ± 111.69</div>
+<div>loo_se: 0.00 ± 0.00</div>
+<div>avg_rhat: 2.25 ± 0.05</div>
+<div>avg_ess: 95.57 ± 20.23</div>
+<div>total_params: 21.00 ± 0.00</div>
+<div><br></div>
+<div><h2>Wine</h2></div>
+<div>Overall Results:</div>
+<div>RMSE: 0.69 ± 0.00</div>
+<div>Time: 125.97 ± 11.44 s</div>
+<div><br></div>
+<div>Diagnostic Summary (averages ± std):</div>
+<div>elpd_waic: 787.47 ± 1.18</div>
+<div>p_waic: 39.91 ± 1.64</div>
+<div>waic_se: 0.02 ± 0.00</div>
+<div>elpd_loo: 788.60 ± 0.67</div>
+<div>p_loo: 38.78 ± 1.18</div>
+<div>loo_se: 0.02 ± 0.00</div>
+<div>avg_rhat: 1.41 ± 0.05</div>
+<div>avg_ess: 910.07 ± 90.20</div>
+<div>total_params: 20.00 ± 0.00</div>
+<div><br></div>
+<div><br></div>
+<div><h2>Yacht</h2></div>
+<div>Overall Results:</div>
+<div>RMSE: 4.38 ± 0.01</div>
+<div>Time: 57.34 ± 7.27 s</div>
+<div><br></div>
+<div>Diagnostic Summary (averages ± std):</div>
+<div>elpd_waic: 319.21 ± 0.06</div>
+<div>p_waic: 17.85 ± 0.06</div>
+<div>waic_se: 0.06 ± 0.00</div>
+<div>elpd_loo: 319.03 ± 0.08</div>
+<div>p_loo: 18.03 ± 0.08</div>
+<div>loo_se: 0.06 ± 0.00</div>
+<div>avg_rhat: 1.23 ± 0.07</div>
+<div>avg_ess: 1503.12 ± 106.05</div>
+<div>total_params: 16.00 ± 0.00</div>
+<div><br></div>
+<div><br></div>
+<div><br></div>
+
+
