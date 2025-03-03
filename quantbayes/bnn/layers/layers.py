@@ -2349,7 +2349,7 @@ class GaussianProcessLayer:
                 jnp.array(1.0),
                 constraint=dist.constraints.positive,
             )
-            K = K + self.noise * jnp.eye(X.shape[0])
+            K = K + self.noise * jnp.eye(X.shape[0]) + 1e-6 * jnp.eye(X.shape[0])
         return K
 
     # --- RBF Kernel Implementation ---
