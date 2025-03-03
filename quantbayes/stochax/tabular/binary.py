@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
-class BinaryClassificationModel:
+class BinaryModel:
     """
     Trains a model that outputs raw logits for binary classification.
     Uses BCE loss with a sigmoid inside the loss function.
@@ -240,7 +240,7 @@ if __name__ == "__main__":
     state = None  # no BN/Dropout => no eqx.nn.State
 
     # Create the training wrapper
-    trainer = BinaryClassificationModel(lr=1e-2)
+    trainer = BinaryModel(lr=1e-2)
     model, state = trainer.fit(
         model,
         state,

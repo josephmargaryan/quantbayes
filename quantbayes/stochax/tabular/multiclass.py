@@ -9,7 +9,7 @@ import seaborn as sns
 from sklearn.metrics import confusion_matrix
 
 
-class MulticlassClassificationModel:
+class MulticlassModel:
     """
     Trains a model that outputs raw logits for multiclass classification.
     Uses cross-entropy with integer labels.
@@ -241,7 +241,7 @@ if __name__ == "__main__":
     model = SimpleMulti(X.shape[1], 64, jr.PRNGKey(1))
     state = None
 
-    trainer = MulticlassClassificationModel(lr=1e-2)
+    trainer = MulticlassModel(lr=1e-2)
     model, state = trainer.fit(
         model,
         state,

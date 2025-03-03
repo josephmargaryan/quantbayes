@@ -1,11 +1,11 @@
-from .binary import BinaryClassificationModel
-from .multiclass import MulticlassClassificationModel
+from .binary import BinaryModel
+from .multiclass import MulticlassModel   
 from .regression import RegressionModel
 from .simple_models.models import LinearRegression, LogisticRegression, MLPClassifier
 
 __all__ = [
-    "BinaryClassificationModel",
-    "MulticlassClassificationModel",
+    "BinaryModel",
+    "MulticlassModel",
     "RegressionModel",
     "LinearRegression",
     "LogisticRegression",
