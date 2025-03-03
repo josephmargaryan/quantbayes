@@ -1,3 +1,4 @@
+from .calibration import CalibratedClassifier
 from .bayesianize import bayesianize, prior_fn
 from .viz import (
     get_fft_full_for_given_params,
@@ -10,6 +11,7 @@ from .viz import (
 )
 
 __all__ = [
+    "CalibratedClassifier",
     "bayesianize",
     "prior_fn",
     "get_fft_full_for_given_params",

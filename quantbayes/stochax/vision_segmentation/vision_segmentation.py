@@ -246,7 +246,7 @@ class SegmentationModel:
 
 
 if __name__ == "__main__":
-    from quantbayes.stochax.vision_segmentation import UNet
+    from quantbayes.stochax.vision_segmentation.models import UNet
 
     print("=== Demo: SegmentationModel with UNet ===")
     key = jr.PRNGKey(42)
