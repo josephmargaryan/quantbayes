@@ -122,26 +122,61 @@ def predict_gp(model, X_train, y_train, X_test):
     return mean_pred, var_pred
 
 
-def predict_gp_binary(model, X_train, y_train, X_test):
-    # Compute the training covariance matrix (with noise) using the GP layer from the fitted model
+def predict_gp_binary(model, X_train, y_train, X_test, num_samples=100):
+    """
+    Computes the predictive distribution for a GP binary classifier by drawing multiple samples 
+    from the approximate posterior of the latent function and then applying the sigmoid transformation.
+    
+    Parameters:
+      model: the fitted GP binary classification model.
+      X_train: training inputs.
+      y_train: training binary labels.
+      X_test: test inputs.
+      num_samples: number of posterior samples to draw.
+      
+    Returns:
+      mean_prob: the mean predicted probability for class 1 (array of shape [n_test]).
+      std_prob: the standard deviation of the predicted probabilities (array of shape [n_test]).
+      all_probs: an array of shape [num_samples, n_test] containing all probability samples.
+    """
+    import numpy as np
+
+    # Compute covariance matrices using the fitted GP layer.
     K_train = jax.device_get(model.gp_layer(X_train))
     K_cross = jax.device_get(model.gp_layer(X_test, X_train))
     K_test = jax.device_get(model.gp_layer(X_test))
     noise = jax.device_get(model.gp_layer.noise)
 
-    # Add noise to training covariance matrix and compute Cholesky decomposition
+    # Add noise to the training covariance matrix and compute its Cholesky decomposition.
     K_train_noise = K_train + (noise**2) * np.eye(K_train.shape[0])
     L = np.linalg.cholesky(K_train_noise + 1e-6 * np.eye(K_train.shape[0]))
 
-    # Solve for latent function at training points (posterior mean approximation, for instance)
+    # A naive posterior mean calculation as used in regression is not fully appropriate for classification.
+    # Here we assume a Laplace approximation where the posterior of the latent function f is Gaussian.
+    # Compute a "regression-style" mean for f at test points.
     alpha = np.linalg.solve(L.T, np.linalg.solve(L, np.array(y_train)))
     f_mean = K_cross.dot(alpha)
 
-    # Transform the latent mean predictions to probabilities using the sigmoid function
-    p_mean = jax.nn.sigmoid(f_mean)
+    # Approximate the posterior covariance for f at test points.
+    # In regression, the predictive covariance is given by:
+    V = K_test - K_cross.dot(np.linalg.solve(K_train_noise, K_cross.T))
+    # Ensure numerical stability.
+    V += 1e-6 * np.eye(V.shape[0])
+    L_V = np.linalg.cholesky(V)
 
-    # In practice, you might also want to compute uncertainty in p_mean via sampling
-    return p_mean
+    # Draw samples from the approximate Gaussian posterior of f at test points.
+    all_probs = []
+    for i in range(num_samples):
+        z = np.random.randn(V.shape[0])
+        f_sample = f_mean + L_V.dot(z)
+        probs = jax.nn.sigmoid(f_sample)
+        all_probs.append(probs)
+    all_probs = np.array(all_probs)  # shape: (num_samples, n_test)
+
+    # Compute mean and standard deviation of the predicted probabilities.
+    mean_prob = all_probs.mean(axis=0)
+    std_prob = all_probs.std(axis=0)
+    return mean_prob, std_prob, all_probs
 
 
 def visualize_predictions(X_test, mean_pred, var_pred):
@@ -185,18 +220,20 @@ def visualize_predictions(X_test, mean_pred, var_pred):
     return fig
 
 
-def visualize_predictions_binary(X_test, pred_probs, threshold=0.5):
+def visualize_predictions_binary(X_test, mean_prob, std_prob, threshold=0.5):
     """
-    Visualizes the predicted probabilities for binary classification from a Gaussian Process model.
-
+    Visualizes the predicted probabilities for binary classification along with uncertainty bands.
+    
     Parameters:
-      X_test: jnp.ndarray or np.ndarray of shape (num_points, input_dim)
+      X_test: array-like, shape (num_points, input_dim)
         Test inputs.
-      pred_probs: array-like of shape (num_points,)
-        Predicted probabilities for class 1.
+      mean_prob: array-like, shape (num_points,)
+        Mean predicted probability for class 1.
+      std_prob: array-like, shape (num_points,)
+        Standard deviation of predicted probabilities.
       threshold: float (default: 0.5)
         Decision threshold for classification.
-
+        
     Returns:
       fig: Matplotlib figure.
     """
@@ -204,34 +241,40 @@ def visualize_predictions_binary(X_test, pred_probs, threshold=0.5):
     import matplotlib.pyplot as plt
     from sklearn.decomposition import PCA
 
-    # Convert X_test to a NumPy array
+    # Convert X_test to a NumPy array.
     X_arr = np.array(X_test)
-
-    # If inputs are multidimensional (>1 feature), reduce to 1D with PCA for visualization.
+    
+    # Reduce dimensionality for visualization if necessary.
     if X_arr.ndim > 1 and X_arr.shape[1] > 1:
         pca = PCA(n_components=1)
         X_reduced = pca.fit_transform(X_arr).flatten()
     else:
         X_reduced = X_arr.flatten()
 
-    # Sort the inputs for a cleaner plot.
+    # Sort inputs for a smooth plot.
     order = np.argsort(X_reduced)
     X_sorted = X_reduced[order]
-    probs_sorted = np.array(pred_probs)[order]
+    mean_sorted = np.array(mean_prob)[order]
+    std_sorted = np.array(std_prob)[order]
 
-    # Plot the predicted probabilities.
+    # Create the plot.
     fig, ax = plt.subplots(figsize=(8, 5))
-    ax.plot(X_sorted, probs_sorted, "b-", label="Probability of Class 1")
-    ax.scatter(X_sorted, probs_sorted, color="blue", s=20)
-    ax.axhline(
-        y=threshold, color="red", linestyle="--", label=f"Threshold = {threshold}"
+    ax.plot(X_sorted, mean_sorted, "b-", label="Mean Probability")
+    # Plot uncertainty bands (e.g., ±2 standard deviations).
+    ax.fill_between(
+        X_sorted,
+        mean_sorted - 2 * std_sorted,
+        mean_sorted + 2 * std_sorted,
+        color="blue",
+        alpha=0.3,
+        label="Uncertainty (±2 std)"
     )
-    ax.set_title("GP Binary Classification Predictions")
+    ax.axhline(y=threshold, color="red", linestyle="--", label=f"Threshold = {threshold}")
     xlabel = "Input" if X_arr.ndim == 1 or X_arr.shape[1] == 1 else "PCA Component 1"
     ax.set_xlabel(xlabel)
     ax.set_ylabel("Probability of Class 1")
+    ax.set_title("GP Binary Classification Predictions with Uncertainty")
     ax.legend()
     plt.tight_layout()
     plt.show()
-
     return fig
