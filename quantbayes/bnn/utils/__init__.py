@@ -1,6 +1,6 @@
 from .entropy_analysis import EntropyAndMutualInformation
 from .model_calibration import (
-    CalibratedBayesNet,
+    CalibratedBNN,
     plot_calibration_curve,
     plot_roc_curve,
     expected_calibration_error,
@@ -22,7 +22,7 @@ from .gp_utils import (
 )
 
 __all__ = [
-    "CalibratedBayesNet",
+    "CalibratedBNN",
     "EntropyAndMutualInformation",
     "BayesianAnalysis",
     "plot_roc_curve",

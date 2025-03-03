@@ -6,7 +6,7 @@ from sklearn.calibration import calibration_curve
 from sklearn.metrics import roc_curve, auc
 
 __all__ = [
-    "CalibratedBayesNet",
+    "CalibratedBNN",
     "plot_roc_curve",
     "plot_calibration_curve",
     "expected_calibration_error",
@@ -120,7 +120,7 @@ def get_calibrator(method: str):
         raise ValueError(f"Unknown calibration method: {method}")
 
 
-class CalibratedBayesNet:
+class CalibratedBNN:
     """
     A wrapper that combines a Bayesian Neural Network (BNN) with post-hoc probability calibration.
 
