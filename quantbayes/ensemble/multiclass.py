@@ -10,7 +10,7 @@ from sklearn.datasets import make_classification
 from sklearn.model_selection import train_test_split
 
 
-class EnsembleMulticlassClassificationModel(BaseEstimator, ClassifierMixin):
+class EnsembleMulticlass(BaseEstimator, ClassifierMixin):
     def __init__(
         self,
         models,
@@ -296,7 +296,7 @@ if __name__ == "__main__":
     weights = None  # Only used for weighted_average if desired.
 
     # Create ensemble instance.
-    ensemble = EnsembleMulticlassClassificationModel(
+    ensemble = EnsembleMulticlass(
         models,
         n_splits=5,
         ensemble_method=ensemble_method,

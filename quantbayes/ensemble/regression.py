@@ -7,7 +7,7 @@ from sklearn.linear_model import LinearRegression
 from sklearn.tree import DecisionTreeRegressor
 
 
-class EnsembleRegressionModel(BaseEstimator, RegressorMixin):
+class EnsembleRegression(BaseEstimator, RegressorMixin):
     def __init__(
         self,
         models,
@@ -254,7 +254,7 @@ if __name__ == "__main__":
     weights = None  # Only used if ensemble_method=="weighted_average"
 
     # Create ensemble instance.
-    ensemble = EnsembleRegressionModel(
+    ensemble = EnsembleRegression(
         models,
         n_splits=5,
         ensemble_method=ensemble_method,

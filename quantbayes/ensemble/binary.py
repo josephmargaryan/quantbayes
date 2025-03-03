@@ -8,7 +8,7 @@ from sklearn.datasets import make_classification
 from sklearn.model_selection import train_test_split
 
 
-class EnsembleClassificationModel(BaseEstimator, ClassifierMixin):
+class EnsembleBinary(BaseEstimator, ClassifierMixin):
     def __init__(
         self,
         models,
@@ -260,7 +260,7 @@ if __name__ == "__main__":
     weights = None  # Only used if ensemble_method=="weighted_average"
 
     # Create an ensemble instance.
-    ensemble = EnsembleClassificationModel(
+    ensemble = EnsembleBinary(
         models,
         n_splits=5,
         ensemble_method=ensemble_method,

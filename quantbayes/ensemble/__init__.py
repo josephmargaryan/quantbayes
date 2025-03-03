@@ -1,6 +1,6 @@
-from .binary import EnsembleClassificationModel
-from .multiclass import EnsembleMulticlassClassificationModel
-from .regression import EnsembleRegressionModel
+from .binary import EnsembleBinary
+from .multiclass import EnsembleMulticlass
+from .regression import EnsembleRegression
 from .bnn_ensemble import (
     BNNEnsembleRegression,
     BNNEnsembleBinary,
@@ -8,9 +8,9 @@ from .bnn_ensemble import (
 )
 
 __all__ = [
-    "EnsembleClassificationModel",
-    "EnsembleMulticlassClassificationModel",
-    "EnsembleRegressionModel",
+    "EnsembleBinary",
+    "EnsembleMulticlass",
+    "EnsembleRegression",
     "BNNMetaEnsemble",
     "BNNEnsembleRegression",
     "BNNEnsembleBinary",
