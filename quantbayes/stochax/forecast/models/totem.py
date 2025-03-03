@@ -3,6 +3,7 @@ import jax.numpy as jnp
 import jax.random as jr
 import equinox as eqx
 
+
 # -------------------------------------------------------------------
 # 1. Codebook and Quantization
 # -------------------------------------------------------------------
@@ -20,13 +21,16 @@ class Codebook(eqx.Module):
         emb = self.embeddings  # shape (E, C)
         # Transpose z_e to (L, C) for pairwise distance computation.
         z_e_t = z_e.T  # shape (L, C)
+
         def _dist(z):
             return jnp.sum((emb - z) ** 2, axis=-1)
+
         dist = jax.vmap(_dist)(z_e_t)  # shape (L, E)
         indices = jnp.argmin(dist, axis=-1)  # shape (L,)
-        z_q_flat = self.embeddings[indices]   # shape (L, C)
+        z_q_flat = self.embeddings[indices]  # shape (L, C)
         z_q = z_q_flat.T  # shape (C, L)
         return z_q, indices
+
 
 # -------------------------------------------------------------------
 # 2. VQ-VAE: Encoder / Decoder + Codebook
@@ -34,46 +38,65 @@ class Codebook(eqx.Module):
 class TOTEMEncoder(eqx.Module):
     conv: eqx.nn.Conv1d
 
-    def __init__(self, in_channels: int, latent_channels: int, kernel_size=4, stride=2, *, key):
+    def __init__(
+        self, in_channels: int, latent_channels: int, kernel_size=4, stride=2, *, key
+    ):
         self.conv = eqx.nn.Conv1d(
-            in_channels, latent_channels, kernel_size=kernel_size,
-            stride=stride, padding="SAME", key=key
+            in_channels,
+            latent_channels,
+            kernel_size=kernel_size,
+            stride=stride,
+            padding="SAME",
+            key=key,
         )
 
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
         # x: shape (in_channels, L)
         return self.conv(x)
 
+
 class TOTEMDecoder(eqx.Module):
     tconv: eqx.nn.ConvTranspose1d
 
-    def __init__(self, latent_channels: int, out_channels: int, kernel_size=4, stride=2, *, key):
+    def __init__(
+        self, latent_channels: int, out_channels: int, kernel_size=4, stride=2, *, key
+    ):
         self.tconv = eqx.nn.ConvTranspose1d(
-            in_channels=latent_channels, out_channels=out_channels,
-            kernel_size=kernel_size, stride=stride, padding="SAME", key=key
+            in_channels=latent_channels,
+            out_channels=out_channels,
+            kernel_size=kernel_size,
+            stride=stride,
+            padding="SAME",
+            key=key,
         )
 
     def __call__(self, z_q: jnp.ndarray) -> jnp.ndarray:
         # z_q: shape (latent_channels, L)
         return self.tconv(z_q)
 
+
 class TOTEMVQVAE(eqx.Module):
     encoder: TOTEMEncoder
     codebook: Codebook
     decoder: TOTEMDecoder
 
-    def __init__(self, in_channels: int, latent_channels: int, num_embeddings: int, *, key):
+    def __init__(
+        self, in_channels: int, latent_channels: int, num_embeddings: int, *, key
+    ):
         k_enc, k_cbook, k_dec = jr.split(key, 3)
         self.encoder = TOTEMEncoder(in_channels, latent_channels, key=k_enc)
         self.codebook = Codebook(num_embeddings, latent_channels, key=k_cbook)
         self.decoder = TOTEMDecoder(latent_channels, in_channels, key=k_dec)
 
-    def __call__(self, x: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    def __call__(
+        self, x: jnp.ndarray
+    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         # x: shape (in_channels, L)
         z_e = self.encoder(x)
         z_q, indices = self.codebook.quantize(z_e)
         x_recon = self.decoder(z_q)
         return x_recon, z_e, z_q, indices
+
 
 # -------------------------------------------------------------------
 # 3. TOTEM Transformer (for discrete tokens)
@@ -104,6 +127,7 @@ class MLP(eqx.Module):
         y = self.dropout(y, key=key2)
         return y
 
+
 class TransformerBlock(eqx.Module):
     norm1: eqx.nn.LayerNorm
     attn: eqx.nn.MultiheadAttention
@@ -112,7 +136,9 @@ class TransformerBlock(eqx.Module):
     mlp: MLP
     dropout2: eqx.nn.Dropout
 
-    def __init__(self, embed_dim: int, num_heads: int, mlp_ratio: float, dropout_p: float, *, key):
+    def __init__(
+        self, embed_dim: int, num_heads: int, mlp_ratio: float, dropout_p: float, *, key
+    ):
         k1, k2, k3, k4, k5 = jr.split(key, 5)
         self.norm1 = eqx.nn.LayerNorm(embed_dim, eps=1e-6)
         self.attn = eqx.nn.MultiheadAttention(
@@ -154,11 +180,21 @@ class TransformerBlock(eqx.Module):
         x = x + mlp_out
         return x
 
+
 class TOTEMTransformer(eqx.Module):
     layers: list[TransformerBlock]
     final_linear: eqx.nn.Linear
 
-    def __init__(self, num_layers: int, embed_dim: int, num_heads: int, mlp_ratio: float, dropout_p: float, *, key):
+    def __init__(
+        self,
+        num_layers: int,
+        embed_dim: int,
+        num_heads: int,
+        mlp_ratio: float,
+        dropout_p: float,
+        *,
+        key,
+    ):
         ks = jr.split(key, num_layers + 1)
         self.layers = [
             TransformerBlock(embed_dim, num_heads, mlp_ratio, dropout_p, key=ks[i])
@@ -171,12 +207,13 @@ class TOTEMTransformer(eqx.Module):
         if key is not None:
             block_keys = jr.split(key, len(self.layers))
         else:
-            block_keys = [None]*len(self.layers)
+            block_keys = [None] * len(self.layers)
         y = x
         for layer, k in zip(self.layers, block_keys):
             y = layer(y, key=k)
         last = y[-1]  # shape (embed_dim,)
         return self.final_linear(last)
+
 
 # -------------------------------------------------------------------
 # 4. TOTEM: End-to-End Model with VQ-VAE and Transformer
@@ -185,11 +222,23 @@ class TOTEM(eqx.Module):
     vqvae: TOTEMVQVAE
     transformer: TOTEMTransformer
 
-    def __init__(self, in_channels: int, latent_channels: int, num_embeddings: int,
-                 num_layers: int, num_heads: int, mlp_ratio: float, dropout_p: float, *, key):
+    def __init__(
+        self,
+        in_channels: int,
+        latent_channels: int,
+        num_embeddings: int,
+        num_layers: int,
+        num_heads: int,
+        mlp_ratio: float,
+        dropout_p: float,
+        *,
+        key,
+    ):
         k_vq, k_tx = jr.split(key)
         self.vqvae = TOTEMVQVAE(in_channels, latent_channels, num_embeddings, key=k_vq)
-        self.transformer = TOTEMTransformer(num_layers, latent_channels, num_heads, mlp_ratio, dropout_p, key=k_tx)
+        self.transformer = TOTEMTransformer(
+            num_layers, latent_channels, num_heads, mlp_ratio, dropout_p, key=k_tx
+        )
 
     def __call__(self, x: jnp.ndarray, *, key=None) -> jnp.ndarray:
         """
@@ -207,18 +256,39 @@ class TOTEM(eqx.Module):
         z_q_t = jnp.transpose(z_q, (1, 0))
         return self.transformer(z_q_t, key=key)
 
+
 # -------------------------------------------------------------------
 # 5. Batch Wrapper: TOTEMForecast
 # -------------------------------------------------------------------
 class TOTEMForecast(eqx.Module):
     model: TOTEM
 
-    def __init__(self, in_channels: int, latent_channels: int, num_embeddings: int,
-                 num_layers: int, num_heads: int, mlp_ratio: float, dropout_p: float, *, key):
-        self.model = TOTEM(in_channels, latent_channels, num_embeddings,
-                           num_layers, num_heads, mlp_ratio, dropout_p, key=key)
+    def __init__(
+        self,
+        in_channels: int,
+        latent_channels: int,
+        num_embeddings: int,
+        num_layers: int,
+        num_heads: int,
+        mlp_ratio: float,
+        dropout_p: float,
+        *,
+        key,
+    ):
+        self.model = TOTEM(
+            in_channels,
+            latent_channels,
+            num_embeddings,
+            num_layers,
+            num_heads,
+            mlp_ratio,
+            dropout_p,
+            key=key,
+        )
 
-    def __call__(self, x: jnp.ndarray, state: eqx.nn.State, *, key=None) -> tuple[jnp.ndarray, eqx.nn.State]:
+    def __call__(
+        self, x: jnp.ndarray, state: eqx.nn.State, *, key=None
+    ) -> tuple[jnp.ndarray, eqx.nn.State]:
         """
         Args:
           x: Input tensor of shape [N, seq_len, in_channels]
@@ -228,6 +298,7 @@ class TOTEMForecast(eqx.Module):
         # Here, we assume the training framework vmaps over samples;
         # so x is a single sample.
         return self.model(x, key=key), state
+
 
 # -------------------------------------------------------------------
 # Example usage
@@ -252,16 +323,23 @@ if __name__ == "__main__":
         in_channels=1,
         latent_channels=24,
         num_embeddings=52,
-        num_layers=2,    #
+        num_layers=2,  #
         num_heads=2,
         mlp_ratio=4,
         dropout_p=0.1,
-        key=key
+        key=key,
     )
     trainer = ForecastingModel(lr=1e-3)
     model, state = trainer.fit(
-        model, state, X_train, y_train, X_val, y_val,
-        num_epochs=500, patience=100, key=jr.PRNGKey(42)
+        model,
+        state,
+        X_train,
+        y_train,
+        X_val,
+        y_val,
+        num_epochs=500,
+        patience=100,
+        key=jr.PRNGKey(42),
     )
     preds = trainer.predict(model, state, X_val, key=jr.PRNGKey(123))
     print(f"preds shape {preds.shape}")

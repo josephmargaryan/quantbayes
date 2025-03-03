@@ -4,6 +4,7 @@ import jax.random as jr
 import jax.nn as jnn
 import equinox as eqx
 
+
 # -------------------------------------------------------------------
 # LSTM Cell (adapted from Equinox examples)
 # -------------------------------------------------------------------
@@ -15,16 +16,28 @@ class LSTMCell(eqx.Module):
     hidden_size: int = eqx.field(static=True)
     use_bias: bool = eqx.field(static=True)
 
-    def __init__(self, input_size: int, hidden_size: int, *, key, use_bias: bool = True):
+    def __init__(
+        self, input_size: int, hidden_size: int, *, key, use_bias: bool = True
+    ):
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.use_bias = use_bias
         k1, k2, k3 = jr.split(key, 3)
-        self.weight_ih = jr.normal(k1, (4 * hidden_size, input_size)) * (1.0 / jnp.sqrt(input_size))
-        self.weight_hh = jr.normal(k2, (4 * hidden_size, hidden_size)) * (1.0 / jnp.sqrt(hidden_size))
-        self.bias = (jr.normal(k3, (4 * hidden_size,)) if use_bias else jnp.zeros((4 * hidden_size,)))
+        self.weight_ih = jr.normal(k1, (4 * hidden_size, input_size)) * (
+            1.0 / jnp.sqrt(input_size)
+        )
+        self.weight_hh = jr.normal(k2, (4 * hidden_size, hidden_size)) * (
+            1.0 / jnp.sqrt(hidden_size)
+        )
+        self.bias = (
+            jr.normal(k3, (4 * hidden_size,))
+            if use_bias
+            else jnp.zeros((4 * hidden_size,))
+        )
 
-    def __call__(self, x: jnp.ndarray, state: tuple[jnp.ndarray, jnp.ndarray]) -> tuple[tuple[jnp.ndarray, jnp.ndarray], jnp.ndarray]:
+    def __call__(
+        self, x: jnp.ndarray, state: tuple[jnp.ndarray, jnp.ndarray]
+    ) -> tuple[tuple[jnp.ndarray, jnp.ndarray], jnp.ndarray]:
         # Ensure x is at least 1D. For input_size==1, x should be shape (1,)
         x = jnp.atleast_1d(x)
         h, c = state
@@ -40,6 +53,7 @@ class LSTMCell(eqx.Module):
         c_new = f * c + i * g
         h_new = o * jnp.tanh(c_new)
         return (h_new, c_new), h_new
+
 
 # -------------------------------------------------------------------
 # LSTM Encoder: processes a sequence and returns hidden states.
@@ -57,11 +71,14 @@ class LSTMEncoder(eqx.Module):
             jnp.zeros((self.cell.hidden_size,)),
             jnp.zeros((self.cell.hidden_size,)),
         )
+
         def step(state, x_t):
             new_state, h_t = self.cell(x_t, state)
             return new_state, h_t
+
         _, hs = jax.lax.scan(step, init_state, x)
         return hs  # shape: (seq_len, hidden_size)
+
 
 # -------------------------------------------------------------------
 # Gating Module: computes a gate vector for fusion.
@@ -75,6 +92,7 @@ class GatingModule(eqx.Module):
 
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
         return jnn.sigmoid(self.linear(x))
+
 
 # -------------------------------------------------------------------
 # Temporal Fusion Transformer (simplified)
@@ -110,14 +128,19 @@ class TemporalFusionTransformer(eqx.Module):
 
     def __call__(self, x: jnp.ndarray, *, key=None) -> jnp.ndarray:
         # x: shape (seq_len, input_size)
-        hs = self.lstm_encoder(x)         # shape: (seq_len, hidden_size)
-        last_hidden = hs[-1]                # shape: (hidden_size,)
-        attn_out = self.attn(last_hidden[None, :], hs, hs, mask=None, key=key)  # shape: (1, hidden_size)
-        attn_out = attn_out[0]              # shape: (hidden_size,)
-        concat = jnp.concatenate([last_hidden, attn_out], axis=-1)  # shape: (2*hidden_size,)
-        gate = self.gating(concat)          # shape: (hidden_size,)
+        hs = self.lstm_encoder(x)  # shape: (seq_len, hidden_size)
+        last_hidden = hs[-1]  # shape: (hidden_size,)
+        attn_out = self.attn(
+            last_hidden[None, :], hs, hs, mask=None, key=key
+        )  # shape: (1, hidden_size)
+        attn_out = attn_out[0]  # shape: (hidden_size,)
+        concat = jnp.concatenate(
+            [last_hidden, attn_out], axis=-1
+        )  # shape: (2*hidden_size,)
+        gate = self.gating(concat)  # shape: (hidden_size,)
         fused = gate * attn_out + (1 - gate) * last_hidden  # shape: (hidden_size,)
-        return self.final_linear(fused)     # shape: (1,)
+        return self.final_linear(fused)  # shape: (1,)
+
 
 # -------------------------------------------------------------------
 # Batch Wrapper: TemporalFusionTransformerForecast
@@ -126,11 +149,16 @@ class TemporalFusionTransformerForecast(eqx.Module):
     model: TemporalFusionTransformer
 
     def __init__(self, input_size: int, hidden_size: int, num_heads: int, *, key):
-        self.model = TemporalFusionTransformer(input_size, hidden_size, num_heads, key=key)
+        self.model = TemporalFusionTransformer(
+            input_size, hidden_size, num_heads, key=key
+        )
 
-    def __call__(self, x: jnp.ndarray, state: eqx.nn.State, *, key=None) -> tuple[jnp.ndarray, any]:
+    def __call__(
+        self, x: jnp.ndarray, state: eqx.nn.State, *, key=None
+    ) -> tuple[jnp.ndarray, any]:
         # x: single sample of shape [seq_len, input_size]
         return self.model(x, key=key), state
+
 
 # -------------------------------------------------------------------
 # Example usage
@@ -152,15 +180,19 @@ if __name__ == "__main__":
 
     key = jr.PRNGKey(0)
     model, state = eqx.nn.make_with_state(TemporalFusionTransformerForecast)(
-        input_size=1,
-        hidden_size=24,
-        num_heads=4,
-        key=key
+        input_size=1, hidden_size=24, num_heads=4, key=key
     )
     trainer = ForecastingModel(lr=1e-3)
     model, state = trainer.fit(
-        model, state, X_train, y_train, X_val, y_val,
-        num_epochs=500, patience=100, key=jr.PRNGKey(42)
+        model,
+        state,
+        X_train,
+        y_train,
+        X_val,
+        y_val,
+        num_epochs=500,
+        patience=100,
+        key=jr.PRNGKey(42),
     )
     preds = trainer.predict(model, state, X_val, key=jr.PRNGKey(123))
     print(f"preds shape {preds.shape}")

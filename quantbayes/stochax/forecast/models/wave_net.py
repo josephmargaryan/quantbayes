@@ -4,6 +4,7 @@ import jax.random as jr
 import equinox as eqx
 import jax.nn as jnn
 
+
 # -------------------------------------------------------------------
 # Helper: VConv1d
 #
@@ -17,6 +18,7 @@ class VConv1d(eqx.Module):
         # x: [N, in_channels, L]
         return jax.vmap(self.conv)(x)
 
+
 # -------------------------------------------------------------------
 # Helper: CausalConv1d
 #
@@ -28,7 +30,15 @@ class CausalConv1d(eqx.Module):
     kernel_size: int = eqx.field(static=True)
     dilation: int = eqx.field(static=True)
 
-    def __init__(self, in_channels: int, out_channels: int, kernel_size: int, dilation: int = 1, *, key):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: int,
+        dilation: int = 1,
+        *,
+        key,
+    ):
         self.kernel_size = kernel_size
         self.dilation = dilation
         self.conv = eqx.nn.Conv1d(
@@ -48,6 +58,7 @@ class CausalConv1d(eqx.Module):
         x_padded = jnp.pad(x, ((0, 0), (0, 0), (pad, 0)))
         return jax.vmap(self.conv)(x_padded)
 
+
 # -------------------------------------------------------------------
 # WaveNet Residual Block
 #
@@ -60,7 +71,15 @@ class WaveNetResidualBlock(eqx.Module):
     conv_res: VConv1d
     conv_skip: VConv1d
 
-    def __init__(self, residual_channels: int, kernel_size: int, dilation: int, skip_channels: int, *, key):
+    def __init__(
+        self,
+        residual_channels: int,
+        kernel_size: int,
+        dilation: int,
+        skip_channels: int,
+        *,
+        key,
+    ):
         k1, k2, k3, k4 = jr.split(key, 4)
         self.conv_filter = CausalConv1d(
             residual_channels, residual_channels, kernel_size, dilation=dilation, key=k1
@@ -87,6 +106,7 @@ class WaveNetResidualBlock(eqx.Module):
         residual = res + x
         return residual, skip
 
+
 # -------------------------------------------------------------------
 # WaveNet Module
 #
@@ -99,27 +119,47 @@ class WaveNet(eqx.Module):
     post_conv1: VConv1d
     post_conv2: VConv1d
 
-    def __init__(self, input_channels: int, residual_channels: int, skip_channels: int,
-                 kernel_size: int, num_blocks: int, *, key):
+    def __init__(
+        self,
+        input_channels: int,
+        residual_channels: int,
+        skip_channels: int,
+        kernel_size: int,
+        num_blocks: int,
+        *,
+        key,
+    ):
         keys = jr.split(key, num_blocks + 4)
         pre_conv_layer = eqx.nn.Conv1d(
-            input_channels, residual_channels, kernel_size=1, padding="SAME", key=keys[0]
+            input_channels,
+            residual_channels,
+            kernel_size=1,
+            padding="SAME",
+            key=keys[0],
         )
         self.pre_conv = VConv1d(pre_conv_layer)
         blocks = []
         for i in range(num_blocks):
             dilation = 2**i
             block = WaveNetResidualBlock(
-                residual_channels, kernel_size, dilation, skip_channels, key=keys[i+1]
+                residual_channels, kernel_size, dilation, skip_channels, key=keys[i + 1]
             )
             blocks.append(block)
         self.residual_blocks = blocks
         post_conv1_layer = eqx.nn.Conv1d(
-            skip_channels, skip_channels, kernel_size=1, padding="SAME", key=keys[num_blocks+1]
+            skip_channels,
+            skip_channels,
+            kernel_size=1,
+            padding="SAME",
+            key=keys[num_blocks + 1],
         )
         self.post_conv1 = VConv1d(post_conv1_layer)
         post_conv2_layer = eqx.nn.Conv1d(
-            skip_channels, skip_channels, kernel_size=1, padding="SAME", key=keys[num_blocks+2]
+            skip_channels,
+            skip_channels,
+            kernel_size=1,
+            padding="SAME",
+            key=keys[num_blocks + 2],
         )
         self.post_conv2 = VConv1d(post_conv2_layer)
 
@@ -136,6 +176,7 @@ class WaveNet(eqx.Module):
         out = self.post_conv2(out)
         return out
 
+
 # -------------------------------------------------------------------
 # WaveNet Forecast Model
 #
@@ -147,15 +188,30 @@ class WaveNetForecast(eqx.Module):
     wavenet: WaveNet
     final_linear: eqx.nn.Linear
 
-    def __init__(self, input_channels: int, residual_channels: int, skip_channels: int,
-                 kernel_size: int, num_blocks: int, *, key):
+    def __init__(
+        self,
+        input_channels: int,
+        residual_channels: int,
+        skip_channels: int,
+        kernel_size: int,
+        num_blocks: int,
+        *,
+        key,
+    ):
         keys = jr.split(key, 3)
         self.wavenet = WaveNet(
-            input_channels, residual_channels, skip_channels, kernel_size, num_blocks, key=keys[0]
+            input_channels,
+            residual_channels,
+            skip_channels,
+            kernel_size,
+            num_blocks,
+            key=keys[0],
         )
         self.final_linear = eqx.nn.Linear(skip_channels, 1, key=keys[1])
 
-    def __call__(self, x: jnp.ndarray, state: eqx.nn.State, *, key=None) -> tuple[jnp.ndarray, any]:
+    def __call__(
+        self, x: jnp.ndarray, state: eqx.nn.State, *, key=None
+    ) -> tuple[jnp.ndarray, any]:
         """
         Args:
           x: Single-sample input tensor of shape [seq_len, D]
@@ -168,9 +224,10 @@ class WaveNetForecast(eqx.Module):
         # Transpose to channels-first: [1, D, seq_len]
         x = jnp.transpose(x, (0, 2, 1))
         out = self.wavenet(x, key=key)  # shape: [1, skip_channels, L]
-        last = out[:, :, -1]           # shape: [1, skip_channels]
+        last = out[:, :, -1]  # shape: [1, skip_channels]
         pred = self.final_linear(last[0])  # shape: [1]
         return pred, state
+
 
 # -------------------------------------------------------------------
 # Example usage
@@ -192,17 +249,24 @@ if __name__ == "__main__":
 
     key = jr.PRNGKey(0)
     model, state = eqx.nn.make_with_state(WaveNetForecast)(
-        input_channels=1,      # raw input channels
+        input_channels=1,  # raw input channels
         residual_channels=32,  # model capacity for residual path
-        skip_channels=4,       # skip connection channels
+        skip_channels=4,  # skip connection channels
         kernel_size=3,
         num_blocks=4,
-        key=key
+        key=key,
     )
     trainer = ForecastingModel(lr=1e-3)
     model, state = trainer.fit(
-        model, state, X_train, y_train, X_val, y_val,
-        num_epochs=500, patience=100, key=jr.PRNGKey(42)
+        model,
+        state,
+        X_train,
+        y_train,
+        X_val,
+        y_val,
+        num_epochs=500,
+        patience=100,
+        key=jr.PRNGKey(42),
     )
     preds = trainer.predict(model, state, X_val, key=jr.PRNGKey(123))
     print(f"preds shape {preds.shape}")

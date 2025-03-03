@@ -4,7 +4,7 @@ from .regression import EnsembleRegressionModel
 from .bnn_ensemble import (
     BNNEnsembleRegression,
     BNNEnsembleBinary,
-    BNNEnsembleMulticlass
+    BNNEnsembleMulticlass,
 )
 
 __all__ = [
@@ -14,5 +14,5 @@ __all__ = [
     "BNNMetaEnsemble",
     "BNNEnsembleRegression",
     "BNNEnsembleBinary",
-    "BNNEnsembleMulticlass"
+    "BNNEnsembleMulticlass",
 ]

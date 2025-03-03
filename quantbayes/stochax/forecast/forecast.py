@@ -160,7 +160,7 @@ class ForecastingModel:
             if patience_counter >= patience:
                 print("Early stopping triggered.")
                 break
-            
+
         plt.figure(figsize=(8, 6))
         plt.plot(self.train_losses, label="Training Loss")
         plt.plot(self.val_losses, label="Validation Loss")

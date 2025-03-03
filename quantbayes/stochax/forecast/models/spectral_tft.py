@@ -27,7 +27,7 @@ class SpectralMultiheadAttention(eqx.Module):
         num_heads: int,
         dropout_rate: float,
         *,
-        key: PRNGKeyArray
+        key: PRNGKeyArray,
     ):
         self.embed_dim = embed_dim
         self.seq_len = seq_len
@@ -110,7 +110,7 @@ class SpectralTemporalFusionTransformer(eqx.Module):
         num_heads: int,
         seq_len: int,
         *,
-        key: PRNGKeyArray
+        key: PRNGKeyArray,
     ):
         k1, k2, k3, k4 = jr.split(key, 4)
         self.lstm_encoder = LSTMEncoder(input_size, hidden_size, key=k1)
@@ -166,16 +166,19 @@ if __name__ == "__main__":
     # Suggested hyperparameters for a univariate time series:
     # seq_len = 10, d = 1, hidden_size = 12.
     model, state = eqx.nn.make_with_state(SpectralTemporalFusionTransformer)(
-        input_size=1,
-        hidden_size=12,
-        num_heads=4,
-        seq_len=10,
-        key=key
+        input_size=1, hidden_size=12, num_heads=4, seq_len=10, key=key
     )
     trainer = ForecastingModel(lr=1e-3)
     model, state = trainer.fit(
-        model, state, X_train, y_train, X_val, y_val,
-        num_epochs=500, patience=100, key=jr.PRNGKey(42)
+        model,
+        state,
+        X_train,
+        y_train,
+        X_val,
+        y_val,
+        num_epochs=500,
+        patience=100,
+        key=jr.PRNGKey(42),
     )
     preds = trainer.predict(model, state, X_val, key=jr.PRNGKey(123))
     print(f"preds shape: {preds.shape}")

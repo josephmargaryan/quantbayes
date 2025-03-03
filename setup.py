@@ -24,7 +24,7 @@ setup(
         "optuna",
         "xgboost",
         "lightgbm",
-        "catboost"
+        "catboost",
     ],
     python_requires=">=3.7",
 )

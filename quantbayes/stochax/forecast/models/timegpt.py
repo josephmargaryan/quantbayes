@@ -4,14 +4,23 @@ import jax.random as jr
 import jax.nn as jnn
 import equinox as eqx
 
+
 # -------------------------------------------------------------------
 # Batched LayerNorm Wrapper (to avoid per-token Python loops)
 # -------------------------------------------------------------------
 class BatchedLayerNorm(eqx.Module):
     ln: eqx.nn.LayerNorm
 
-    def __init__(self, feature_dim: int, eps: float = 1e-6, use_weight: bool = True, use_bias: bool = True):
-        self.ln = eqx.nn.LayerNorm(feature_dim, eps=eps, use_weight=use_weight, use_bias=use_bias)
+    def __init__(
+        self,
+        feature_dim: int,
+        eps: float = 1e-6,
+        use_weight: bool = True,
+        use_bias: bool = True,
+    ):
+        self.ln = eqx.nn.LayerNorm(
+            feature_dim, eps=eps, use_weight=use_weight, use_bias=use_bias
+        )
 
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
         # x: shape (..., feature_dim)
@@ -19,6 +28,7 @@ class BatchedLayerNorm(eqx.Module):
         x_flat = x.reshape(-1, orig_shape[-1])
         y_flat = jax.vmap(self.ln)(x_flat)
         return y_flat.reshape(orig_shape)
+
 
 # -------------------------------------------------------------------
 # Input Projection: maps raw input to embed_dim.
@@ -33,6 +43,7 @@ class InputProjection(eqx.Module):
         # Use einsum to handle batched inputs.
         return jnp.einsum("...i,oi->...o", x, self.linear.weight) + self.linear.bias
 
+
 # -------------------------------------------------------------------
 # Positional Embedding: learnable positional embeddings.
 # -------------------------------------------------------------------
@@ -46,6 +57,7 @@ class PositionalEmbedding(eqx.Module):
         seq_len = x.shape[0]
         return x + self.pe[:seq_len]
 
+
 # -------------------------------------------------------------------
 # Simple MLP Block (used inside the GPT block)
 # -------------------------------------------------------------------
@@ -55,7 +67,9 @@ class SimpleMLP(eqx.Module):
     dropout: eqx.nn.Dropout
     activation: callable
 
-    def __init__(self, in_features: int, hidden_features: int, dropout_p: float, *, key):
+    def __init__(
+        self, in_features: int, hidden_features: int, dropout_p: float, *, key
+    ):
         k1, k2, k3 = jr.split(key, 3)
         self.fc1 = eqx.nn.Linear(in_features, hidden_features, key=k1)
         self.fc2 = eqx.nn.Linear(hidden_features, in_features, key=k2)
@@ -74,6 +88,7 @@ class SimpleMLP(eqx.Module):
         y = self.dropout(y, key=key2)
         return y
 
+
 # -------------------------------------------------------------------
 # TimeGPT Block: a transformer-style decoder block with causal self-attention.
 # -------------------------------------------------------------------
@@ -85,7 +100,9 @@ class TimeGPTBlock(eqx.Module):
     mlp: SimpleMLP
     dropout2: eqx.nn.Dropout
 
-    def __init__(self, embed_dim: int, num_heads: int, mlp_ratio: float, dropout_p: float, *, key):
+    def __init__(
+        self, embed_dim: int, num_heads: int, mlp_ratio: float, dropout_p: float, *, key
+    ):
         # Split keys once.
         k1, k2, k3, k4, k5 = jr.split(key, 5)
         self.norm1 = BatchedLayerNorm(embed_dim, eps=1e-6)
@@ -106,7 +123,12 @@ class TimeGPTBlock(eqx.Module):
         self.dropout1 = eqx.nn.Dropout(p=dropout_p, inference=False)
         self.norm2 = BatchedLayerNorm(embed_dim, eps=1e-6)
         hidden_mlp = int(embed_dim * mlp_ratio)
-        self.mlp = SimpleMLP(in_features=embed_dim, hidden_features=hidden_mlp, dropout_p=dropout_p, key=k3)
+        self.mlp = SimpleMLP(
+            in_features=embed_dim,
+            hidden_features=hidden_mlp,
+            dropout_p=dropout_p,
+            key=k3,
+        )
         self.dropout2 = eqx.nn.Dropout(p=dropout_p, inference=False)
 
     def __call__(self, x: jnp.ndarray, *, key=None) -> jnp.ndarray:
@@ -124,22 +146,35 @@ class TimeGPTBlock(eqx.Module):
         # Apply norm2 tokenwise.
         normed2 = self.norm2(x)
         # Here we apply the MLP tokenwise.
-        mlp_out = jax.vmap(self.mlp)(normed2, key=(None if key_rest is None else jr.split(key_rest, seq_len)))
+        mlp_out = jax.vmap(self.mlp)(
+            normed2, key=(None if key_rest is None else jr.split(key_rest, seq_len))
+        )
         x = x + self.dropout2(mlp_out, key=key_drop)
         return x
+
 
 # -------------------------------------------------------------------
 # TimeGPT Model: stacks TimeGPT blocks, adds positional embeddings, and outputs a forecast.
 # -------------------------------------------------------------------
 class TimeGPT(eqx.Module):
-    input_proj: InputProjection   # Projects raw input to embed_dim.
+    input_proj: InputProjection  # Projects raw input to embed_dim.
     pos_emb: PositionalEmbedding
     blocks: list[TimeGPTBlock]
     final_linear: eqx.nn.Linear
     embed_dim: int = eqx.field(static=True)
 
-    def __init__(self, input_dim: int, embed_dim: int, num_layers: int, num_heads: int,
-                 mlp_ratio: float, dropout_p: float, max_len: int, *, key):
+    def __init__(
+        self,
+        input_dim: int,
+        embed_dim: int,
+        num_layers: int,
+        num_heads: int,
+        mlp_ratio: float,
+        dropout_p: float,
+        max_len: int,
+        *,
+        key,
+    ):
         keys = jr.split(key, num_layers + 3)
         self.embed_dim = embed_dim
         self.input_proj = InputProjection(input_dim, embed_dim, key=keys[0])
@@ -169,17 +204,39 @@ class TimeGPT(eqx.Module):
         last = x[-1]  # shape: (embed_dim,)
         return self.final_linear(last)
 
+
 # -------------------------------------------------------------------
 # Batch Wrapper: TimeGPTForecast
 # -------------------------------------------------------------------
 class TimeGPTForecast(eqx.Module):
     model: TimeGPT
 
-    def __init__(self, input_dim: int, embed_dim: int, num_layers: int, num_heads: int,
-                 mlp_ratio: float, dropout_p: float, max_len: int, *, key):
-        self.model = TimeGPT(input_dim, embed_dim, num_layers, num_heads, mlp_ratio, dropout_p, max_len, key=key)
+    def __init__(
+        self,
+        input_dim: int,
+        embed_dim: int,
+        num_layers: int,
+        num_heads: int,
+        mlp_ratio: float,
+        dropout_p: float,
+        max_len: int,
+        *,
+        key,
+    ):
+        self.model = TimeGPT(
+            input_dim,
+            embed_dim,
+            num_layers,
+            num_heads,
+            mlp_ratio,
+            dropout_p,
+            max_len,
+            key=key,
+        )
 
-    def __call__(self, x: jnp.ndarray, state: eqx.nn.State, *, key=None) -> tuple[jnp.ndarray, any]:
+    def __call__(
+        self, x: jnp.ndarray, state: eqx.nn.State, *, key=None
+    ) -> tuple[jnp.ndarray, any]:
         """
         Args:
           x: Input tensor of shape [N, seq_len, input_dim]
@@ -189,6 +246,7 @@ class TimeGPTForecast(eqx.Module):
         """
         # Our training framework already vmaps over samples; x here is one sample.
         return self.model(x, key=key), state
+
 
 # -------------------------------------------------------------------
 # Example usage
@@ -218,12 +276,19 @@ if __name__ == "__main__":
         mlp_ratio=4,
         dropout_p=0.1,
         max_len=10,
-        key=key
+        key=key,
     )
     trainer = ForecastingModel(lr=1e-3)
     model, state = trainer.fit(
-        model, state, X_train, y_train, X_val, y_val,
-        num_epochs=500, patience=100, key=jr.PRNGKey(42)
+        model,
+        state,
+        X_train,
+        y_train,
+        X_val,
+        y_val,
+        num_epochs=500,
+        patience=100,
+        key=jr.PRNGKey(42),
     )
     preds = trainer.predict(model, state, X_val, key=jr.PRNGKey(123))
     print(f"preds shape {preds.shape}")

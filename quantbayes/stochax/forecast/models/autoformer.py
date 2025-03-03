@@ -7,16 +7,26 @@ import optax
 import numpy as np
 import matplotlib.pyplot as plt
 
+
 # --- Batched LayerNorm Wrapper ---
 class BatchedLayerNorm(eqx.Module):
     """
     A wrapper around eqx.nn.LayerNorm that applies normalization over the
     last dimension, regardless of any extra batch dimensions.
     """
+
     ln: eqx.nn.LayerNorm
 
-    def __init__(self, feature_dim: int, eps: float = 1e-6, use_weight: bool = True, use_bias: bool = True):
-        self.ln = eqx.nn.LayerNorm(feature_dim, eps=eps, use_weight=use_weight, use_bias=use_bias)
+    def __init__(
+        self,
+        feature_dim: int,
+        eps: float = 1e-6,
+        use_weight: bool = True,
+        use_bias: bool = True,
+    ):
+        self.ln = eqx.nn.LayerNorm(
+            feature_dim, eps=eps, use_weight=use_weight, use_bias=use_bias
+        )
 
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
         orig_shape = x.shape
@@ -24,9 +34,11 @@ class BatchedLayerNorm(eqx.Module):
         y_flat = jax.vmap(self.ln)(x_flat)
         return y_flat.reshape(orig_shape)
 
+
 # --- Helper: Batched Linear ---
 def apply_linear(linear: eqx.nn.Linear, x: jnp.ndarray) -> jnp.ndarray:
     return jnp.einsum("...i,oi->...o", x, linear.weight) + linear.bias
+
 
 # --- Utility: Series Decomposition ---
 class SeriesDecomposition(eqx.Module):
@@ -34,6 +46,7 @@ class SeriesDecomposition(eqx.Module):
     A simple moving average based decomposition module.
     Computes a trend component using a fixed kernel via depthwise convolution.
     """
+
     kernel_size: int
 
     def __init__(self, kernel_size: int = 25):
@@ -54,10 +67,13 @@ class SeriesDecomposition(eqx.Module):
             window_strides=(1,),
             padding="SAME",
             dimension_numbers=("NCL", "LIO", "NCL"),
-            feature_group_count=x_t.shape[1],  # Depthwise convolution: one group per channel.
+            feature_group_count=x_t.shape[
+                1
+            ],  # Depthwise convolution: one group per channel.
         )
         trend = jnp.transpose(trend, (0, 2, 1))
         return trend
+
 
 # --- MLP Block ---
 class MLP(eqx.Module):
@@ -66,7 +82,9 @@ class MLP(eqx.Module):
     dropout: eqx.nn.Dropout
     activation: callable
 
-    def __init__(self, in_features: int, hidden_features: int, dropout_p: float, *, key):
+    def __init__(
+        self, in_features: int, hidden_features: int, dropout_p: float, *, key
+    ):
         key1, key2 = jr.split(key, 2)
         self.fc1 = eqx.nn.Linear(in_features, hidden_features, key=key1)
         self.fc2 = eqx.nn.Linear(hidden_features, in_features, key=key2)
@@ -80,6 +98,7 @@ class MLP(eqx.Module):
         x = apply_linear(self.fc2, x)
         return x
 
+
 # --- Auto-Correlation Attention ---
 def auto_correlation(q: jnp.ndarray, k: jnp.ndarray) -> jnp.ndarray:
     q_fft = jnp.fft.rfft(q, axis=2)
@@ -88,6 +107,7 @@ def auto_correlation(q: jnp.ndarray, k: jnp.ndarray) -> jnp.ndarray:
     corr_time = jnp.fft.irfft(corr, n=q.shape[2], axis=2)
     corr_avg = jnp.mean(corr_time, axis=-1)
     return corr_avg
+
 
 class AutoCorrelationAttention(eqx.Module):
     embed_dim: int
@@ -125,6 +145,7 @@ class AutoCorrelationAttention(eqx.Module):
         out = jnp.repeat(out[:, None, :], L, axis=1)
         return out
 
+
 # --- Transformer Block with Autoformer Elements ---
 class TransformerBlock(eqx.Module):
     norm1: BatchedLayerNorm
@@ -133,8 +154,15 @@ class TransformerBlock(eqx.Module):
     mlp: MLP
     decomposition: SeriesDecomposition
 
-    def __init__(self, embed_dim: int, num_heads: int, mlp_ratio: float = 4.0,
-                 dropout_p: float = 0.1, *, key):
+    def __init__(
+        self,
+        embed_dim: int,
+        num_heads: int,
+        mlp_ratio: float = 4.0,
+        dropout_p: float = 0.1,
+        *,
+        key,
+    ):
         keys = jr.split(key, 4)
         self.norm1 = BatchedLayerNorm(embed_dim, eps=1e-6)
         self.attn = AutoCorrelationAttention(embed_dim, num_heads, key=keys[0])
@@ -155,18 +183,30 @@ class TransformerBlock(eqx.Module):
         x = x + y
         return x
 
+
 # --- Autoformer Model ---
 class Autoformer(eqx.Module):
     input_proj: eqx.nn.Linear
     layers: list[TransformerBlock]
     final_linear: eqx.nn.Linear
 
-    def __init__(self, input_dim: int, num_layers: int, embed_dim: int,
-                 num_heads: int, mlp_ratio: float = 4.0, dropout_p: float = 0.1, *, key):
+    def __init__(
+        self,
+        input_dim: int,
+        num_layers: int,
+        embed_dim: int,
+        num_heads: int,
+        mlp_ratio: float = 4.0,
+        dropout_p: float = 0.1,
+        *,
+        key,
+    ):
         keys = jr.split(key, num_layers + 2)
         self.input_proj = eqx.nn.Linear(input_dim, embed_dim, key=keys[0])
-        self.layers = [TransformerBlock(embed_dim, num_heads, mlp_ratio, dropout_p, key=k)
-                       for k in keys[1:-1]]
+        self.layers = [
+            TransformerBlock(embed_dim, num_heads, mlp_ratio, dropout_p, key=k)
+            for k in keys[1:-1]
+        ]
         self.final_linear = eqx.nn.Linear(embed_dim, 1, key=keys[-1])
 
     def __call__(self, x: jnp.ndarray, *, key) -> jnp.ndarray:
@@ -178,6 +218,7 @@ class Autoformer(eqx.Module):
         last_token = x[:, -1, :]
         out = apply_linear(self.final_linear, last_token)
         return out
+
 
 # --- Forecasting Training Wrapper ---
 class ForecastingModel:
@@ -195,17 +236,21 @@ class ForecastingModel:
 
     def _batch_forward_train(self, model, X, key):
         keys = jr.split(key, X.shape[0])
+
         def single_forward(x, key):
             preds = model(x[None, ...], key=key)
             return preds[0]
+
         preds = jax.vmap(single_forward)(X, keys)
         return preds
 
     def _batch_forward_inference(self, model, X, key):
         keys = jr.split(key, X.shape[0])
+
         def single_forward(x, key):
             preds = model(x[None, ...], key=key)
             return preds[0]
+
         preds = jax.vmap(single_forward)(X, keys)
         return preds
 
@@ -214,6 +259,7 @@ class ForecastingModel:
         def loss_wrapper(m):
             preds = self._batch_forward_train(m, X, key)
             return self.loss_fn(preds, Y)
+
         loss_val, grads = eqx.filter_value_and_grad(loss_wrapper)(model)
         updates, self.opt_state = self.optimizer.update(grads, self.opt_state)
         new_model = eqx.apply_updates(model, updates)
@@ -223,8 +269,17 @@ class ForecastingModel:
         preds = self._batch_forward_inference(model, X, key)
         return self.loss_fn(preds, Y)
 
-    def fit(self, model, X_train, Y_train, X_val, Y_val,
-            num_epochs=50, patience=10, key=jr.PRNGKey(0)):
+    def fit(
+        self,
+        model,
+        X_train,
+        Y_train,
+        X_val,
+        Y_val,
+        num_epochs=50,
+        patience=10,
+        key=jr.PRNGKey(0),
+    ):
         self.opt_state = self.optimizer.init(eqx.filter(model, eqx.is_array))
         best_val_loss = float("inf")
         patience_counter = 0
@@ -242,7 +297,9 @@ class ForecastingModel:
             else:
                 patience_counter += 1
             if (epoch + 1) % 5 == 0:
-                print(f"Epoch {epoch+1}/{num_epochs}: Train Loss = {loss_val:.4f}, Val Loss = {val_loss:.4f}")
+                print(
+                    f"Epoch {epoch+1}/{num_epochs}: Train Loss = {loss_val:.4f}, Val Loss = {val_loss:.4f}"
+                )
             if patience_counter >= patience:
                 print("Early stopping triggered.")
                 break
@@ -273,12 +330,15 @@ class ForecastingModel:
         plt.legend()
         plt.show()
 
+
 # --- Example Usage ---
 if __name__ == "__main__":
     from quantbayes.fake_data import create_synthetic_time_series
 
     X_train, X_val, y_train, y_val = create_synthetic_time_series()
-    y_train, y_val = y_train.reshape(y_train.shape[0], -1), y_val.reshape(y_val.shape[0], -1)
+    y_train, y_val = y_train.reshape(y_train.shape[0], -1), y_val.reshape(
+        y_val.shape[0], -1
+    )
     print(f"X_train shape: {X_train.shape}")
     print(f"Y_train shape: {y_train.shape}")
 

@@ -1,12 +1,17 @@
 import matplotlib.pyplot as plt
 import jax
 import numpy as np
+import jax.numpy as jnp
+from numpyro.infer import Predictive
+from jax.nn import sigmoid
 
 __all__ = [
     "visualize_gp_kernel",
     "sample_gp_prior",
     "predict_gp",
+    "predict_gp_binary",
     "visualize_predictions",
+    "visualize_predictions_binary",
 ]
 
 
@@ -117,6 +122,37 @@ def predict_gp(model, X_train, y_train, X_test):
     return mean_pred, var_pred
 
 
+def predict_gp_binary(model, samples, X_test, num_samples=1000):
+    """
+    Generate posterior predictive probabilities for binary classification.
+
+    Parameters:
+      model: The binary GP model (using Bernoulli likelihood).
+      samples: MCMC samples obtained after fitting the model.
+      X_test: Test input data, jnp.ndarray of shape (num_test_points, input_dim).
+      num_samples: Number of posterior samples to use in the predictive computation.
+
+    Returns:
+      mean_probs: Posterior predictive probabilities (mean over samples).
+      prob_samples: All posterior predictive probability samples (shape: [num_samples, num_test_points]).
+    """
+    # Create a predictive distribution function.
+    predictive = Predictive(model, samples, num_samples=num_samples)
+
+    # Generate predictions. We assume your model returns a deterministic "logits" field.
+    pred_samples = predictive(X_test)
+    # pred_samples["logits"] has shape (num_samples, num_test_points)
+    logits_samples = pred_samples["logits"]
+
+    # Convert logits to probabilities.
+    prob_samples = sigmoid(logits_samples)
+
+    # Compute the mean predictive probability over samples.
+    mean_probs = jnp.mean(prob_samples, axis=0)
+
+    return mean_probs, prob_samples
+
+
 def visualize_predictions(X_test, mean_pred, var_pred):
     # Convert X_test to a NumPy array
     X_arr = np.array(X_test)
@@ -152,6 +188,57 @@ def visualize_predictions(X_test, mean_pred, var_pred):
         "Input" if X_arr.ndim == 1 or X_arr.shape[1] == 1 else "PCA Component 1"
     )
     ax.set_ylabel("Output")
+    ax.legend()
+    plt.tight_layout()
+    plt.show()
+    return fig
+
+
+def visualize_predictions_binary(X_test, mean_probs, prob_samples):
+    """
+    Visualizes the predictive probability for binary classification.
+
+    Parameters:
+      X_test: jnp.ndarray of shape (num_points, input_dim) or 1D array.
+      mean_probs: The mean predicted probabilities (shape: [num_points]).
+      prob_samples: The full set of probability samples (shape: [num_samples, num_points]).
+
+    Returns:
+      fig: Matplotlib figure.
+    """
+    # Convert X_test to NumPy array for plotting.
+    X_arr = np.array(X_test)
+
+    # If multidimensional, reduce to 1D (e.g., using the first dimension or PCA).
+    if X_arr.ndim > 1 and X_arr.shape[1] > 1:
+        from sklearn.decomposition import PCA
+
+        pca = PCA(n_components=1)
+        X_reduced = pca.fit_transform(X_arr).flatten()
+    else:
+        X_reduced = X_arr.flatten()
+
+    # Sort the inputs for a clean plot.
+    order = np.argsort(X_reduced)
+    X_plot = X_reduced[order]
+    mean_probs_sorted = np.array(mean_probs)[order]
+
+    # Compute uncertainty (e.g., standard deviation of the probability samples)
+    std_probs = np.std(np.array(prob_samples), axis=0)[order]
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.plot(X_plot, mean_probs_sorted, "b-", label="Mean Predictive Probability")
+    ax.fill_between(
+        X_plot,
+        mean_probs_sorted - 2 * std_probs,
+        mean_probs_sorted + 2 * std_probs,
+        color="blue",
+        alpha=0.3,
+        label="Uncertainty (±2 std)",
+    )
+    ax.set_title("GP Binary Classification Predictive Posterior")
+    ax.set_xlabel("Input (or PCA Component 1)")
+    ax.set_ylabel("Predicted Probability")
     ax.legend()
     plt.tight_layout()
     plt.show()

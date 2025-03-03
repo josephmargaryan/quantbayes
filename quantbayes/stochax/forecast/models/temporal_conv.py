@@ -19,7 +19,7 @@ class CausalConv1d(eqx.Module):
         kernel_size: int,
         dilation: int = 1,
         *,
-        key
+        key,
     ):
         self.kernel_size = kernel_size
         self.dilation = dilation
@@ -59,7 +59,7 @@ class TCNBlock(eqx.Module):
         dilation: int,
         dropout_p: float,
         *,
-        key
+        key,
     ):
         keys = jax.random.split(key, 4)
         self.conv1 = CausalConv1d(
@@ -110,7 +110,7 @@ class TCN(eqx.Module):
         kernel_size: int,
         dropout_p: float,
         *,
-        key
+        key,
     ):
         keys = jax.random.split(key, num_levels)
         blocks = []
@@ -150,7 +150,7 @@ class TCNForecast(eqx.Module):
         kernel_size: int,
         dropout_p: float,
         *,
-        key
+        key,
     ):
         keys = jr.split(key, 2)
         self.tcn = TCN(
@@ -159,7 +159,9 @@ class TCNForecast(eqx.Module):
         self.final_linear = eqx.nn.Linear(num_filters, 1, key=keys[1])
         self.in_channels = in_channels
 
-    def __call__(self, x: jnp.ndarray, state: eqx.nn.State, *, key=None) -> tuple[jnp.ndarray, any]:
+    def __call__(
+        self, x: jnp.ndarray, state: eqx.nn.State, *, key=None
+    ) -> tuple[jnp.ndarray, any]:
         """
         Args:
           x: A single sample of shape [seq_len, D], where D == in_channels.
@@ -201,10 +203,12 @@ if __name__ == "__main__":
         num_levels=4,
         kernel_size=4,
         dropout_p=0.1,
-        key=key
+        key=key,
     )
     trainer = ForecastingModel(lr=1e-4)
-    trainer.fit(model, state, X_train, y_train, X_val, y_val, num_epochs=500, patience=100)
+    trainer.fit(
+        model, state, X_train, y_train, X_val, y_val, num_epochs=500, patience=100
+    )
     preds = trainer.predict(model, state, X_val, key=jr.PRNGKey(123))
     print(f"preds shape {preds.shape}")
     trainer.visualize(y_val, preds, title="Forecast vs. Ground Truth")

@@ -26,5 +26,5 @@ __all__ = [
     "TemporalFusionTransformer",
     "WaveNet",
     "TimeGTP",
-    "TOTEM"
+    "TOTEM",
 ]

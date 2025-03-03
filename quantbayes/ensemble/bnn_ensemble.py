@@ -5,12 +5,7 @@ from sklearn.base import BaseEstimator, ClassifierMixin, RegressorMixin
 from sklearn.model_selection import StratifiedKFold, KFold
 from scipy.special import expit, softmax  # for sigmoid and softmax
 
-__all__ = [
-    "BNNEnsembleRegression",
-    "BNNEnsembleBinary",
-    "BNNEnsembleMulticlass"
-    ""
-]
+__all__ = ["BNNEnsembleRegression", "BNNEnsembleBinary", "BNNEnsembleMulticlass" ""]
 
 """
 Example usecase:
@@ -31,38 +26,53 @@ binary_probs = ensemble_binary.predict_proba(X_test)
 binary_preds = ensemble_binary.predict(X_test)
 """
 
+
 def compute_entropy_binary(probs):
     """Compute binary classification entropy."""
     return -probs * np.log(probs + 1e-10) - (1 - probs) * np.log(1 - probs + 1e-10)
 
+
 class BNNEnsembleRegression(BaseEstimator, RegressorMixin):
     """
     Ensemble for regression using BNN base models.
-    
+
     Base models should implement:
       - fit(X, y, rng_key)
       - predict(X, rng_key, posterior="logits") which returns posterior samples of predictions.
     The base model's predict() is assumed to output samples drawn from a Normal likelihood.
-    
+
     Meta model should be a scikit-learn regressor.
     """
-    def __init__(self, base_models, meta_model, n_folds=5, rng_key=jax.random.PRNGKey(0)):
+
+    def __init__(
+        self,
+        base_models,
+        meta_model,
+        n_folds=5,
+        rng_key=jax.random.PRNGKey(0),
+        **kwargs
+    ):
         self.base_models = base_models  # dict of base models
-        self.meta_model = meta_model    # e.g. a GradientBoostingRegressor
+        self.meta_model = meta_model  # e.g. a GradientBoostingRegressor
         self.n_folds = n_folds
         self.rng_key = rng_key
+        self.kwargs = kwargs
 
     def _generate_meta_features(self, X, y, is_train=True):
+        num_warmup = self.kwargs.get("num_warmup", 500)
+        num_samples = self.kwargs.get("num_samples", 1000)
+        num_chains = self.kwargs.get("num_chains", 2)
+        num_steps = self.kwargs.get("num_steps", 1000)
         n_samples = X.shape[0]
         n_models = len(self.base_models)
         # For regression, we use two features per model: mean and std.
         meta_features = np.zeros((n_samples, n_models * 2))
-        
+
         # Use regular KFold since y is continuous
         kf = KFold(n_splits=self.n_folds, shuffle=True, random_state=42)
         meta_pred = {name: np.zeros(n_samples) for name in self.base_models}
         meta_std = {name: np.zeros(n_samples) for name in self.base_models}
-        
+
         for name, model in self.base_models.items():
             oof_preds = np.zeros(n_samples)
             oof_stds = np.zeros(n_samples)
@@ -71,9 +81,13 @@ class BNNEnsembleRegression(BaseEstimator, RegressorMixin):
                 y_train_fold = y[train_idx]
                 # Reinitialize model for each fold
                 model_fold = type(model)()
-                model_fold.compile(num_warmup=500, num_samples=1000, num_chains=2)
+                model_fold.compile(
+                    num_warmup=num_warmup,
+                    num_samples=num_samples,
+                    num_chains=num_chains,
+                )
                 key, self.rng_key = jax.random.split(self.rng_key)
-                model_fold.fit(X_train_fold, y_train_fold, key)
+                model_fold.fit(X_train_fold, y_train_fold, key, num_steps=num_steps)
                 # Get posterior samples on validation fold
                 key, self.rng_key = jax.random.split(self.rng_key)
                 samples = model_fold.predict(X_val_fold, key, posterior="logits")
@@ -84,7 +98,7 @@ class BNNEnsembleRegression(BaseEstimator, RegressorMixin):
                 oof_stds[val_idx] = std_pred
             meta_pred[name] = oof_preds
             meta_std[name] = oof_stds
-        
+
         feature_list = []
         for name in sorted(self.base_models.keys()):
             feature_list.append(meta_pred[name].reshape(-1, 1))
@@ -129,35 +143,50 @@ class BNNEnsembleRegression(BaseEstimator, RegressorMixin):
 
     def predict_proba(self, X):
         # For regression, predict_proba might not be relevant.
-        raise NotImplementedError("predict_proba is not implemented for regression tasks.")
+        raise NotImplementedError(
+            "predict_proba is not implemented for regression tasks."
+        )
 
-        
+
 class BNNEnsembleBinary(BaseEstimator, ClassifierMixin):
     """
     Ensemble for binary classification using BNN base models.
-    
+
     Base models should implement:
       - fit(X, y, rng_key)
       - predict(X, rng_key, posterior="logits") which returns posterior samples of logits.
     For binary classification we convert logits to probabilities with a sigmoid.
-    
+
     Meta model should be a scikit-learn classifier.
     """
-    def __init__(self, base_models, meta_model, n_folds=5, rng_key=jax.random.PRNGKey(0)):
+
+    def __init__(
+        self,
+        base_models,
+        meta_model,
+        n_folds=5,
+        rng_key=jax.random.PRNGKey(0),
+        **kwargs
+    ):
         self.base_models = base_models
         self.meta_model = meta_model
         self.n_folds = n_folds
         self.rng_key = rng_key
+        self.kwargs = kwargs
 
     def _generate_meta_features(self, X, y, is_train=True):
+        num_warmup = self.kwargs.get("num_warmup", 500)
+        num_samples = self.kwargs.get("num_samples", 1000)
+        num_chains = self.kwargs.get("num_chains", 2)
+        num_steps = self.kwargs.get("num_steps", 1000)
         n_samples = X.shape[0]
         n_models = len(self.base_models)
         meta_features = np.zeros((n_samples, n_models * 2))
-        
+
         skf = StratifiedKFold(n_splits=self.n_folds, shuffle=True, random_state=42)
         meta_pred = {name: np.zeros(n_samples) for name in self.base_models}
         meta_std = {name: np.zeros(n_samples) for name in self.base_models}
-        
+
         for name, model in self.base_models.items():
             oof_preds = np.zeros(n_samples)
             oof_stds = np.zeros(n_samples)
@@ -165,9 +194,13 @@ class BNNEnsembleBinary(BaseEstimator, ClassifierMixin):
                 X_train_fold, X_val_fold = X[train_idx], X[val_idx]
                 y_train_fold = y[train_idx]
                 model_fold = type(model)()
-                model_fold.compile(num_warmup=500, num_samples=1000, num_chains=2)
+                model_fold.compile(
+                    num_warmup=num_warmup,
+                    num_samples=num_samples,
+                    num_chains=num_chains,
+                )
                 key, self.rng_key = jax.random.split(self.rng_key)
-                model_fold.fit(X_train_fold, y_train_fold, key)
+                model_fold.fit(X_train_fold, y_train_fold, key, num_steps=num_steps)
                 key, self.rng_key = jax.random.split(self.rng_key)
                 logits_samples = model_fold.predict(X_val_fold, key, posterior="logits")
                 # Convert logits to probabilities using sigmoid.
@@ -178,7 +211,7 @@ class BNNEnsembleBinary(BaseEstimator, ClassifierMixin):
                 oof_stds[val_idx] = std_probs
             meta_pred[name] = oof_preds
             meta_std[name] = oof_stds
-        
+
         feature_list = []
         for name in sorted(self.base_models.keys()):
             feature_list.append(meta_pred[name].reshape(-1, 1))
@@ -228,27 +261,40 @@ class BNNEnsembleBinary(BaseEstimator, ClassifierMixin):
 class BNNEnsembleMulticlass(BaseEstimator, ClassifierMixin):
     """
     Ensemble for multiclass classification using BNN base models.
-    
+
     Base models should implement:
       - fit(X, y, rng_key)
       - predict(X, rng_key, posterior="logits") which returns posterior samples of logits.
     For multiclass, convert logits to probabilities using softmax.
-    
+
     Meta model should be a scikit-learn classifier that supports multiclass tasks.
     """
-    def __init__(self, base_models, meta_model, n_folds=5, rng_key=jax.random.PRNGKey(0)):
+
+    def __init__(
+        self,
+        base_models,
+        meta_model,
+        n_folds=5,
+        rng_key=jax.random.PRNGKey(0),
+        **kwargs
+    ):
         self.base_models = base_models
         self.meta_model = meta_model
         self.n_folds = n_folds
         self.rng_key = rng_key
+        self.kwargs = kwargs
 
     def _generate_meta_features(self, X, y, is_train=True):
+        num_warmup = self.kwargs.get("num_warmup", 500)
+        num_samples = self.kwargs.get("num_samples", 1000)
+        num_chains = self.kwargs.get("num_chains", 2)
+        num_steps = self.kwargs.get("num_steps", 1000)
         n_samples = X.shape[0]
         n_models = len(self.base_models)
         # Here each base model returns logits of shape (n_samples_post, n_samples, n_classes).
         # We will flatten mean and std across classes.
         meta_features = None  # to be built dynamically
-        
+
         # For multiclass, we use KFold (stratified split can be used if needed)
         skf = StratifiedKFold(n_splits=self.n_folds, shuffle=True, random_state=42)
         meta_means = {}
@@ -256,7 +302,7 @@ class BNNEnsembleMulticlass(BaseEstimator, ClassifierMixin):
         for name in self.base_models:
             meta_means[name] = None
             meta_stds[name] = None
-        
+
         for name, model in self.base_models.items():
             all_means = []
             all_stds = []
@@ -264,16 +310,20 @@ class BNNEnsembleMulticlass(BaseEstimator, ClassifierMixin):
                 X_train_fold, X_val_fold = X[train_idx], X[val_idx]
                 y_train_fold = y[train_idx]
                 model_fold = type(model)()
-                model_fold.compile(num_warmup=500, num_samples=1000, num_chains=2)
+                model_fold.compile(
+                    num_warmup=num_warmup,
+                    num_samples=num_samples,
+                    num_chains=num_chains,
+                )
                 key, self.rng_key = jax.random.split(self.rng_key)
-                model_fold.fit(X_train_fold, y_train_fold, key)
+                model_fold.fit(X_train_fold, y_train_fold, key, num_steps=num_steps)
                 key, self.rng_key = jax.random.split(self.rng_key)
                 logits_samples = model_fold.predict(X_val_fold, key, posterior="logits")
                 # Convert logits to probabilities using softmax over last axis.
                 # logits_samples shape: (n_samples_post, n_val, n_classes)
                 probs_samples = softmax(logits_samples, axis=-1)
                 mean_probs = np.mean(probs_samples, axis=0)  # shape: (n_val, n_classes)
-                std_probs = np.std(probs_samples, axis=0)      # shape: (n_val, n_classes)
+                std_probs = np.std(probs_samples, axis=0)  # shape: (n_val, n_classes)
                 all_means.append((val_idx, mean_probs))
                 all_stds.append((val_idx, std_probs))
             # Combine across folds into full arrays
@@ -285,7 +335,7 @@ class BNNEnsembleMulticlass(BaseEstimator, ClassifierMixin):
                 full_std[idx, :] = s
             meta_means[name] = full_mean
             meta_stds[name] = full_std
-        
+
         # Concatenate features from each model: for each base model, flatten mean and std.
         feature_list = []
         for name in sorted(self.base_models.keys()):
@@ -318,7 +368,7 @@ class BNNEnsembleMulticlass(BaseEstimator, ClassifierMixin):
             logits_samples = model.predict(X, key, posterior="logits")
             probs_samples = softmax(logits_samples, axis=-1)
             mean_probs = np.mean(probs_samples, axis=0)  # shape: (n_samples, n_classes)
-            std_probs = np.std(probs_samples, axis=0)      # shape: (n_samples, n_classes)
+            std_probs = np.std(probs_samples, axis=0)  # shape: (n_samples, n_classes)
             feature_list.append(mean_probs)
             feature_list.append(std_probs)
         meta_X_test = np.hstack(feature_list)

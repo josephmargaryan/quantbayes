@@ -31,5 +31,5 @@ __all__ = [
     "preprocessing",
     "ensemble",
     "in_batches",
-    "hyperparameter_tune"
+    "hyperparameter_tune",
 ]

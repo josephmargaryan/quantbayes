@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+
 # -------------------------------------------------------------------
 # 1. Strided CNN Encoder / Decoder
 # -------------------------------------------------------------------
@@ -9,7 +10,13 @@ class TOTEMEncoder(nn.Module):
     def __init__(self, in_channels, latent_channels, kernel_size=4, stride=2):
         super().__init__()
         # Example: a single conv layer. Adjust as needed.
-        self.conv = nn.Conv1d(in_channels, latent_channels, kernel_size, stride=stride, padding=kernel_size//2)
+        self.conv = nn.Conv1d(
+            in_channels,
+            latent_channels,
+            kernel_size,
+            stride=stride,
+            padding=kernel_size // 2,
+        )
 
     def forward(self, x):
         # x: shape (N, in_channels, L)
@@ -19,7 +26,13 @@ class TOTEMEncoder(nn.Module):
 class TOTEMDecoder(nn.Module):
     def __init__(self, latent_channels, out_channels, kernel_size=4, stride=2):
         super().__init__()
-        self.tconv = nn.ConvTranspose1d(latent_channels, out_channels, kernel_size, stride=stride, padding=kernel_size//2)
+        self.tconv = nn.ConvTranspose1d(
+            latent_channels,
+            out_channels,
+            kernel_size,
+            stride=stride,
+            padding=kernel_size // 2,
+        )
 
     def forward(self, z_q):
         # z_q: shape (N, latent_channels, L_enc)
@@ -73,7 +86,7 @@ class TOTEMVQVAE(nn.Module):
         """
         N, C, L = z_e.shape
         # Flatten => shape [N*L, C]
-        z_e_flat = z_e.permute(0,2,1).contiguous().view(-1, C)  # shape (N*L, C)
+        z_e_flat = z_e.permute(0, 2, 1).contiguous().view(-1, C)  # shape (N*L, C)
 
         # compute distances to codebook entries
         # codebook.weight: shape (num_embeddings, embedding_dim = C)
@@ -84,10 +97,14 @@ class TOTEMVQVAE(nn.Module):
         codebook_weight = self.codebook.weight  # (E, C)
         # squared norms:
         z_e_sq = (z_e_flat**2).sum(dim=1, keepdim=True)  # (N*L, 1)
-        cbook_sq = (codebook_weight**2).sum(dim=1)       # (E,)
+        cbook_sq = (codebook_weight**2).sum(dim=1)  # (E,)
         # z_e_flat @ codebook_weight.T => shape (N*L, E)
         # dist(i,e) = z_e_sq[i] + cbook_sq[e] - 2 * z_e_flat[i] dot codebook_weight[e]
-        dist = z_e_sq + cbook_sq.unsqueeze(0) - 2*torch.matmul(z_e_flat, codebook_weight.t())
+        dist = (
+            z_e_sq
+            + cbook_sq.unsqueeze(0)
+            - 2 * torch.matmul(z_e_flat, codebook_weight.t())
+        )
 
         # Argmin
         indices = dist.argmin(dim=-1)  # (N*L,)
@@ -95,7 +112,7 @@ class TOTEMVQVAE(nn.Module):
         z_q_flat = self.codebook(indices)  # (N*L, C)
 
         # Reshape back
-        z_q = z_q_flat.view(N, L, C).permute(0,2,1).contiguous()  # (N, C, L)
+        z_q = z_q_flat.view(N, L, C).permute(0, 2, 1).contiguous()  # (N, C, L)
 
         return z_q, indices.view(N, L)
 
@@ -110,10 +127,10 @@ class TOTEMTransformer(nn.Module):
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=embed_dim,
             nhead=num_heads,
-            dim_feedforward=4*embed_dim,
+            dim_feedforward=4 * embed_dim,
             dropout=dropout_p,
             activation="relu",
-            batch_first=True  # we pass (N, seq_len, embed_dim)
+            batch_first=True,  # we pass (N, seq_len, embed_dim)
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
         self.final_linear = nn.Linear(embed_dim, 1)
@@ -125,10 +142,10 @@ class TOTEMTransformer(nn.Module):
         So we transpose to get (N, L, C).
         Returns: shape (N, 1)
         """
-        x = z_q.transpose(1,2)  # (N, L, C)
-        y = self.transformer(x) # (N, L, C)
+        x = z_q.transpose(1, 2)  # (N, L, C)
+        y = self.transformer(x)  # (N, L, C)
         # take last token
-        last = y[:, -1, :]      # (N, C)
+        last = y[:, -1, :]  # (N, C)
         out = self.final_linear(last)  # (N, 1)
         return out
 
@@ -137,17 +154,30 @@ class TOTEMTransformer(nn.Module):
 # 4. TOTEM: end-to-end for forecasting
 # -------------------------------------------------------------------
 class TOTEM(nn.Module):
-    def __init__(self, in_channels, latent_channels, num_embeddings, num_layers, num_heads, dropout_p=0.1):
+    def __init__(
+        self,
+        in_channels,
+        latent_channels,
+        num_embeddings,
+        num_layers,
+        num_heads,
+        dropout_p=0.1,
+    ):
         super().__init__()
         # VQ-VAE
         self.vqvae = TOTEMVQVAE(
             in_channels=in_channels,
             latent_channels=latent_channels,
             num_embeddings=num_embeddings,
-            embedding_dim=latent_channels
+            embedding_dim=latent_channels,
         )
         # Transformer
-        self.transformer = TOTEMTransformer(embed_dim=latent_channels, num_layers=num_layers, num_heads=num_heads, dropout_p=dropout_p)
+        self.transformer = TOTEMTransformer(
+            embed_dim=latent_channels,
+            num_layers=num_layers,
+            num_heads=num_heads,
+            dropout_p=dropout_p,
+        )
 
     def forward(self, x):
         """
@@ -173,7 +203,7 @@ if __name__ == "__main__":
         num_embeddings=128,
         num_layers=2,
         num_heads=2,
-        dropout_p=0.1
+        dropout_p=0.1,
     )
 
     # Suppose an input of shape (N, in_channels, L)

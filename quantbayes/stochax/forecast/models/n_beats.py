@@ -4,6 +4,7 @@ import jax.nn as jnn
 import equinox as eqx
 from typing import List
 
+
 # -------------------------------------------------------
 # NBeatsBlock
 # -------------------------------------------------------
@@ -20,15 +21,21 @@ class NBeatsBlock(eqx.Module):
         forecast_dim: int,
         num_fc_layers: int,
         *,
-        key
+        key,
     ):
         keys = jax.random.split(key, num_fc_layers + 2)
         self.fc_layers = []
         for i in range(num_fc_layers):
             input_dim = in_features if i == 0 else hidden_features
-            self.fc_layers.append(eqx.nn.Linear(input_dim, hidden_features, key=keys[i]))
-        self.forecast_layer = eqx.nn.Linear(hidden_features, forecast_dim, key=keys[num_fc_layers])
-        self.backcast_layer = eqx.nn.Linear(hidden_features, in_features, key=keys[num_fc_layers+1])
+            self.fc_layers.append(
+                eqx.nn.Linear(input_dim, hidden_features, key=keys[i])
+            )
+        self.forecast_layer = eqx.nn.Linear(
+            hidden_features, forecast_dim, key=keys[num_fc_layers]
+        )
+        self.backcast_layer = eqx.nn.Linear(
+            hidden_features, in_features, key=keys[num_fc_layers + 1]
+        )
         self.activation = jnn.relu
 
     def __call__(self, x: jnp.ndarray) -> tuple[jnp.ndarray, jnp.ndarray]:
@@ -39,6 +46,7 @@ class NBeatsBlock(eqx.Module):
         forecast = self.forecast_layer(h)  # shape (forecast_dim,)
         backcast = self.backcast_layer(h)  # shape (in_features,)
         return forecast, backcast
+
 
 # -------------------------------------------------------
 # NBeats
@@ -57,11 +65,13 @@ class NBeats(eqx.Module):
         hidden_features: int,
         num_fc_layers: int,
         *,
-        key
+        key,
     ):
         keys = jax.random.split(key, num_blocks)
         self.blocks = [
-            NBeatsBlock(in_features, hidden_features, forecast_dim, num_fc_layers, key=k)
+            NBeatsBlock(
+                in_features, hidden_features, forecast_dim, num_fc_layers, key=k
+            )
             for k in keys
         ]
         self.num_blocks = num_blocks
@@ -77,6 +87,7 @@ class NBeats(eqx.Module):
             forecast_sum = forecast_sum + f
             residual = residual - b
         return forecast_sum
+
 
 # -------------------------------------------------------
 # NBeatsForecast Wrapper
@@ -94,16 +105,25 @@ class NBeatsForecast(eqx.Module):
         hidden_features: int,
         num_fc_layers: int,
         *,
-        key
+        key,
     ):
         # For a sample of shape (seq_len, d), the flattened input has length seq_len*d.
         in_features = seq_len * d
         forecast_dim = 1
-        self.model = NBeats(in_features, forecast_dim, num_blocks, hidden_features, num_fc_layers, key=key)
+        self.model = NBeats(
+            in_features,
+            forecast_dim,
+            num_blocks,
+            hidden_features,
+            num_fc_layers,
+            key=key,
+        )
         self.seq_len = seq_len
         self.d = d
 
-    def __call__(self, x: jnp.ndarray, state: eqx.nn.State, *, key=None) -> tuple[jnp.ndarray, any]:
+    def __call__(
+        self, x: jnp.ndarray, state: eqx.nn.State, *, key=None
+    ) -> tuple[jnp.ndarray, any]:
         """
         Args:
           x: Input tensor of shape [N, seq_len, d]
@@ -115,6 +135,7 @@ class NBeatsForecast(eqx.Module):
         x_flat = x.reshape(self.seq_len * self.d)
         forecast = self.model(x_flat)  # shape (1,)
         return forecast, state
+
 
 # -------------------------------------------------------
 # Example usage
@@ -138,17 +159,19 @@ if __name__ == "__main__":
     # Suggested hyperparameters:
     #   seq_len = 10, d = 1, num_blocks = 4, hidden_features = 12, num_fc_layers = 3.
     model, state = eqx.nn.make_with_state(NBeatsForecast)(
-        seq_len=10,
-        d=1,
-        num_blocks=4,
-        hidden_features=12,
-        num_fc_layers=3,
-        key=key
+        seq_len=10, d=1, num_blocks=4, hidden_features=12, num_fc_layers=3, key=key
     )
     trainer = ForecastingModel(lr=1e-3)
     model, state = trainer.fit(
-        model, state, X_train, y_train, X_val, y_val,
-        num_epochs=500, patience=100, key=jr.PRNGKey(42)
+        model,
+        state,
+        X_train,
+        y_train,
+        X_val,
+        y_val,
+        num_epochs=500,
+        patience=100,
+        key=jr.PRNGKey(42),
     )
     preds = trainer.predict(model, state, X_val, key=jr.PRNGKey(123))
     print(f"preds shape {preds.shape}")

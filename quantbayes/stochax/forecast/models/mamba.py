@@ -4,6 +4,7 @@ import jax.random as jr
 import jax.nn as jnn
 import equinox as eqx
 
+
 # -------------------------------------------------------
 # MambaStateSpaceCell
 #
@@ -30,6 +31,7 @@ class MambaStateSpaceCell(eqx.Module):
         h = jnp.reshape(h, (-1,))
         h_new = self.activation(jnp.dot(self.A, h) + jnp.dot(self.B, x) + self.bias)
         return h_new
+
 
 # -------------------------------------------------------
 # MambaStateSpaceModel
@@ -58,12 +60,15 @@ class MambaStateSpaceModel(eqx.Module):
         """
         seq_len = x.shape[0]
         h = jnp.zeros((self.hidden_size,))
+
         def step(h, x_t):
             h_new = self.cell(x_t, h)
             return h_new, h_new
+
         _, hs = jax.lax.scan(step, h, x)
         final_state = hs[-1]
         return self.out(final_state)
+
 
 # -------------------------------------------------------
 # MambaStateSpaceForecast Wrapper
@@ -83,7 +88,9 @@ class MambaStateSpaceForecast(eqx.Module):
         self.seq_len = seq_len
         self.d = d
 
-    def __call__(self, x: jnp.ndarray, state: eqx.nn.State, *, key=None) -> tuple[jnp.ndarray, any]:
+    def __call__(
+        self, x: jnp.ndarray, state: eqx.nn.State, *, key=None
+    ) -> tuple[jnp.ndarray, any]:
         """
         Args:
             x: A single sample of shape (seq_len, d)
@@ -94,6 +101,7 @@ class MambaStateSpaceForecast(eqx.Module):
         """
         preds = self.model(x, key=key)
         return preds, state
+
 
 # -------------------------------------------------------
 # Example usage
@@ -117,15 +125,19 @@ if __name__ == "__main__":
     # Suggested hyperparameters for a univariate time series:
     # seq_len = 10, d = 1, hidden_size = 12.
     model, state = eqx.nn.make_with_state(MambaStateSpaceForecast)(
-        seq_len=10,
-        d=1,
-        hidden_size=12,
-        key=key
+        seq_len=10, d=1, hidden_size=12, key=key
     )
     trainer = ForecastingModel(lr=1e-3)
     model, state = trainer.fit(
-        model, state, X_train, y_train, X_val, y_val,
-        num_epochs=500, patience=100, key=jr.PRNGKey(42)
+        model,
+        state,
+        X_train,
+        y_train,
+        X_val,
+        y_val,
+        num_epochs=500,
+        patience=100,
+        key=jr.PRNGKey(42),
     )
     preds = trainer.predict(model, state, X_val, key=jr.PRNGKey(123))
     print(f"preds shape: {preds.shape}")
