@@ -5,6 +5,13 @@ from sklearn.base import BaseEstimator, ClassifierMixin, RegressorMixin
 from sklearn.model_selection import StratifiedKFold, KFold
 from scipy.special import expit, softmax  # for sigmoid and softmax
 
+__all__ = [
+    "BNNEnsembleRegression",
+    "BNNEnsembleBinary",
+    "BNNEnsembleMulticlass"
+    ""
+]
+
 """
 Example usecase:
 from sklearn.linear_model import LogisticRegression
