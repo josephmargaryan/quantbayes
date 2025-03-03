@@ -128,21 +128,20 @@ def predict_gp_binary(model, X_train, y_train, X_test):
     K_cross = jax.device_get(model.gp_layer(X_test, X_train))
     K_test = jax.device_get(model.gp_layer(X_test))
     noise = jax.device_get(model.gp_layer.noise)
-    
+
     # Add noise to training covariance matrix and compute Cholesky decomposition
     K_train_noise = K_train + (noise**2) * np.eye(K_train.shape[0])
     L = np.linalg.cholesky(K_train_noise + 1e-6 * np.eye(K_train.shape[0]))
-    
+
     # Solve for latent function at training points (posterior mean approximation, for instance)
     alpha = np.linalg.solve(L.T, np.linalg.solve(L, np.array(y_train)))
     f_mean = K_cross.dot(alpha)
-    
+
     # Transform the latent mean predictions to probabilities using the sigmoid function
     p_mean = jax.nn.sigmoid(f_mean)
-    
+
     # In practice, you might also want to compute uncertainty in p_mean via sampling
     return p_mean
-
 
 
 def visualize_predictions(X_test, mean_pred, var_pred):
@@ -224,7 +223,9 @@ def visualize_predictions_binary(X_test, pred_probs, threshold=0.5):
     fig, ax = plt.subplots(figsize=(8, 5))
     ax.plot(X_sorted, probs_sorted, "b-", label="Probability of Class 1")
     ax.scatter(X_sorted, probs_sorted, color="blue", s=20)
-    ax.axhline(y=threshold, color="red", linestyle="--", label=f"Threshold = {threshold}")
+    ax.axhline(
+        y=threshold, color="red", linestyle="--", label=f"Threshold = {threshold}"
+    )
     ax.set_title("GP Binary Classification Predictions")
     xlabel = "Input" if X_arr.ndim == 1 or X_arr.shape[1] == 1 else "PCA Component 1"
     ax.set_xlabel(xlabel)

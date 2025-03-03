@@ -1183,11 +1183,13 @@ class ParticleLinear:
         out_features: int,
         name: str = "particle_layer",
         aggregation: str = "mean",
+        prior=lambda shape: dist.Normal(0, 1).expand(shape).to_event(len(shape)),
     ):
         self.in_features = in_features
         self.out_features = out_features
         self.name = name
         self.aggregation = aggregation
+        self.prior = prior
 
     def __call__(self, X: jnp.ndarray) -> jnp.ndarray:
         """
@@ -1201,24 +1203,18 @@ class ParticleLinear:
             X = X[jnp.newaxis, ...]  # Shape: (1, batch_size, in_features)
 
         particles = X.shape[0]
-        # Sample weights and biases with full event treatment.
+        # Sample weights and biases with full event treatment using the provided prior.
         w = numpyro.sample(
             f"{self.name}_w",
-            dist.Normal(0, 1)
-            .expand([particles, self.in_features, self.out_features])
-            .to_event(3),  # Treat each particle's weight matrix as a joint variable.
+            self.prior([particles, self.in_features, self.out_features]),
         )
         b = numpyro.sample(
             f"{self.name}_b",
-            dist.Normal(0, 1)
-            .expand([particles, self.out_features])
-            .to_event(2),  # Treat each particle's bias vector as a joint variable.
+            self.prior([particles, self.out_features]),
         )
 
         # Compute output for each particle.
-        particle_outputs = (
-            jnp.einsum("pbi,pij->pbj", X, w) + b
-        )  # (particles, batch_size, out_features)
+        particle_outputs = jnp.einsum("pbi,pij->pbj", X, w) + b
 
         # Aggregate across particles.
         if self.aggregation == "mean":
@@ -1247,10 +1243,12 @@ class FFTParticleLinear:
         in_features: int,
         name: str = "fft_particle_layer",
         aggregation: str = "mean",
+        prior=lambda shape: dist.Normal(0, 1).expand(shape).to_event(len(shape)),
     ):
         self.in_features = in_features
         self.name = name
         self.aggregation = aggregation
+        self.prior = prior
 
     def __call__(self, X: jnp.ndarray) -> jnp.ndarray:
         """
@@ -1264,18 +1262,14 @@ class FFTParticleLinear:
             X = X[jnp.newaxis, ...]  # Shape: (1, batch_size, in_features)
 
         particles = X.shape[0]
-        # Sample first rows and biases for each particle with proper event dimensions.
+        # Sample first rows and biases for each particle using the provided prior.
         first_rows = numpyro.sample(
             f"{self.name}_first_rows",
-            dist.Normal(0, 1)
-            .expand([particles, self.in_features])
-            .to_event(2),  # Each particle's first row is a joint variable.
+            self.prior([particles, self.in_features]),
         )
         biases = numpyro.sample(
             f"{self.name}_biases",
-            dist.Normal(0, 1)
-            .expand([particles, self.in_features])
-            .to_event(2),  # Each particle's bias vector is a joint variable.
+            self.prior([particles, self.in_features]),
         )
 
         def fft_particle_transform(p_idx):
@@ -1285,6 +1279,7 @@ class FFTParticleLinear:
             return transformed + bias
 
         particle_outputs = jax.vmap(fft_particle_transform)(jnp.arange(particles))
+
         # Aggregate across particles.
         if self.aggregation == "mean":
             aggregated_output = jnp.mean(particle_outputs, axis=0)
