@@ -22,7 +22,8 @@ from .gp_utils import (
 )
 
 __all__ = [
-    "CalibratedBayesNet" "EntropyAndMutualInformation",
+    "CalibratedBayesNet",
+    "EntropyAndMutualInformation",
     "BayesianAnalysis",
     "plot_roc_curve",
     "plot_calibration_curve",
