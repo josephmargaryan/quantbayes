@@ -1,4 +1,5 @@
 import equinox as eqx
+import pickle
 import jax
 import jax.random as jr
 import jax.numpy as jnp
@@ -199,6 +200,37 @@ class BinaryModel:
         plt.suptitle("Binary Classification Performance")
         plt.tight_layout(rect=[0, 0.03, 1, 0.95])
         plt.show()
+
+    def save(self, path, model, state):
+        """Save the model, state, and optimizer state to disk."""
+        with open(path, "wb") as f:
+            pickle.dump(
+                {
+                    "model": model,
+                    "state": state,
+                    "opt_state": self.opt_state,
+                    "train_losses": self.train_losses,
+                    "val_losses": self.val_losses,
+                },
+                f,
+            )
+        print(f"Saved model to {path}")
+
+    @classmethod
+    def load(cls, path):
+        """Load the model, state, and optimizer state from disk.
+
+        Returns a tuple: (wrapper, model, state)
+        """
+        with open(path, "rb") as f:
+            data = pickle.load(f)
+        # Reconstruct the wrapper.
+        wrapper = cls()
+        wrapper.opt_state = data["opt_state"]
+        wrapper.train_losses = data.get("train_losses", [])
+        wrapper.val_losses = data.get("val_losses", [])
+        print(f"Loaded model from {path}")
+        return wrapper, data["model"], data["state"]
 
 
 if __name__ == "__main__":

@@ -1,4 +1,5 @@
 import equinox as eqx
+import pickle
 import jax
 import jax.numpy as jnp
 import jax.random as jr
@@ -215,6 +216,37 @@ class RegressionModel:
             plt.tight_layout()
             plt.show()
 
+    def save(self, path, model, state):
+        """Save the model, state, and optimizer state to disk."""
+        with open(path, "wb") as f:
+            pickle.dump(
+                {
+                    "model": model,
+                    "state": state,
+                    "opt_state": self.opt_state,
+                    "train_losses": self.train_losses,
+                    "val_losses": self.val_losses,
+                },
+                f,
+            )
+        print(f"Saved model to {path}")
+
+    @classmethod
+    def load(cls, path):
+        """Load the model, state, and optimizer state from disk.
+
+        Returns a tuple: (wrapper, model, state)
+        """
+        with open(path, "rb") as f:
+            data = pickle.load(f)
+        # Reconstruct the wrapper.
+        wrapper = cls()
+        wrapper.opt_state = data["opt_state"]
+        wrapper.train_losses = data.get("train_losses", [])
+        wrapper.val_losses = data.get("val_losses", [])
+        print(f"Loaded model from {path}")
+        return wrapper, data["model"], data["state"]
+
 
 if __name__ == "__main__":
     import jax
@@ -274,3 +306,9 @@ if __name__ == "__main__":
     preds = trainer.predict(model, state, X_test)
     print(f"MSE: {mean_squared_error(np.array(y_test), np.array(preds))}")
     trainer.visualize(model, state, X_train, y_train, key)
+
+    ##### Example loading and saving
+    # model, state = ...  # assume these are obtained after training
+    # regression_model = RegressionModel(lr=1e-3)
+    # regression_model.save("model_state.pkl", model, state)
+    # regression_model, model, state = RegressionModel.load("model_state.pkl")

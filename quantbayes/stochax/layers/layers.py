@@ -12,6 +12,7 @@ __all__ = [
     "BlockCirculantProcess",
     "SpectralDenseBlock",
     "FourierNeuralOperator1D",
+    "MixtureOfTwoLayers",
 ]
 
 
@@ -568,3 +569,65 @@ class FourierNeuralOperator1D(eqx.Module):
         h = jax.nn.relu(h)
         x_mlp = self.linear2(h)
         return x_ifft + x_mlp
+
+
+class MixtureOfTwoLayers(eqx.Module):
+    # Layers for combining
+    layerA: eqx.Module
+    layerB: eqx.Module
+    # gating mechanism selection
+    gating_mode: str = "param"
+    # parameters for "param" gating:
+    logit_gate: jnp.ndarray = None
+    # parameters for "beta" gating (we use mean of Beta(alpha, beta)):
+    alpha0: jnp.ndarray = None
+    beta0: jnp.ndarray = None
+    # parameters for "mlp" gating:
+    gate_w: jnp.ndarray = None
+    gate_b: jnp.ndarray = None
+
+    # key and d_in are only needed for certain gating modes
+    def __init__(
+        self,
+        layerA: eqx.Module,
+        layerB: eqx.Module,
+        gating_mode: str = "param",
+        key: jax.random.PRNGKey = None,
+        d_in: int = None,
+    ):
+        self.layerA = layerA
+        self.layerB = layerB
+        self.gating_mode = gating_mode
+
+        if gating_mode == "param":
+            # A single learnable scalar (logit) gate.
+            self.logit_gate = jnp.array(0.0)
+        elif gating_mode == "beta":
+            # Instead of sampling from a Beta, we’ll use a deterministic function, e.g. its mean.
+            self.alpha0 = jnp.array(2.0)
+            self.beta0 = jnp.array(2.0)
+        elif gating_mode == "mlp":
+            # For data-dependent gating we need to map from input (d_in) to a scalar gate.
+            if key is None or d_in is None:
+                raise ValueError("For mlp gating, key and d_in must be provided")
+            # Initialize weights and bias. (For simplicity we use a single linear layer.)
+            self.gate_w = jax.random.normal(key, (d_in, 1))
+            self.gate_b = jax.random.normal(key, (1,))
+        else:
+            raise ValueError(f"Unrecognized gating_mode={gating_mode}")
+
+    def __call__(self, X: jnp.ndarray) -> jnp.ndarray:
+        outA = self.layerA(X)
+        outB = self.layerB(X)
+        if self.gating_mode == "param":
+            gate = jax.nn.sigmoid(self.logit_gate)  # scalar in (0,1)
+        elif self.gating_mode == "beta":
+            # Deterministically use the mean of the Beta distribution:
+            gate = self.alpha0 / (self.alpha0 + self.beta0)
+        elif self.gating_mode == "mlp":
+            # Compute per-example gate values.
+            logit = jnp.dot(X, self.gate_w) + self.gate_b  # shape (batch_size, 1)
+            gate = jax.nn.sigmoid(logit)
+        else:
+            raise ValueError(f"Unrecognized gating_mode={self.gating_mode}")
+        return gate * outA + (1.0 - gate) * outB

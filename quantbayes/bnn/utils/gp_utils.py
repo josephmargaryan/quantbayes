@@ -124,16 +124,16 @@ def predict_gp(model, X_train, y_train, X_test):
 
 def predict_gp_binary(model, X_train, y_train, X_test, num_samples=100):
     """
-    Computes the predictive distribution for a GP binary classifier by drawing multiple samples 
+    Computes the predictive distribution for a GP binary classifier by drawing multiple samples
     from the approximate posterior of the latent function and then applying the sigmoid transformation.
-    
+
     Parameters:
       model: the fitted GP binary classification model.
       X_train: training inputs.
       y_train: training binary labels.
       X_test: test inputs.
       num_samples: number of posterior samples to draw.
-      
+
     Returns:
       mean_prob: the mean predicted probability for class 1 (array of shape [n_test]).
       std_prob: the standard deviation of the predicted probabilities (array of shape [n_test]).
@@ -223,7 +223,7 @@ def visualize_predictions(X_test, mean_pred, var_pred):
 def visualize_predictions_binary(X_test, mean_prob, std_prob, threshold=0.5):
     """
     Visualizes the predicted probabilities for binary classification along with uncertainty bands.
-    
+
     Parameters:
       X_test: array-like, shape (num_points, input_dim)
         Test inputs.
@@ -233,7 +233,7 @@ def visualize_predictions_binary(X_test, mean_prob, std_prob, threshold=0.5):
         Standard deviation of predicted probabilities.
       threshold: float (default: 0.5)
         Decision threshold for classification.
-        
+
     Returns:
       fig: Matplotlib figure.
     """
@@ -243,7 +243,7 @@ def visualize_predictions_binary(X_test, mean_prob, std_prob, threshold=0.5):
 
     # Convert X_test to a NumPy array.
     X_arr = np.array(X_test)
-    
+
     # Reduce dimensionality for visualization if necessary.
     if X_arr.ndim > 1 and X_arr.shape[1] > 1:
         pca = PCA(n_components=1)
@@ -267,9 +267,11 @@ def visualize_predictions_binary(X_test, mean_prob, std_prob, threshold=0.5):
         mean_sorted + 2 * std_sorted,
         color="blue",
         alpha=0.3,
-        label="Uncertainty (±2 std)"
+        label="Uncertainty (±2 std)",
     )
-    ax.axhline(y=threshold, color="red", linestyle="--", label=f"Threshold = {threshold}")
+    ax.axhline(
+        y=threshold, color="red", linestyle="--", label=f"Threshold = {threshold}"
+    )
     xlabel = "Input" if X_arr.ndim == 1 or X_arr.shape[1] == 1 else "PCA Component 1"
     ax.set_xlabel(xlabel)
     ax.set_ylabel("Probability of Class 1")

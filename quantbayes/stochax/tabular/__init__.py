@@ -1,5 +1,5 @@
 from .binary import BinaryModel
-from .multiclass import MulticlassModel   
+from .multiclass import MulticlassModel
 from .regression import RegressionModel
 from .simple_models.models import LinearRegression, LogisticRegression, MLPClassifier
 
