@@ -1,5 +1,5 @@
 from .autoformer import Autoformer
-from .baseline import GRUBaselineForecast, LSTMBaselineForecast
+from .baseline import GRU, LSTM
 from .fedformer import FedformerForecast
 from .infoformer import InfoFormerForecast
 from .mamba import MambaStateSpaceForecast
@@ -12,8 +12,8 @@ from .spectral_tft import SpectralTemporalFusionTransformer
 
 __all__ = [
     "Autoformer",
-    "GRUBaselineForecast",
-    "LSTMBaselineForecast",
+    "GRU",
+    "LSTM",
     "FedformerForecast",
     "InfoFormerForecast",
     "MambaStateSpaceForecast",
