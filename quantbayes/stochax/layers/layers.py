@@ -49,7 +49,7 @@ class AggregatedLayer(eqx.Module):
     agg_method: str = eqx.static_field()  # "mean", "max", or "attention"
     attention_aggregator: LearnableAggregator = None  # only used if agg_method == "attention"
 
-    def __init__(self, layer: eqx.Module, agg_method: str = "mean", *, seq_len: int, key):
+    def __init__(self, layer: eqx.Module, agg_method: str = "mean", *, key):
         self.layer = layer
         self.agg_method = agg_method
         if agg_method == "attention":
