@@ -13,25 +13,86 @@ __all__ = [
     "SpectralDenseBlock",
     "FourierNeuralOperator1D",
     "MixtureOfTwoLayers",
-    "apply_layer_over_channels"
+    "AggregatedLayer"
 ]
 
-def apply_layer_over_channels(layer, x: jnp.ndarray) -> jnp.ndarray:
+class LearnableAggregator(eqx.Module):
     """
-    Applies a custom layer to each channel of a time series input.
+    Attention-based aggregator that computes a weighted average over time.
+    Expects input of shape (seq_len, feature_dim) and returns an aggregated
+    vector of shape (feature_dim,).
+    """
+    query: eqx.nn.Linear  # Projects each time step to a scalar score.
 
-    Parameters:
-        layer: A callable that accepts a 1D array of shape (seq_len,) and returns an array.
-        x: A time series array of shape (seq_len, D), where D is the number of channels.
-    
-    Returns:
-        The output after applying the layer to each channel, with shape (D, ...).
+    def __init__(self, input_dim: int, *, key):
+        self.query = eqx.nn.Linear(input_dim, 1, key=key)
+
+    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
+        # x shape: (seq_len, input_dim)
+        scores = self.query(x)  # shape: (seq_len, 1)
+        weights = jax.nn.softmax(scores, axis=0)  # softmax over time steps
+        aggregated = jnp.sum(x * weights, axis=0)  # shape: (input_dim,)
+        return aggregated
+
+class AggregatedLayer(eqx.Module):
     """
-    # Transpose so each channel is first.
-    x_transposed = jnp.transpose(x, (1, 0))  # (D, seq_len)
-    # Apply the layer to each channel using vmap.
-    processed = jax.vmap(layer)(x_transposed)
-    return processed
+    Applies a custom 1D signal processing layer to each channel of a time series,
+    and aggregates the outputs along the time axis using a specified method.
+    
+    Parameters:
+      - layer: A custom layer that processes a 1D signal (shape: (seq_len,)) and outputs a 1D signal.
+      - agg_method: A string specifying the aggregation method.
+                    Options include "mean", "max", or "attention".
+      - For "attention", a learnable aggregator is created.
+    """
+    layer: eqx.Module
+    agg_method: str = eqx.static_field()  # "mean", "max", or "attention"
+    attention_aggregator: LearnableAggregator = None  # only used if agg_method == "attention"
+
+    def __init__(self, layer: eqx.Module, agg_method: str = "mean", *, seq_len: int, key):
+        self.layer = layer
+        self.agg_method = agg_method
+        if agg_method == "attention":
+            # For attention, we assume the custom layer returns a 1D signal of shape (seq_len,)
+            # and we add a feature dimension of 1.
+            key_aggr, _ = jax.random.split(key)
+            self.attention_aggregator = LearnableAggregator(input_dim=1, key=key_aggr)
+        else:
+            self.attention_aggregator = None
+
+    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
+        """
+        Apply the custom layer to each channel and aggregate over time.
+        
+        Parameters:
+          x: A single time series sample of shape (seq_len, D) where D is the number of channels.
+          
+        Returns:
+          An aggregated output per channel, shape: (D,).
+        """
+        # Transpose to shape (D, seq_len) so each channel is processed individually.
+        x_transposed = jnp.transpose(x, (1, 0))
+        
+        # Apply the custom layer to each channel using vmap.
+        # Each channel's signal is processed independently.
+        processed = jax.vmap(self.layer)(x_transposed)  # shape: (D, seq_len)
+        
+        # Now, aggregate along the time axis (axis=-1) for each channel.
+        def aggregate_fn(signal):
+            # signal: shape (seq_len,)
+            if self.agg_method == "mean":
+                return jnp.mean(signal)
+            elif self.agg_method == "max":
+                return jnp.max(signal)
+            elif self.agg_method == "attention":
+                # Add a feature dimension for attention: (seq_len,) -> (seq_len, 1)
+                signal = signal[:, None]
+                return self.attention_aggregator(signal).squeeze()
+            else:
+                raise ValueError(f"Unknown aggregation method: {self.agg_method}")
+        
+        aggregated = jax.vmap(aggregate_fn)(processed)  # shape: (D,)
+        return aggregated
 
 
 class Circulant(eqx.Module):
