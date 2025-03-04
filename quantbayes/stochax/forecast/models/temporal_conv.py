@@ -1,4 +1,5 @@
 import jax
+import jax.random as jr
 import jax.numpy as jnp
 import jax.nn as jnn
 import equinox as eqx
