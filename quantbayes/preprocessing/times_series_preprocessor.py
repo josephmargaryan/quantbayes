@@ -186,16 +186,13 @@ class TimeSeriesPreprocessor:
         return X_scaled, y_scaled
 
     def _add_temporal_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Add temporal features (year, month, day, weekday, etc.) based on the datetime column.
-        """
         self.logger.info(f"Adding temporal features from '{self.datetime_col}'.")
         if not pd.api.types.is_datetime64_any_dtype(df[self.datetime_col]):
             df[self.datetime_col] = pd.to_datetime(df[self.datetime_col])
             self.logger.info(f"Converted '{self.datetime_col}' to datetime.")
         df["year"] = df[self.datetime_col].dt.year
         df["month"] = df[self.datetime_col].dt.month
-        df["day"] = df[self.datetime_col].dt.day
+        df["day_of_month"] = df[self.datetime_col].dt.day  # Renamed from "day" to "day_of_month"
         df["day_of_week"] = df[self.datetime_col].dt.dayofweek
         df["day_of_year"] = df[self.datetime_col].dt.dayofyear
         df["quarter"] = df[self.datetime_col].dt.quarter
@@ -207,6 +204,7 @@ class TimeSeriesPreprocessor:
             df["second"] = df[self.datetime_col].dt.second
         self.logger.info("Temporal features added.")
         return df
+
 
     def _fourier_transform(
         self, series: np.ndarray, period: int = 365
@@ -521,3 +519,70 @@ if __name__ == "__main__":
     )
 
     print("\nAll tests completed successfully.")
+
+
+def test_preprocessor():
+    import pandas as pd
+    import numpy as np
+    from sklearn.preprocessing import StandardScaler
+
+    # Create a small synthetic dataset
+    date_rng = pd.date_range(start="2022-01-01", periods=15, freq="D")
+    data = {
+        "day": date_rng,  # datetime column
+        "feature1": np.random.randn(15),
+        "target": np.random.randint(0, 10, size=15)
+    }
+    df = pd.DataFrame(data)
+    
+    # Instantiate the preprocessor.
+    # Note: auto_detect is True so it will automatically figure out that 'feature1' is numeric.
+    processor = TimeSeriesPreprocessor(
+        datetime_col="day",
+        target_col="target",
+        categorical_cols=None,
+        numeric_cols=None,
+        feature_scaler=StandardScaler(),
+        target_scaler=None,
+        seq_length=3,
+        forecast_horizon=1,
+        top_k_fourier=2,
+        remove_na=True,
+        data_format="dataframe",
+        auto_detect=True,
+    )
+    
+    try:
+        # Test fit_transform on training data
+        df_processed, X_seq, y_seq = processor.fit_transform(
+            data=df,
+            add_temporal=True,
+            add_fourier=False  # Disable Fourier to focus on temporal features
+        )
+        print("Fit Transform successful!")
+        print("Processed DataFrame head:")
+        print(df_processed.head())
+        print("X_seq shape:", X_seq.shape)
+        print("y_seq shape:", y_seq.shape)
+        
+        # Test transform in prediction mode (without target)
+        df_new = df.drop(columns=["target"])
+        test_df, test_X_seq, test_y_seq = processor.transform(
+            data=df_new,
+            add_temporal=True,
+            add_fourier=False,
+            prediction_mode=True
+        )
+        print("\nTransform (Prediction mode) successful!")
+        print("Transformed Test DataFrame head:")
+        print(test_df.head())
+        print("Test X_seq shape:", test_X_seq.shape)
+        print("Test y_seq (should be None):", test_y_seq)
+        
+    except Exception as e:
+        print("Test failed with error:", e)
+
+
+if __name__ == "__main__":
+    test_preprocessor()
+    # You can keep the other test code or demo below this block if needed.
