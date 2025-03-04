@@ -1,5 +1,5 @@
 from .models.autoformer import Autoformer
-from .models.baseline import GRUBaselineForecast, LSTMBaselineForecast
+from .models.baseline import GRU, LSTM
 from .models.fedformer import FedformerForecast
 from .models.infoformer import InfoFormerForecast
 from .models.mamba import MambaStateSpaceForecast
@@ -14,8 +14,8 @@ from .forecast import ForecastingModel
 
 __all__ = [
     "Autoformer",
-    "GRUBaselineForecast",
-    "LSTMBaselineForecast",
+    "GRU",
+    "LSTM",
     "FedformerForecast",
     "InfoFormerForecast",
     "MambaStateSpaceForecast",
