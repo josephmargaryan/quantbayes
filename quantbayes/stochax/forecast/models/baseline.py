@@ -3,6 +3,7 @@ import jax.numpy as jnp
 import jax.random as jr
 import equinox as eqx
 
+
 class GRU(eqx.Module):
     cell: eqx.nn.GRUCell
     fc: eqx.nn.Linear
@@ -24,7 +25,8 @@ class GRU(eqx.Module):
 
         final_h, _ = jax.lax.scan(step, init_h, x)
         return self.fc(final_h), state
-    
+
+
 class LSTM(eqx.Module):
     cell: eqx.nn.LSTMCell
     fc: eqx.nn.Linear
@@ -39,7 +41,10 @@ class LSTM(eqx.Module):
     def __call__(self, x, state=None, *, key=None):
         # x shape: [seq_len, input_dim]
         # Initialize hidden state and cell state
-        init_state = (jnp.zeros(self.cell.hidden_size), jnp.zeros(self.cell.hidden_size))
+        init_state = (
+            jnp.zeros(self.cell.hidden_size),
+            jnp.zeros(self.cell.hidden_size),
+        )
 
         def step(carry, xt):
             h, c = carry

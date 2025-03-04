@@ -192,7 +192,9 @@ class TimeSeriesPreprocessor:
             self.logger.info(f"Converted '{self.datetime_col}' to datetime.")
         df["year"] = df[self.datetime_col].dt.year
         df["month"] = df[self.datetime_col].dt.month
-        df["day_of_month"] = df[self.datetime_col].dt.day  # Renamed from "day" to "day_of_month"
+        df["day_of_month"] = df[
+            self.datetime_col
+        ].dt.day  # Renamed from "day" to "day_of_month"
         df["day_of_week"] = df[self.datetime_col].dt.dayofweek
         df["day_of_year"] = df[self.datetime_col].dt.dayofyear
         df["quarter"] = df[self.datetime_col].dt.quarter
@@ -204,7 +206,6 @@ class TimeSeriesPreprocessor:
             df["second"] = df[self.datetime_col].dt.second
         self.logger.info("Temporal features added.")
         return df
-
 
     def _fourier_transform(
         self, series: np.ndarray, period: int = 365
@@ -531,10 +532,10 @@ def test_preprocessor():
     data = {
         "day": date_rng,  # datetime column
         "feature1": np.random.randn(15),
-        "target": np.random.randint(0, 10, size=15)
+        "target": np.random.randint(0, 10, size=15),
     }
     df = pd.DataFrame(data)
-    
+
     # Instantiate the preprocessor.
     # Note: auto_detect is True so it will automatically figure out that 'feature1' is numeric.
     processor = TimeSeriesPreprocessor(
@@ -551,34 +552,31 @@ def test_preprocessor():
         data_format="dataframe",
         auto_detect=True,
     )
-    
+
     try:
         # Test fit_transform on training data
         df_processed, X_seq, y_seq = processor.fit_transform(
             data=df,
             add_temporal=True,
-            add_fourier=False  # Disable Fourier to focus on temporal features
+            add_fourier=False,  # Disable Fourier to focus on temporal features
         )
         print("Fit Transform successful!")
         print("Processed DataFrame head:")
         print(df_processed.head())
         print("X_seq shape:", X_seq.shape)
         print("y_seq shape:", y_seq.shape)
-        
+
         # Test transform in prediction mode (without target)
         df_new = df.drop(columns=["target"])
         test_df, test_X_seq, test_y_seq = processor.transform(
-            data=df_new,
-            add_temporal=True,
-            add_fourier=False,
-            prediction_mode=True
+            data=df_new, add_temporal=True, add_fourier=False, prediction_mode=True
         )
         print("\nTransform (Prediction mode) successful!")
         print("Transformed Test DataFrame head:")
         print(test_df.head())
         print("Test X_seq shape:", test_X_seq.shape)
         print("Test y_seq (should be None):", test_y_seq)
-        
+
     except Exception as e:
         print("Test failed with error:", e)
 
