@@ -13,7 +13,25 @@ __all__ = [
     "SpectralDenseBlock",
     "FourierNeuralOperator1D",
     "MixtureOfTwoLayers",
+    "apply_layer_over_channels"
 ]
+
+def apply_layer_over_channels(layer, x: jnp.ndarray) -> jnp.ndarray:
+    """
+    Applies a custom layer to each channel of a time series input.
+
+    Parameters:
+        layer: A callable that accepts a 1D array of shape (seq_len,) and returns an array.
+        x: A time series array of shape (seq_len, D), where D is the number of channels.
+    
+    Returns:
+        The output after applying the layer to each channel, with shape (D, ...).
+    """
+    # Transpose so each channel is first.
+    x_transposed = jnp.transpose(x, (1, 0))  # (D, seq_len)
+    # Apply the layer to each channel using vmap.
+    processed = jax.vmap(layer)(x_transposed)
+    return processed
 
 
 class Circulant(eqx.Module):

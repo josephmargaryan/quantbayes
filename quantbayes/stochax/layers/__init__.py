@@ -6,6 +6,7 @@ from .layers import (
     SpectralDenseBlock,
     FourierNeuralOperator1D,
     MixtureOfTwoLayers,
+    apply_layer_over_channels
 )
 from .custom_jvp import (
     JVPCirculant,
@@ -26,4 +27,5 @@ __all__ = [
     "JVPBlockCirculantProcess",
     "JVPCirculantProcess",
     "MixtureOfTwoLayers",
+    "apply_layer_over_channels"
 ]
