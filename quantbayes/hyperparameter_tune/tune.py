@@ -113,11 +113,11 @@ class XGBClassifierTuner(BaseTuner):
             "n_estimators": trial.suggest_int("n_estimators", 50, 500),
             "max_depth": trial.suggest_int("max_depth", 3, 10),
             "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
-            "subsample": trial.suggest_uniform("subsample", 0.5, 1.0),
-            "colsample_bytree": trial.suggest_uniform("colsample_bytree", 0.5, 1.0),
-            "colsample_bylevel": trial.suggest_uniform("colsample_bylevel", 0.5, 1.0),  # NEW
-            "colsample_bynode": trial.suggest_uniform("colsample_bynode", 0.5, 1.0),  # NEW
-            "gamma": trial.suggest_uniform("gamma", 0, 5),
+            "subsample": trial.suggest_float("subsample", 0.5, 1.0),
+            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0),
+            "colsample_bylevel": trial.suggest_float("colsample_bylevel", 0.5, 1.0),  # NEW
+            "colsample_bynode": trial.suggest_float("colsample_bynode", 0.5, 1.0),  # NEW
+            "gamma": trial.suggest_float("gamma", 0, 5),
             "reg_alpha": trial.suggest_float("reg_alpha", 1e-8, 1.0, log=True),
             "reg_lambda": trial.suggest_float("reg_lambda", 1e-8, 1.0, log=True),
             "min_child_weight": trial.suggest_int("min_child_weight", 1, 10),
@@ -143,11 +143,11 @@ class XGBRegressorTuner(BaseTuner):
             "n_estimators": trial.suggest_int("n_estimators", 50, 500),
             "max_depth": trial.suggest_int("max_depth", 3, 10),
             "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
-            "subsample": trial.suggest_uniform("subsample", 0.5, 1.0),
-            "colsample_bytree": trial.suggest_uniform("colsample_bytree", 0.5, 1.0),
-            "colsample_bylevel": trial.suggest_uniform("colsample_bylevel", 0.5, 1.0),  # NEW
-            "colsample_bynode": trial.suggest_uniform("colsample_bynode", 0.5, 1.0),  # NEW
-            "gamma": trial.suggest_uniform("gamma", 0, 5),
+            "subsample": trial.suggest_float("subsample", 0.5, 1.0),
+            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0),
+            "colsample_bylevel": trial.suggest_float("colsample_bylevel", 0.5, 1.0),  # NEW
+            "colsample_bynode": trial.suggest_float("colsample_bynode", 0.5, 1.0),  # NEW
+            "gamma": trial.suggest_float("gamma", 0, 5),
             "reg_alpha": trial.suggest_float("reg_alpha", 1e-8, 1.0, log=True),
             "reg_lambda": trial.suggest_float("reg_lambda", 1e-8, 1.0, log=True),
             "min_child_weight": trial.suggest_int("min_child_weight", 1, 10),
@@ -181,8 +181,8 @@ class LGBMClassifierTuner(BaseTuner):
             "num_leaves": trial.suggest_int("num_leaves", 20, 150),
             "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
             "min_child_samples": trial.suggest_int("min_child_samples", 5, 100),
-            "subsample": trial.suggest_uniform("subsample", 0.5, 1.0),
-            "colsample_bytree": trial.suggest_uniform("colsample_bytree", 0.5, 1.0),
+            "subsample": trial.suggest_float("subsample", 0.5, 1.0),
+            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0),
             "reg_alpha": trial.suggest_float("reg_alpha", 1e-8, 1.0, log=True),
             "reg_lambda": trial.suggest_float("reg_lambda", 1e-8, 1.0, log=True),
             "min_split_gain": trial.suggest_float("min_split_gain", 0.0, 0.1),  # NEW
@@ -211,8 +211,8 @@ class LGBMRegressorTuner(BaseTuner):
             "num_leaves": trial.suggest_int("num_leaves", 20, 150),
             "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
             "min_child_samples": trial.suggest_int("min_child_samples", 5, 100),
-            "subsample": trial.suggest_uniform("subsample", 0.5, 1.0),
-            "colsample_bytree": trial.suggest_uniform("colsample_bytree", 0.5, 1.0),
+            "subsample": trial.suggest_float("subsample", 0.5, 1.0),
+            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0),
             "reg_alpha": trial.suggest_float("reg_alpha", 1e-8, 1.0, log=True),
             "reg_lambda": trial.suggest_float("reg_lambda", 1e-8, 1.0, log=True),
             "min_split_gain": trial.suggest_float("min_split_gain", 0.0, 0.1),  # NEW
@@ -249,7 +249,7 @@ class CatBoostClassifierTuner(BaseTuner):
             "depth": trial.suggest_int("depth", 3, 10),
             "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
             "l2_leaf_reg": trial.suggest_float("l2_leaf_reg", 1, 10, log=True),
-            "bagging_temperature": trial.suggest_uniform("bagging_temperature", 0, 1),
+            "bagging_temperature": trial.suggest_float("bagging_temperature", 0, 1),
             "border_count": trial.suggest_int("border_count", 32, 255),
             "random_strength": trial.suggest_float("random_strength", 0, 10),  # NEW
             "rsm": trial.suggest_float("rsm", 0.5, 1.0),  # NEW
@@ -276,7 +276,7 @@ class CatBoostRegressorTuner(BaseTuner):
             "depth": trial.suggest_int("depth", 3, 10),
             "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
             "l2_leaf_reg": trial.suggest_float("l2_leaf_reg", 1, 10, log=True),
-            "bagging_temperature": trial.suggest_uniform("bagging_temperature", 0, 1),
+            "bagging_temperature": trial.suggest_float("bagging_temperature", 0, 1),
             "border_count": trial.suggest_int("border_count", 32, 255),
             "random_strength": trial.suggest_float("random_strength", 0, 10),  # NEW
             "rsm": trial.suggest_float("rsm", 0.5, 1.0),  # NEW
