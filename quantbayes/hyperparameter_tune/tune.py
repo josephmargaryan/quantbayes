@@ -112,12 +112,17 @@ class XGBClassifierTuner(BaseTuner):
         params = {
             "n_estimators": trial.suggest_int("n_estimators", 50, 500),
             "max_depth": trial.suggest_int("max_depth", 3, 10),
-            "learning_rate": trial.suggest_loguniform("learning_rate", 0.01, 0.3),
+            "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
             "subsample": trial.suggest_uniform("subsample", 0.5, 1.0),
             "colsample_bytree": trial.suggest_uniform("colsample_bytree", 0.5, 1.0),
+            "colsample_bylevel": trial.suggest_uniform("colsample_bylevel", 0.5, 1.0),  # NEW
+            "colsample_bynode": trial.suggest_uniform("colsample_bynode", 0.5, 1.0),  # NEW
             "gamma": trial.suggest_uniform("gamma", 0, 5),
-            "reg_alpha": trial.suggest_loguniform("reg_alpha", 1e-8, 1.0),
-            "reg_lambda": trial.suggest_loguniform("reg_lambda", 1e-8, 1.0),
+            "reg_alpha": trial.suggest_float("reg_alpha", 1e-8, 1.0, log=True),
+            "reg_lambda": trial.suggest_float("reg_lambda", 1e-8, 1.0, log=True),
+            "min_child_weight": trial.suggest_int("min_child_weight", 1, 10),
+            "scale_pos_weight": trial.suggest_float("scale_pos_weight", 0.1, 10.0, log=True),
+            "max_delta_step": trial.suggest_int("max_delta_step", 0, 10),  # NEW
         }
         # Merge with fixed parameters
         params.update(self.fixed_params)
@@ -137,12 +142,16 @@ class XGBRegressorTuner(BaseTuner):
         params = {
             "n_estimators": trial.suggest_int("n_estimators", 50, 500),
             "max_depth": trial.suggest_int("max_depth", 3, 10),
-            "learning_rate": trial.suggest_loguniform("learning_rate", 0.01, 0.3),
+            "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
             "subsample": trial.suggest_uniform("subsample", 0.5, 1.0),
             "colsample_bytree": trial.suggest_uniform("colsample_bytree", 0.5, 1.0),
+            "colsample_bylevel": trial.suggest_uniform("colsample_bylevel", 0.5, 1.0),  # NEW
+            "colsample_bynode": trial.suggest_uniform("colsample_bynode", 0.5, 1.0),  # NEW
             "gamma": trial.suggest_uniform("gamma", 0, 5),
-            "reg_alpha": trial.suggest_loguniform("reg_alpha", 1e-8, 1.0),
-            "reg_lambda": trial.suggest_loguniform("reg_lambda", 1e-8, 1.0),
+            "reg_alpha": trial.suggest_float("reg_alpha", 1e-8, 1.0, log=True),
+            "reg_lambda": trial.suggest_float("reg_lambda", 1e-8, 1.0, log=True),
+            "min_child_weight": trial.suggest_int("min_child_weight", 1, 10),
+            "max_delta_step": trial.suggest_int("max_delta_step", 0, 10),  # NEW
         }
         params.update(self.fixed_params)
         model = self.model_class(**params, random_state=self.random_state)
@@ -170,12 +179,18 @@ class LGBMClassifierTuner(BaseTuner):
         params = {
             "n_estimators": trial.suggest_int("n_estimators", 50, 500),
             "num_leaves": trial.suggest_int("num_leaves", 20, 150),
-            "learning_rate": trial.suggest_loguniform("learning_rate", 0.01, 0.3),
+            "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
             "min_child_samples": trial.suggest_int("min_child_samples", 5, 100),
             "subsample": trial.suggest_uniform("subsample", 0.5, 1.0),
             "colsample_bytree": trial.suggest_uniform("colsample_bytree", 0.5, 1.0),
-            "reg_alpha": trial.suggest_loguniform("reg_alpha", 1e-8, 1.0),
-            "reg_lambda": trial.suggest_loguniform("reg_lambda", 1e-8, 1.0),
+            "reg_alpha": trial.suggest_float("reg_alpha", 1e-8, 1.0, log=True),
+            "reg_lambda": trial.suggest_float("reg_lambda", 1e-8, 1.0, log=True),
+            "min_split_gain": trial.suggest_float("min_split_gain", 0.0, 0.1),  # NEW
+            "bagging_fraction": trial.suggest_float("bagging_fraction", 0.5, 1.0),  # NEW
+            "bagging_freq": trial.suggest_int("bagging_freq", 1, 10),  # NEW
+            "feature_fraction": trial.suggest_float("feature_fraction", 0.5, 1.0),  # NEW
+            "lambda_l1": trial.suggest_float("lambda_l1", 1e-8, 1.0, log=True),  # NEW
+            "lambda_l2": trial.suggest_float("lambda_l2", 1e-8, 1.0, log=True),  # NEW
         }
         params.update(self.fixed_params)
         model = self.model_class(**params, random_state=self.random_state)
@@ -194,12 +209,18 @@ class LGBMRegressorTuner(BaseTuner):
         params = {
             "n_estimators": trial.suggest_int("n_estimators", 50, 500),
             "num_leaves": trial.suggest_int("num_leaves", 20, 150),
-            "learning_rate": trial.suggest_loguniform("learning_rate", 0.01, 0.3),
+            "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
             "min_child_samples": trial.suggest_int("min_child_samples", 5, 100),
             "subsample": trial.suggest_uniform("subsample", 0.5, 1.0),
             "colsample_bytree": trial.suggest_uniform("colsample_bytree", 0.5, 1.0),
-            "reg_alpha": trial.suggest_loguniform("reg_alpha", 1e-8, 1.0),
-            "reg_lambda": trial.suggest_loguniform("reg_lambda", 1e-8, 1.0),
+            "reg_alpha": trial.suggest_float("reg_alpha", 1e-8, 1.0, log=True),
+            "reg_lambda": trial.suggest_float("reg_lambda", 1e-8, 1.0, log=True),
+            "min_split_gain": trial.suggest_float("min_split_gain", 0.0, 0.1),  # NEW
+            "bagging_fraction": trial.suggest_float("bagging_fraction", 0.5, 1.0),  # NEW
+            "bagging_freq": trial.suggest_int("bagging_freq", 1, 10),  # NEW
+            "feature_fraction": trial.suggest_float("feature_fraction", 0.5, 1.0),  # NEW
+            "lambda_l1": trial.suggest_float("lambda_l1", 1e-8, 1.0, log=True),  # NEW
+            "lambda_l2": trial.suggest_float("lambda_l2", 1e-8, 1.0, log=True),  # NEW
         }
         params.update(self.fixed_params)
         model = self.model_class(**params, random_state=self.random_state)
@@ -226,10 +247,15 @@ class CatBoostClassifierTuner(BaseTuner):
         params = {
             "iterations": trial.suggest_int("iterations", 100, 1000),
             "depth": trial.suggest_int("depth", 3, 10),
-            "learning_rate": trial.suggest_loguniform("learning_rate", 0.01, 0.3),
-            "l2_leaf_reg": trial.suggest_loguniform("l2_leaf_reg", 1, 10),
+            "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
+            "l2_leaf_reg": trial.suggest_float("l2_leaf_reg", 1, 10, log=True),
             "bagging_temperature": trial.suggest_uniform("bagging_temperature", 0, 1),
             "border_count": trial.suggest_int("border_count", 32, 255),
+            "random_strength": trial.suggest_float("random_strength", 0, 10),  # NEW
+            "rsm": trial.suggest_float("rsm", 0.5, 1.0),  # NEW
+            "leaf_estimation_iterations": trial.suggest_int("leaf_estimation_iterations", 1, 10),  # NEW
+            "od_type": trial.suggest_categorical("od_type", ["IncToDec", "Iter"]),  # NEW
+            "od_wait": trial.suggest_int("od_wait", 10, 50),  # NEW
         }
         params.update(self.fixed_params)
         model = self.model_class(**params, random_state=self.random_state)
@@ -248,10 +274,15 @@ class CatBoostRegressorTuner(BaseTuner):
         params = {
             "iterations": trial.suggest_int("iterations", 100, 1000),
             "depth": trial.suggest_int("depth", 3, 10),
-            "learning_rate": trial.suggest_loguniform("learning_rate", 0.01, 0.3),
-            "l2_leaf_reg": trial.suggest_loguniform("l2_leaf_reg", 1, 10),
+            "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
+            "l2_leaf_reg": trial.suggest_float("l2_leaf_reg", 1, 10, log=True),
             "bagging_temperature": trial.suggest_uniform("bagging_temperature", 0, 1),
             "border_count": trial.suggest_int("border_count", 32, 255),
+            "random_strength": trial.suggest_float("random_strength", 0, 10),  # NEW
+            "rsm": trial.suggest_float("rsm", 0.5, 1.0),  # NEW
+            "leaf_estimation_iterations": trial.suggest_int("leaf_estimation_iterations", 1, 10),  # NEW
+            "od_type": trial.suggest_categorical("od_type", ["IncToDec", "Iter"]),  # NEW
+            "od_wait": trial.suggest_int("od_wait", 10, 50),  # NEW
         }
         params.update(self.fixed_params)
         model = self.model_class(**params, random_state=self.random_state)
@@ -272,9 +303,11 @@ class HistGradientBoostingClassifierTuner(BaseTuner):
     def objective(self, trial):
         params = {
             "max_iter": trial.suggest_int("max_iter", 100, 500),
-            "learning_rate": trial.suggest_loguniform("learning_rate", 0.01, 0.3),
+            "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
             "max_leaf_nodes": trial.suggest_int("max_leaf_nodes", 10, 100),
-            "l2_regularization": trial.suggest_loguniform("l2_regularization", 1e-8, 1.0),
+            "l2_regularization": trial.suggest_float("l2_regularization", 1e-8, 1.0, log=True),
+            "early_stopping": trial.suggest_categorical("early_stopping", [True, False]),  # NEW
+            "validation_fraction": trial.suggest_float("validation_fraction", 0.1, 0.3),  # NEW
         }
         params.update(self.fixed_params)
         model = self.model_class(**params, random_state=self.random_state)
@@ -292,9 +325,13 @@ class HistGradientBoostingRegressorTuner(BaseTuner):
     def objective(self, trial):
         params = {
             "max_iter": trial.suggest_int("max_iter", 100, 500),
-            "learning_rate": trial.suggest_loguniform("learning_rate", 0.01, 0.3),
+            "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
             "max_leaf_nodes": trial.suggest_int("max_leaf_nodes", 10, 100),
-            "l2_regularization": trial.suggest_loguniform("l2_regularization", 1e-8, 1.0),
+            "l2_regularization": trial.suggest_float("l2_regularization", 1e-8, 1.0, log=True),
+            "early_stopping": trial.suggest_categorical("early_stopping", [True, False]),  # NEW
+            "validation_fraction": trial.suggest_float("validation_fraction", 0.1, 0.3),  # NEW
+            "n_iter_no_change": trial.suggest_int("n_iter_no_change", 5, 20),  # NEW
+            "tol": trial.suggest_float("tol", 1e-4, 1e-2, log=True),  # NEW
         }
         params.update(self.fixed_params)
         model = self.model_class(**params, random_state=self.random_state)
