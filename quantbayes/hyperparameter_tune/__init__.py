@@ -1,3 +1,21 @@
-from .tune import XGBTuner, CatBoostTuner, LGBMTuner, HistGBMTuner
+from .tune import (
+    XGBClassifierTuner,
+    XGBRegressorTuner,
+    CatBoostClassifierTuner,
+    CatBoostRegressorTuner,
+    LGBMClassifierTuner,
+    LGBMRegressorTuner,
+    HistGradientBoostingClassifier,
+    HistGradientBoostingClassifierTuner
+)
 
-__all__ = ["XGBTuner", "CatBoostTuner", "LGBMTuner", "HistGBMTuner"]
+__all__ = [
+    "XGBClassifierTuner",
+    "XGBRegressorTuner",
+    "LGBMClassifierTuner",
+    "LGBMRegressorTuner",
+    "CatBoostClassifierTuner",
+    "CatBoostRegressorTuner",
+    "HistGradientBoostingClassifierTuner",
+    "HistGradientBoostingRegressorTuner"
+]

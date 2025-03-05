@@ -8,6 +8,17 @@ import lightgbm as lgb
 import catboost as cb
 from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor
 
+__all__ = [
+    "XGBClassifierTuner",
+    "XGBRegressorTuner",
+    "LGBMClassifierTuner",
+    "LGBMRegressorTuner",
+    "CatBoostClassifierTuner",
+    "CatBoostRegressorTuner",
+    "HistGradientBoostingClassifierTuner",
+    "HistGradientBoostingRegressorTuner"
+]
+
 """
 Example usage:
 tuner = XGBRegressorTuner(X, y, n_trials=50, cv=5)
