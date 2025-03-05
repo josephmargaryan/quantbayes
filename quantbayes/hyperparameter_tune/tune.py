@@ -1,29 +1,18 @@
+import numpy as np
 import optuna
 from optuna.samplers import TPESampler
-from sklearn.model_selection import cross_val_score, StratifiedKFold, KFold
-from sklearn.metrics import (
-    roc_auc_score,
-    make_scorer,
-    mean_squared_error,
-    accuracy_score,
-)
-import numpy as np
+from sklearn.metrics import log_loss, mean_squared_error, make_scorer
+from sklearn.model_selection import StratifiedKFold, KFold, cross_val_score
 
-# Import classifier and regressor versions
+# Import models
 from xgboost import XGBClassifier, XGBRegressor
 from catboost import CatBoostClassifier, CatBoostRegressor
 from lightgbm import LGBMClassifier, LGBMRegressor
-from sklearn.ensemble import (
-    HistGradientBoostingClassifier,
-    HistGradientBoostingRegressor,
-)
-
+from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor
 
 # Base tuner class supporting different problem types
 class BaseTuner:
-    def __init__(
-        self, X, y, cv_splits=5, problem_type: str = "binary", random_state=42
-    ):
+    def __init__(self, X, y, cv_splits=5, problem_type: str = "binary", random_state=42):
         self.X = X
         self.y = y
         self.problem_type = problem_type.lower()
@@ -31,9 +20,7 @@ class BaseTuner:
 
         # Choose CV strategy based on problem type
         if self.problem_type in ["binary", "multiclass"]:
-            self.cv = StratifiedKFold(
-                n_splits=cv_splits, shuffle=True, random_state=random_state
-            )
+            self.cv = StratifiedKFold(n_splits=cv_splits, shuffle=True, random_state=random_state)
         else:
             self.cv = KFold(n_splits=cv_splits, shuffle=True, random_state=random_state)
 
@@ -43,20 +30,14 @@ class BaseTuner:
         self.study = None
 
     def get_scorer(self):
-        if self.problem_type == "binary":
-            return make_scorer(roc_auc_score, needs_proba=True)
-        elif self.problem_type == "multiclass":
-            # Use one-vs-rest ROC AUC; you can change this to accuracy_score if preferred
-            return make_scorer(roc_auc_score, multi_class="ovr", needs_proba=True)
+        if self.problem_type in ["binary", "multiclass"]:
+            # Use negative log loss so that a higher score is better
+            return make_scorer(log_loss, greater_is_better=False, needs_proba=True)
         elif self.problem_type == "regression":
             # Use negative MSE so that a higher score is better
-            return make_scorer(
-                lambda y_true, y_pred: -mean_squared_error(y_true, y_pred)
-            )
+            return make_scorer(lambda y_true, y_pred: -mean_squared_error(y_true, y_pred))
         else:
-            raise ValueError(
-                "Invalid problem_type. Choose 'binary', 'multiclass', or 'regression'."
-            )
+            raise ValueError("Invalid problem_type. Choose 'binary', 'multiclass', or 'regression'.")
 
     def objective(self, trial):
         raise NotImplementedError("Subclasses must implement this method.")
@@ -69,7 +50,6 @@ class BaseTuner:
         self.best_score = study.best_trial.value
         self.study = study
         return study.best_trial
-
 
 # Tuner for XGBoost
 class XGBTuner(BaseTuner):
@@ -85,21 +65,14 @@ class XGBTuner(BaseTuner):
             "random_state": self.random_state,
         }
 
-        # Choose appropriate model version
         if self.problem_type == "regression":
             model = XGBRegressor(**param)
         else:
-            # Works for binary and multiclass
-            # For multiclass, XGBClassifier handles multi:softprob output
-            model = XGBClassifier(
-                **param, use_label_encoder=False, eval_metric="logloss"
-            )
+            # For binary and multiclass
+            model = XGBClassifier(**param, use_label_encoder=False, eval_metric="logloss")
 
-        scores = cross_val_score(
-            model, self.X, self.y, cv=self.cv, scoring=self.scorer, n_jobs=-1
-        )
+        scores = cross_val_score(model, self.X, self.y, cv=self.cv, scoring=self.scorer, n_jobs=-1)
         return np.mean(scores)
-
 
 # Tuner for CatBoost
 class CatBoostTuner(BaseTuner):
@@ -110,7 +83,7 @@ class CatBoostTuner(BaseTuner):
             "iterations": trial.suggest_int("iterations", 100, 400),
             "l2_leaf_reg": trial.suggest_float("l2_leaf_reg", 1, 10),
             "random_state": self.random_state,
-            "verbose": False,  # Use verbose=False for cleaner output
+            "silent": True,
         }
 
         if self.problem_type == "regression":
@@ -118,11 +91,8 @@ class CatBoostTuner(BaseTuner):
         else:
             model = CatBoostClassifier(**param)
 
-        scores = cross_val_score(
-            model, self.X, self.y, cv=self.cv, scoring=self.scorer, n_jobs=-1
-        )
+        scores = cross_val_score(model, self.X, self.y, cv=self.cv, scoring=self.scorer, n_jobs=-1)
         return np.mean(scores)
-
 
 # Tuner for LightGBM
 class LGBMTuner(BaseTuner):
@@ -136,6 +106,7 @@ class LGBMTuner(BaseTuner):
             "subsample": trial.suggest_float("subsample", 0.6, 1.0),
             "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0),
             "random_state": self.random_state,
+            "verbose": -1
         }
 
         if self.problem_type == "regression":
@@ -143,11 +114,8 @@ class LGBMTuner(BaseTuner):
         else:
             model = LGBMClassifier(**param)
 
-        scores = cross_val_score(
-            model, self.X, self.y, cv=self.cv, scoring=self.scorer, n_jobs=-1
-        )
+        scores = cross_val_score(model, self.X, self.y, cv=self.cv, scoring=self.scorer, n_jobs=-1)
         return np.mean(scores)
-
 
 # Tuner for HistGradientBoosting
 class HistGBMTuner(BaseTuner):
@@ -165,16 +133,12 @@ class HistGBMTuner(BaseTuner):
         else:
             model = HistGradientBoostingClassifier(**param)
 
-        scores = cross_val_score(
-            model, self.X, self.y, cv=self.cv, scoring=self.scorer, n_jobs=-1
-        )
+        scores = cross_val_score(model, self.X, self.y, cv=self.cv, scoring=self.scorer, n_jobs=-1)
         return np.mean(scores)
-
 
 # Example usage:
 if __name__ == "__main__":
     # For demonstration purposes, we use a synthetic dataset.
-    # For classification, use make_classification; for regression, use make_regression.
     from sklearn.datasets import make_classification, make_regression
 
     # Choose problem type: "binary", "multiclass", or "regression"
@@ -188,13 +152,8 @@ if __name__ == "__main__":
             random_state=42,
         )
     else:
-        from sklearn.datasets import make_regression
+        X, y = make_regression(n_samples=1000, n_features=20, noise=0.1, random_state=42)
 
-        X, y = make_regression(
-            n_samples=1000, n_features=20, noise=0.1, random_state=42
-        )
-
-    # Example tuning for each model
     print("Tuning XGB...")
     xgb_tuner = XGBTuner(X, y, problem_type=problem_type)
     best_xgb = xgb_tuner.tune(n_trials=100)

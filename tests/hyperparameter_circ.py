@@ -23,16 +23,6 @@ y_test_scaled = target_scaler.transform(y_test.reshape(-1, 1)).ravel
 X_train_scaled = feature_scaler.fit_transform(X_train)
 X_test_scaled = feature_scaler.transform(X_test)
 
-import time
-import numpy as np
-import jax
-import jax.numpy as jnp
-import jax.random as jr
-from quantbayes import bnn
-import numpyro
-import numpyro.distributions as dist
-from sklearn.metrics import mean_squared_error
-
 
 # Define the model class.
 class Test(bnn.Module):
