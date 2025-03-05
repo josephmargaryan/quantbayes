@@ -1,183 +1,292 @@
 import numpy as np
 import optuna
-from optuna.samplers import TPESampler
-from sklearn.metrics import log_loss, mean_squared_error, make_scorer
-from sklearn.model_selection import StratifiedKFold, KFold, cross_val_score
+from sklearn.model_selection import cross_val_score, StratifiedKFold, KFold
 
-# Import models
-from xgboost import XGBClassifier, XGBRegressor
-from catboost import CatBoostClassifier, CatBoostRegressor
-from lightgbm import LGBMClassifier, LGBMRegressor
+# Import model libraries
+import xgboost as xgb
+import lightgbm as lgb
+import catboost as cb
 from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor
 
-# Base tuner class supporting different problem types
+"""
+Example usage:
+tuner = XGBRegressorTuner(X, y, n_trials=50, cv=5)
+best_params, best_score = tuner.tune()
+
+print("Regression Best Hyperparameters:", best_params)
+print("Regression Best CV Score:", best_score)
+"""
 class BaseTuner:
-    def __init__(self, X, y, cv_splits=5, problem_type: str = "binary", random_state=42):
+    """
+    Base class for hyperparameter tuning using Optuna.
+    It automatically sets the CV splitter and scoring based on whether the problem is classification or regression.
+    """
+    def __init__(self, X, y, n_trials=50, cv=5, scoring=None, random_state=42):
         self.X = X
         self.y = y
-        self.problem_type = problem_type.lower()
+        self.n_trials = n_trials
+        self.cv = cv
         self.random_state = random_state
-
-        # Choose CV strategy based on problem type
-        if self.problem_type in ["binary", "multiclass"]:
-            self.cv = StratifiedKFold(n_splits=cv_splits, shuffle=True, random_state=random_state)
+        self.is_classifier = self._determine_if_classifier()
+        
+        # Default scoring: for classification (binary: roc_auc, multiclass: accuracy) and for regression (neg_mean_squared_error)
+        if scoring is not None:
+            self.scoring = scoring
         else:
-            self.cv = KFold(n_splits=cv_splits, shuffle=True, random_state=random_state)
-
-        self.scorer = self.get_scorer()
-        self.best_params = None
-        self.best_score = None
-        self.study = None
-
-    def get_scorer(self):
-        if self.problem_type in ["binary", "multiclass"]:
-            # Use negative log loss so that a higher score is better
-            return make_scorer(log_loss, greater_is_better=False, needs_proba=True)
-        elif self.problem_type == "regression":
-            # Use negative MSE so that a higher score is better
-            return make_scorer(lambda y_true, y_pred: -mean_squared_error(y_true, y_pred))
+            if self.is_classifier:
+                # Use roc_auc if binary, accuracy if multiclass.
+                unique_vals = np.unique(y)
+                self.scoring = 'roc_auc' if len(unique_vals) == 2 else 'accuracy'
+            else:
+                self.scoring = 'neg_mean_squared_error'
+                
+        # For classification, also store problem type for later (binary vs multiclass)
+        if self.is_classifier:
+            self.problem_type = 'binary' if len(np.unique(y)) == 2 else 'multiclass'
         else:
-            raise ValueError("Invalid problem_type. Choose 'binary', 'multiclass', or 'regression'.")
+            self.problem_type = 'regression'
+    
+    def _determine_if_classifier(self):
+        # Simple heuristic: if target has <=20 unique values or is not float, assume classification.
+        if np.issubdtype(self.y.dtype, np.floating) and len(np.unique(self.y)) > 20:
+            return False
+        else:
+            return True
+
+    def get_cv(self):
+        # Use StratifiedKFold for classification, KFold for regression.
+        if self.is_classifier:
+            return StratifiedKFold(n_splits=self.cv, shuffle=True, random_state=self.random_state)
+        else:
+            return KFold(n_splits=self.cv, shuffle=True, random_state=self.random_state)
 
     def objective(self, trial):
+        """
+        Must be implemented by subclasses. This function should:
+          - Suggest a set of hyperparameters,
+          - Initialize the model (with any fixed parameters merged in),
+          - Evaluate via cross-validation,
+          - And return the mean CV score.
+        """
         raise NotImplementedError("Subclasses must implement this method.")
 
-    def tune(self, n_trials=50, sampler_seed=42):
-        sampler = TPESampler(seed=sampler_seed)
-        study = optuna.create_study(direction="maximize", sampler=sampler)
-        study.optimize(self.objective, n_trials=n_trials)
-        self.best_params = study.best_trial.params
-        self.best_score = study.best_trial.value
-        self.study = study
-        return study.best_trial
-
-# Tuner for XGBoost
-class XGBTuner(BaseTuner):
-    def objective(self, trial):
-        param = {
-            "learning_rate": trial.suggest_loguniform("learning_rate", 0.005, 0.05),
-            "max_depth": trial.suggest_int("max_depth", 2, 10),
-            "n_estimators": trial.suggest_int("n_estimators", 100, 500),
-            "subsample": trial.suggest_float("subsample", 0.5, 1.0),
-            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0),
-            "reg_alpha": trial.suggest_float("reg_alpha", 0, 1.0),
-            "reg_lambda": trial.suggest_float("reg_lambda", 0, 1.0),
-            "random_state": self.random_state,
-        }
-
-        if self.problem_type == "regression":
-            model = XGBRegressor(**param)
-        else:
-            # For binary and multiclass
-            model = XGBClassifier(**param, use_label_encoder=False, eval_metric="logloss")
-
-        scores = cross_val_score(model, self.X, self.y, cv=self.cv, scoring=self.scorer, n_jobs=-1)
-        return np.mean(scores)
-
-# Tuner for CatBoost
-class CatBoostTuner(BaseTuner):
-    def objective(self, trial):
-        param = {
-            "learning_rate": trial.suggest_loguniform("learning_rate", 0.01, 0.2),
-            "depth": trial.suggest_int("depth", 3, 12),
-            "iterations": trial.suggest_int("iterations", 100, 400),
-            "l2_leaf_reg": trial.suggest_float("l2_leaf_reg", 1, 10),
-            "random_state": self.random_state,
-            "silent": True,
-        }
-
-        if self.problem_type == "regression":
-            model = CatBoostRegressor(**param)
-        else:
-            model = CatBoostClassifier(**param)
-
-        scores = cross_val_score(model, self.X, self.y, cv=self.cv, scoring=self.scorer, n_jobs=-1)
-        return np.mean(scores)
-
-# Tuner for LightGBM
-class LGBMTuner(BaseTuner):
-    def objective(self, trial):
-        param = {
-            "learning_rate": trial.suggest_loguniform("learning_rate", 0.005, 0.05),
-            "max_depth": trial.suggest_int("max_depth", 2, 8),
-            "n_estimators": trial.suggest_int("n_estimators", 100, 500),
-            "num_leaves": trial.suggest_int("num_leaves", 20, 60),
-            "min_child_samples": trial.suggest_int("min_child_samples", 5, 50),
-            "subsample": trial.suggest_float("subsample", 0.6, 1.0),
-            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0),
-            "random_state": self.random_state,
-            "verbose": -1
-        }
-
-        if self.problem_type == "regression":
-            model = LGBMRegressor(**param)
-        else:
-            model = LGBMClassifier(**param)
-
-        scores = cross_val_score(model, self.X, self.y, cv=self.cv, scoring=self.scorer, n_jobs=-1)
-        return np.mean(scores)
-
-# Tuner for HistGradientBoosting
-class HistGBMTuner(BaseTuner):
-    def objective(self, trial):
-        param = {
-            "learning_rate": trial.suggest_loguniform("learning_rate", 0.001, 0.05),
-            "max_depth": trial.suggest_int("max_depth", 2, 10),
-            "max_iter": trial.suggest_int("max_iter", 100, 600),
-            "min_samples_leaf": trial.suggest_int("min_samples_leaf", 1, 50),
-            "random_state": self.random_state,
-        }
-
-        if self.problem_type == "regression":
-            model = HistGradientBoostingRegressor(**param)
-        else:
-            model = HistGradientBoostingClassifier(**param)
-
-        scores = cross_val_score(model, self.X, self.y, cv=self.cv, scoring=self.scorer, n_jobs=-1)
-        return np.mean(scores)
-
-# Example usage:
-if __name__ == "__main__":
-    # For demonstration purposes, we use a synthetic dataset.
-    from sklearn.datasets import make_classification, make_regression
-
-    # Choose problem type: "binary", "multiclass", or "regression"
-    problem_type = "binary"  # Change as needed
-
-    if problem_type in ["binary", "multiclass"]:
-        X, y = make_classification(
-            n_samples=1000,
-            n_features=20,
-            n_classes=2 if problem_type == "binary" else 3,
-            random_state=42,
+    def tune(self):
+        # Create an Optuna study (maximizing the score) and run optimization.
+        study = optuna.create_study(
+            direction="maximize",
+            sampler=optuna.samplers.TPESampler(seed=self.random_state)
         )
-    else:
-        X, y = make_regression(n_samples=1000, n_features=20, noise=0.1, random_state=42)
+        study.optimize(self.objective, n_trials=self.n_trials)
+        self.best_params = study.best_trial.params
+        self.best_score = study.best_value
+        return self.best_params, self.best_score
 
-    print("Tuning XGB...")
-    xgb_tuner = XGBTuner(X, y, problem_type=problem_type)
-    best_xgb = xgb_tuner.tune(n_trials=100)
-    print("Best trial for XGBoost:")
-    print("  Score: {:.4f}".format(xgb_tuner.best_score))
-    print("  Params:", xgb_tuner.best_params)
 
-    print("\nTuning CatBoost...")
-    catboost_tuner = CatBoostTuner(X, y, problem_type=problem_type)
-    best_cat = catboost_tuner.tune(n_trials=100)
-    print("Best trial for CatBoost:")
-    print("  Score: {:.4f}".format(catboost_tuner.best_score))
-    print("  Params:", catboost_tuner.best_params)
+#############################################
+# XGBoost Tuners
+#############################################
+class XGBClassifierTuner(BaseTuner):
+    def __init__(self, X, y, n_trials=50, cv=5, scoring=None, random_state=42):
+        super().__init__(X, y, n_trials, cv, scoring, random_state)
+        self.model_class = xgb.XGBClassifier
+        self.fixed_params = {}
+        # Automatically set the objective and (if needed) num_class for multiclass problems.
+        if self.problem_type == 'multiclass':
+            self.fixed_params["objective"] = "multi:softprob"
+            self.fixed_params["num_class"] = len(np.unique(y))
+        else:
+            self.fixed_params["objective"] = "binary:logistic"
 
-    print("\nTuning LightGBM...")
-    lgbm_tuner = LGBMTuner(X, y, problem_type=problem_type)
-    best_lgbm = lgbm_tuner.tune(n_trials=100)
-    print("Best trial for LightGBM:")
-    print("  Score: {:.4f}".format(lgbm_tuner.best_score))
-    print("  Params:", lgbm_tuner.best_params)
+    def objective(self, trial):
+        params = {
+            "n_estimators": trial.suggest_int("n_estimators", 50, 500),
+            "max_depth": trial.suggest_int("max_depth", 3, 10),
+            "learning_rate": trial.suggest_loguniform("learning_rate", 0.01, 0.3),
+            "subsample": trial.suggest_uniform("subsample", 0.5, 1.0),
+            "colsample_bytree": trial.suggest_uniform("colsample_bytree", 0.5, 1.0),
+            "gamma": trial.suggest_uniform("gamma", 0, 5),
+            "reg_alpha": trial.suggest_loguniform("reg_alpha", 1e-8, 1.0),
+            "reg_lambda": trial.suggest_loguniform("reg_lambda", 1e-8, 1.0),
+        }
+        # Merge with fixed parameters
+        params.update(self.fixed_params)
+        model = self.model_class(**params, random_state=self.random_state, use_label_encoder=False)
+        cv = self.get_cv()
+        scores = cross_val_score(model, self.X, self.y, scoring=self.scoring, cv=cv, n_jobs=-1)
+        return np.mean(scores)
 
-    print("\nTuning HistGradientBoosting...")
-    histgbm_tuner = HistGBMTuner(X, y, problem_type=problem_type)
-    best_histgbm = histgbm_tuner.tune(n_trials=100)
-    print("Best trial for HistGradientBoosting:")
-    print("  Score: {:.4f}".format(histgbm_tuner.best_score))
-    print("  Params:", histgbm_tuner.best_params)
+
+class XGBRegressorTuner(BaseTuner):
+    def __init__(self, X, y, n_trials=50, cv=5, scoring=None, random_state=42):
+        super().__init__(X, y, n_trials, cv, scoring, random_state)
+        self.model_class = xgb.XGBRegressor
+        self.fixed_params = {}  # No fixed parameters here
+
+    def objective(self, trial):
+        params = {
+            "n_estimators": trial.suggest_int("n_estimators", 50, 500),
+            "max_depth": trial.suggest_int("max_depth", 3, 10),
+            "learning_rate": trial.suggest_loguniform("learning_rate", 0.01, 0.3),
+            "subsample": trial.suggest_uniform("subsample", 0.5, 1.0),
+            "colsample_bytree": trial.suggest_uniform("colsample_bytree", 0.5, 1.0),
+            "gamma": trial.suggest_uniform("gamma", 0, 5),
+            "reg_alpha": trial.suggest_loguniform("reg_alpha", 1e-8, 1.0),
+            "reg_lambda": trial.suggest_loguniform("reg_lambda", 1e-8, 1.0),
+        }
+        params.update(self.fixed_params)
+        model = self.model_class(**params, random_state=self.random_state)
+        cv = self.get_cv()
+        scores = cross_val_score(model, self.X, self.y, scoring=self.scoring, cv=cv, n_jobs=-1)
+        return np.mean(scores)
+
+
+#############################################
+# LightGBM Tuners
+#############################################
+class LGBMClassifierTuner(BaseTuner):
+    def __init__(self, X, y, n_trials=50, cv=5, scoring=None, random_state=42):
+        super().__init__(X, y, n_trials, cv, scoring, random_state)
+        self.model_class = lgb.LGBMClassifier
+        # Set fixed parameter to silence verbose output.
+        self.fixed_params = {"verbose": -1}
+        if self.problem_type == 'multiclass':
+            self.fixed_params["objective"] = "multiclass"
+            self.fixed_params["num_class"] = len(np.unique(y))
+        else:
+            self.fixed_params["objective"] = "binary"
+
+    def objective(self, trial):
+        params = {
+            "n_estimators": trial.suggest_int("n_estimators", 50, 500),
+            "num_leaves": trial.suggest_int("num_leaves", 20, 150),
+            "learning_rate": trial.suggest_loguniform("learning_rate", 0.01, 0.3),
+            "min_child_samples": trial.suggest_int("min_child_samples", 5, 100),
+            "subsample": trial.suggest_uniform("subsample", 0.5, 1.0),
+            "colsample_bytree": trial.suggest_uniform("colsample_bytree", 0.5, 1.0),
+            "reg_alpha": trial.suggest_loguniform("reg_alpha", 1e-8, 1.0),
+            "reg_lambda": trial.suggest_loguniform("reg_lambda", 1e-8, 1.0),
+        }
+        params.update(self.fixed_params)
+        model = self.model_class(**params, random_state=self.random_state)
+        cv = self.get_cv()
+        scores = cross_val_score(model, self.X, self.y, scoring=self.scoring, cv=cv, n_jobs=-1)
+        return np.mean(scores)
+
+
+class LGBMRegressorTuner(BaseTuner):
+    def __init__(self, X, y, n_trials=50, cv=5, scoring=None, random_state=42):
+        super().__init__(X, y, n_trials, cv, scoring, random_state)
+        self.model_class = lgb.LGBMRegressor
+        self.fixed_params = {"verbose": -1}
+
+    def objective(self, trial):
+        params = {
+            "n_estimators": trial.suggest_int("n_estimators", 50, 500),
+            "num_leaves": trial.suggest_int("num_leaves", 20, 150),
+            "learning_rate": trial.suggest_loguniform("learning_rate", 0.01, 0.3),
+            "min_child_samples": trial.suggest_int("min_child_samples", 5, 100),
+            "subsample": trial.suggest_uniform("subsample", 0.5, 1.0),
+            "colsample_bytree": trial.suggest_uniform("colsample_bytree", 0.5, 1.0),
+            "reg_alpha": trial.suggest_loguniform("reg_alpha", 1e-8, 1.0),
+            "reg_lambda": trial.suggest_loguniform("reg_lambda", 1e-8, 1.0),
+        }
+        params.update(self.fixed_params)
+        model = self.model_class(**params, random_state=self.random_state)
+        cv = self.get_cv()
+        scores = cross_val_score(model, self.X, self.y, scoring=self.scoring, cv=cv, n_jobs=-1)
+        return np.mean(scores)
+
+
+#############################################
+# CatBoost Tuners
+#############################################
+class CatBoostClassifierTuner(BaseTuner):
+    def __init__(self, X, y, n_trials=50, cv=5, scoring=None, random_state=42):
+        super().__init__(X, y, n_trials, cv, scoring, random_state)
+        self.model_class = cb.CatBoostClassifier
+        # Fixed parameter to silence verbose output.
+        self.fixed_params = {"silent": True}
+        if self.problem_type == 'multiclass':
+            self.fixed_params["loss_function"] = "MultiClass"
+        else:
+            self.fixed_params["loss_function"] = "Logloss"
+
+    def objective(self, trial):
+        params = {
+            "iterations": trial.suggest_int("iterations", 100, 1000),
+            "depth": trial.suggest_int("depth", 3, 10),
+            "learning_rate": trial.suggest_loguniform("learning_rate", 0.01, 0.3),
+            "l2_leaf_reg": trial.suggest_loguniform("l2_leaf_reg", 1, 10),
+            "bagging_temperature": trial.suggest_uniform("bagging_temperature", 0, 1),
+            "border_count": trial.suggest_int("border_count", 32, 255),
+        }
+        params.update(self.fixed_params)
+        model = self.model_class(**params, random_state=self.random_state)
+        cv = self.get_cv()
+        scores = cross_val_score(model, self.X, self.y, scoring=self.scoring, cv=cv, n_jobs=-1)
+        return np.mean(scores)
+
+
+class CatBoostRegressorTuner(BaseTuner):
+    def __init__(self, X, y, n_trials=50, cv=5, scoring=None, random_state=42):
+        super().__init__(X, y, n_trials, cv, scoring, random_state)
+        self.model_class = cb.CatBoostRegressor
+        self.fixed_params = {"silent": True}
+
+    def objective(self, trial):
+        params = {
+            "iterations": trial.suggest_int("iterations", 100, 1000),
+            "depth": trial.suggest_int("depth", 3, 10),
+            "learning_rate": trial.suggest_loguniform("learning_rate", 0.01, 0.3),
+            "l2_leaf_reg": trial.suggest_loguniform("l2_leaf_reg", 1, 10),
+            "bagging_temperature": trial.suggest_uniform("bagging_temperature", 0, 1),
+            "border_count": trial.suggest_int("border_count", 32, 255),
+        }
+        params.update(self.fixed_params)
+        model = self.model_class(**params, random_state=self.random_state)
+        cv = self.get_cv()
+        scores = cross_val_score(model, self.X, self.y, scoring=self.scoring, cv=cv, n_jobs=-1)
+        return np.mean(scores)
+
+
+#############################################
+# HistGradientBoosting Tuners (sklearn)
+#############################################
+class HistGradientBoostingClassifierTuner(BaseTuner):
+    def __init__(self, X, y, n_trials=50, cv=5, scoring=None, random_state=42):
+        super().__init__(X, y, n_trials, cv, scoring, random_state)
+        self.model_class = HistGradientBoostingClassifier
+        self.fixed_params = {}  # No fixed parameters
+
+    def objective(self, trial):
+        params = {
+            "max_iter": trial.suggest_int("max_iter", 100, 500),
+            "learning_rate": trial.suggest_loguniform("learning_rate", 0.01, 0.3),
+            "max_leaf_nodes": trial.suggest_int("max_leaf_nodes", 10, 100),
+            "l2_regularization": trial.suggest_loguniform("l2_regularization", 1e-8, 1.0),
+        }
+        params.update(self.fixed_params)
+        model = self.model_class(**params, random_state=self.random_state)
+        cv = self.get_cv()
+        scores = cross_val_score(model, self.X, self.y, scoring=self.scoring, cv=cv, n_jobs=-1)
+        return np.mean(scores)
+
+
+class HistGradientBoostingRegressorTuner(BaseTuner):
+    def __init__(self, X, y, n_trials=50, cv=5, scoring=None, random_state=42):
+        super().__init__(X, y, n_trials, cv, scoring, random_state)
+        self.model_class = HistGradientBoostingRegressor
+        self.fixed_params = {}  # No fixed parameters
+
+    def objective(self, trial):
+        params = {
+            "max_iter": trial.suggest_int("max_iter", 100, 500),
+            "learning_rate": trial.suggest_loguniform("learning_rate", 0.01, 0.3),
+            "max_leaf_nodes": trial.suggest_int("max_leaf_nodes", 10, 100),
+            "l2_regularization": trial.suggest_loguniform("l2_regularization", 1e-8, 1.0),
+        }
+        params.update(self.fixed_params)
+        model = self.model_class(**params, random_state=self.random_state)
+        cv = self.get_cv()
+        scores = cross_val_score(model, self.X, self.y, scoring=self.scoring, cv=cv, n_jobs=-1)
+        return np.mean(scores)
