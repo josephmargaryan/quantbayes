@@ -126,9 +126,11 @@ if __name__ == "__main__":
     print(f"Ensemble loss: {loss:.3f}")
     print(f"Ensemble ECE: {ece:.3f}")
 
-
     ensemble2 = EnsembleBinary(
-        models=models, ensemble_method="weighted_average", weights=None, meta_learner=None
+        models=models,
+        ensemble_method="weighted_average",
+        weights=None,
+        meta_learner=None,
     )
     ensemble2.fit(X_train, y_train)
     ensemble2.summary()

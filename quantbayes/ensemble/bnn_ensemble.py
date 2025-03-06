@@ -1,629 +1,722 @@
 import numpy as np
 import jax
-import matplotlib.pyplot as plt
-from sklearn.base import BaseEstimator, ClassifierMixin, RegressorMixin
-from sklearn.model_selection import StratifiedKFold, KFold, TimeSeriesSplit
-from scipy.special import expit, softmax  # for sigmoid and softmax
+import jax.numpy as jnp
 
-__all__ = [
-    "BNNEnsembleRegression",
-    "BNNEnsembleBinary",
-    "BNNEnsembleMulticlass",
-    "BNNEnsembleForecast",
-]
-
-"""
-Example usecase:
-from sklearn.linear_model import LogisticRegression
-
-# Instantiate your base BNN models for binary classification.
-base_models = {
-    "deep_spectral": DeepSpectralBNN(), 
-    "mixture_experts": MixtureOfExpertsBNN(),
-    "fully_dense": FullyDenseBNN()
-}
-
-meta_model = LogisticRegression()
-ensemble_binary = BNNEnsembleBinary(base_models=base_models, meta_model=meta_model, n_folds=5, rng_key=jax.random.PRNGKey(0))
-
-ensemble_binary.fit(X_train, y_train)
-binary_probs = ensemble_binary.predict_proba(X_test)
-binary_preds = ensemble_binary.predict(X_test)
-"""
+__all__ = ["BNNEnsembleRegression", "BNNEnsembleBinary", "BNNEnsembleMulticlass"]
 
 
-def compute_entropy_binary(probs):
-    """Compute binary classification entropy."""
-    return -probs * np.log(probs + 1e-10) - (1 - probs) * np.log(1 - probs + 1e-10)
+######################################################################
+# Some Utility Functions for Advanced Methods
+######################################################################
 
 
-class BNNEnsembleRegression(BaseEstimator, RegressorMixin):
+def softmax_logits(logits, axis=-1, eps=1e-20):
     """
-    Ensemble for regression using BNN base models.
+    Numerically stable softmax for logits with small epsilon clipping.
+    """
+    exps = jnp.exp(logits - jnp.max(logits, axis=axis, keepdims=True))
+    sums = jnp.sum(exps, axis=axis, keepdims=True)
+    return jnp.clip(exps / sums, eps, 1.0 - eps)
 
-    Base models should implement:
-      - fit(X, y, rng_key)
-      - predict(X, rng_key, posterior="logits") which returns posterior samples of predictions.
-    The base model's predict() is assumed to output samples drawn from a Normal likelihood.
 
-    Meta model should be a scikit-learn regressor.
+def binary_log_likelihood(logits, y):
+    """
+    Compute log-likelihood for binary classification given logits.
+    logits: shape (S, N)
+    y: shape (N,) in {0,1}
+    Returns: shape (S, N) array of log p(y | logits)
+    """
+    # p = sigmoid(logits)
+    # log p(y=1|x) = log(sigmoid(logit)), log p(y=0|x) = log(1 - sigmoid(logit))
+    # We'll vectorize:
+    log_p_1 = -jax.nn.softplus(-logits)  # log(sigmoid(logits))
+    log_p_0 = -jax.nn.softplus(logits)  # log(1 - sigmoid(logits))
+    # Now pick the correct one via y
+    return y * log_p_1 + (1 - y) * log_p_0
+
+
+def multiclass_log_likelihood(logits, y):
+    """
+    Compute log-likelihood for multiclass given logits.
+    logits: shape (S, N, C)
+    y: shape (N,) in {0,1,...,C-1}
+    Returns: shape (S, N)
+    """
+    # 1) Convert to probabilities via softmax
+    probs = softmax_logits(logits, axis=-1)  # shape (S, N, C)
+    # 2) Gather the probability corresponding to the correct class
+    #    We do a fancy indexing
+    gather_idxs = jnp.expand_dims(y, axis=0)  # shape (1, N)
+    gather_idxs = jnp.expand_dims(gather_idxs, axis=-1)  # shape (1, N, 1)
+    # Now we gather from probs along last axis
+    correct_class_probs = jnp.take_along_axis(probs, gather_idxs, axis=-1).squeeze(
+        -1
+    )  # (S, N)
+    # 3) log
+    return jnp.log(correct_class_probs + 1e-20)
+
+
+def regression_log_likelihood(predictions, y, sigma=1.0):
+    """
+    Compute log-likelihood for regression under a Gaussian with known sigma.
+    predictions: shape (S, N)
+    y: shape (N,)
+    sigma: float, presumed noise std dev
+    Returns: shape (S, N) for log p(y | predictions)
+    """
+    # For demonstration, assume y ~ Normal(prediction, sigma^2).
+    # log p(y|mu, sigma) = -0.5 * log(2pi*sigma^2) - (y - mu)^2 / (2*sigma^2)
+    # We'll do this elementwise:
+    c = -0.5 * jnp.log(2.0 * jnp.pi * sigma**2)
+    mse_term = -0.5 / (sigma**2) * (y - predictions) ** 2
+    return c + mse_term
+
+
+def compute_waic_and_weights(loglik_matrix):
+    """
+    Given loglik_matrix of shape (S, N), we compute an approximate WAIC
+    and return (waic, weight).
+    - WAIC = -2 * (lpd - p_waic), where
+      lpd = sum over i of log(average of exp(loglik over S)),
+      p_waic = sum over i of var(loglik over S).
+    We'll do sums over data dimension i, i.e. dimension=1 in (S, N).
+
+    Returns waic_value (float), and then you can transform it to weight with:
+      weight = exp(-0.5 * waic_value)
+    (Pseudo-BMA weighting).
+    """
+    # 1) pointwise log predictive density: logmeanexp over S
+    # shape (N,)
+    log_colmeans = jax.scipy.special.logsumexp(loglik_matrix, axis=0) - jnp.log(
+        loglik_matrix.shape[0]
+    )
+
+    # 2) total log predictive density
+    lpd = jnp.sum(log_colmeans)
+
+    # 3) pointwise var of loglik -> shape (N,)
+    #    then sum over N
+    var_loglik = jnp.var(loglik_matrix, axis=0, ddof=1)
+    p_waic = jnp.sum(var_loglik)
+
+    waic = -2.0 * (lpd - p_waic)
+    return waic
+
+
+def normalize_weights(weights):
+    """
+    Given a list or array of weights, returns normalized version that sums to 1.
+    """
+    w = jnp.array(weights)
+    w = jnp.clip(w, 1e-20, None)  # ensure non-negative
+    return w / jnp.sum(w)
+
+
+######################################################################
+# Base Ensemble Class with Additional “Fit Weights” Logic
+######################################################################
+
+
+class _BNNEnsembleBase:
+    """
+    Extended base class for handling multiple BNN models and combining predictions.
+    Adds advanced methods to compute WAIC-based weights or stacking weights.
     """
 
-    def __init__(
-        self,
-        base_models,
-        meta_model,
-        n_folds=5,
-        rng_key=jax.random.PRNGKey(0),
-        **kwargs,
+    def __init__(self, models_dict, ensemble_method="bma"):
+        """
+        :param models_dict: dict
+            { 'modelA': myBNN_A, 'modelB': myBNN_B, ... }
+            Each must inherit from your 'Module' base class.
+        :param ensemble_method: str
+            'bma', 'simple_average', 'stacking' (extended with advanced weighting).
+        """
+        self.models_dict = models_dict
+        self.ensemble_method = ensemble_method
+        # Store learned weights for BMA or stacking
+        self.model_weights = None
+
+    ##################################################################
+    # 1) Compile each model
+    ##################################################################
+    def compile_models(self, **compile_kwargs):
+        for name, model in self.models_dict.items():
+            print(f"[Ensemble] Compiling model: {name}")
+            model.compile(**compile_kwargs)
+
+    ##################################################################
+    # 2) Fit each model
+    ##################################################################
+    def fit_models(self, X_train, y_train, rng_keys, **fit_kwargs):
+        models_list = list(self.models_dict.items())
+
+        # If single rng_key is passed, split it
+        if isinstance(rng_keys, jnp.ndarray):
+            rng_keys = jax.random.split(rng_keys, len(models_list))
+
+        for (name, model), key in zip(models_list, rng_keys):
+            print(f"[Ensemble] Fitting model: {name}")
+            model.fit(X_train, y_train, key, **fit_kwargs)
+
+    ##################################################################
+    # 3) Predict from each model
+    ##################################################################
+    def predict_models(
+        self, X_test, rng_keys, posterior="likelihood", num_samples=None
     ):
-        self.base_models = base_models  # dict of base models
-        self.meta_model = meta_model  # e.g. a GradientBoostingRegressor
-        self.n_folds = n_folds
-        self.rng_key = rng_key
-        self.kwargs = kwargs
+        models_list = list(self.models_dict.items())
 
-    def _generate_meta_features(self, X, y, is_train=True):
-        num_warmup = self.kwargs.get("num_warmup", 500)
-        num_samples = self.kwargs.get("num_samples", 1000)
-        num_chains = self.kwargs.get("num_chains", 2)
-        num_steps = self.kwargs.get("num_steps", 1000)
-        n_samples = X.shape[0]
-        n_models = len(self.base_models)
-        # For regression, we use two features per model: mean and std.
-        meta_features = np.zeros((n_samples, n_models * 2))
+        if isinstance(rng_keys, jnp.ndarray):
+            rng_keys = jax.random.split(rng_keys, len(models_list))
 
-        # Use regular KFold since y is continuous
-        kf = KFold(n_splits=self.n_folds, shuffle=True, random_state=42)
-        meta_pred = {name: np.zeros(n_samples) for name in self.base_models}
-        meta_std = {name: np.zeros(n_samples) for name in self.base_models}
-
-        for name, model in self.base_models.items():
-            oof_preds = np.zeros(n_samples)
-            oof_stds = np.zeros(n_samples)
-            for train_idx, val_idx in kf.split(X):
-                X_train_fold, X_val_fold = X[train_idx], X[val_idx]
-                y_train_fold = y[train_idx]
-                # Reinitialize model for each fold
-                model_fold = type(model)()
-                model_fold.compile(
-                    num_warmup=num_warmup,
-                    num_samples=num_samples,
-                    num_chains=num_chains,
-                )
-                key, self.rng_key = jax.random.split(self.rng_key)
-                model_fold.fit(X_train_fold, y_train_fold, key, num_steps=num_steps)
-                # Get posterior samples on validation fold
-                key, self.rng_key = jax.random.split(self.rng_key)
-                samples = model_fold.predict(X_val_fold, key, posterior="logits")
-                # For regression, no transformation is needed.
-                mean_pred = np.mean(samples, axis=0)
-                std_pred = np.std(samples, axis=0)
-                oof_preds[val_idx] = mean_pred
-                oof_stds[val_idx] = std_pred
-            meta_pred[name] = oof_preds
-            meta_std[name] = oof_stds
-
-        feature_list = []
-        for name in sorted(self.base_models.keys()):
-            feature_list.append(meta_pred[name].reshape(-1, 1))
-            feature_list.append(meta_std[name].reshape(-1, 1))
-        meta_X = np.hstack(feature_list)
-        return meta_X
-
-    def fit(self, X, y):
-        X = np.asarray(X)
-        y = np.asarray(y)
-        self.meta_X_ = self._generate_meta_features(X, y, is_train=True)
-        self.meta_model.fit(self.meta_X_, y)
-        # Retrain each base model on full training data.
-        self.fitted_base_models_ = {}
-        for name, model in self.base_models.items():
-            model_full = type(model)()
-            model_full.compile(num_warmup=500, num_samples=1000, num_chains=2)
-            key, self.rng_key = jax.random.split(self.rng_key)
-            model_full.fit(X, y, key)
-            self.fitted_base_models_[name] = model_full
-        return self
-
-    def _meta_features_for_test(self, X):
-        X = np.asarray(X)
-        n_samples = X.shape[0]
-        n_models = len(self.fitted_base_models_)
-        feature_list = []
-        for name in sorted(self.fitted_base_models_.keys()):
-            model = self.fitted_base_models_[name]
-            key, self.rng_key = jax.random.split(self.rng_key)
-            samples = model.predict(X, key, posterior="logits")
-            mean_pred = np.mean(samples, axis=0)
-            std_pred = np.std(samples, axis=0)
-            feature_list.append(mean_pred.reshape(-1, 1))
-            feature_list.append(std_pred.reshape(-1, 1))
-        meta_X_test = np.hstack(feature_list)
-        return meta_X_test
-
-    def predict(self, X):
-        meta_X = self._meta_features_for_test(X)
-        return self.meta_model.predict(meta_X)
-
-    def predict_proba(self, X):
-        # For regression, predict_proba might not be relevant.
-        raise NotImplementedError(
-            "predict_proba is not implemented for regression tasks."
-        )
-
-
-class BNNEnsembleBinary(BaseEstimator, ClassifierMixin):
-    """
-    Ensemble for binary classification using BNN base models.
-
-    Base models should implement:
-      - fit(X, y, rng_key)
-      - predict(X, rng_key, posterior="logits") which returns posterior samples of logits.
-    For binary classification we convert logits to probabilities with a sigmoid.
-
-    Meta model should be a scikit-learn classifier.
-    """
-
-    def __init__(
-        self,
-        base_models,
-        meta_model,
-        n_folds=5,
-        rng_key=jax.random.PRNGKey(0),
-        **kwargs,
-    ):
-        self.base_models = base_models
-        self.meta_model = meta_model
-        self.n_folds = n_folds
-        self.rng_key = rng_key
-        self.kwargs = kwargs
-
-    def _generate_meta_features(self, X, y, is_train=True):
-        num_warmup = self.kwargs.get("num_warmup", 500)
-        num_samples = self.kwargs.get("num_samples", 1000)
-        num_chains = self.kwargs.get("num_chains", 2)
-        num_steps = self.kwargs.get("num_steps", 1000)
-        n_samples = X.shape[0]
-        n_models = len(self.base_models)
-        meta_features = np.zeros((n_samples, n_models * 2))
-
-        skf = StratifiedKFold(n_splits=self.n_folds, shuffle=True, random_state=42)
-        meta_pred = {name: np.zeros(n_samples) for name in self.base_models}
-        meta_std = {name: np.zeros(n_samples) for name in self.base_models}
-
-        for name, model in self.base_models.items():
-            oof_preds = np.zeros(n_samples)
-            oof_stds = np.zeros(n_samples)
-            for train_idx, val_idx in skf.split(X, y):
-                X_train_fold, X_val_fold = X[train_idx], X[val_idx]
-                y_train_fold = y[train_idx]
-                model_fold = type(model)()
-                model_fold.compile(
-                    num_warmup=num_warmup,
-                    num_samples=num_samples,
-                    num_chains=num_chains,
-                )
-                key, self.rng_key = jax.random.split(self.rng_key)
-                model_fold.fit(X_train_fold, y_train_fold, key, num_steps=num_steps)
-                key, self.rng_key = jax.random.split(self.rng_key)
-                logits_samples = model_fold.predict(X_val_fold, key, posterior="logits")
-                # Convert logits to probabilities using sigmoid.
-                probs_samples = expit(logits_samples)
-                mean_probs = np.mean(probs_samples, axis=0)
-                std_probs = np.std(probs_samples, axis=0)
-                oof_preds[val_idx] = mean_probs
-                oof_stds[val_idx] = std_probs
-            meta_pred[name] = oof_preds
-            meta_std[name] = oof_stds
-
-        feature_list = []
-        for name in sorted(self.base_models.keys()):
-            feature_list.append(meta_pred[name].reshape(-1, 1))
-            feature_list.append(meta_std[name].reshape(-1, 1))
-        meta_X = np.hstack(feature_list)
-        return meta_X
-
-    def fit(self, X, y):
-        X = np.asarray(X)
-        y = np.asarray(y)
-        self.meta_X_ = self._generate_meta_features(X, y, is_train=True)
-        self.meta_model.fit(self.meta_X_, y)
-        self.fitted_base_models_ = {}
-        for name, model in self.base_models.items():
-            model_full = type(model)()
-            model_full.compile(num_warmup=500, num_samples=1000, num_chains=2)
-            key, self.rng_key = jax.random.split(self.rng_key)
-            model_full.fit(X, y, key)
-            self.fitted_base_models_[name] = model_full
-        return self
-
-    def _meta_features_for_test(self, X):
-        X = np.asarray(X)
-        n_samples = X.shape[0]
-        feature_list = []
-        for name in sorted(self.fitted_base_models_.keys()):
-            model = self.fitted_base_models_[name]
-            key, self.rng_key = jax.random.split(self.rng_key)
-            logits_samples = model.predict(X, key, posterior="logits")
-            probs_samples = expit(logits_samples)
-            mean_probs = np.mean(probs_samples, axis=0)
-            std_probs = np.std(probs_samples, axis=0)
-            feature_list.append(mean_probs.reshape(-1, 1))
-            feature_list.append(std_probs.reshape(-1, 1))
-        meta_X_test = np.hstack(feature_list)
-        return meta_X_test
-
-    def predict_proba(self, X):
-        meta_X = self._meta_features_for_test(X)
-        return self.meta_model.predict_proba(meta_X)
-
-    def predict(self, X):
-        meta_X = self._meta_features_for_test(X)
-        return self.meta_model.predict(meta_X)
-
-
-class BNNEnsembleMulticlass(BaseEstimator, ClassifierMixin):
-    """
-    Ensemble for multiclass classification using BNN base models.
-
-    Base models should implement:
-      - fit(X, y, rng_key)
-      - predict(X, rng_key, posterior="logits") which returns posterior samples of logits.
-    For multiclass, convert logits to probabilities using softmax.
-
-    Meta model should be a scikit-learn classifier that supports multiclass tasks.
-    """
-
-    def __init__(
-        self,
-        base_models,
-        meta_model,
-        n_folds=5,
-        rng_key=jax.random.PRNGKey(0),
-        **kwargs,
-    ):
-        self.base_models = base_models
-        self.meta_model = meta_model
-        self.n_folds = n_folds
-        self.rng_key = rng_key
-        self.kwargs = kwargs
-
-    def _generate_meta_features(self, X, y, is_train=True):
-        num_warmup = self.kwargs.get("num_warmup", 500)
-        num_samples = self.kwargs.get("num_samples", 1000)
-        num_chains = self.kwargs.get("num_chains", 2)
-        num_steps = self.kwargs.get("num_steps", 1000)
-        n_samples = X.shape[0]
-        n_models = len(self.base_models)
-        # Here each base model returns logits of shape (n_samples_post, n_samples, n_classes).
-        # We will flatten mean and std across classes.
-        meta_features = None  # to be built dynamically
-
-        # For multiclass, we use KFold (stratified split can be used if needed)
-        skf = StratifiedKFold(n_splits=self.n_folds, shuffle=True, random_state=42)
-        meta_means = {}
-        meta_stds = {}
-        for name in self.base_models:
-            meta_means[name] = None
-            meta_stds[name] = None
-
-        for name, model in self.base_models.items():
-            all_means = []
-            all_stds = []
-            for train_idx, val_idx in skf.split(X, y):
-                X_train_fold, X_val_fold = X[train_idx], X[val_idx]
-                y_train_fold = y[train_idx]
-                model_fold = type(model)()
-                model_fold.compile(
-                    num_warmup=num_warmup,
-                    num_samples=num_samples,
-                    num_chains=num_chains,
-                )
-                key, self.rng_key = jax.random.split(self.rng_key)
-                model_fold.fit(X_train_fold, y_train_fold, key, num_steps=num_steps)
-                key, self.rng_key = jax.random.split(self.rng_key)
-                logits_samples = model_fold.predict(X_val_fold, key, posterior="logits")
-                # Convert logits to probabilities using softmax over last axis.
-                # logits_samples shape: (n_samples_post, n_val, n_classes)
-                probs_samples = softmax(logits_samples, axis=-1)
-                mean_probs = np.mean(probs_samples, axis=0)  # shape: (n_val, n_classes)
-                std_probs = np.std(probs_samples, axis=0)  # shape: (n_val, n_classes)
-                all_means.append((val_idx, mean_probs))
-                all_stds.append((val_idx, std_probs))
-            # Combine across folds into full arrays
-            full_mean = np.zeros((n_samples, mean_probs.shape[-1]))
-            full_std = np.zeros((n_samples, std_probs.shape[-1]))
-            for idx, m in all_means:
-                full_mean[idx, :] = m
-            for idx, s in all_stds:
-                full_std[idx, :] = s
-            meta_means[name] = full_mean
-            meta_stds[name] = full_std
-
-        # Concatenate features from each model: for each base model, flatten mean and std.
-        feature_list = []
-        for name in sorted(self.base_models.keys()):
-            feature_list.append(meta_means[name])
-            feature_list.append(meta_stds[name])
-        meta_X = np.hstack(feature_list)
-        return meta_X
-
-    def fit(self, X, y):
-        X = np.asarray(X)
-        y = np.asarray(y)
-        self.meta_X_ = self._generate_meta_features(X, y, is_train=True)
-        self.meta_model.fit(self.meta_X_, y)
-        self.fitted_base_models_ = {}
-        for name, model in self.base_models.items():
-            model_full = type(model)()
-            model_full.compile(num_warmup=500, num_samples=1000, num_chains=2)
-            key, self.rng_key = jax.random.split(self.rng_key)
-            model_full.fit(X, y, key)
-            self.fitted_base_models_[name] = model_full
-        return self
-
-    def _meta_features_for_test(self, X):
-        X = np.asarray(X)
-        n_samples = X.shape[0]
-        feature_list = []
-        for name in sorted(self.fitted_base_models_.keys()):
-            model = self.fitted_base_models_[name]
-            key, self.rng_key = jax.random.split(self.rng_key)
-            logits_samples = model.predict(X, key, posterior="logits")
-            probs_samples = softmax(logits_samples, axis=-1)
-            mean_probs = np.mean(probs_samples, axis=0)  # shape: (n_samples, n_classes)
-            std_probs = np.std(probs_samples, axis=0)  # shape: (n_samples, n_classes)
-            feature_list.append(mean_probs)
-            feature_list.append(std_probs)
-        meta_X_test = np.hstack(feature_list)
-        return meta_X_test
-
-    def predict_proba(self, X):
-        meta_X = self._meta_features_for_test(X)
-        return self.meta_model.predict_proba(meta_X)
-
-    def predict(self, X):
-        meta_X = self._meta_features_for_test(X)
-        return self.meta_model.predict(meta_X)
-
-
-class BNNEnsembleForecast(BaseEstimator, RegressorMixin):
-    """
-    Ensemble forecasting for time series using Bayesian Neural Network (BNN) models.
-
-    Base models must implement:
-      - fit(X, y, rng_key)
-      - predict(X, rng_key, posterior="logits") which returns posterior samples.
-
-    The meta model is any scikit-learn regressor that is trained on meta features derived from the
-    base model predictions (e.g., mean and standard deviation of the forecasts).
-    """
-
-    def __init__(
-        self,
-        base_models,
-        meta_model,
-        forecast_horizon=1,
-        n_splits=5,
-        rng_key=None,
-        **kwargs,
-    ):
-        """
-        Parameters:
-            base_models (dict): Dictionary of BNN base models.
-            meta_model: A scikit-learn regressor to be used as the meta learner.
-            forecast_horizon (int): Number of time steps ahead to forecast.
-            n_splits (int): Number of splits for time series cross validation.
-            rng_key: JAX random key (if None, a default key is created).
-            kwargs: Additional keyword arguments (e.g., for inference parameters).
-        """
-        self.base_models = base_models
-        self.meta_model = meta_model
-        self.forecast_horizon = forecast_horizon
-        self.n_splits = n_splits
-        self.kwargs = kwargs
-        if rng_key is None:
-            import jax
-
-            self.rng_key = jax.random.PRNGKey(0)
-        else:
-            self.rng_key = rng_key
-
-    def _generate_meta_features(self, X, y):
-        """
-        Generate meta features using TimeSeriesSplit.
-
-        For each base model, we generate out-of-fold predictions on a time-series split.
-        For forecasting, the meta features are the mean and standard deviation of the posterior
-        predictions (assumed to be samples from a Normal likelihood) for a given forecast horizon.
-
-        Parameters:
-            X (np.ndarray): Feature matrix (e.g., lagged observations).
-            y (np.ndarray): True target values.
-
-        Returns:
-            meta_X (np.ndarray): Meta feature matrix.
-        """
-        num_warmup = self.kwargs.get("num_warmup", 500)
-        num_samples = self.kwargs.get("num_samples", 1000)
-        num_chains = self.kwargs.get("num_chains", 2)
-        num_steps = self.kwargs.get("num_steps", 1000)
-
-        n_samples = X.shape[0]
-        n_models = len(self.base_models)
-        # For each base model, we extract two features: the forecast mean and std.
-        meta_features = np.zeros((n_samples, n_models * 2))
-
-        # Use TimeSeriesSplit to preserve temporal ordering.
-        tscv = TimeSeriesSplit(n_splits=self.n_splits)
-        # To store meta predictions for each base model
-        meta_pred = {name: np.zeros(n_samples) for name in self.base_models}
-        meta_std = {name: np.zeros(n_samples) for name in self.base_models}
-
-        for name, model in self.base_models.items():
-            oof_preds = np.zeros(n_samples)
-            oof_stds = np.zeros(n_samples)
-
-            # Loop over time series splits. In each fold, training always comes before validation.
-            for train_idx, val_idx in tscv.split(X):
-                X_train_fold, X_val_fold = X[train_idx], X[val_idx]
-                y_train_fold = y[train_idx]
-                # Instantiate a fresh instance of the base model for this fold.
-                model_fold = type(model)()
-                model_fold.compile(
-                    num_warmup=num_warmup,
-                    num_samples=num_samples,
-                    num_chains=num_chains,
-                )
-                # Split the random key for reproducibility.
-                import jax
-
-                key, self.rng_key = jax.random.split(self.rng_key)
-                model_fold.fit(X_train_fold, y_train_fold, key, num_steps=num_steps)
-
-                # For forecasting, we assume the model's predict method is set up for forecast_horizon steps.
-                key, self.rng_key = jax.random.split(self.rng_key)
-                samples = model_fold.predict(X_val_fold, key, posterior="logits")
-                # samples shape: (n_posterior_samples, n_val)
-                mean_pred = np.mean(samples, axis=0)
-                std_pred = np.std(samples, axis=0)
-
-                oof_preds[val_idx] = mean_pred
-                oof_stds[val_idx] = std_pred
-
-            meta_pred[name] = oof_preds
-            meta_std[name] = oof_stds
-
-        # Concatenate features in a fixed order across base models.
-        feature_list = []
-        for name in sorted(self.base_models.keys()):
-            feature_list.append(meta_pred[name].reshape(-1, 1))
-            feature_list.append(meta_std[name].reshape(-1, 1))
-        meta_X = np.hstack(feature_list)
-        return meta_X
-
-    def fit(self, X, y):
-        """
-        Fit the ensemble forecast model.
-
-        Generates meta features using out-of-fold predictions from base models (via TimeSeriesSplit)
-        and trains the meta model on these features. Also retrains each base model on the full data.
-
-        Parameters:
-            X (np.ndarray): Feature matrix (e.g., lagged observations).
-            y (np.ndarray): True target values.
-
-        Returns:
-            self
-        """
-        X = np.asarray(X)
-        y = np.asarray(y)
-
-        # Generate meta features using time-series cross validation.
-        self.meta_X_ = self._generate_meta_features(X, y)
-        self.meta_model.fit(self.meta_X_, y)
-
-        # Refit each base model on the full training data.
-        self.fitted_base_models_ = {}
-        for name, model in self.base_models.items():
-            model_full = type(model)()
-            model_full.compile(
-                num_warmup=self.kwargs.get("num_warmup", 500),
-                num_samples=self.kwargs.get("num_samples", 1000),
-                num_chains=self.kwargs.get("num_chains", 2),
+        predictions_dict = {}
+        for (name, model), key in zip(models_list, rng_keys):
+            print(f"[Ensemble] Predicting with model: {name}")
+            preds = model.predict(
+                X_test, key, posterior=posterior, num_samples=num_samples
             )
-            import jax
+            predictions_dict[name] = preds
+        return predictions_dict
 
-            key, self.rng_key = jax.random.split(self.rng_key)
-            model_full.fit(X, y, key, num_steps=self.kwargs.get("num_steps", 1000))
-            self.fitted_base_models_[name] = model_full
-        return self
+    ##################################################################
+    # 4) combine_predictions is specialized in sub-classes
+    ##################################################################
+    def combine_predictions(self, predictions_dict, ensemble_method=None):
+        raise NotImplementedError
 
-    def _meta_features_for_test(self, X):
+    ##################################################################
+    # 5) High-level predict
+    ##################################################################
+    def predict(
+        self,
+        X_test,
+        rng_key,
+        posterior="likelihood",
+        num_samples=None,
+        ensemble_method=None,
+    ):
+        preds_dict = self.predict_models(X_test, rng_key, posterior, num_samples)
+        return self.combine_predictions(preds_dict, ensemble_method=ensemble_method)
+
+    ##################################################################
+    # ADVANCED: Fit Weights on a Validation Set
+    # Subclasses may override or call this to help with WAIC or stacking
+    ##################################################################
+    def fit_ensemble_weights(self, X_val, y_val):
         """
-        Generate meta features for test/forecast data.
-
-        For each fitted base model, we compute the mean and standard deviation of the posterior forecast.
-
-        Parameters:
-            X (np.ndarray): Feature matrix for which to generate forecasts.
-
-        Returns:
-            meta_X_test (np.ndarray): Meta feature matrix for test data.
+        Optional method to fit ensemble weights using a hold-out set (X_val, y_val).
+        Sub-classes typically override or extend this to:
+          - compute WAIC for each model (pseudo-BMA),
+          - or do stacking by optimizing negative log-likelihood wrt weights.
         """
-        X = np.asarray(X)
-        n_samples = X.shape[0]
-        feature_list = []
+        raise NotImplementedError
 
-        for name in sorted(self.fitted_base_models_.keys()):
-            model = self.fitted_base_models_[name]
-            import jax
 
-            key, self.rng_key = jax.random.split(self.rng_key)
-            samples = model.predict(X, key, posterior="logits")
-            mean_pred = np.mean(samples, axis=0)
-            std_pred = np.std(samples, axis=0)
-            feature_list.append(mean_pred.reshape(-1, 1))
-            feature_list.append(std_pred.reshape(-1, 1))
-        meta_X_test = np.hstack(feature_list)
-        return meta_X_test
+######################################################################
+# BNNEnsembleRegression
+######################################################################
 
-    def predict(self, X):
+
+class BNNEnsembleRegression(_BNNEnsembleBase):
+    """
+    For regression tasks.
+    predictions: shape (S, N) from each model.
+    We'll assume a Normal likelihood with a fixed sigma in computing log-likelihood,
+    but you can adapt as needed.
+    """
+
+    def fit_ensemble_weights(self, X_val, y_val, sigma=1.0, method="waic"):
         """
-        Generate forecasts using the ensemble.
-
-        The meta features are generated using the base models' predictions on X and then
-        passed to the meta model.
-
-        Parameters:
-            X (np.ndarray): Feature matrix for forecasting.
-
-        Returns:
-            Forecasts (np.ndarray)
+        For regression:
+          - If method="waic", compute WAIC for each model, store pseudo-BMA weights.
+          - If method="stacking", solve for weights that minimize negative log-likelihood
+            of the ensemble distribution on the validation set.
         """
-        meta_X = self._meta_features_for_test(X)
-        return self.meta_model.predict(meta_X)
+        # 1) get predictions from each model
+        rng_tmp = jax.random.PRNGKey(9999)  # or pass in a separate rng_key
+        preds_dict = self.predict_models(X_val, rng_tmp, posterior="likelihood")
 
-    def forecast(self, X_future):
-        """
-        Alias for predict() to emphasize forecasting.
+        # shapes: M models each -> (S, N)
+        model_names = list(preds_dict.keys())
 
-        Parameters:
-            X_future (np.ndarray): Feature matrix for future time steps.
+        if method == "waic":
+            # For each model, compute log-likelihood
+            waic_values = []
+            for m in model_names:
+                # shape (S, N)
+                samples = preds_dict[m]
+                # loglik_matrix shape (S, N)
+                loglik_matrix = regression_log_likelihood(samples, y_val, sigma=sigma)
+                waic_m = compute_waic_and_weights(loglik_matrix)
+                waic_values.append(waic_m)
 
-        Returns:
-            Forecasted values.
-        """
-        return self.predict(X_future)
+            # Convert WAIC to weights
+            # weight_m = exp(-0.5 * waic_m) / sum over all models
+            weights_unnorm = jnp.exp(-0.5 * jnp.array(waic_values))
+            self.model_weights = normalize_weights(weights_unnorm)
+            print("[EnsembleRegression] WAIC-based weights:", self.model_weights)
 
-    def summary(self):
-        """
-        Print a summary of the ensemble forecasting model.
-        """
-        print("BNN Ensemble Forecasting Model Summary")
-        print("--------------------------------------")
-        print(f"Forecast Horizon: {self.forecast_horizon}")
-        print(f"Number of Base Models: {len(self.base_models)}")
-        print(f"Ensemble Meta Model: {self.meta_model.__class__.__name__}")
-        print(f"Time Series CV Splits: {self.n_splits}")
-        print("--------------------------------------")
+        elif method == "stacking":
+            # 1) For stacking, we want to directly optimize:
+            #    max_w sum_i log( sum_m w_m * p_m(y_i|x_i) ).
+            #    We'll do a simple gradient-based approach with jax.
 
-    def plot_forecast(self, X, y_true):
-        """
-        Plot the forecasted values against the true values.
+            # Convert (S, N) samples from each model into a full distribution:
+            # we assume predictions ~ Normal(mu, sigma^2).
+            # But for a simpler approach, take each model's mean for each data point as an approximation:
+            model_means = {}
+            for m in model_names:
+                model_means[m] = preds_dict[m].mean(axis=0)  # shape (N,)
 
-        Parameters:
-            X (np.ndarray): Feature matrix for forecasting.
-            y_true (np.ndarray): True target values.
+            # We'll do a small function to compute negative log-likelihood of mixture of Gaussians
+            # Weighted mixture: E[y|x] ~ sum_m w_m * Normal(model_means[m], sigma^2)
+            # For regression stacking, a straightforward approach is to treat it as
+            # an additive mixture of means (like a single normal with mean = sum_m w_m mu_m).
+            # This is a simplification. More advanced approach might handle sample-by-sample.
+
+            def nll(weights):
+                # weights shape (M,) on the simplex
+                w = jnn_softmax(
+                    weights
+                )  # we can do a softmax so the sum=1, or other param
+                # combined mean -> shape (N,)
+                combined_mean = jnp.zeros_like(y_val, dtype=jnp.float32)
+                for i, m in enumerate(model_names):
+                    combined_mean += w[i] * model_means[m]
+
+                # log-likelihood under Normal(combined_mean, sigma^2)
+                loglik_matrix = regression_log_likelihood(
+                    combined_mean[None, :], y_val, sigma=sigma
+                )
+                # shape (1, N)
+                return -jnp.sum(loglik_matrix)
+
+            # We'll define an init for weights
+            from jax import grad
+
+            jnn_softmax = lambda x: jax.nn.softmax(x)  # map R^M -> simplex
+
+            # We'll do simple gradient descent
+            M = len(model_names)
+            w_init = jnp.ones((M,)) / M
+            # We'll param in unconstrained space, then softmax
+            theta_init = jnp.zeros_like(w_init)
+
+            def train_stacking(theta_init, lr=0.01, steps=1000):
+                theta = theta_init
+                for step in range(steps):
+                    g = grad(nll)(theta)
+                    theta = theta - lr * g
+                return theta
+
+            theta_opt = train_stacking(theta_init)
+            w_opt = jnn_softmax(theta_opt)
+            self.model_weights = w_opt
+            print("[EnsembleRegression] Stacking weights:", self.model_weights)
+
+        else:
+            raise ValueError(f"Unknown method for ensemble weight fitting: {method}")
+
+    def combine_predictions(self, predictions_dict, ensemble_method=None):
         """
-        y_pred = self.predict(X)
-        plt.figure(figsize=(10, 6))
-        plt.plot(y_true, label="True Values", marker="o")
-        plt.plot(y_pred, label="Forecasted Values", marker="x")
-        plt.xlabel("Time")
-        plt.ylabel("Forecast")
-        plt.title("BNN Ensemble Forecast vs True Values")
-        plt.legend()
-        plt.grid(True)
-        plt.show()
+        Combine regression predictions from each model: shape (S, N).
+        If self.model_weights is not None, we do a weighted combination. Otherwise fallback to uniform.
+        """
+        if ensemble_method is None:
+            ensemble_method = self.ensemble_method
+
+        model_names = list(predictions_dict.keys())
+        stacked_preds = jnp.stack(
+            [predictions_dict[m] for m in model_names], axis=0
+        )  # (M, S, N)
+
+        # If advanced weights exist, let's use them in any method that needs weighting
+        if self.model_weights is None:
+            # fallback: uniform
+            w = jnp.ones((len(model_names),)) / len(model_names)
+        else:
+            w = self.model_weights
+
+        if ensemble_method == "bma":
+            # Weighted average in probability space. For regression, we are typically just combining samples.
+            # We'll do a simple weighted average across M of the sample means.
+            # Or more fully, we can treat each sample as "from model m" with probability w[m].
+            # For demonstration, do a mixture of means:
+            # shape (M, S, N)
+            combined_preds = jnp.tensordot(w, stacked_preds, axes=1)  # shape (S, N)
+            return combined_preds
+
+        elif ensemble_method == "simple_average":
+            # same but ignoring any model_weights
+            combined_preds = stacked_preds.mean(axis=0)  # shape (S, N)
+            return combined_preds
+
+        elif ensemble_method == "stacking":
+            # If stacking weights exist, do the weighted average
+            combined_preds = jnp.tensordot(w, stacked_preds, axes=1)  # shape (S, N)
+            return combined_preds
+
+        else:
+            raise ValueError(f"Unknown ensemble method: {ensemble_method}")
+
+
+######################################################################
+# BNNEnsembleBinary
+######################################################################
+
+
+class BNNEnsembleBinary(_BNNEnsembleBase):
+    """
+    For binary classification tasks, each model's predictions are logits (S, N).
+    """
+
+    def fit_ensemble_weights(self, X_val, y_val, method="waic"):
+        """
+        Fit weights based on hold-out set (X_val, y_val) for binary classification.
+        method='waic': compute WAIC for each model, use pseudo-BMA weighting.
+        method='stacking': optimize negative log-likelihood of ensemble mixture on validation data.
+        """
+        rng_tmp = jax.random.PRNGKey(9998)
+        preds_dict = self.predict_models(X_val, rng_tmp, posterior="logits")
+        model_names = list(preds_dict.keys())
+
+        if method == "waic":
+            waic_values = []
+            for m in model_names:
+                # shape (S, N)
+                logits_samps = preds_dict[m]
+                # loglik_matrix shape (S, N)
+                loglik_matrix = binary_log_likelihood(logits_samps, y_val)
+                waic_m = compute_waic_and_weights(loglik_matrix)
+                waic_values.append(waic_m)
+
+            weights_unnorm = jnp.exp(-0.5 * jnp.array(waic_values))
+            self.model_weights = normalize_weights(weights_unnorm)
+            print("[EnsembleBinary] WAIC-based weights:", self.model_weights)
+
+        elif method == "stacking":
+            # We'll do a direct optimization of negative log-likelihood:
+            # negative sum_i log( sum_m w_m * p_m(y_i|x_i) ),
+            # where p_m(y_i|x_i) is Bernoulli(prob= sigmoid(logits_m)).
+            # We'll do it in a simplified manner with a small gradient routine.
+
+            # First gather probability predictions from each model's mean over samples:
+            # For better fidelity, we might keep the entire distribution of samples,
+            # but let's do a single average probability to keep it simpler.
+            probs_dict = {}
+            for m in model_names:
+                logits_samps = preds_dict[m]  # shape (S, N)
+                # average across S -> shape (N,)
+                mean_logits = logits_samps.mean(axis=0)
+                probs_dict[m] = jax.nn.sigmoid(mean_logits)  # shape (N,)
+
+            # Now define an objective in terms of mixture weights w
+            def nll(theta):
+                w = jax.nn.softmax(theta)  # force simplex
+                # mixture probability = sum_m w_m * p_m
+                mixture_prob = jnp.zeros_like(y_val, dtype=jnp.float32)
+                for i, mn in enumerate(model_names):
+                    mixture_prob += w[i] * probs_dict[mn]
+                # log-likelihood for each data point i
+                # log p(y_i=1) = log(mixture_prob[i]), log p(y_i=0) = log(1 - mixture_prob[i])
+                # We'll clamp to avoid log(0).
+                mixture_prob = jnp.clip(mixture_prob, 1e-20, 1.0 - 1e-20)
+                log_p_1 = jnp.log(mixture_prob)
+                log_p_0 = jnp.log(1 - mixture_prob)
+                ll = y_val * log_p_1 + (1 - y_val) * log_p_0
+                return -jnp.sum(ll)  # negative log-likelihood
+
+            from jax import grad
+
+            M = len(model_names)
+            theta_init = jnp.zeros((M,))
+
+            def train_stacking(theta_init, lr=0.01, steps=1000):
+                theta = theta_init
+                for step in range(steps):
+                    g = grad(nll)(theta)
+                    theta = theta - lr * g
+                return theta
+
+            theta_opt = train_stacking(theta_init)
+            self.model_weights = jax.nn.softmax(theta_opt)
+            print("[EnsembleBinary] Stacking weights:", self.model_weights)
+        else:
+            raise ValueError(
+                f"Unknown method {method} for binary ensemble weight fitting."
+            )
+
+    def combine_predictions(self, predictions_dict, ensemble_method=None):
+        """
+        Combine binary classification predictions (logits).
+        If self.model_weights is not None, we do a weighted mixture in probability space for BMA/stacking.
+        """
+        if ensemble_method is None:
+            ensemble_method = self.ensemble_method
+
+        model_names = list(predictions_dict.keys())
+        stacked_preds = jnp.stack(
+            [predictions_dict[m] for m in model_names], axis=0
+        )  # (M, S, N)
+
+        # If advanced weights exist
+        if self.model_weights is None:
+            # fallback: uniform
+            w = jnp.ones((len(model_names),)) / len(model_names)
+        else:
+            w = self.model_weights
+
+        if ensemble_method == "bma":
+            # 1) Convert logits to probabilities
+            prob_preds = jax.nn.sigmoid(stacked_preds)  # (M, S, N)
+            # 2) Weighted average across M
+            # shape (S, N)
+            weighted_probs = jnp.tensordot(w, prob_preds, axes=1)
+            # 3) Convert back to logits
+            combined_logits = jnp.log(weighted_probs) - jnp.log1p(-weighted_probs)
+            return combined_logits
+
+        elif ensemble_method == "simple_average":
+            # direct average of logits ignoring self.model_weights
+            combined_logits = stacked_preds.mean(axis=0)  # (S, N)
+            return combined_logits
+
+        elif ensemble_method == "stacking":
+            # Weighted mixture in probability space if model_weights is set
+            prob_preds = jax.nn.sigmoid(stacked_preds)
+            weighted_probs = jnp.tensordot(w, prob_preds, axes=1)  # (S, N)
+            combined_logits = jnp.log(weighted_probs) - jnp.log1p(-weighted_probs)
+            return combined_logits
+
+        else:
+            raise ValueError(f"Unknown ensemble method: {ensemble_method}")
+
+
+######################################################################
+# BNNEnsembleMulticlass
+######################################################################
+
+
+class BNNEnsembleMulticlass(_BNNEnsembleBase):
+    """
+    For multiclass classification tasks, each model's predictions are logits: (S, N, C).
+    """
+
+    def fit_ensemble_weights(self, X_val, y_val, method="waic"):
+        """
+        Fit weights based on hold-out set (X_val, y_val) for multiclass classification.
+        method='waic': compute WAIC for each model, use pseudo-BMA weighting
+        method='stacking': optimize negative log-likelihood of ensemble mixture
+        """
+        rng_tmp = jax.random.PRNGKey(9997)
+        preds_dict = self.predict_models(X_val, rng_tmp, posterior="logits")
+        model_names = list(preds_dict.keys())
+
+        if method == "waic":
+            waic_values = []
+            for m in model_names:
+                logits_samps = preds_dict[m]  # (S, N, C)
+                loglik_matrix = multiclass_log_likelihood(logits_samps, y_val)  # (S, N)
+                waic_m = compute_waic_and_weights(loglik_matrix)
+                waic_values.append(waic_m)
+
+            weights_unnorm = jnp.exp(-0.5 * jnp.array(waic_values))
+            self.model_weights = normalize_weights(weights_unnorm)
+            print("[EnsembleMulticlass] WAIC-based weights:", self.model_weights)
+
+        elif method == "stacking":
+            # We'll define a simpler approach, using the mean of each model's logits to produce a single (N, C).
+            model_mean_probs = {}
+            for m in model_names:
+                # shape (S, N, C)
+                logits_samps = preds_dict[m]
+                mean_logits = logits_samps.mean(axis=0)  # shape (N, C)
+                # Convert to probabilities
+                mean_probs = softmax_logits(mean_logits, axis=-1)  # (N, C)
+                model_mean_probs[m] = mean_probs
+
+            def nll(theta):
+                w = jax.nn.softmax(theta)  # shape (M,)
+                # mixture of probabilities: sum_m w_m * p_m
+                mixture_probs = jnp.zeros_like(model_mean_probs[model_names[0]])
+                for i, mn in enumerate(model_names):
+                    mixture_probs += w[i] * model_mean_probs[mn]
+                # negative log-likelihood of mixture
+                mixture_probs = jnp.clip(mixture_probs, 1e-20, 1.0 - 1e-20)
+                # pick correct class
+                gather_idxs = y_val[None, :].astype(int)  # shape (1, N)
+                gather_idxs = jnp.expand_dims(gather_idxs, axis=-1)  # (1, N, 1)
+                correct_probs = jnp.take_along_axis(
+                    mixture_probs[None, ...], gather_idxs, axis=-1
+                ).squeeze(-1)
+                # shape (1, N)
+                return -jnp.sum(jnp.log(correct_probs + 1e-20))
+
+            from jax import grad
+
+            M = len(model_names)
+            theta_init = jnp.zeros((M,))
+
+            def train_stacking(theta_init, lr=0.01, steps=1000):
+                theta = theta_init
+                for step in range(steps):
+                    g = grad(nll)(theta)
+                    theta = theta - lr * g
+                return theta
+
+            theta_opt = train_stacking(theta_init)
+            self.model_weights = jax.nn.softmax(theta_opt)
+            print("[EnsembleMulticlass] Stacking weights:", self.model_weights)
+
+        else:
+            raise ValueError(
+                f"Unknown method {method} for multiclass ensemble weight fitting."
+            )
+
+    def combine_predictions(self, predictions_dict, ensemble_method=None):
+        if ensemble_method is None:
+            ensemble_method = self.ensemble_method
+
+        model_names = list(predictions_dict.keys())
+        stacked_preds = jnp.stack(
+            [predictions_dict[m] for m in model_names], axis=0
+        )  # (M, S, N, C)
+
+        if self.model_weights is None:
+            w = jnp.ones((len(model_names),)) / len(model_names)
+        else:
+            w = self.model_weights
+
+        if ensemble_method == "bma":
+            # Convert each model's logits to probabilities, then do a weighted average
+            prob_preds = jax.nn.softmax(stacked_preds, axis=-1)  # (M, S, N, C)
+            weighted_probs = jnp.tensordot(w, prob_preds, axes=1)  # (S, N, C)
+            # Convert back to logits by log(prob)
+            combined_logits = jnp.log(weighted_probs + 1e-20)
+            return combined_logits
+
+        elif ensemble_method == "simple_average":
+            # Just average the logits
+            return stacked_preds.mean(axis=0)  # (S, N, C)
+
+        elif ensemble_method == "stacking":
+            # Weighted mixture in probability space
+            prob_preds = jax.nn.softmax(stacked_preds, axis=-1)
+            weighted_probs = jnp.tensordot(w, prob_preds, axes=1)  # (S, N, C)
+            combined_logits = jnp.log(weighted_probs + 1e-20)
+            return combined_logits
+
+        else:
+            raise ValueError(f"Unknown ensemble method: {ensemble_method}")
+
+
+######################################################################
+# Example Usage (Pseudo-Code)
+######################################################################
+if __name__ == "__main__":
+
+    # Suppose you have BNN models that inherit from your `Module` and define `__call__`.
+    # E.g. DenseBinary, DenseRegression, etc.
+
+    # 1) Binary Classification Example with advanced WAIC or stacking
+
+    # 2) BINARY CLASSIFICATION EXAMPLE
+    import numpy as np
+    import jax.random as jr
+    from sklearn.metrics import log_loss
+    from kaggle.bnn import Dense, Spectral
+    from quantbayes.fake_data import generate_binary_classification_data
+    from quantbayes.bnn.utils import plot_calibration_curve, plot_roc_curve
+    from sklearn.model_selection import train_test_split
+
+    df = generate_binary_classification_data()
+    X, y = df.drop("target", axis=1), df["target"]
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=24
+    )
+    X_train, X_test, y_train, y_test = (
+        jnp.array(X_train),
+        jnp.array(X_test),
+        jnp.array(y_train),
+        jnp.array(y_test),
+    )
+
+    rng_key_bin = jr.key(1)
+
+    bin_model1 = Dense(method="nuts")
+    bin_model2 = Spectral(method="nuts")
+
+    bin_ensemble = BNNEnsembleBinary(
+        models_dict={"m1": bin_model1, "m2": bin_model2}, ensemble_method="stacking"  #
+    )
+
+    # Compile & fit
+    bin_ensemble.compile_models(num_warmup=300, num_samples=500)
+    bin_ensemble.fit_models(X_train, y_train, rng_key_bin, num_samples=500)
+    bin_ensemble.fit_ensemble_weights(X_test, y_test, method="stacking")
+
+    # Predict (logits)
+    rng_test_bin = jr.key(99)
+    bin_logits = bin_ensemble.predict(X_test, rng_test_bin, posterior="logits")
+
+    # Convert to probabilities
+    bin_probs = jax.nn.sigmoid(bin_logits).mean(axis=0)
+    loss = log_loss(np.array(y_test), np.array(bin_probs))
+    plot_roc_curve(y_test, bin_probs)
+    plot_calibration_curve(y_test, bin_probs)
+    print(f"Log loss: {loss}")
+
+    # 2) Regression Example with WAIC or stacking
+    """
+    X_train_reg, y_train_reg = ...
+    X_val_reg, y_val_reg = ...
+    X_test_reg, y_test_reg = ...
+    rng_key_reg = random.PRNGKey(42)
+
+    reg_model1 = DenseRegression(method="nuts")
+    reg_model2 = DenseRegression(method="svi")
+
+    reg_ensemble = BNNEnsembleRegression(
+        models_dict={"r1": reg_model1, "r2": reg_model2},
+        ensemble_method="stacking"
+    )
+
+    reg_ensemble.compile_models(num_warmup=300, num_samples=800)
+    reg_ensemble.fit_models(X_train_reg, y_train_reg, rng_key_reg, num_samples=800)
+
+    # Fit ensemble weights with WAIC or stacking
+    reg_ensemble.fit_ensemble_weights(X_val_reg, y_val_reg, sigma=1.0, method="stacking")
+
+    # Predict on test set
+    rng_test_reg = random.PRNGKey(2023)
+    reg_samples = reg_ensemble.predict(X_test_reg, rng_test_reg, posterior="likelihood")
+    # shape (S, N) posterior draws
+    mean_pred = reg_samples.mean(axis=0)
+    """
+
+    # 3) Multiclass Example likewise
+    """
+    X_train_multi, y_train_multi = ...
+    X_val_multi, y_val_multi = ...
+    X_test_multi, y_test_multi = ...
+
+    multi_model1 = DenseMulticlass(method="nuts")
+    multi_model2 = DenseMulticlass(method="svi")
+
+    multi_ensemble = BNNEnsembleMulticlass(
+        models_dict={"m1": multi_model1, "m2": multi_model2},
+        ensemble_method="bma"
+    )
+
+    multi_ensemble.compile_models(num_warmup=400, num_samples=800)
+    rng_key_multi = random.PRNGKey(1234)
+    multi_ensemble.fit_models(X_train_multi, y_train_multi, rng_key_multi, num_samples=800)
+
+    # Fit weighting strategy
+    multi_ensemble.fit_ensemble_weights(X_val_multi, y_val_multi, method="stacking")
+
+    rng_test_multi = random.PRNGKey(9876)
+    combined_logits = multi_ensemble.predict(X_test_multi, rng_test_multi, posterior="logits")
+    combined_probs = jax.nn.softmax(combined_logits, axis=-1).mean(axis=0)  # (N, C)
+    print("Multiclass test probs:", combined_probs)
+    """
