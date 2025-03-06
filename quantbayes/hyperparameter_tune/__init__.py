@@ -6,7 +6,7 @@ from .tune import (
     LGBMClassifierTuner,
     LGBMRegressorTuner,
     HistGradientBoostingClassifier,
-    HistGradientBoostingClassifierTuner
+    HistGradientBoostingClassifierTuner,
 )
 
 __all__ = [
@@ -17,5 +17,5 @@ __all__ = [
     "CatBoostClassifierTuner",
     "CatBoostRegressorTuner",
     "HistGradientBoostingClassifierTuner",
-    "HistGradientBoostingRegressorTuner"
+    "HistGradientBoostingRegressorTuner",
 ]

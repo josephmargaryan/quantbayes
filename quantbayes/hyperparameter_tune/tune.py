@@ -6,7 +6,10 @@ from sklearn.model_selection import cross_val_score, StratifiedKFold, KFold
 import xgboost as xgb
 import lightgbm as lgb
 import catboost as cb
-from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor
+from sklearn.ensemble import (
+    HistGradientBoostingClassifier,
+    HistGradientBoostingRegressor,
+)
 
 __all__ = [
     "XGBClassifierTuner",
@@ -16,7 +19,7 @@ __all__ = [
     "CatBoostClassifierTuner",
     "CatBoostRegressorTuner",
     "HistGradientBoostingClassifierTuner",
-    "HistGradientBoostingRegressorTuner"
+    "HistGradientBoostingRegressorTuner",
 ]
 
 """
@@ -27,11 +30,14 @@ best_params, best_score = tuner.tune()
 print("Regression Best Hyperparameters:", best_params)
 print("Regression Best CV Score:", best_score)
 """
+
+
 class BaseTuner:
     """
     Base class for hyperparameter tuning using Optuna.
     It automatically sets the CV splitter and scoring based on whether the problem is classification or regression.
     """
+
     def __init__(self, X, y, n_trials=50, cv=5, scoring=None, random_state=42):
         self.X = X
         self.y = y
@@ -39,7 +45,7 @@ class BaseTuner:
         self.cv = cv
         self.random_state = random_state
         self.is_classifier = self._determine_if_classifier()
-        
+
         # Default scoring: for classification (binary: roc_auc, multiclass: accuracy) and for regression (neg_mean_squared_error)
         if scoring is not None:
             self.scoring = scoring
@@ -47,16 +53,16 @@ class BaseTuner:
             if self.is_classifier:
                 # Use roc_auc if binary, accuracy if multiclass.
                 unique_vals = np.unique(y)
-                self.scoring = 'roc_auc' if len(unique_vals) == 2 else 'accuracy'
+                self.scoring = "roc_auc" if len(unique_vals) == 2 else "accuracy"
             else:
-                self.scoring = 'neg_mean_squared_error'
-                
+                self.scoring = "neg_mean_squared_error"
+
         # For classification, also store problem type for later (binary vs multiclass)
         if self.is_classifier:
-            self.problem_type = 'binary' if len(np.unique(y)) == 2 else 'multiclass'
+            self.problem_type = "binary" if len(np.unique(y)) == 2 else "multiclass"
         else:
-            self.problem_type = 'regression'
-    
+            self.problem_type = "regression"
+
     def _determine_if_classifier(self):
         # Simple heuristic: if target has <=20 unique values or is not float, assume classification.
         if np.issubdtype(self.y.dtype, np.floating) and len(np.unique(self.y)) > 20:
@@ -67,7 +73,9 @@ class BaseTuner:
     def get_cv(self):
         # Use StratifiedKFold for classification, KFold for regression.
         if self.is_classifier:
-            return StratifiedKFold(n_splits=self.cv, shuffle=True, random_state=self.random_state)
+            return StratifiedKFold(
+                n_splits=self.cv, shuffle=True, random_state=self.random_state
+            )
         else:
             return KFold(n_splits=self.cv, shuffle=True, random_state=self.random_state)
 
@@ -85,7 +93,7 @@ class BaseTuner:
         # Create an Optuna study (maximizing the score) and run optimization.
         study = optuna.create_study(
             direction="maximize",
-            sampler=optuna.samplers.TPESampler(seed=self.random_state)
+            sampler=optuna.samplers.TPESampler(seed=self.random_state),
         )
         study.optimize(self.objective, n_trials=self.n_trials)
         self.best_params = study.best_trial.params
@@ -102,7 +110,7 @@ class XGBClassifierTuner(BaseTuner):
         self.model_class = xgb.XGBClassifier
         self.fixed_params = {}
         # Automatically set the objective and (if needed) num_class for multiclass problems.
-        if self.problem_type == 'multiclass':
+        if self.problem_type == "multiclass":
             self.fixed_params["objective"] = "multi:softprob"
             self.fixed_params["num_class"] = len(np.unique(y))
         else:
@@ -115,20 +123,30 @@ class XGBClassifierTuner(BaseTuner):
             "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
             "subsample": trial.suggest_float("subsample", 0.5, 1.0),
             "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0),
-            "colsample_bylevel": trial.suggest_float("colsample_bylevel", 0.5, 1.0),  # NEW
-            "colsample_bynode": trial.suggest_float("colsample_bynode", 0.5, 1.0),  # NEW
+            "colsample_bylevel": trial.suggest_float(
+                "colsample_bylevel", 0.5, 1.0
+            ),  # NEW
+            "colsample_bynode": trial.suggest_float(
+                "colsample_bynode", 0.5, 1.0
+            ),  # NEW
             "gamma": trial.suggest_float("gamma", 0, 5),
             "reg_alpha": trial.suggest_float("reg_alpha", 1e-8, 1.0, log=True),
             "reg_lambda": trial.suggest_float("reg_lambda", 1e-8, 1.0, log=True),
             "min_child_weight": trial.suggest_int("min_child_weight", 1, 10),
-            "scale_pos_weight": trial.suggest_float("scale_pos_weight", 0.1, 10.0, log=True),
+            "scale_pos_weight": trial.suggest_float(
+                "scale_pos_weight", 0.1, 10.0, log=True
+            ),
             "max_delta_step": trial.suggest_int("max_delta_step", 0, 10),  # NEW
         }
         # Merge with fixed parameters
         params.update(self.fixed_params)
-        model = self.model_class(**params, random_state=self.random_state, use_label_encoder=False)
+        model = self.model_class(
+            **params, random_state=self.random_state, use_label_encoder=False
+        )
         cv = self.get_cv()
-        scores = cross_val_score(model, self.X, self.y, scoring=self.scoring, cv=cv, n_jobs=-1)
+        scores = cross_val_score(
+            model, self.X, self.y, scoring=self.scoring, cv=cv, n_jobs=-1
+        )
         return np.mean(scores)
 
 
@@ -145,8 +163,12 @@ class XGBRegressorTuner(BaseTuner):
             "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
             "subsample": trial.suggest_float("subsample", 0.5, 1.0),
             "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0),
-            "colsample_bylevel": trial.suggest_float("colsample_bylevel", 0.5, 1.0),  # NEW
-            "colsample_bynode": trial.suggest_float("colsample_bynode", 0.5, 1.0),  # NEW
+            "colsample_bylevel": trial.suggest_float(
+                "colsample_bylevel", 0.5, 1.0
+            ),  # NEW
+            "colsample_bynode": trial.suggest_float(
+                "colsample_bynode", 0.5, 1.0
+            ),  # NEW
             "gamma": trial.suggest_float("gamma", 0, 5),
             "reg_alpha": trial.suggest_float("reg_alpha", 1e-8, 1.0, log=True),
             "reg_lambda": trial.suggest_float("reg_lambda", 1e-8, 1.0, log=True),
@@ -156,7 +178,9 @@ class XGBRegressorTuner(BaseTuner):
         params.update(self.fixed_params)
         model = self.model_class(**params, random_state=self.random_state)
         cv = self.get_cv()
-        scores = cross_val_score(model, self.X, self.y, scoring=self.scoring, cv=cv, n_jobs=-1)
+        scores = cross_val_score(
+            model, self.X, self.y, scoring=self.scoring, cv=cv, n_jobs=-1
+        )
         return np.mean(scores)
 
 
@@ -169,7 +193,7 @@ class LGBMClassifierTuner(BaseTuner):
         self.model_class = lgb.LGBMClassifier
         # Set fixed parameter to silence verbose output.
         self.fixed_params = {"verbose": -1}
-        if self.problem_type == 'multiclass':
+        if self.problem_type == "multiclass":
             self.fixed_params["objective"] = "multiclass"
             self.fixed_params["num_class"] = len(np.unique(y))
         else:
@@ -186,16 +210,22 @@ class LGBMClassifierTuner(BaseTuner):
             "reg_alpha": trial.suggest_float("reg_alpha", 1e-8, 1.0, log=True),
             "reg_lambda": trial.suggest_float("reg_lambda", 1e-8, 1.0, log=True),
             "min_split_gain": trial.suggest_float("min_split_gain", 0.0, 0.1),  # NEW
-            "bagging_fraction": trial.suggest_float("bagging_fraction", 0.5, 1.0),  # NEW
+            "bagging_fraction": trial.suggest_float(
+                "bagging_fraction", 0.5, 1.0
+            ),  # NEW
             "bagging_freq": trial.suggest_int("bagging_freq", 1, 10),  # NEW
-            "feature_fraction": trial.suggest_float("feature_fraction", 0.5, 1.0),  # NEW
+            "feature_fraction": trial.suggest_float(
+                "feature_fraction", 0.5, 1.0
+            ),  # NEW
             "lambda_l1": trial.suggest_float("lambda_l1", 1e-8, 1.0, log=True),  # NEW
             "lambda_l2": trial.suggest_float("lambda_l2", 1e-8, 1.0, log=True),  # NEW
         }
         params.update(self.fixed_params)
         model = self.model_class(**params, random_state=self.random_state)
         cv = self.get_cv()
-        scores = cross_val_score(model, self.X, self.y, scoring=self.scoring, cv=cv, n_jobs=-1)
+        scores = cross_val_score(
+            model, self.X, self.y, scoring=self.scoring, cv=cv, n_jobs=-1
+        )
         return np.mean(scores)
 
 
@@ -216,16 +246,22 @@ class LGBMRegressorTuner(BaseTuner):
             "reg_alpha": trial.suggest_float("reg_alpha", 1e-8, 1.0, log=True),
             "reg_lambda": trial.suggest_float("reg_lambda", 1e-8, 1.0, log=True),
             "min_split_gain": trial.suggest_float("min_split_gain", 0.0, 0.1),  # NEW
-            "bagging_fraction": trial.suggest_float("bagging_fraction", 0.5, 1.0),  # NEW
+            "bagging_fraction": trial.suggest_float(
+                "bagging_fraction", 0.5, 1.0
+            ),  # NEW
             "bagging_freq": trial.suggest_int("bagging_freq", 1, 10),  # NEW
-            "feature_fraction": trial.suggest_float("feature_fraction", 0.5, 1.0),  # NEW
+            "feature_fraction": trial.suggest_float(
+                "feature_fraction", 0.5, 1.0
+            ),  # NEW
             "lambda_l1": trial.suggest_float("lambda_l1", 1e-8, 1.0, log=True),  # NEW
             "lambda_l2": trial.suggest_float("lambda_l2", 1e-8, 1.0, log=True),  # NEW
         }
         params.update(self.fixed_params)
         model = self.model_class(**params, random_state=self.random_state)
         cv = self.get_cv()
-        scores = cross_val_score(model, self.X, self.y, scoring=self.scoring, cv=cv, n_jobs=-1)
+        scores = cross_val_score(
+            model, self.X, self.y, scoring=self.scoring, cv=cv, n_jobs=-1
+        )
         return np.mean(scores)
 
 
@@ -238,7 +274,7 @@ class CatBoostClassifierTuner(BaseTuner):
         self.model_class = cb.CatBoostClassifier
         # Fixed parameter to silence verbose output.
         self.fixed_params = {"silent": True}
-        if self.problem_type == 'multiclass':
+        if self.problem_type == "multiclass":
             self.fixed_params["loss_function"] = "MultiClass"
         else:
             self.fixed_params["loss_function"] = "Logloss"
@@ -253,14 +289,20 @@ class CatBoostClassifierTuner(BaseTuner):
             "border_count": trial.suggest_int("border_count", 32, 255),
             "random_strength": trial.suggest_float("random_strength", 0, 10),  # NEW
             "rsm": trial.suggest_float("rsm", 0.5, 1.0),  # NEW
-            "leaf_estimation_iterations": trial.suggest_int("leaf_estimation_iterations", 1, 10),  # NEW
-            "od_type": trial.suggest_categorical("od_type", ["IncToDec", "Iter"]),  # NEW
+            "leaf_estimation_iterations": trial.suggest_int(
+                "leaf_estimation_iterations", 1, 10
+            ),  # NEW
+            "od_type": trial.suggest_categorical(
+                "od_type", ["IncToDec", "Iter"]
+            ),  # NEW
             "od_wait": trial.suggest_int("od_wait", 10, 50),  # NEW
         }
         params.update(self.fixed_params)
         model = self.model_class(**params, random_state=self.random_state)
         cv = self.get_cv()
-        scores = cross_val_score(model, self.X, self.y, scoring=self.scoring, cv=cv, n_jobs=-1)
+        scores = cross_val_score(
+            model, self.X, self.y, scoring=self.scoring, cv=cv, n_jobs=-1
+        )
         return np.mean(scores)
 
 
@@ -280,14 +322,20 @@ class CatBoostRegressorTuner(BaseTuner):
             "border_count": trial.suggest_int("border_count", 32, 255),
             "random_strength": trial.suggest_float("random_strength", 0, 10),  # NEW
             "rsm": trial.suggest_float("rsm", 0.5, 1.0),  # NEW
-            "leaf_estimation_iterations": trial.suggest_int("leaf_estimation_iterations", 1, 10),  # NEW
-            "od_type": trial.suggest_categorical("od_type", ["IncToDec", "Iter"]),  # NEW
+            "leaf_estimation_iterations": trial.suggest_int(
+                "leaf_estimation_iterations", 1, 10
+            ),  # NEW
+            "od_type": trial.suggest_categorical(
+                "od_type", ["IncToDec", "Iter"]
+            ),  # NEW
             "od_wait": trial.suggest_int("od_wait", 10, 50),  # NEW
         }
         params.update(self.fixed_params)
         model = self.model_class(**params, random_state=self.random_state)
         cv = self.get_cv()
-        scores = cross_val_score(model, self.X, self.y, scoring=self.scoring, cv=cv, n_jobs=-1)
+        scores = cross_val_score(
+            model, self.X, self.y, scoring=self.scoring, cv=cv, n_jobs=-1
+        )
         return np.mean(scores)
 
 
@@ -305,14 +353,22 @@ class HistGradientBoostingClassifierTuner(BaseTuner):
             "max_iter": trial.suggest_int("max_iter", 100, 500),
             "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
             "max_leaf_nodes": trial.suggest_int("max_leaf_nodes", 10, 100),
-            "l2_regularization": trial.suggest_float("l2_regularization", 1e-8, 1.0, log=True),
-            "early_stopping": trial.suggest_categorical("early_stopping", [True, False]),  # NEW
-            "validation_fraction": trial.suggest_float("validation_fraction", 0.1, 0.3),  # NEW
+            "l2_regularization": trial.suggest_float(
+                "l2_regularization", 1e-8, 1.0, log=True
+            ),
+            "early_stopping": trial.suggest_categorical(
+                "early_stopping", [True, False]
+            ),  # NEW
+            "validation_fraction": trial.suggest_float(
+                "validation_fraction", 0.1, 0.3
+            ),  # NEW
         }
         params.update(self.fixed_params)
         model = self.model_class(**params, random_state=self.random_state)
         cv = self.get_cv()
-        scores = cross_val_score(model, self.X, self.y, scoring=self.scoring, cv=cv, n_jobs=-1)
+        scores = cross_val_score(
+            model, self.X, self.y, scoring=self.scoring, cv=cv, n_jobs=-1
+        )
         return np.mean(scores)
 
 
@@ -327,14 +383,22 @@ class HistGradientBoostingRegressorTuner(BaseTuner):
             "max_iter": trial.suggest_int("max_iter", 100, 500),
             "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
             "max_leaf_nodes": trial.suggest_int("max_leaf_nodes", 10, 100),
-            "l2_regularization": trial.suggest_float("l2_regularization", 1e-8, 1.0, log=True),
-            "early_stopping": trial.suggest_categorical("early_stopping", [True, False]),  # NEW
-            "validation_fraction": trial.suggest_float("validation_fraction", 0.1, 0.3),  # NEW
+            "l2_regularization": trial.suggest_float(
+                "l2_regularization", 1e-8, 1.0, log=True
+            ),
+            "early_stopping": trial.suggest_categorical(
+                "early_stopping", [True, False]
+            ),  # NEW
+            "validation_fraction": trial.suggest_float(
+                "validation_fraction", 0.1, 0.3
+            ),  # NEW
             "n_iter_no_change": trial.suggest_int("n_iter_no_change", 5, 20),  # NEW
             "tol": trial.suggest_float("tol", 1e-4, 1e-2, log=True),  # NEW
         }
         params.update(self.fixed_params)
         model = self.model_class(**params, random_state=self.random_state)
         cv = self.get_cv()
-        scores = cross_val_score(model, self.X, self.y, scoring=self.scoring, cv=cv, n_jobs=-1)
+        scores = cross_val_score(
+            model, self.X, self.y, scoring=self.scoring, cv=cv, n_jobs=-1
+        )
         return np.mean(scores)

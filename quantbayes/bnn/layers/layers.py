@@ -2463,7 +2463,11 @@ class Matern52Kernel:
         sqrt5 = jnp.sqrt(5.0)
         return (
             variance
-            * (1 + sqrt5 * diff / length_scale + (5 * diff**2) / (3 * length_scale**2))
+            * (
+                1
+                + sqrt5 * diff / length_scale
+                + (5 * diff**2) / (3 * length_scale**2)
+            )
             * jnp.exp(-sqrt5 * diff / length_scale)
         )
 
@@ -2519,7 +2523,9 @@ class RationalQuadraticKernel:
         alpha = numpyro.param(
             f"{self.name}_alpha", jnp.array(1.0), constraint=dist.constraints.positive
         )
-        return variance * (1 + (diff**2) / (2 * alpha * length_scale**2)) ** (-alpha)
+        return variance * (1 + (diff**2) / (2 * alpha * length_scale**2)) ** (
+            -alpha
+        )
 
 
 # Linear Kernel:

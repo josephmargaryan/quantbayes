@@ -108,9 +108,11 @@ def block_circulant_matmul_custom(
 @block_circulant_matmul_custom.defjvp
 def block_circulant_matmul_custom_jvp(primals, tangents):
     W, x, d_bernoulli = primals
-    dW, dx, dd = (
-        tangents  # dd is the tangent for d_bernoulli (ignored here for simplicity)
-    )
+    (
+        dW,
+        dx,
+        dd,
+    ) = tangents  # dd is the tangent for d_bernoulli (ignored here for simplicity)
 
     if x.ndim == 1:
         x = x[None, :]
