@@ -6,17 +6,14 @@ from .bnn_ensemble import (
     BNNEnsembleRegression,
     BNNEnsembleBinary,
     BNNEnsembleMulticlass,
-    BNNEnsembleForecast,
 )
 
 __all__ = [
     "EnsembleBinary",
     "EnsembleMulticlass",
     "EnsembleRegression",
-    "BNNMetaEnsemble",
+    "EnsembleForecast",
     "BNNEnsembleRegression",
     "BNNEnsembleBinary",
     "BNNEnsembleMulticlass",
-    "EnsembleForecast",
-    "BNNEnsembleForecast",
 ]
