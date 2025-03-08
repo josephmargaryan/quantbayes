@@ -1,6 +1,5 @@
 # score_diffusion/training/trainer.py
 
-import jax
 import jax.random as jr
 import equinox as eqx
 import optax

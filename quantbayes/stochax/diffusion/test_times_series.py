@@ -1,11 +1,12 @@
 # score_diffusion/tests/test_time_series_diffusion.py
 
 import jax
+import equinox as eqx
 import jax.random as jr
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 
-from quantbayes.stochax.diffusion.config import TimeSeriesConfig
+from quantbayes.stochax.diffusion import TimeSeriesConfig
 from quantbayes.stochax.diffusion.dataloaders import (
     generate_synthetic_time_series,
     dataloader,
@@ -58,7 +59,7 @@ def test_conv_time_unet_diffusion():
         dataset=data,  # shape [N, seq_length]
         t1=cfg.t1,
         lr=cfg.lr,
-        num_steps=cfg.num_steps,
+        num_steps=10,  # For testing
         batch_size=cfg.batch_size,
         weight_fn=weight_fn,
         int_beta_fn=int_beta_linear,
@@ -129,7 +130,7 @@ def test_diffusion_transformer_1d():
         dataset=data,  # shape => (N, seq_length)
         t1=cfg.t1,
         lr=cfg.lr,
-        num_steps=cfg.num_steps,
+        num_steps=10,  # For testing purposes
         batch_size=cfg.batch_size,
         weight_fn=weight_fn,
         int_beta_fn=int_beta_linear,
@@ -141,11 +142,12 @@ def test_diffusion_transformer_1d():
     # Sample
     sample_size = 4
     sample_keys = jr.split(sample_key, sample_size)
+    inf_model = eqx.tree_inference(trained_model, value=True)
 
     def sample_fn(k):
         # shape => (seq_length,)
         return single_sample_fn(
-            trained_model, int_beta_linear, (cfg.seq_length,), cfg.dt0, cfg.t1, k
+            inf_model, int_beta_linear, (cfg.seq_length,), cfg.dt0, cfg.t1, k
         )
 
     samples = jax.vmap(sample_fn)(sample_keys)  # (sample_size, seq_length)

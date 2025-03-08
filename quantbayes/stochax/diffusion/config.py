@@ -31,3 +31,10 @@ class TimeSeriesConfig(DiffusionConfig):
     time_emb_dim: int = 64
     num_layers: int = 4
     seq_length: int = 128  # e.g. time series length
+
+
+@dataclass
+class TabularConfig(DiffusionConfig):
+    hidden_dim: int = 64  # internal hidden dimension for the MLP
+    time_emb_dim: int = 32  # dimension for the time embedding
+    num_layers: int = 3  # depth of the core MLP
