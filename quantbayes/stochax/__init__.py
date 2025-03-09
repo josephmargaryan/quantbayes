@@ -12,8 +12,8 @@ from . import (
     vision_classification,
     vision_segmentation,
 )
+from .trainer.train import data_loader, apply_model, predict, train, predict_unlabeled
 
-# Define what should be accessible when doing `from quantbayes import stochax as stx`
 __all__ = [
     "deepar",
     "diffusion",
@@ -26,4 +26,9 @@ __all__ = [
     "vae",
     "vision_classification",
     "vision_segmentation",
+    "data_loader", 
+    "apply_model", 
+    "predict", 
+    "train", 
+    "predict_unlabeled"
 ]
