@@ -12,7 +12,7 @@ from . import (
     vision_classification,
     vision_segmentation,
 )
-from .trainer.train import data_loader, apply_model, predict, train, predict_unlabeled
+from .trainer.train import data_loader, predict, train, predict_unlabeled
 
 __all__ = [
     "deepar",
@@ -27,7 +27,6 @@ __all__ = [
     "vision_classification",
     "vision_segmentation",
     "data_loader", 
-    "apply_model", 
     "predict", 
     "train", 
     "predict_unlabeled"
