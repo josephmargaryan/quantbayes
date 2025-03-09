@@ -1,8 +1,9 @@
 # score_diffusion/training/trainer.py
 
-import jax.random as jr
 import equinox as eqx
+import jax.random as jr
 import optax
+
 from quantbayes.stochax.diffusion.sde import batch_loss_fn
 
 

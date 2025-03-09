@@ -1,7 +1,8 @@
 from typing import Optional
+
+import equinox as eqx
 import jax
 import jax.numpy as jnp
-import equinox as eqx
 import jax.random as jr
 
 __all__ = [

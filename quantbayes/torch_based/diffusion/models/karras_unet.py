@@ -2,21 +2,18 @@
 the magnitude-preserving unet proposed in https://arxiv.org/abs/2312.02696 by Karras et al
 """
 
-from functools import wraps
-from packaging import version
-from collections import namedtuple
-
 import math
-from math import sqrt, ceil
-from functools import partial
+from collections import namedtuple
+from functools import partial, wraps
+from math import ceil, sqrt
 
 import torch
-from torch import nn, einsum
+import torch.nn.functional as F
+from einops import pack, rearrange, repeat, unpack
+from packaging import version
+from torch import einsum, nn
 from torch.nn import Module, ModuleList
 from torch.optim.lr_scheduler import LambdaLR
-import torch.nn.functional as F
-
-from einops import rearrange, repeat, pack, unpack
 
 AttentionConfig = namedtuple(
     "AttentionConfig", ["enable_flash", "enable_math", "enable_mem_efficient"]
@@ -122,7 +119,7 @@ class Attend(nn.Module):
 
         # similarity
 
-        sim = einsum(f"b h i d, b h j d -> b h i j", q, k) * scale
+        sim = einsum("b h i d, b h j d -> b h i j", q, k) * scale
 
         # attention
 
@@ -131,7 +128,7 @@ class Attend(nn.Module):
 
         # aggregate values
 
-        out = einsum(f"b h i j, b h j d -> b h i d", attn, v)
+        out = einsum("b h i j, b h j d -> b h i d", attn, v)
 
         return out
 

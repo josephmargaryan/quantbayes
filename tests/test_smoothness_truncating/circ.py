@@ -1,13 +1,11 @@
 import jax
-import jax.random as jr
 import jax.numpy as jnp
-import matplotlib.pyplot as plt
-from sklearn.model_selection import train_test_split
+import jax.random as jr
 import numpyro
 import numpyro.distributions as dist
+from sklearn.model_selection import train_test_split
 
 from quantbayes import bnn, fake_data
-from quantbayes.stochax.utils import visualize_circulant_layer
 
 
 # Assume your MyNet model is defined as follows:

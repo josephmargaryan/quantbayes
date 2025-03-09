@@ -1,14 +1,15 @@
-from quantbayes.bnn.core.base_task import BaseTask
-from quantbayes.bnn.core.base_inference import BaseInference
-from quantbayes.bnn.utils.fft_module import fft_matmul
-from numpyro.infer import MCMC, NUTS, Predictive
-import jax.random as jr
 import jax
 import jax.numpy as jnp
-import numpyro
-import numpy as np
+import jax.random as jr
 import matplotlib.pyplot as plt
+import numpy as np
+import numpyro
 import numpyro.distributions as dist
+from numpyro.infer import MCMC, NUTS, Predictive
+
+from quantbayes.bnn.core.base_inference import BaseInference
+from quantbayes.bnn.core.base_task import BaseTask
+from quantbayes.bnn.utils.fft_module import fft_matmul
 
 
 class FFTRegressionMCMC(BaseTask, BaseInference):
@@ -187,15 +188,15 @@ class FFTRegressionMCMC(BaseTask, BaseInference):
 if __name__ == "__main__":
 
     ############# Example Usage #############
+    import jax.numpy as jnp
+    import jax.random as jr
     from bnn.AutoML.fft.regression.mcmc import FFTRegressionMCMC
     from bnn.utils.entropy_analysis import EntropyAndMutualInformation
     from bnn.utils.generalization_bound import BayesianAnalysis
     from fake_data import generate_regression_data
-    from sklearn.model_selection import train_test_split
     from sklearn.metrics import mean_absolute_error
+    from sklearn.model_selection import train_test_split
     from sklearn.preprocessing import MinMaxScaler, StandardScaler
-    import jax.random as jr
-    import jax.numpy as jnp
 
     target_scaler = MinMaxScaler()
     feature_scaler = StandardScaler()

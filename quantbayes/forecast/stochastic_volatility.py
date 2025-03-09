@@ -1,9 +1,9 @@
-import jax.numpy as jnp
 import jax
+import jax.numpy as jnp
+import matplotlib.pyplot as plt
 import numpyro
 import numpyro.distributions as dist
 from numpyro.infer import MCMC, NUTS, Predictive
-import matplotlib.pyplot as plt
 
 
 class StochasticVolatilityModel:
@@ -132,7 +132,6 @@ if __name__ == "__main__":
     import numpy as np
 
     # from stochastic_volatility_model import StochasticVolatilityModel
-
     # Generate synthetic returns
     np.random.seed(42)
     N = 200

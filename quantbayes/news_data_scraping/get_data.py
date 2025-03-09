@@ -1,9 +1,8 @@
-import yfinance as yf
-import pandas as pd
-import numpy as np
-from sklearn.preprocessing import MinMaxScaler
-from datetime import datetime, timedelta
 import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import yfinance as yf
+from sklearn.preprocessing import MinMaxScaler
 
 
 class StockDataProcessor:

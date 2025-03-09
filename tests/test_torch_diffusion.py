@@ -1,8 +1,8 @@
 # diffusion_lib/test.py
 
 import torch
-from quantbayes.torch_based.diffusion import UNet
-from quantbayes.torch_based.diffusion import GaussianDiffusion, BetaSchedule
+
+from quantbayes.torch_based.diffusion import BetaSchedule, GaussianDiffusion, UNet
 
 
 def test_unet_forward():

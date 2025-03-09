@@ -1,6 +1,6 @@
 import matplotlib.pyplot as plt
-import torch
 import numpy as np
+import torch
 
 from quantbayes.sde.sde_base import BaseSDE
 

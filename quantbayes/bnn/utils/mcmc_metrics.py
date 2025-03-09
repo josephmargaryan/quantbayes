@@ -1,8 +1,9 @@
-import jax
+import warnings
+
 import arviz as az
+import jax
 import jax.numpy as jnp
 import numpy as np
-import warnings
 
 from quantbayes import bnn
 

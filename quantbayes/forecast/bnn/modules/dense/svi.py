@@ -1,13 +1,14 @@
-from time_forecast.bnn.core.base_inference import BaseInference
-from time_forecast.bnn.core.base_task import BaseTask
 from typing import Callable
-import numpyro.distributions as dist
-import numpyro
-from numpyro.optim import Adam
-from numpyro.infer import SVI, Trace_ELBO, Predictive, autoguide
+
+import jax
 import jax.numpy as jnp
 import jax.random as jr
-import jax
+import numpyro
+import numpyro.distributions as dist
+from numpyro.infer import SVI, Predictive, Trace_ELBO, autoguide
+from numpyro.optim import Adam
+from time_forecast.bnn.core.base_inference import BaseInference
+from time_forecast.bnn.core.base_task import BaseTask
 
 
 class DenseSVI(BaseTask, BaseInference):
@@ -112,8 +113,8 @@ class DenseSVI(BaseTask, BaseInference):
             y_val: Validation target data (shape: (N_val,)).
             posterior_preds: Model predictions on the validation set with uncertainty (shape: (samples, N_val)).
         """
-        import matplotlib.pyplot as plt
         import jax.numpy as jnp
+        import matplotlib.pyplot as plt
 
         # Compute prediction statistics
         mean_predictions = posterior_preds.mean(axis=0)
@@ -429,9 +430,9 @@ class DenseSVI(BaseTask, BaseInference):
 if __name__ == "__main__":
 
     ############### Demo #############
-    from time_forecast.bnn.modules.dense.svi import DenseSVI
     import jax.random as jr
     from fake_data import create_synthetic_time_series
+    from time_forecast.bnn.modules.dense.svi import DenseSVI
 
     X_train, X_val, y_train, y_val = create_synthetic_time_series()
     model = DenseSVI(model="deep_feedforward", num_steps=100, hidden_dim=3)
@@ -439,8 +440,8 @@ if __name__ == "__main__":
     posterior_preds = model.predict(X_val, jr.key(2))
     model.visualize(y_train=y_train, y_val=y_val, posterior_preds=posterior_preds)
 
-    from sklearn.metrics import mean_squared_error
     import numpy as np
+    from sklearn.metrics import mean_squared_error
 
     MSE = mean_squared_error(np.array(y_val), np.array(posterior_preds.mean(axis=0)))
     print(f" Loss {MSE}")

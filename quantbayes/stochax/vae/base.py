@@ -1,5 +1,6 @@
 # base_vae.py
 from abc import ABC, abstractmethod
+
 import jax.numpy as jnp
 
 

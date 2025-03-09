@@ -1,5 +1,5 @@
 import abc
-from typing import Any, Union, Tuple, Callable
+from typing import Callable
 
 
 class BaseTask(abc.ABC):

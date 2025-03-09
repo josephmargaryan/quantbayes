@@ -1,10 +1,10 @@
 import pandas as pd
 from catboost import CatBoostClassifier
-from sklearn.ensemble import HistGradientBoostingClassifier
 from lightgbm import LGBMClassifier
+from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.metrics import log_loss
-from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
 from xgboost import XGBClassifier
 
 from quantbayes.bnn.utils import (

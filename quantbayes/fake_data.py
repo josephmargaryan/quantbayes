@@ -1,9 +1,8 @@
-import pandas as pd
-import numpy as np
-from sklearn.datasets import make_classification
-from sklearn.datasets import make_blobs
 import jax
 import jax.numpy as jnp
+import numpy as np
+import pandas as pd
+from sklearn.datasets import make_blobs, make_classification
 
 
 def generate_regression_data(

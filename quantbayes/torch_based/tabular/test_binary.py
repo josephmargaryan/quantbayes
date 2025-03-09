@@ -1,12 +1,12 @@
 # binary_script_torch.py
 
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import matplotlib.pyplot as plt
-from sklearn.metrics import roc_curve, auc
 from sklearn.calibration import calibration_curve
+from sklearn.metrics import auc, roc_curve
 
 
 # ----------------------------------------------------------------

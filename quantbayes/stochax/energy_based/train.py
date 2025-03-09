@@ -1,8 +1,9 @@
 # trainer.py
+from typing import Callable
+
+import equinox as eqx
 import jax
 import jax.numpy as jnp
-from typing import Callable, Dict
-import equinox as eqx
 import optax
 
 from quantbayes.stochax.energy_based.base import BaseEBM

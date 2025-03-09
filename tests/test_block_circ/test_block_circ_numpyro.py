@@ -1,6 +1,6 @@
 import jax
-import jax.random as jr
 import jax.numpy as jnp
+import jax.random as jr
 import numpyro
 import numpyro.distributions as dist
 

@@ -1,9 +1,9 @@
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
 from scipy.special import expit
-from sklearn.isotonic import IsotonicRegression
 from sklearn.calibration import calibration_curve
-from sklearn.metrics import roc_curve, auc
+from sklearn.isotonic import IsotonicRegression
+from sklearn.metrics import auc, roc_curve
 
 __all__ = [
     "CalibratedBNN",

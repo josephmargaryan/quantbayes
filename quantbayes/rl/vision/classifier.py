@@ -1,10 +1,10 @@
+import matplotlib.pyplot as plt
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.distributions import Categorical
 import torch.utils.data as data
-import numpy as np
-import matplotlib.pyplot as plt
+from torch.distributions import Categorical
 
 
 class RLCNNClassifier(nn.Module):

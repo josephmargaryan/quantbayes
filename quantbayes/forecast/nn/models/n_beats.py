@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
-from quantbayes.forecast.nn.base import MonteCarloMixin, BaseModel
+
+from quantbayes.forecast.nn.base import BaseModel, MonteCarloMixin
 
 
 class NBeatsBlock(MonteCarloMixin, BaseModel):

@@ -1,10 +1,10 @@
 from .components import (
-    MLP_VAE,
-    ConvVAE,
-    ResidualVAE,
     GRU_VAE,
     LSTM_VAE,
+    MLP_VAE,
+    ConvVAE,
     MultiHeadAttentionVAE,
+    ResidualVAE,
     ViT_VAE,
 )
 

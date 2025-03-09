@@ -1,5 +1,6 @@
-from quantbayes.bnn.layers import Conv1d, Linear
 import jax.numpy as jnp
+
+from quantbayes.bnn.layers import Conv1d, Linear
 
 
 class Conv1DTimeSeriesForecaster:

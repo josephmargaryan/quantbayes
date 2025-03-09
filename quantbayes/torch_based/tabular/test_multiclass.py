@@ -1,11 +1,11 @@
 # multiclass_script_torch.py
 
+import matplotlib.pyplot as plt
 import numpy as np
+import seaborn as sns
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import matplotlib.pyplot as plt
-import seaborn as sns
 from sklearn.metrics import confusion_matrix
 
 
@@ -164,8 +164,9 @@ def visualize_multiclass(model: nn.Module, X: np.ndarray, y: np.ndarray):
 # 4. Example Test
 # ----------------------------------------------------------------
 if __name__ == "__main__":
-    from quantbayes.fake_data import generate_multiclass_classification_data
     from sklearn.model_selection import train_test_split
+
+    from quantbayes.fake_data import generate_multiclass_classification_data
 
     df = generate_multiclass_classification_data(n_categorical=1, n_continuous=2)
 

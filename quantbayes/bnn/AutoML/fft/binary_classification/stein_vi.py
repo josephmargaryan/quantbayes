@@ -1,17 +1,19 @@
-from quantbayes.bnn.core.base_task import BaseTask
-from quantbayes.bnn.core.base_inference import BaseInference
-from quantbayes.bnn.utils.fft_module import fft_matmul
-from numpyro.contrib.einstein import SteinVI, RBFKernel, MixtureGuidePredictive
-from numpyro.optim import Adam, Adagrad, SGD
-from numpyro.infer.autoguide import AutoNormal
 from typing import Callable
-import jax.random as jr
+
 import jax
 import jax.numpy as jnp
-import numpyro
-import numpy as np
+import jax.random as jr
 import matplotlib.pyplot as plt
+import numpy as np
+import numpyro
 import numpyro.distributions as dist
+from numpyro.contrib.einstein import MixtureGuidePredictive, RBFKernel, SteinVI
+from numpyro.infer.autoguide import AutoNormal
+from numpyro.optim import Adagrad
+
+from quantbayes.bnn.core.base_inference import BaseInference
+from quantbayes.bnn.core.base_task import BaseTask
+from quantbayes.bnn.utils.fft_module import fft_matmul
 
 
 class FFTBinarySteinVI(BaseTask, BaseInference):
@@ -258,14 +260,14 @@ class FFTBinarySteinVI(BaseTask, BaseInference):
 if __name__ == "__main__":
 
     ############# Example Usage #############
+    import jax.numpy as jnp
+    import jax.random as jr
     from bnn.AutoML.fft.binary_classification.stein_vi import FFTBinarySteinVI
     from bnn.utils.entropy_analysis import EntropyAndMutualInformation
     from bnn.utils.generalization_bound import BayesianAnalysis
     from fake_data import generate_binary_classification_data
-    from sklearn.model_selection import train_test_split
     from sklearn.metrics import log_loss
-    import jax.random as jr
-    import jax.numpy as jnp
+    from sklearn.model_selection import train_test_split
 
     df = generate_binary_classification_data()
     X, y = df.drop("target", axis=1), df["target"]

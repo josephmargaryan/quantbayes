@@ -1,12 +1,12 @@
 from quantbayes.stochax.energy_based.base import (
-    MLPBasedEBM,
+    AttentionBasedEBM,
     ConvEBM,
     LSTMBasedEBM,
-    AttentionBasedEBM,
+    MLPBasedEBM,
     RNNBasedEBM,
 )
+from quantbayes.stochax.energy_based.inference import detect_ood, generate_samples
 from quantbayes.stochax.energy_based.train import EBMTrainer
-from quantbayes.stochax.energy_based.inference import generate_samples, detect_ood
 
 __all__ = [
     "MLPBasedEBM",

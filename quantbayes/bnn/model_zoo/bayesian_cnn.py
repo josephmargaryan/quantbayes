@@ -1,8 +1,9 @@
-from quantbayes.bnn.layers import Conv1d, Linear, Module
 import jax
 import jax.numpy as jnp
-import numpyro.distributions as dist
 import numpyro
+import numpyro.distributions as dist
+
+from quantbayes.bnn.layers import Conv1d, Linear, Module
 
 
 class BayesianCNN(Module):

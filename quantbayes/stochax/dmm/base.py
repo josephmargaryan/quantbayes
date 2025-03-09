@@ -1,5 +1,6 @@
 # base_dmm.py
 from abc import ABC, abstractmethod
+
 import jax.numpy as jnp
 
 

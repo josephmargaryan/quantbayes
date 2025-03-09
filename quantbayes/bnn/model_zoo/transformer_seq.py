@@ -1,9 +1,8 @@
-import jax
 import jax.numpy as jnp
 import numpyro
 import numpyro.distributions as dist
 
-from quantbayes.bnn.layers import TransformerEncoder, Linear
+from quantbayes.bnn.layers import Linear, TransformerEncoder
 
 
 class TransformerSequenceClassifier:

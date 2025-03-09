@@ -1,5 +1,5 @@
 # Import from base.py
-from .base import Visualizer, MonteCarloMixin, TimeSeriesTrainer, BaseModel
+from .base import BaseModel, MonteCarloMixin, TimeSeriesTrainer, Visualizer
 
 # Define the public API for nn
 __all__ = [

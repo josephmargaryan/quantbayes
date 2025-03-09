@@ -1,12 +1,11 @@
 import jax
-import jax.random as jr
 import jax.numpy as jnp
+import jax.random as jr
 import numpyro
 import numpyro.distributions as dist
 from sklearn.model_selection import train_test_split
 
-from quantbayes import bnn
-from quantbayes import fake_data
+from quantbayes import bnn, fake_data
 from quantbayes.bnn.utils import BayesianAnalysis
 from quantbayes.stochax.utils import (
     get_block_fft_full_for_given_params,
@@ -92,8 +91,8 @@ fig1 = plot_block_fft_spectra(fft_full, show=True)
 fig2 = visualize_block_circulant_kernels(fft_full, show=True)
 
 
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
 
 
 def plot_block_fft_spectra_with_phase(fft_full_blocks: jnp.ndarray, show: bool = True):

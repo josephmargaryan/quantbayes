@@ -1,6 +1,5 @@
 import pandas as pd
 from tqdm import tqdm
-from rapidfuzz import fuzz
 
 
 class SimilarityMatcher:

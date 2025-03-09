@@ -1,11 +1,12 @@
 # score_diffusion/sde/sde_utils.py
 
 import functools as ft
+
+import diffrax as dfx
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jr
-import equinox as eqx
-import diffrax as dfx
 
 
 def int_beta_linear(t):

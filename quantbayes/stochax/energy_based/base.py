@@ -1,11 +1,12 @@
 # ebm_base.py
 from abc import ABC, abstractmethod
 from typing import Callable, Optional
-import jax
-import jax.random as jrandom
+
 import equinox as eqx
+import jax
 import jax.nn as jnn
 import jax.numpy as jnp
+import jax.random as jrandom
 
 
 class BaseEBM(eqx.Module, ABC):

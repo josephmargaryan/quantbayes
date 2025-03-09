@@ -7,9 +7,9 @@ from sklearn.model_selection import train_test_split
 
 from quantbayes import bnn
 from quantbayes.bnn.utils import (
-    plot_calibration_curve,
-    expected_calibration_error,
     CalibratedBayesNet,
+    expected_calibration_error,
+    plot_calibration_curve,
 )
 from quantbayes.fake_data import generate_binary_classification_data
 

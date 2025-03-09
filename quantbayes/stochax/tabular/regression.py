@@ -1,11 +1,12 @@
-import equinox as eqx
 import pickle
+
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jr
-import optax
 import matplotlib.pyplot as plt
 import numpy as np
+import optax
 
 
 class RegressionModel:
@@ -250,11 +251,11 @@ class RegressionModel:
 
 if __name__ == "__main__":
     import jax
-    import jax.random as jr
     import jax.numpy as jnp
+    import jax.random as jr
     import numpy as np
-    from sklearn.model_selection import train_test_split
     from sklearn.metrics import mean_squared_error
+    from sklearn.model_selection import train_test_split
 
     from quantbayes.fake_data import generate_regression_data
 

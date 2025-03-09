@@ -1,12 +1,13 @@
-import jax.numpy as jnp
+import functools
+
 import jax
+import jax.numpy as jnp
+import matplotlib.pyplot as plt
 import numpy as np
-from jax.experimental.ode import odeint
-from numpyro.infer import MCMC, NUTS, Predictive
 import numpyro
 import numpyro.distributions as dist
-import matplotlib.pyplot as plt
-import functools
+from jax.experimental.ode import odeint
+from numpyro.infer import MCMC, NUTS, Predictive
 
 
 def dz_dt(z, t, theta):

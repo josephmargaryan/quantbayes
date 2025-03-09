@@ -1,8 +1,8 @@
-import torch
-from torch.utils.data import Dataset, DataLoader
-from utils import apply_pooling
 import pandas as pd
-from transformers import AutoTokenizer, AutoModel
+import torch
+from torch.utils.data import DataLoader, Dataset
+from transformers import AutoModel, AutoTokenizer
+from utils import apply_pooling
 
 
 class HierarchicalDataset(Dataset):

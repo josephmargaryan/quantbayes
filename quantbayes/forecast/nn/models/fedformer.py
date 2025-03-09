@@ -1,7 +1,8 @@
-from quantbayes.forecast.nn import BaseModel, MonteCarloMixin
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+from quantbayes.forecast.nn import BaseModel, MonteCarloMixin
 
 
 # ---------------------------------------------------------------------

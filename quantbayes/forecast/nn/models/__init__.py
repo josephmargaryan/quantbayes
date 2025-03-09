@@ -9,9 +9,9 @@ from .n_beats import NBeats
 from .n_beats2 import NBeats2
 from .temporal_convolutional_network import TCNForecaster
 from .temporal_fusion_transformer import TemporalFusionTransformer
-from .wave_net import WaveNet
 from .timegpt import TimeGTP
 from .totem import TOTEM
+from .wave_net import WaveNet
 
 # Expose these classes in the public API of `quantbayes.forecast.nn.models`
 __all__ = [

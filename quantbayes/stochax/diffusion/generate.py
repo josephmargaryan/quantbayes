@@ -1,6 +1,7 @@
-import jax
 import equinox as eqx
+import jax
 import jax.numpy as jnp
+
 from quantbayes.stochax.diffusion.sde import single_sample_fn
 
 

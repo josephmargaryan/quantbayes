@@ -1,16 +1,16 @@
 import jax
-import numpyro
-import jax.random as jr
 import jax.numpy as jnp
+import jax.random as jr
+import numpyro
 import numpyro.distributions as dist
+from sklearn.model_selection import train_test_split
 
+from quantbayes import bnn
 from quantbayes.fake_data import (
-    generate_regression_data,
     generate_binary_classification_data,
     generate_multiclass_classification_data,
+    generate_regression_data,
 )
-from sklearn.model_selection import train_test_split
-from quantbayes import bnn
 
 ##############################################################
 # REGRESSION

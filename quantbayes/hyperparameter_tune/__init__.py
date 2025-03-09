@@ -1,12 +1,12 @@
 from .tune import (
-    XGBClassifierTuner,
-    XGBRegressorTuner,
     CatBoostClassifierTuner,
     CatBoostRegressorTuner,
-    LGBMClassifierTuner,
-    LGBMRegressorTuner,
     HistGradientBoostingClassifier,
     HistGradientBoostingClassifierTuner,
+    LGBMClassifierTuner,
+    LGBMRegressorTuner,
+    XGBClassifierTuner,
+    XGBRegressorTuner,
 )
 
 __all__ = [

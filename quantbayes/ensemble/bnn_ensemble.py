@@ -1,6 +1,6 @@
-import numpy as np
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 __all__ = ["BNNEnsembleRegression", "BNNEnsembleBinary", "BNNEnsembleMulticlass"]
 
@@ -621,13 +621,14 @@ if __name__ == "__main__":
     # 1) Binary Classification Example with advanced WAIC or stacking
 
     # 2) BINARY CLASSIFICATION EXAMPLE
-    import numpy as np
     import jax.random as jr
-    from sklearn.metrics import log_loss
+    import numpy as np
     from kaggle.bnn import Dense, Spectral
-    from quantbayes.fake_data import generate_binary_classification_data
-    from quantbayes.bnn.utils import plot_calibration_curve, plot_roc_curve
+    from sklearn.metrics import log_loss
     from sklearn.model_selection import train_test_split
+
+    from quantbayes.bnn.utils import plot_calibration_curve, plot_roc_curve
+    from quantbayes.fake_data import generate_binary_classification_data
 
     df = generate_binary_classification_data()
     X, y = df.drop("target", axis=1), df["target"]

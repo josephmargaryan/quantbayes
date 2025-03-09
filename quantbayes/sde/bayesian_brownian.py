@@ -1,9 +1,10 @@
-import numpy as np
-import jax.numpy as jnp
 import jax
+import jax.numpy as jnp
+import numpy as np
 import numpyro
 import numpyro.distributions as dist
 from numpyro.infer import MCMC, NUTS
+
 from quantbayes.sde.sde_base import BaseSDE
 
 

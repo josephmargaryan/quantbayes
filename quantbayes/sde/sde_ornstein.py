@@ -1,4 +1,5 @@
 import numpy as np
+
 from quantbayes.sde.sde_base import BaseSDE
 
 

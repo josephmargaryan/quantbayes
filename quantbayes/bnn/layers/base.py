@@ -1,16 +1,17 @@
-from typing import Optional, Any
+import pickle
+from typing import Any, Optional
+
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
-import seaborn as sns
-from sklearn.metrics import roc_curve, auc, confusion_matrix
-from sklearn.calibration import calibration_curve
-from numpyro.infer import SVI, Trace_ELBO, Predictive, MCMC, NUTS
-from numpyro.infer.autoguide import AutoNormal
-from numpyro.contrib.einstein import SteinVI, RBFKernel, MixtureGuidePredictive
-from numpyro.optim import Adam, Adagrad, SGD
-import pickle
 import numpy as np
+import seaborn as sns
+from numpyro.contrib.einstein import MixtureGuidePredictive, RBFKernel, SteinVI
+from numpyro.infer import MCMC, NUTS, SVI, Predictive, Trace_ELBO
+from numpyro.infer.autoguide import AutoNormal
+from numpyro.optim import Adagrad, Adam
+from sklearn.calibration import calibration_curve
+from sklearn.metrics import auc, confusion_matrix, roc_curve
 
 
 class Module:
@@ -456,7 +457,6 @@ class Module:
         pred_classes = np.argmax(pred_mean_probs, axis=-1)
 
         # Compute confusion matrix.
-        from sklearn.metrics import confusion_matrix  # Local import if only needed here
 
         cm = confusion_matrix(y, pred_classes)
 

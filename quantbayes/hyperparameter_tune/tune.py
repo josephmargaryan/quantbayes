@@ -1,15 +1,15 @@
+import catboost as cb
+import lightgbm as lgb
 import numpy as np
 import optuna
-from sklearn.model_selection import cross_val_score, StratifiedKFold, KFold
 
 # Import model libraries
 import xgboost as xgb
-import lightgbm as lgb
-import catboost as cb
 from sklearn.ensemble import (
     HistGradientBoostingClassifier,
     HistGradientBoostingRegressor,
 )
+from sklearn.model_selection import KFold, StratifiedKFold, cross_val_score
 
 __all__ = [
     "XGBClassifierTuner",

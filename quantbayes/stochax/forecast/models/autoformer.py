@@ -1,11 +1,11 @@
+import equinox as eqx
 import jax
+import jax.nn as jnn
 import jax.numpy as jnp
 import jax.random as jr
-import jax.nn as jnn
-import equinox as eqx
-import optax
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
+import optax
 
 
 # --- Batched LayerNorm Wrapper ---

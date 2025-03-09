@@ -1,17 +1,17 @@
+import collections.abc
+import logging
 import math
 import os
-from functools import partial
-from typing import Callable, Optional, List, Tuple, Union, Type
-import logging
-from itertools import repeat
-import collections.abc
 from enum import Enum
+from functools import partial
+from itertools import repeat
+from typing import Callable, List, Optional, Tuple, Type, Union
+
+import numpy as np
 import torch
-from torch.jit import Final
 import torch.nn as nn
 import torch.nn.functional as F
-import numpy as np
-import math
+from torch.jit import Final
 
 try:
     from torch import _assert

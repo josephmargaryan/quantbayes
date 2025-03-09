@@ -1,8 +1,8 @@
+import equinox as eqx
 import jax
+import jax.nn as jnn
 import jax.numpy as jnp
 import jax.random as jr
-import jax.nn as jnn
-import equinox as eqx
 
 
 # -------------------------------------------------------
@@ -108,6 +108,7 @@ class MambaStateSpaceForecast(eqx.Module):
 # -------------------------------------------------------
 if __name__ == "__main__":
     import jax.random as jr
+
     from quantbayes.fake_data import create_synthetic_time_series
     from quantbayes.stochax.forecast import ForecastingModel
 

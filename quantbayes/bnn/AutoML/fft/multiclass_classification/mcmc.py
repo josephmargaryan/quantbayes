@@ -1,14 +1,16 @@
-from quantbayes.bnn.core.base_task import BaseTask
-from quantbayes.bnn.core.base_inference import BaseInference
-from quantbayes.bnn.utils.fft_module import fft_matmul
-from numpyro.infer import MCMC, NUTS, Predictive
 from typing import Callable
+
 import jax
 import jax.numpy as jnp
-import numpyro
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
+import numpyro
 import numpyro.distributions as dist
+from numpyro.infer import MCMC, NUTS, Predictive
+
+from quantbayes.bnn.core.base_inference import BaseInference
+from quantbayes.bnn.core.base_task import BaseTask
+from quantbayes.bnn.utils.fft_module import fft_matmul
 
 
 class FFTMultiClassMCMC(BaseTask, BaseInference):
@@ -208,14 +210,14 @@ class FFTMultiClassMCMC(BaseTask, BaseInference):
 if __name__ == "__main__":
 
     ############# Example Usage #############
+    import jax.numpy as jnp
+    import jax.random as jr
     from bnn.AutoML.fft.multiclass_classification.mcmc import FFTMultiClassMCMC
     from bnn.utils.entropy_analysis import EntropyAndMutualInformation
     from bnn.utils.generalization_bound import BayesianAnalysis
     from fake_data import generate_multiclass_classification_data
-    from sklearn.model_selection import train_test_split
     from sklearn.metrics import log_loss
-    import jax.random as jr
-    import jax.numpy as jnp
+    from sklearn.model_selection import train_test_split
 
     df = generate_multiclass_classification_data()
     X, y = df.drop("target", axis=1), df["target"]

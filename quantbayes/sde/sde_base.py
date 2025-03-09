@@ -1,6 +1,7 @@
+import abc
+
 import numpy as np
 import torch
-import abc
 
 
 class BaseSDE(abc.ABC):

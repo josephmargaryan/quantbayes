@@ -1,10 +1,10 @@
 import jax.numpy as jnp
-from jax import random
-import numpyro
-from numpyro.contrib.control_flow import scan
-import numpyro.distributions as dist
-from numpyro.infer import MCMC, NUTS, Predictive
 import matplotlib.pyplot as plt
+import numpyro
+import numpyro.distributions as dist
+from jax import random
+from numpyro.contrib.control_flow import scan
+from numpyro.infer import MCMC, NUTS, Predictive
 
 
 def sgt_model(y, seasonality, future=0):
@@ -248,8 +248,9 @@ class SGTModel:
 
 
 if __name__ == "__main__":
-    from quantbayes.fake_data import create_synthetic_time_series
     from sklearn.preprocessing import MinMaxScaler
+
+    from quantbayes.fake_data import create_synthetic_time_series
 
     _, _, y_train, y_test = create_synthetic_time_series()
     scaler = MinMaxScaler()

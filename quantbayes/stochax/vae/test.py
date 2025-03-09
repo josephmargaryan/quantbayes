@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-import jax
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 import numpy as np
 
 from quantbayes.stochax.vae.components import (
-    ConvVAE,
-    ResidualVAE,
-    MLP_VAE,
     GRU_VAE,
     LSTM_VAE,
+    MLP_VAE,
+    ConvVAE,
     MultiHeadAttentionVAE,
+    ResidualVAE,
     ViT_VAE,
 )
 

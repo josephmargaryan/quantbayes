@@ -1,2 +1,2 @@
-from .fft import *
 from .dense import *
+from .fft import *

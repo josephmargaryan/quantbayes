@@ -1,8 +1,8 @@
 import jax
 import jax.numpy as jnp
 import jax.random as jr
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
 from numpyro import handlers
 
 __all__ = [

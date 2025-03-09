@@ -1,8 +1,9 @@
 from typing import Tuple
-import jax
-import jax.random as jr
-import jax.numpy as jnp
+
 import equinox as eqx
+import jax
+import jax.numpy as jnp
+import jax.random as jr
 
 
 class ConvBlock(eqx.Module):

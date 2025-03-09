@@ -1,5 +1,5 @@
-import matplotlib.pyplot as plt
 import jax.numpy as jnp
+import matplotlib.pyplot as plt
 
 
 def plot_results(y, samples, T, K):

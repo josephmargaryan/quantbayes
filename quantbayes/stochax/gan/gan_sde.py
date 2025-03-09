@@ -1,5 +1,5 @@
 from typing import Union
-import pandas as pd
+
 import diffrax
 import equinox as eqx  # https://github.com/patrick-kidger/equinox
 import jax
@@ -8,6 +8,7 @@ import jax.numpy as jnp
 import jax.random as jr
 import matplotlib.pyplot as plt
 import optax  # https://github.com/deepmind/optax
+import pandas as pd
 
 
 def lipswish(x):

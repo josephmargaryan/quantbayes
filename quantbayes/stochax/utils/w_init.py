@@ -1,6 +1,6 @@
+import equinox as eqx
 import jax
 import jax.numpy as jnp
-import equinox as eqx
 
 __all__ = [
     "xavier_init",
@@ -84,8 +84,8 @@ def apply_custom_initialization(model, init_fn, key):
 
 # Example usage:
 if __name__ == "__main__":
-    import jax.random as random
     import equinox as eqx
+    import jax.random as random
 
     class MLP(eqx.Module):
         l1: eqx.nn.Linear

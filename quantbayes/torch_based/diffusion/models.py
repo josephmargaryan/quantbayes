@@ -1,10 +1,10 @@
 # diffusion_lib/models.py
+import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import math
 from torch.nn import TransformerEncoder, TransformerEncoderLayer
-
 
 ########################################
 # 2) Vision Transformer for Image Diffusion

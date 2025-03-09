@@ -1,9 +1,10 @@
-import time
-import feedparser
-from bs4 import BeautifulSoup
-import requests
-import pandas as pd
 import logging
+import time
+
+import feedparser
+import pandas as pd
+import requests
+from bs4 import BeautifulSoup
 
 logging.basicConfig(level=logging.INFO)
 

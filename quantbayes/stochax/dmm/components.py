@@ -4,7 +4,6 @@ from typing import Tuple
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-import matplotlib.pyplot as plt
 import numpy as np
 import optax
 

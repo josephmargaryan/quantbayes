@@ -1,9 +1,11 @@
 import math
+
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import numpy as np
-from quantbayes.forecast.nn.base import MonteCarloMixin, BaseModel
+
+from quantbayes.forecast.nn.base import BaseModel, MonteCarloMixin
 
 
 # --------------------------------------------------------------------

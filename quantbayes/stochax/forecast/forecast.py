@@ -1,14 +1,9 @@
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-import optax
+import jax.random as jr
 import matplotlib.pyplot as plt
 import numpy as np
-
-import jax
-import jax.numpy as jnp
-import jax.random as jr
-import equinox as eqx
 import optax
 
 
@@ -200,11 +195,11 @@ class ForecastingModel:
 
 if __name__ == "__main__":
     import jax
-    import jax.random as jr
     import jax.numpy as jnp
+    import jax.random as jr
     import numpy as np
-    from sklearn.model_selection import train_test_split
     from sklearn.metrics import mean_squared_error
+    from sklearn.model_selection import train_test_split
 
     from quantbayes.fake_data import create_synthetic_time_series
 

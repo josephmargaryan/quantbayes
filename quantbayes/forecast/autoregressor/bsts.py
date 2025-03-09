@@ -1,10 +1,10 @@
 import jax.numpy as jnp
-from jax import random, lax
-import numpyro
-from numpyro.contrib.control_flow import scan
-import numpyro.distributions as dist
-from numpyro.infer import MCMC, NUTS, Predictive
 import matplotlib.pyplot as plt
+import numpyro
+import numpyro.distributions as dist
+from jax import lax, random
+from numpyro.contrib.control_flow import scan
+from numpyro.infer import MCMC, NUTS, Predictive
 
 
 def bsts_extended_model(y, seasonality=12, fourier_order=2, future=0):

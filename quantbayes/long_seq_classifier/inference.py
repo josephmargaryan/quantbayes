@@ -1,13 +1,13 @@
-import torch
-from tqdm import tqdm
-from torch.utils.data import DataLoader
 import pickle
-from transformers import AutoTokenizer, AutoModel
-import pandas as pd
-from utils import generate_word_clouds, scatter_plot_sentiments
 
-from model import DocumentClassifier
+import pandas as pd
+import torch
 from dataset import HierarchicalDataset
+from model import DocumentClassifier
+from torch.utils.data import DataLoader
+from tqdm import tqdm
+from transformers import AutoModel, AutoTokenizer
+from utils import generate_word_clouds, scatter_plot_sentiments
 
 
 def inference(

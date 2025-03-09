@@ -1,13 +1,10 @@
-import numpy as np
 import matplotlib.pyplot as plt
-import seaborn as sns
-
-from sklearn.base import clone, BaseEstimator, ClassifierMixin
-from sklearn.model_selection import KFold
-from sklearn.metrics import confusion_matrix, accuracy_score, classification_report
-from sklearn.linear_model import LogisticRegression
+import numpy as np
+from sklearn.base import BaseEstimator, ClassifierMixin, clone
 from sklearn.datasets import make_classification
-from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+from sklearn.model_selection import KFold, train_test_split
 
 
 class EnsembleMulticlass(BaseEstimator, ClassifierMixin):
@@ -262,9 +259,9 @@ class EnsembleMulticlass(BaseEstimator, ClassifierMixin):
 
 # Test the ensemble multiclass classifier when running as the main program.
 if __name__ == "__main__":
-    from sklearn.tree import DecisionTreeClassifier
     from sklearn.ensemble import RandomForestClassifier
     from sklearn.svm import SVC
+    from sklearn.tree import DecisionTreeClassifier
 
     # Generate a synthetic multiclass classification dataset.
     # Here, we create 4 classes.

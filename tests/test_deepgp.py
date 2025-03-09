@@ -1,23 +1,21 @@
-import numpy as np
-import jax.random as jr
 import equinox as eqx
+import jax
+import jax.numpy as jnp
+import jax.random as jr
+import numpy as np
 import numpyro
 import numpyro.distributions as dist
-import jax.numpy as jnp
-import jax
-from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error
+from sklearn.model_selection import train_test_split
 
+from quantbayes import bnn
 from quantbayes.bnn.utils import (
     predict_gp,
-    visualize_predictions,
-    visualize_gp_kernel,
     sample_gp_prior,
+    visualize_gp_kernel,
+    visualize_predictions,
 )
-from quantbayes import bnn
-from quantbayes.stochax.utils import bayesianize, prior_fn
 from quantbayes.fake_data import generate_regression_data
-
 
 df = generate_regression_data()
 X, y = df.drop("target", axis=1), df["target"]

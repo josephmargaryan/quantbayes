@@ -1,10 +1,10 @@
 # regression_script_torch.py
 
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import matplotlib.pyplot as plt
 
 
 # ----------------------------------------------------------------
@@ -177,8 +177,9 @@ def visualize_regressor(model: nn.Module, X: np.ndarray, y: np.ndarray):
 # 4. Example Test
 # ----------------------------------------------------------------
 if __name__ == "__main__":
-    from quantbayes.fake_data import generate_regression_data
     from sklearn.model_selection import train_test_split
+
+    from quantbayes.fake_data import generate_regression_data
 
     df = generate_regression_data(n_categorical=1, n_continuous=2)
 

@@ -1,7 +1,7 @@
-import numpy as np
-import matplotlib.pyplot as plt
 import jax
 import jax.nn
+import matplotlib.pyplot as plt
+import numpy as np
 
 __all__ = ["visualize_uncertainty_multiclass", "visualize_uncertainty_binary"]
 

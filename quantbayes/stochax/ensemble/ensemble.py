@@ -1,4 +1,5 @@
 import copy
+
 import numpy as np
 from sklearn.model_selection import KFold
 
@@ -196,8 +197,8 @@ class EnsembleBinary:
         preds = self.predict(X, **viz_kwargs)
         # Convert raw logits to probabilities via sigmoid.
         probs = 1 / (1 + np.exp(-preds))
-        from sklearn.metrics import roc_curve, auc, calibration_curve
         import matplotlib.pyplot as plt
+        from sklearn.metrics import auc, calibration_curve, roc_curve
 
         fpr, tpr, _ = roc_curve(y, probs)
         roc_auc = auc(fpr, tpr)
@@ -368,9 +369,9 @@ class EnsembleMulticlass:
         preds = self.predict(X, **viz_kwargs)
         # Get predicted class labels.
         pred_classes = np.argmax(preds, axis=-1)
-        from sklearn.metrics import confusion_matrix
-        import seaborn as sns
         import matplotlib.pyplot as plt
+        import seaborn as sns
+        from sklearn.metrics import confusion_matrix
 
         cm = confusion_matrix(y, pred_classes)
         fig, axs = plt.subplots(1, 2, figsize=(14, 6))

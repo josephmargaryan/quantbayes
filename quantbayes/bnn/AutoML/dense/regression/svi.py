@@ -1,16 +1,18 @@
-from quantbayes.bnn.core.base_task import BaseTask
-from quantbayes.bnn.core.base_inference import BaseInference
 from typing import Callable
+
 import jax
 import jax.numpy as jnp
-import numpyro
-import numpy as np
-import matplotlib.pyplot as plt
-from numpyro.optim import Adam
-from numpyro.infer import SVI, Trace_ELBO, Predictive, autoguide
 import jax.random as jr
-from jax import random
+import matplotlib.pyplot as plt
+import numpy as np
+import numpyro
 import numpyro.distributions as dist
+from jax import random
+from numpyro.infer import SVI, Predictive, Trace_ELBO, autoguide
+from numpyro.optim import Adam
+
+from quantbayes.bnn.core.base_inference import BaseInference
+from quantbayes.bnn.core.base_task import BaseTask
 
 
 class DenseRegressionSVI(BaseTask, BaseInference):
@@ -199,13 +201,13 @@ class DenseRegressionSVI(BaseTask, BaseInference):
 if __name__ == "__main__":
 
     ############# Example Usage #############
-    from bnn.AutoML.dense.regression.svi import DenseRegressionSVI
-    from bnn.utils.entropy_analysis import EntropyAndMutualInformation, BayesianAnalysis
-    from fake_data import generate_regression_data
-    from sklearn.model_selection import train_test_split
-    from sklearn.metrics import mean_absolute_error
-    import jax.random as jr
     import jax.numpy as jnp
+    import jax.random as jr
+    from bnn.AutoML.dense.regression.svi import DenseRegressionSVI
+    from bnn.utils.entropy_analysis import BayesianAnalysis, EntropyAndMutualInformation
+    from fake_data import generate_regression_data
+    from sklearn.metrics import mean_absolute_error
+    from sklearn.model_selection import train_test_split
 
     df = generate_regression_data()
     X, y = df.drop("target", axis=1), df["target"]

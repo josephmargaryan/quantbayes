@@ -1,5 +1,6 @@
-import fitz  # PyMuPDF
 import re
+
+import fitz  # PyMuPDF
 
 """
 pdffonts "Joseph - Font Test - MC-US-10336-External-Flu- RSV RUO deck (1).pdf"

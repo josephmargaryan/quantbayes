@@ -1,10 +1,11 @@
+import random
+from collections import deque
+
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from collections import deque
-import random
-import matplotlib.pyplot as plt
 
 
 # Environment for Portfolio Management

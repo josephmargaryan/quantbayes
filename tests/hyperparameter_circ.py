@@ -1,14 +1,16 @@
 import time
-import numpy as np
+
 import jax
 import jax.numpy as jnp
 import jax.random as jr
-from quantbayes import bnn
+import numpy as np
 import numpyro
 import numpyro.distributions as dist
 from sklearn.metrics import mean_squared_error
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
+
+from quantbayes import bnn
 from quantbayes.fake_data import generate_regression_data
 
 # Generate synthetic regression data

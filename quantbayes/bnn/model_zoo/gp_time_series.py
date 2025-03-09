@@ -1,9 +1,10 @@
-from quantbayes.bnn import Module
-from quantbayes.bnn.layers import GaussianProcessLayer
 import jax
 import jax.numpy as jnp
 import numpyro
 import numpyro.distributions as dist
+
+from quantbayes.bnn import Module
+from quantbayes.bnn.layers import GaussianProcessLayer
 
 
 class GaussianProcessTimeSeries(Module):

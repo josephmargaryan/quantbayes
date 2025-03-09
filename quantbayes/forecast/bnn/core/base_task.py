@@ -1,6 +1,5 @@
 import abc
-from typing import Any, Union, Tuple, Callable
-import jax.numpy as jnp
+from typing import Callable
 
 
 class BaseTask(abc.ABC):

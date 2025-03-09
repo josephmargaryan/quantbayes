@@ -1,11 +1,11 @@
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
 import logging
 from datetime import datetime
-from typing import Optional, List, Tuple, Union, Dict
+from typing import Dict, List, Optional, Tuple, Union
 
-from sklearn.preprocessing import StandardScaler, MinMaxScaler, OneHotEncoder
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from sklearn.preprocessing import MinMaxScaler, OneHotEncoder, StandardScaler
 
 
 class TimeSeriesPreprocessor:
@@ -523,8 +523,8 @@ if __name__ == "__main__":
 
 
 def test_preprocessor():
-    import pandas as pd
     import numpy as np
+    import pandas as pd
     from sklearn.preprocessing import StandardScaler
 
     # Create a small synthetic dataset

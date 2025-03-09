@@ -1,25 +1,25 @@
 # score_diffusion/tests/test_image_diffusion.py
 
-import jax
-import jax.random as jr
-import jax.numpy as jnp
-import matplotlib.pyplot as plt
 import einops
+import jax
+import jax.numpy as jnp
+import jax.random as jr
+import matplotlib.pyplot as plt
 
 from quantbayes.stochax.diffusion.config import ImageConfig
 from quantbayes.stochax.diffusion.dataloaders import (
-    generate_synthetic_image_dataset,
     dataloader,
+    generate_synthetic_image_dataset,
 )
-from quantbayes.stochax.diffusion.sde import (
-    int_beta_linear,
-    weight_fn,
-    single_sample_fn,
-)
-from quantbayes.stochax.diffusion.trainer import train_model
-from quantbayes.stochax.diffusion.models.unet_2d import UNet
 from quantbayes.stochax.diffusion.models.mixer_2d import Mixer2d
 from quantbayes.stochax.diffusion.models.transformer_2d import DiffusionTransformer2D
+from quantbayes.stochax.diffusion.models.unet_2d import UNet
+from quantbayes.stochax.diffusion.sde import (
+    int_beta_linear,
+    single_sample_fn,
+    weight_fn,
+)
+from quantbayes.stochax.diffusion.trainer import train_model
 
 
 def test_mixer2d_image_diffusion():

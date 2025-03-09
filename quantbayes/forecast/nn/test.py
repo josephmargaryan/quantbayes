@@ -1,14 +1,10 @@
-import torch
 import numpy as np
+import torch
 from torch.utils.data import DataLoader, TensorDataset
-from quantbayes.forecast.nn.base import (
-    TimeSeriesTrainer,
-    Visualizer,
-)
-from quantbayes.forecast.nn.models import *
-from quantbayes.fake_data import create_synthetic_time_series
-from quantbayes.forecast.nn.models.n_beats import NBeats
 
+from quantbayes.fake_data import create_synthetic_time_series
+from quantbayes.forecast.nn.base import TimeSeriesTrainer, Visualizer
+from quantbayes.forecast.nn.models import *
 
 X_train, X_val, y_train, y_val = create_synthetic_time_series()
 X_train, X_val, y_train, y_val = (

@@ -1,10 +1,11 @@
-import umap.umap_ as umap
-from utils import get_document_representations
+import logging
+import pickle
+
 import matplotlib.pyplot as plt
 import seaborn as sns
 import torch
-import logging
-import pickle
+import umap.umap_ as umap
+from utils import get_document_representations
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -67,7 +68,6 @@ def plot_embeddings_3d(
     - save_path: File path to save the plot.
     """
     decoded_labels = label_encoder.inverse_transform(labels)
-    from mpl_toolkits.mplot3d import Axes3D
 
     fig = plt.figure(figsize=(12, 10))
     ax = fig.add_subplot(111, projection="3d")

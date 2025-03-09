@@ -1,8 +1,9 @@
+from typing import Tuple
+
+import equinox as eqx
 import jax
 import jax.numpy as jnp
-import equinox as eqx
 import jax.random as jr
-from typing import Tuple
 
 
 # --- A simple spectral 2D convolution using FFT ---

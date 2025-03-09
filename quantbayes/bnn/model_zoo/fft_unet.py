@@ -1,8 +1,9 @@
-from quantbayes.bnn import *
+import jax
 import jax.numpy as jnp
 import numpyro
 import numpyro.distributions as dist
-import jax
+
+from quantbayes.bnn import *
 
 
 class FFTUnet(Module):

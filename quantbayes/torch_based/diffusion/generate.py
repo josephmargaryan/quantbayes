@@ -1,8 +1,9 @@
 # diffusion_lib/generate.py
 
-import torch
 import matplotlib.pyplot as plt
 import numpy as np
+import torch
+
 from quantbayes.torch_based.diffusion import GaussianDiffusion
 
 

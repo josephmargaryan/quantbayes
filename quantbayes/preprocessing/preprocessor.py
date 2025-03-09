@@ -1,13 +1,13 @@
+import logging
+from typing import Dict, List, Optional, Tuple, Union
+
 import numpy as np
 import pandas as pd
-import logging
-from typing import Optional, List, Dict, Tuple, Union
-
 from sklearn.preprocessing import (
-    StandardScaler,
-    MinMaxScaler,
     LabelEncoder,
+    MinMaxScaler,
     OneHotEncoder,
+    StandardScaler,
 )
 
 

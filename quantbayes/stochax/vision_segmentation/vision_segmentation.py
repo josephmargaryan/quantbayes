@@ -1,11 +1,12 @@
 import pickle
-import numpy as np
-import optax
+
+import equinox as eqx
 import jax
+import jax.numpy as jnp
 import jax.random as jr
 import matplotlib.pyplot as plt
-import jax.numpy as jnp
-import equinox as eqx
+import numpy as np
+import optax
 
 
 class SegmentationModel:

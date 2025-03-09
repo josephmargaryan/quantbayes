@@ -1,3 +1,4 @@
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jr
@@ -5,12 +6,11 @@ import numpy as np
 from scipy.optimize import minimize
 from scipy.special import expit  # Sigmoid function
 from sklearn.isotonic import IsotonicRegression
-
-from quantbayes.stochax.tabular import BinaryModel
-import equinox as eqx
 from sklearn.model_selection import train_test_split
+
+from quantbayes.bnn.utils import expected_calibration_error, plot_calibration_curve
 from quantbayes.fake_data import generate_binary_classification_data
-from quantbayes.bnn.utils import plot_calibration_curve, expected_calibration_error
+from quantbayes.stochax.tabular import BinaryModel
 
 
 class CalibratedClassifier:

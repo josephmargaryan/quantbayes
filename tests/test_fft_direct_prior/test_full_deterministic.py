@@ -1,14 +1,12 @@
-import jax
-import jax.random as jr
-import jax.numpy as jnp
 import equinox as eqx
+import jax
+import jax.numpy as jnp
+import jax.random as jr
+
+from quantbayes.stochax.layers import FFTDirectPriorLinear
 
 # Import your FFT layer and visualization functions.
-from quantbayes.stochax.utils import (
-    plot_fft_spectrum,
-    visualize_circulant_kernel,
-)
-from quantbayes.stochax.layers import FFTDirectPriorLinear
+from quantbayes.stochax.utils import plot_fft_spectrum, visualize_circulant_kernel
 
 
 # Define a simple deterministic network that uses the FFT layer.

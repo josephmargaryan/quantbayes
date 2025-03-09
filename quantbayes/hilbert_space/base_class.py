@@ -1,5 +1,6 @@
 import abc
-from typing import Optional, Union, Tuple
+from typing import Tuple, Union
+
 import jax.numpy as jnp
 
 

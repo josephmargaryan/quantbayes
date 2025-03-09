@@ -1,12 +1,11 @@
 import jax
-import jax.random as jr
 import jax.numpy as jnp
+import jax.random as jr
 import numpyro
 import numpyro.distributions as dist
 from sklearn.model_selection import train_test_split
 
-from quantbayes import bnn
-from quantbayes import fake_data
+from quantbayes import bnn, fake_data
 from quantbayes.bnn.utils import BayesianAnalysis
 from quantbayes.stochax.utils import (
     get_fft_full_for_given_params,

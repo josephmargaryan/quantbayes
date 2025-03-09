@@ -1,8 +1,9 @@
 import logging
-import numpy as np
-from sklearn.model_selection import TimeSeriesSplit
-from sklearn.metrics import mean_squared_error
+
 import matplotlib.pyplot as plt
+import numpy as np
+from sklearn.metrics import mean_squared_error
+from sklearn.model_selection import TimeSeriesSplit
 from tqdm import tqdm
 
 logging.basicConfig(

@@ -1,5 +1,5 @@
-from torch import nn
 import torch
+from torch import nn
 
 from quantbayes.sde.neural_sde_base import NeuralSDE
 

@@ -1,6 +1,6 @@
-import numpy as np
-import matplotlib.pyplot as plt
 import arviz as az
+import matplotlib.pyplot as plt
+import numpy as np
 
 
 def plot_hdi(

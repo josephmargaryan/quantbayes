@@ -1,10 +1,11 @@
+import ast
+
+import matplotlib.pyplot as plt
+import pandas as pd
+import plotly.express as px
 import torch
 from tqdm import tqdm
-import matplotlib.pyplot as plt
-import plotly.express as px
-import pandas as pd
 from wordcloud import WordCloud
-import ast
 
 
 def apply_pooling(cls_embeddings, pooling_strategy="mean"):

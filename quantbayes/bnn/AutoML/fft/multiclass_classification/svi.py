@@ -1,16 +1,18 @@
-from quantbayes.bnn.core.base_task import BaseTask
-from quantbayes.bnn.core.base_inference import BaseInference
-from quantbayes.bnn.utils.fft_module import fft_matmul
 from typing import Callable
+
 import jax
 import jax.numpy as jnp
-import numpyro
-import numpy as np
 import matplotlib.pyplot as plt
-from numpyro.optim import Adam
-from numpyro.infer import SVI, Trace_ELBO, Predictive, autoguide
-from jax import random
+import numpy as np
+import numpyro
 import numpyro.distributions as dist
+from jax import random
+from numpyro.infer import SVI, Predictive, Trace_ELBO, autoguide
+from numpyro.optim import Adam
+
+from quantbayes.bnn.core.base_inference import BaseInference
+from quantbayes.bnn.core.base_task import BaseTask
+from quantbayes.bnn.utils.fft_module import fft_matmul
 
 
 class FFTMultiClassSVI(BaseTask, BaseInference):
@@ -232,13 +234,13 @@ class FFTMultiClassSVI(BaseTask, BaseInference):
 if __name__ == "__main__":
 
     ############# Example Usage #############
-    from bnn.AutoML.fft.multiclass_classification.svi import FFTMultiClassSVI
-    from bnn.utils.entropy_analysis import EntropyAndMutualInformation, BayesianAnalysis
-    from fake_data import generate_multiclass_classification_data
-    from sklearn.model_selection import train_test_split
-    from sklearn.metrics import log_loss
-    import jax.random as jr
     import jax.numpy as jnp
+    import jax.random as jr
+    from bnn.AutoML.fft.multiclass_classification.svi import FFTMultiClassSVI
+    from bnn.utils.entropy_analysis import BayesianAnalysis, EntropyAndMutualInformation
+    from fake_data import generate_multiclass_classification_data
+    from sklearn.metrics import log_loss
+    from sklearn.model_selection import train_test_split
 
     df = generate_multiclass_classification_data(n_classes=3)
     X, y = df.drop("target", axis=1), df["target"]

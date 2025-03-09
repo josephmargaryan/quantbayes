@@ -4,9 +4,9 @@ import jax.random as jr
 
 from quantbayes.stochax.layers import SmoothTruncEquinoxCirculant
 from quantbayes.stochax.utils import (
+    compare_time_domain_truncation,
     plot_fft_spectrum,
     visualize_circulant_kernel,
-    compare_time_domain_truncation,
 )
 
 if __name__ == "__main__":

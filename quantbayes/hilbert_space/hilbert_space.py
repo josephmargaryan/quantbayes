@@ -1,10 +1,9 @@
 import jax.numpy as jnp
-from jax import random
+import matplotlib.pyplot as plt
 import numpyro
 import numpyro.distributions as dist
+from jax import random
 from numpyro.infer import MCMC, NUTS, Predictive
-from numpyro.contrib.control_flow import scan
-import matplotlib.pyplot as plt
 
 
 # --- Utility Functions ---

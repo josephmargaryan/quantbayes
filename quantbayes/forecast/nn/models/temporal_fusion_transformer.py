@@ -1,7 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from quantbayes.forecast.nn.base import MonteCarloMixin, BaseModel
+
+from quantbayes.forecast.nn.base import BaseModel, MonteCarloMixin
 
 # -----------------------------------------------------------------------------
 # 1. Basic Building Blocks

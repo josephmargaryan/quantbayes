@@ -1,8 +1,19 @@
 import torch
 
+
 class Trainer:
-    def __init__(self, model, loss_fn, optimizer, scheduler=None, device="cpu",
-                 metrics=None, grad_clip=None, amp=False, callbacks=None):
+    def __init__(
+        self,
+        model,
+        loss_fn,
+        optimizer,
+        scheduler=None,
+        device="cpu",
+        metrics=None,
+        grad_clip=None,
+        amp=False,
+        callbacks=None,
+    ):
         self.model = model.to(device)
         self.loss_fn = loss_fn
         self.optimizer = optimizer
@@ -33,13 +44,17 @@ class Trainer:
             if self.amp:
                 self.scaler.scale(loss).backward()
                 if self.grad_clip:
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)
+                    torch.nn.utils.clip_grad_norm_(
+                        self.model.parameters(), self.grad_clip
+                    )
                 self.scaler.step(self.optimizer)
                 self.scaler.update()
             else:
                 loss.backward()
                 if self.grad_clip:
-                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)
+                    torch.nn.utils.clip_grad_norm_(
+                        self.model.parameters(), self.grad_clip
+                    )
                 self.optimizer.step()
             # Optionally update metrics here or via a callback
 
@@ -60,7 +75,7 @@ class Trainer:
             for batch in dataloader:
                 x, y = [b.to(self.device) for b in batch]
                 if self.amp:
-                    with torch.amp.autocast('cuda'):
+                    with torch.amp.autocast("cuda"):
                         output = self.model(x)
                 else:
                     output = self.model(x)
@@ -80,7 +95,9 @@ class Trainer:
         for epoch in range(num_epochs):
             train_loss = self.train_epoch(train_loader)
             val_loss = self.evaluate(val_loader)
-            print(f"Epoch {epoch+1}: Train Loss={train_loss:.3f}, Val Loss={val_loss:.3f}")
+            print(
+                f"Epoch {epoch+1}: Train Loss={train_loss:.3f}, Val Loss={val_loss:.3f}"
+            )
 
             # Early stopping check
             if val_loss < best_val_loss:
@@ -89,7 +106,10 @@ class Trainer:
                 # Save best model state, e.g. self.best_model = deepcopy(self.model.state_dict())
             else:
                 epochs_no_improve += 1
-                if early_stopping_patience and epochs_no_improve >= early_stopping_patience:
+                if (
+                    early_stopping_patience
+                    and epochs_no_improve >= early_stopping_patience
+                ):
                     print(f"Early stopping triggered at epoch {epoch+1}")
                     break
 
@@ -97,19 +117,19 @@ class Trainer:
 
         return self.model
 
+
 if __name__ == "__main__":
     import torch
     import torch.nn as nn
     import torch.optim as optim
     from torch.utils.data import DataLoader, TensorDataset
 
-
     # Define a simple linear model
     class SimpleModel(nn.Module):
         def __init__(self, input_size, output_size):
             super(SimpleModel, self).__init__()
             self.linear = nn.Linear(input_size, output_size)
-        
+
         def forward(self, x):
             return self.linear(x)
 
@@ -130,11 +150,13 @@ if __name__ == "__main__":
     optimizer = optim.Adam(model.parameters(), lr=1e-3)
 
     # Create the Trainer instance
-    trainer = Trainer(model=model,
-                    loss_fn=loss_fn,
-                    optimizer=optimizer,
-                    device=torch.device("cpu"),  # Change to "cuda" if available
-                    amp=False)
+    trainer = Trainer(
+        model=model,
+        loss_fn=loss_fn,
+        optimizer=optimizer,
+        device=torch.device("cpu"),  # Change to "cuda" if available
+        amp=False,
+    )
 
     # Train the model using the Trainer
     trainer.train(train_loader, val_loader, num_epochs=5, early_stopping_patience=3)

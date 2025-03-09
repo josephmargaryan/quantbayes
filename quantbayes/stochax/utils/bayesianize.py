@@ -1,8 +1,8 @@
-import jax.numpy as jnp
-from jax import tree_util
 import equinox as eqx
+import jax.numpy as jnp
 import numpyro
 import numpyro.distributions as dist
+from jax import tree_util
 
 __all__ = ["bayesianize", "prior_fn"]
 

@@ -1,7 +1,8 @@
+from typing import Callable, Sequence
+
+import equinox as eqx
 import jax
 import jax.numpy as jnp
-import equinox as eqx
-from typing import Callable, Sequence
 import jax.random as jr
 
 

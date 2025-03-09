@@ -1,8 +1,8 @@
-import numpy as np
-import matplotlib.pyplot as plt
 import jax
-import jax.numpy as jnp
 import jax.nn
+import jax.numpy as jnp
+import matplotlib.pyplot as plt
+import numpy as np
 
 
 def analyze_pre_activations(X_pre):
@@ -146,8 +146,6 @@ if __name__ == "__main__":
     from quantbayes import bnn
     from quantbayes.fake_data import (
         generate_multiclass_classification_data,
-        generate_binary_classification_data,
-        generate_regression_data,
     )
 
     df = generate_multiclass_classification_data(n_categorical=2, n_continuous=2)

@@ -1,15 +1,15 @@
-import jax.numpy as jnp
-from jax import random, pure_callback
 from collections import defaultdict
-import numpy as np
+
+import jax.numpy as jnp
 import matplotlib.pyplot as plt
-from numpyro import sample, handlers
-from numpyro.infer import SVI, TraceEnum_ELBO, init_to_value, MCMC, NUTS
-from numpyro.contrib.funsor import config_enumerate, infer_discrete
-from numpyro.infer.autoguide import AutoDelta
-from numpyro.distributions import Dirichlet, LogNormal, Normal, Categorical, constraints
 import optax
 import scipy.stats
+from jax import pure_callback, random
+from numpyro import handlers, sample
+from numpyro.contrib.funsor import config_enumerate, infer_discrete
+from numpyro.distributions import Categorical, Dirichlet, LogNormal, Normal
+from numpyro.infer import MCMC, NUTS, SVI, TraceEnum_ELBO, init_to_value
+from numpyro.infer.autoguide import AutoDelta
 
 
 class GaussianMixtureModel:

@@ -1,19 +1,18 @@
 import jax
-import numpy as np
-import jax.random as jr
 import jax.numpy as jnp
+import jax.random as jr
+import numpy as np
 import numpyro
 import numpyro.distributions as dist
-from quantbayes import bnn
+from kaggle.test import X_test, X_train, y_test, y_train
 from sklearn.metrics import log_loss
 
-from kaggle.test import X_train, X_test, y_train, y_test
+from quantbayes import bnn
 from quantbayes.bnn.utils import (
     expected_calibration_error,
     plot_calibration_curve,
     plot_roc_curve,
 )
-
 
 X_train, X_test, y_train, y_test = (
     jnp.array(X_train),

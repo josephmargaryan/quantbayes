@@ -1,24 +1,24 @@
 # score_diffusion/tests/test_time_series_diffusion.py
 
-import jax
 import equinox as eqx
-import jax.random as jr
+import jax
 import jax.numpy as jnp
+import jax.random as jr
 import matplotlib.pyplot as plt
 
 from quantbayes.stochax.diffusion import TimeSeriesConfig
 from quantbayes.stochax.diffusion.dataloaders import (
-    generate_synthetic_time_series,
     dataloader,
+    generate_synthetic_time_series,
 )
-from quantbayes.stochax.diffusion.sde import (
-    int_beta_linear,
-    weight_fn,
-    single_sample_fn,
-)
-from quantbayes.stochax.diffusion.trainer import train_model
 from quantbayes.stochax.diffusion.models.times_series_1d import ConvTimeUNet
 from quantbayes.stochax.diffusion.models.transformer_1d import DiffusionTransformer1D
+from quantbayes.stochax.diffusion.sde import (
+    int_beta_linear,
+    single_sample_fn,
+    weight_fn,
+)
+from quantbayes.stochax.diffusion.trainer import train_model
 
 
 def test_conv_time_unet_diffusion():

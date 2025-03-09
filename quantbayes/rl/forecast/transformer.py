@@ -1,9 +1,9 @@
+import matplotlib.pyplot as plt
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.distributions import Categorical
-import numpy as np
-import matplotlib.pyplot as plt
 
 
 # Transformer-based time series model

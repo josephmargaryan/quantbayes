@@ -1,10 +1,10 @@
+import equinox as eqx
 import jax
 import jax.numpy as jnp
-import equinox as eqx
 import jax.random as jr
 from jaxtyping import PRNGKeyArray
 
-from quantbayes.stochax.forecast.models.temporal_fusion import LSTMEncoder, GatingModule
+from quantbayes.stochax.forecast.models.temporal_fusion import GatingModule, LSTMEncoder
 
 
 # --- Minimal Spectral Multihead Attention ---
@@ -149,6 +149,7 @@ class SpectralTemporalFusionTransformer(eqx.Module):
 
 if __name__ == "__main__":
     import jax.random as jr
+
     from quantbayes.fake_data import create_synthetic_time_series
     from quantbayes.stochax.forecast import ForecastingModel
 

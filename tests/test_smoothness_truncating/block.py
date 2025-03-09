@@ -4,18 +4,17 @@ import numpyro
 import numpyro.distributions as dist
 
 from quantbayes.stochax.utils import (
+    get_block_fft_full_for_given_params,
     plot_block_fft_spectra,
     visualize_block_circulant_kernels,
-    get_block_fft_full_for_given_params,
 )
-
 
 if __name__ == "__main__":
     import jax.random as jr
 
     from quantbayes import bnn
-    from quantbayes.fake_data import generate_regression_data
     from quantbayes.bnn.utils import plot_hdi
+    from quantbayes.fake_data import generate_regression_data
 
     df = generate_regression_data()
     X, y = df.drop("target", axis=1), df["target"]

@@ -1,7 +1,7 @@
 import jax.numpy as jnp
 import numpyro
-from numpyro.contrib.control_flow import scan
 import numpyro.distributions as dist
+from numpyro.contrib.control_flow import scan
 
 
 def var2_scan(y):

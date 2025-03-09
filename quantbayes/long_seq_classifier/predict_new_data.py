@@ -1,17 +1,18 @@
-import torch
-from transformers import AutoTokenizer, AutoModel
-import pandas as pd
 import pickle
-from utils import (
-    plot_sentiment_distribution,
-    plot_average_logits_heatmap,
-    plot_sentiment_polarity,
-    generate_wordclouds,
-)
-from model import DocumentClassifier
+
+import pandas as pd
+import torch
 from dataset import HierarchicalDataset
-from tqdm import tqdm
+from model import DocumentClassifier
 from torch.utils.data import DataLoader
+from tqdm import tqdm
+from transformers import AutoModel, AutoTokenizer
+from utils import (
+    generate_wordclouds,
+    plot_average_logits_heatmap,
+    plot_sentiment_distribution,
+    plot_sentiment_polarity,
+)
 
 
 def inference(

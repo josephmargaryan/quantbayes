@@ -1,13 +1,11 @@
+import equinox as eqx
 import jax.numpy as jnp
 import jax.random as jr
+import matplotlib.pyplot as plt
 import numpy as np
-import equinox as eqx
-
 import numpyro
 import numpyro.distributions as dist
 from numpyro.infer import MCMC, NUTS, Predictive
-
-import matplotlib.pyplot as plt
 
 
 # --------------------------------------------------------------------------------

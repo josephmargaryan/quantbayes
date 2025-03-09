@@ -1,17 +1,19 @@
-from quantbayes.bnn.core.base_task import BaseTask
-from quantbayes.bnn.core.base_inference import BaseInference
-from quantbayes.bnn.utils.fft_module import fft_matmul
-from numpyro.contrib.einstein import SteinVI, RBFKernel, MixtureGuidePredictive
-from numpyro.optim import Adam, Adagrad, SGD
-from numpyro.infer.autoguide import AutoNormal
 from typing import Callable
-import jax.random as jr
+
 import jax
 import jax.numpy as jnp
-import numpyro
-import numpy as np
+import jax.random as jr
 import matplotlib.pyplot as plt
+import numpy as np
+import numpyro
 import numpyro.distributions as dist
+from numpyro.contrib.einstein import MixtureGuidePredictive, RBFKernel, SteinVI
+from numpyro.infer.autoguide import AutoNormal
+from numpyro.optim import Adagrad
+
+from quantbayes.bnn.core.base_inference import BaseInference
+from quantbayes.bnn.core.base_task import BaseTask
+from quantbayes.bnn.utils.fft_module import fft_matmul
 
 
 class FFTRegressionSteinVI(BaseTask, BaseInference):
@@ -249,14 +251,14 @@ class FFTRegressionSteinVI(BaseTask, BaseInference):
 if __name__ == "__main__":
 
     ############# Example Usage #############
-    from bnn.AutoML.fft.regression.stein_vi import FFTRegressionSteinVI
-    from bnn.utils.entropy_analysis import EntropyAndMutualInformation, BayesianAnalysis
-    from fake_data import generate_regression_data
-    from sklearn.model_selection import train_test_split
-    from sklearn.metrics import mean_absolute_error
-    from sklearn.preprocessing import MinMaxScaler, StandardScaler
-    import jax.random as jr
     import jax.numpy as jnp
+    import jax.random as jr
+    from bnn.AutoML.fft.regression.stein_vi import FFTRegressionSteinVI
+    from bnn.utils.entropy_analysis import BayesianAnalysis, EntropyAndMutualInformation
+    from fake_data import generate_regression_data
+    from sklearn.metrics import mean_absolute_error
+    from sklearn.model_selection import train_test_split
+    from sklearn.preprocessing import MinMaxScaler, StandardScaler
 
     target_scaler = MinMaxScaler()
     feature_scaler = StandardScaler()

@@ -1,21 +1,20 @@
+import jax
+import jax.numpy as jnp
 import numpy as np
 import numpyro
 import numpyro.distributions as dist
-import jax.numpy as jnp
-import jax
-from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error
+from sklearn.model_selection import train_test_split
 
+from quantbayes import bnn
 from quantbayes.bnn.utils import (
     predict_gp,
-    visualize_predictions,
-    visualize_gp_kernel,
     sample_gp_prior,
+    visualize_gp_kernel,
+    visualize_predictions,
 )
-from quantbayes.stochax.utils import visualize_circulant_layer, analyze_pre_activations
-from quantbayes import bnn
 from quantbayes.fake_data import generate_regression_data
-
+from quantbayes.stochax.utils import analyze_pre_activations, visualize_circulant_layer
 
 df = generate_regression_data()
 X, y = df.drop("target", axis=1), df["target"]
@@ -117,12 +116,15 @@ conv_matrix = analyze_pre_activations(model, X)
 
 ############### Scikit-Learn ##################
 
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
 from sklearn.gaussian_process import GaussianProcessRegressor
-from sklearn.gaussian_process.kernels import RBF, ConstantKernel as C, WhiteKernel
-from sklearn.model_selection import train_test_split
+from sklearn.gaussian_process.kernels import RBF
+from sklearn.gaussian_process.kernels import ConstantKernel as C
+from sklearn.gaussian_process.kernels import WhiteKernel
 from sklearn.metrics import mean_squared_error
+from sklearn.model_selection import train_test_split
+
 from quantbayes.fake_data import generate_regression_data
 
 # Generate synthetic regression data

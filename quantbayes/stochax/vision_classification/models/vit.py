@@ -1,9 +1,9 @@
+import einops
+import equinox as eqx
 import jax
 import jax.numpy as jnp
-import equinox as eqx
 import jax.random as jr
 from jaxtyping import Array, Float, PRNGKeyArray
-import einops
 
 
 # -------------------------------------------------------------------

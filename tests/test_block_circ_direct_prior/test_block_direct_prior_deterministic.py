@@ -1,6 +1,6 @@
+import equinox as eqx
 import jax
 import jax.random as jr
-import equinox as eqx
 
 # Import your FFT layer and visualization functions.
 from quantbayes.stochax.utils import (

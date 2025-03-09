@@ -1,10 +1,13 @@
-import torch
-from torch.utils.data import DataLoader, Dataset, random_split
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
-from transformers import get_scheduler
-import torch.nn as nn
-from tqdm import tqdm
 import pandas as pd
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader, Dataset, random_split
+from tqdm import tqdm
+from transformers import (
+    AutoModelForSequenceClassification,
+    AutoTokenizer,
+    get_scheduler,
+)
 
 # Hyperparameters
 MODEL_NAME = "bert-base-uncased"

@@ -1,29 +1,14 @@
 import math
-from functools import partial
 from collections import namedtuple
+from functools import partial, wraps
 
 import torch
-from torch import nn, einsum
 import torch.nn.functional as F
-from torch.nn import Module, ModuleList
-
 from einops import rearrange, repeat
 from einops.layers.torch import Rearrange
-
-from functools import wraps
 from packaging import version
-from collections import namedtuple
-
-import math
-from math import sqrt, ceil
-from functools import partial
-
-import torch
-from torch import nn, einsum
+from torch import einsum, nn
 from torch.nn import Module, ModuleList
-import torch.nn.functional as F
-
-from einops import rearrange, repeat
 
 AttentionConfig = namedtuple(
     "AttentionConfig", ["enable_flash", "enable_math", "enable_mem_efficient"]
@@ -129,7 +114,7 @@ class Attend(nn.Module):
 
         # similarity
 
-        sim = einsum(f"b h i d, b h j d -> b h i j", q, k) * scale
+        sim = einsum("b h i d, b h j d -> b h i j", q, k) * scale
 
         # attention
 
@@ -138,7 +123,7 @@ class Attend(nn.Module):
 
         # aggregate values
 
-        out = einsum(f"b h i j, b h j d -> b h i d", attn, v)
+        out = einsum("b h i j, b h j d -> b h i d", attn, v)
 
         return out
 

@@ -1,9 +1,9 @@
-import jax
+from typing import Optional
+
 import jax.numpy as jnp
 import numpyro
 import numpyro.distributions as dist
-from quantbayes.bnn import Module
-from typing import Optional
+
 from quantbayes.bnn import Module, PositionalEncoding, TransformerEncoder
 
 

@@ -1,12 +1,14 @@
 # diffusion_lib/train.py
 
+import logging
 import os
+from time import time
+
 import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader
-import logging
-from time import time
-from quantbayes.torch_based.diffusion import GaussianDiffusion, BetaSchedule
+
+from quantbayes.torch_based.diffusion import GaussianDiffusion
 
 
 # Simple EMA update function (for one GPU)

@@ -1,7 +1,8 @@
 # score_diffusion/models/unet_2d.py
 
-from typing import Union, Callable, Optional
 import math
+from typing import Callable, Optional, Union
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp

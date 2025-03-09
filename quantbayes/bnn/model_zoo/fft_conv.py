@@ -1,5 +1,6 @@
-from quantbayes.bnn.layers import FFTConv1d, Linear
 import jax.numpy as jnp
+
+from quantbayes.bnn.layers import FFTConv1d, Linear
 
 
 class FFTConv1DModel:

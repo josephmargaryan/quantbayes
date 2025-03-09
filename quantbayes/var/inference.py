@@ -1,7 +1,8 @@
+import os
+import time
+
 import numpyro
 import numpyro.infer
-import time
-import os
 
 
 def run_inference(model, y, args, rng_key):

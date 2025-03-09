@@ -1,8 +1,9 @@
-from quantbayes.bnn.layers import MultiHeadSelfAttention, Linear, Module
 import jax
 import jax.numpy as jnp
 import numpyro
 import numpyro.distributions as dist
+
+from quantbayes.bnn.layers import Linear, Module, MultiHeadSelfAttention
 
 
 class BayesianTransformer(Module):

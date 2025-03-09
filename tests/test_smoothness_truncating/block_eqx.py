@@ -1,5 +1,5 @@
-import jax
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 import jax.random as jr
 
@@ -8,7 +8,6 @@ from quantbayes.stochax.utils import (
     plot_block_fft_spectra,
     visualize_block_circulant_kernels,
 )
-
 
 if __name__ == "__main__":
     import jax

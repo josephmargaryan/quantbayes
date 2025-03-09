@@ -10,7 +10,6 @@ A self-contained script that implements:
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 # For optional visualization
 try:

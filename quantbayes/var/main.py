@@ -1,9 +1,10 @@
 import argparse
+
 import jax.numpy as jnp
-from jax import random
 from data import generate_var2_data
-from model import var2_scan
 from inference import run_inference
+from jax import random
+from model import var2_scan
 from plotting import plot_results
 
 

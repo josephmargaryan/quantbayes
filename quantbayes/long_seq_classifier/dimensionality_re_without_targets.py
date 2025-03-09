@@ -1,7 +1,8 @@
-from dimensionality_reduction import apply_umap
 import pickle
+
 import matplotlib.pyplot as plt
 import seaborn as sns
+from dimensionality_reduction import apply_umap
 
 
 def umap_2d(df, embeddings):

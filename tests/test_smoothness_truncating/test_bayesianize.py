@@ -1,28 +1,23 @@
-import jax
-import jax.random as jr
-import jax.numpy as jnp
 import equinox as eqx
+import jax
+import jax.numpy as jnp
+import jax.random as jr
 import numpyro
 import numpyro.distributions as dist
-from quantbayes.stochax.utils import (
-    bayesianize,
-    prior_fn,
-    plot_fft_spectrum,
-    visualize_circulant_kernel,
-)
-from quantbayes.stochax.layers import (
-    SmoothTruncEquinoxBlockCirculant,
-    SmoothTruncEquinoxCirculant,
-)
-from quantbayes.bnn.utils import BayesianAnalysis, plot_hdi
-from quantbayes.stochax.utils import get_fft_full_for_given_params, collect_block_r_i
-from quantbayes import bnn, fake_data
 from sklearn.model_selection import train_test_split
 
-import matplotlib.pyplot as plt
-import numpy as np
-
-from numpyro import handlers
+from quantbayes import bnn, fake_data
+from quantbayes.bnn.utils import BayesianAnalysis, plot_hdi
+from quantbayes.stochax.layers import (
+    SmoothTruncEquinoxCirculant,
+)
+from quantbayes.stochax.utils import (
+    bayesianize,
+    get_fft_full_for_given_params,
+    plot_fft_spectrum,
+    prior_fn,
+    visualize_circulant_kernel,
+)
 
 
 # --- Deterministic network using FFTDirectPriorLinear ---

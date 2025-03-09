@@ -1,9 +1,11 @@
+from typing import Optional
+
 import jax
 import jax.numpy as jnp
 import numpyro
 import numpyro.distributions as dist
+
 from quantbayes.bnn import Module
-from typing import Optional
 
 
 class Unet(Module):
@@ -82,7 +84,7 @@ class Unet(Module):
           - Two "up" levels
           - 1x1 output conv
         """
-        from quantbayes.bnn import MaxPool2d, Conv2d
+        from quantbayes.bnn import Conv2d, MaxPool2d
 
         # Down 1
         d1 = self.double_conv(X, self.in_channels, 64, "down1")

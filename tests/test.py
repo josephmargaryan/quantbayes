@@ -1,13 +1,13 @@
 import time
+
 import jax
-import jax.random as jr
 import jax.numpy as jnp
+import jax.random as jr
 import numpy as np
-import equinox as eqx
 import numpyro
 import numpyro.distributions as dist
-from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error
+from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import MinMaxScaler, StandardScaler
 
 from quantbayes import bnn
@@ -78,7 +78,7 @@ def aggregate_diagnostics(diag_list):
                 # Convert each value to float (if it's a string, float() will work)
                 val = float(diag[key])
                 values.append(val)
-            except Exception as e:
+            except Exception:
                 # If conversion fails, skip this key
                 continue
         if values:

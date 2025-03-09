@@ -1,9 +1,6 @@
-import matplotlib.pyplot as plt
 import jax
+import matplotlib.pyplot as plt
 import numpy as np
-import jax.numpy as jnp
-from numpyro.infer import Predictive
-from jax.nn import sigmoid
 
 __all__ = [
     "visualize_gp_kernel",
@@ -237,8 +234,8 @@ def visualize_predictions_binary(X_test, mean_prob, std_prob, threshold=0.5):
     Returns:
       fig: Matplotlib figure.
     """
-    import numpy as np
     import matplotlib.pyplot as plt
+    import numpy as np
     from sklearn.decomposition import PCA
 
     # Convert X_test to a NumPy array.

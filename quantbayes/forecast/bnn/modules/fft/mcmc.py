@@ -1,12 +1,13 @@
+from typing import Callable
+
+import jax
+import jax.numpy as jnp
+import numpyro
+import numpyro.distributions as dist
+from numpyro.infer import MCMC, NUTS, Predictive
 from time_forecast.bnn.core.base_inference import BaseInference
 from time_forecast.bnn.core.base_task import BaseTask
 from time_forecast.bnn.utils.fft_module import fft_matmul
-from typing import Callable
-import numpyro.distributions as dist
-import numpyro
-from numpyro.infer import MCMC, NUTS, Predictive
-import jax.numpy as jnp
-import jax
 
 
 class FFT_MCMC(BaseTask, BaseInference):
@@ -92,8 +93,8 @@ class FFT_MCMC(BaseTask, BaseInference):
             y_val: Validation target data (shape: (N_val,)).
             posterior_preds: Model predictions on the validation set with uncertainty (shape: (samples, N_val)).
         """
-        import matplotlib.pyplot as plt
         import jax.numpy as jnp
+        import matplotlib.pyplot as plt
 
         # Compute prediction statistics
         mean_predictions = posterior_preds.mean(axis=0)
@@ -409,9 +410,9 @@ class FFT_MCMC(BaseTask, BaseInference):
 if __name__ == "__main__":
 
     ############### Demo #############
-    from time_forecast.bnn.modules.fft.mcmc import FFT_MCMC
     import jax.random as jr
     from fake_data import create_synthetic_time_series
+    from time_forecast.bnn.modules.fft.mcmc import FFT_MCMC
 
     X_train, X_val, y_train, y_val = create_synthetic_time_series()
     model = FFT_MCMC(
@@ -422,8 +423,8 @@ if __name__ == "__main__":
     print(posterior_preds.shape)
     model.visualize(y_train=y_train, y_val=y_val, posterior_preds=posterior_preds)
 
-    from sklearn.metrics import mean_squared_error
     import numpy as np
+    from sklearn.metrics import mean_squared_error
 
     MSE = mean_squared_error(np.array(y_val), np.array(posterior_preds.mean(axis=0)))
     print(MSE)

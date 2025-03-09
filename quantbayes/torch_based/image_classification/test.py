@@ -1,12 +1,13 @@
 # image_classification_script_torch.py
 
 import math
+from typing import List
+
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import matplotlib.pyplot as plt
-from typing import List
 
 
 # ----------------------------------------------------------------------------

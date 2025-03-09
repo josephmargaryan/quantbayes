@@ -2,8 +2,9 @@ import jax
 import jax.numpy as jnp
 import numpyro
 import numpyro.distributions as dist
-from quantbayes.bnn.layers.base import Module
+
 from quantbayes.bnn.layers import LSTM, Linear
+from quantbayes.bnn.layers.base import Module
 
 
 class BayesianLSTM(Module):

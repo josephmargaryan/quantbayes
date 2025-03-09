@@ -1,10 +1,12 @@
+import math
+import random
+
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from quantbayes.forecast.nn.base import MonteCarloMixin, BaseModel
-import math
-import numpy as np
-import random
+
+from quantbayes.forecast.nn.base import BaseModel, MonteCarloMixin
 
 torch.manual_seed(0)
 random.seed(0)

@@ -1,9 +1,10 @@
 from typing import Optional
-import jax
-import jax.random as jr
-import jax.numpy as jnp
+
 import equinox as eqx
+import jax
+import jax.numpy as jnp
 import jax.random
+import jax.random as jr
 
 __all__ = [
     "Circulant",

@@ -1,6 +1,7 @@
-import pandas as pd
 import pickle
 import re
+
+import pandas as pd
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 
@@ -83,10 +84,10 @@ if __name__ == "__main__":
     train_df.to_csv("train_data.csv", index=False)
     val_df.to_csv("val_data.csv", index=False)
 
-    print(f"Data preprocessing complete!")
+    print("Data preprocessing complete!")
     print(f"Number of classes: {num_classes}")
-    print(f"Training data saved to 'train_data.csv'.")
-    print(f"Validation data saved to 'val_data.csv'.")
+    print("Training data saved to 'train_data.csv'.")
+    print("Validation data saved to 'val_data.csv'.")
 
 
 #### For inference

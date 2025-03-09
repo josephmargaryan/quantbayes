@@ -1,7 +1,8 @@
 from abc import ABC, abstractmethod
-import torch
+
 import matplotlib.pyplot as plt
 import numpy as np
+import torch
 from torch.utils.data import DataLoader
 
 

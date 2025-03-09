@@ -1,5 +1,6 @@
-from quantbayes.bnn.layers import VariationalLayer
 import jax
+
+from quantbayes.bnn.layers import VariationalLayer
 
 
 class VariationalMLP:

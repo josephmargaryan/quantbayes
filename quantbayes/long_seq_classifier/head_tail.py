@@ -1,9 +1,10 @@
-from torch.utils.data import Dataset, DataLoader
-import pandas as pd
-from transformers import AutoTokenizer, AutoModelForSequenceClassification
-import torch
 import pickle
+
+import pandas as pd
+import torch
+from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
+from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
 
 class HeadTailDataset(Dataset):

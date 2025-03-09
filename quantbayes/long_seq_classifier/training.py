@@ -1,11 +1,11 @@
-import torch
+import matplotlib.pyplot as plt
 import numpy as np
-from sklearn.metrics import f1_score, accuracy_score
-from tqdm import tqdm
+import pandas as pd
+import torch
 from dataset import train_loader, val_loader
 from model import DocumentClassifier
-import matplotlib.pyplot as plt
-import pandas as pd
+from sklearn.metrics import accuracy_score, f1_score
+from tqdm import tqdm
 
 
 def train(

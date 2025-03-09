@@ -1,11 +1,10 @@
-import numpy as np
 import matplotlib.pyplot as plt
-from sklearn.base import clone, BaseEstimator, ClassifierMixin
-from sklearn.model_selection import KFold
-from sklearn.metrics import roc_curve, auc, accuracy_score, log_loss
-from sklearn.linear_model import LogisticRegression
+import numpy as np
+from sklearn.base import BaseEstimator, ClassifierMixin, clone
 from sklearn.datasets import make_classification
-from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score, auc, log_loss, roc_curve
+from sklearn.model_selection import KFold, train_test_split
 
 
 class EnsembleBinary(BaseEstimator, ClassifierMixin):
@@ -231,8 +230,8 @@ class EnsembleBinary(BaseEstimator, ClassifierMixin):
 
 # Test the ensemble classifier when the module is run as the main program.
 if __name__ == "__main__":
-    from sklearn.tree import DecisionTreeClassifier
     from sklearn.ensemble import RandomForestClassifier
+    from sklearn.tree import DecisionTreeClassifier
 
     # Generate a synthetic binary classification dataset.
     X, y = make_classification(

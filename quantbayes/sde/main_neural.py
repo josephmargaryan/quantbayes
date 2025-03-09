@@ -1,6 +1,6 @@
 import torch
-from stochastic_model import StochasticModel
 from linear_neural_sde import LinearNeuralSDE
+from stochastic_model import StochasticModel
 
 
 def main():

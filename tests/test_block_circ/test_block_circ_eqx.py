@@ -1,15 +1,14 @@
-import jax
-import numpyro
 import equinox as eqx
-import jax.random as jr
+import jax
 import jax.numpy as jnp
+import jax.random as jr
+import numpyro
 import numpyro.distributions as dist
 
-from quantbayes.fake_data import generate_regression_data
 from quantbayes import bnn
 from quantbayes.bnn.utils import plot_hdi
-from quantbayes.stochax.utils import bayesianize, prior_fn
-from quantbayes.stochax.utils import BlockCirculantLinear
+from quantbayes.fake_data import generate_regression_data
+from quantbayes.stochax.utils import BlockCirculantLinear, bayesianize, prior_fn
 
 
 class MyBlockCirculantNet(eqx.Module):

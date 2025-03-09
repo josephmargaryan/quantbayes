@@ -1,7 +1,7 @@
-import numpy as np
+import diffrax
 import jax.numpy as jnp
 import jax.random as jr
-import diffrax
+import numpy as np
 
 from quantbayes.stochax.gan_sde import run_sde
 

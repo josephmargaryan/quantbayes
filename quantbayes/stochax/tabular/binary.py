@@ -1,13 +1,14 @@
-import equinox as eqx
 import pickle
+
+import equinox as eqx
 import jax
-import jax.random as jr
 import jax.numpy as jnp
-import optax
-from sklearn.calibration import calibration_curve
-from sklearn.metrics import roc_curve, auc
+import jax.random as jr
 import matplotlib.pyplot as plt
 import numpy as np
+import optax
+from sklearn.calibration import calibration_curve
+from sklearn.metrics import auc, roc_curve
 
 
 class BinaryModel:
@@ -235,11 +236,11 @@ class BinaryModel:
 
 if __name__ == "__main__":
     import jax
-    import jax.random as jr
     import jax.numpy as jnp
+    import jax.random as jr
     import numpy as np
-    from sklearn.model_selection import train_test_split
     from sklearn.metrics import log_loss
+    from sklearn.model_selection import train_test_split
 
     from quantbayes.fake_data import generate_binary_classification_data
 

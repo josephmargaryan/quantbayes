@@ -1,12 +1,12 @@
-import numpy as np
+import arviz as az
 import jax
 import jax.numpy as jnp
-from jax.random import PRNGKey
+import matplotlib.pyplot as plt
+import numpy as np
 import numpyro
 import numpyro.distributions as dist
+from jax.random import PRNGKey
 from numpyro.infer import MCMC, NUTS
-import matplotlib.pyplot as plt
-import arviz as az
 
 
 # Generate synthetic data

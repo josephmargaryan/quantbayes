@@ -1,10 +1,10 @@
+import einops
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 import optax
-import einops
 from jaxtyping import Array, Float, PRNGKeyArray
 
 from quantbayes.stochax.vae.base import BaseDecoder, BaseEncoder, BaseVAE
