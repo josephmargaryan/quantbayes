@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, Tuple
 
 import equinox as eqx
 import jax
@@ -379,13 +379,13 @@ def spectral_circulant_matmul_jvp(primals, tangents):
 
 class JVPCirculantProcess(eqx.Module):
     """
-    Equinox-based 'spectral' circulant layer with a custom JVP. Includes:
-      - Real + imaginary half-spectrum parameters (w_real, w_imag)
-      - A bias term of shape (padded_dim,).
-
+    Equinox-based 'spectral' circulant layer with a custom JVP.
+    This layer uses real and imaginary half-spectrum parameters and a bias.
+    Instead of mutating an internal state to store the Fourier coefficients,
+    the forward pass returns both the output and the full Fourier coefficients.
+    
     The parameter count thus matches that of JVPCirculant: 2 * padded_dim total.
     """
-
     in_features: int
     padded_dim: int
     alpha: float
@@ -395,8 +395,6 @@ class JVPCirculantProcess(eqx.Module):
     w_real: jnp.ndarray  # shape (k_half,)
     w_imag: jnp.ndarray  # shape (k_half,)
     bias: jnp.ndarray  # shape (padded_dim,)
-
-    _last_fft_full: jnp.ndarray = eqx.field(default=None, repr=False)
 
     def __init__(
         self,
@@ -411,12 +409,13 @@ class JVPCirculantProcess(eqx.Module):
     ):
         """
         :param in_features: size of input
-        :param padded_dim: if not None, we pad/truncate input to padded_dim
+        :param padded_dim: if not None, we pad/truncate input to padded_dim;
+                           defaults to in_features.
         :param alpha: used in frequency scaling (example usage)
-        :param K: number of active frequencies; if None or > half, defaults to half
-        :param key: a PRNGKey
-        :param init_scale: scale for the spectral coefficients
-        :param bias_init_scale: scale for the bias
+        :param K: number of active frequencies; if None or > half, defaults to half.
+        :param key: a PRNGKey.
+        :param init_scale: scale for the spectral coefficients.
+        :param bias_init_scale: scale for the bias.
         """
         self.in_features = in_features
         self.padded_dim = padded_dim if padded_dim is not None else in_features
@@ -432,7 +431,7 @@ class JVPCirculantProcess(eqx.Module):
         w_r = jr.normal(key_r, (self.k_half,)) * init_scale
         w_i = jr.normal(key_i, (self.k_half,)) * init_scale
 
-        # Force DC (index 0) and maybe Nyquist (if even padded_dim) to be purely real
+        # Force DC (index 0) and maybe Nyquist (if even padded_dim) to be purely real.
         w_i = w_i.at[0].set(0.0)
         if (self.padded_dim % 2 == 0) and (self.k_half > 1):
             w_i = w_i.at[-1].set(0.0)
@@ -443,21 +442,25 @@ class JVPCirculantProcess(eqx.Module):
         # Initialize the bias: shape = (padded_dim,)
         self.bias = jr.normal(key_b, (self.padded_dim,)) * bias_init_scale
 
-    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
+    def __call__(self, x: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray]:
         """
         Forward pass:
-         1) Create a half-complex array from (w_real, w_imag), forcing zero for imag at DC, etc.
+         1) Create a half-complex array from (w_real, w_imag), zeroing out
+            the imaginary part at DC (and Nyquist if needed).
          2) Mirror to get the full FFT spectrum.
          3) Multiply via spectral_circulant_matmul.
          4) Add the bias.
+         
+        Returns:
+            A tuple (output, fft_full) where fft_full contains the full Fourier coefficients.
         """
-        # "Active frequencies" logic if you want to zero out some. Example:
+        # "Active frequencies" logic: zero out frequencies beyond K.
         freq_mask = jnp.arange(self.k_half) < self.K
         half_complex = (self.w_real * freq_mask) + 1j * (self.w_imag * freq_mask)
 
-        # Mirror them to get the full length = padded_dim
+        # Mirror to get the full-length FFT spectrum.
         if (self.padded_dim % 2 == 0) and (self.k_half > 1):
-            # even-length case: separate out the Nyquist freq
+            # even-length case: separate out the Nyquist frequency.
             nyquist = half_complex[-1].real[None]
             fft_full = jnp.concatenate(
                 [half_complex[:-1], nyquist, jnp.conjugate(half_complex[1:-1])[::-1]]
@@ -467,24 +470,25 @@ class JVPCirculantProcess(eqx.Module):
                 [half_complex, jnp.conjugate(half_complex[1:])[::-1]]
             )
 
-        object.__setattr__(self, "_last_fft_full", fft_full)
-
-        # Actual circulant multiplication
+        # Perform circulant multiplication using the custom JVP rule.
         out = spectral_circulant_matmul(x, fft_full)
-        # Add bias (broadcast along batch dimension if x is 2D)
+        # Add bias: broadcast along batch dimension if needed.
         if out.ndim == 2:
-            return out + self.bias[None, :]
+            out = out + self.bias[None, :]
         else:
-            # out is 1D
-            return out + self.bias
+            out = out + self.bias
 
-    def get_fourier_coeffs(self) -> jnp.ndarray:
-        """Retrieve the last full FFT vector used in forward pass."""
-        if self._last_fft_full is None:
-            raise ValueError(
-                "Must call the layer at least once before calling this method."
-            )
-        return self._last_fft_full
+        # Instead of mutating self, return fft_full along with the output.
+        return out
+
+    def get_fourier_coeffs(self, x: jnp.ndarray) -> jnp.ndarray:
+        """
+        Convenience method to compute and retrieve the Fourier coefficients
+        by performing a forward pass.
+        """
+        _, fft_full = self(x)
+        return fft_full
+
 
 
 class JVPBlockCirculantProcess(eqx.Module):

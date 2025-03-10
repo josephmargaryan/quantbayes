@@ -30,15 +30,15 @@ train_loader = data_loader(X=X_train, y=y_train, batch_size=800, shuffle=True)
 val_loader = data_loader(X=X_test, y=y_test, batch_size=200, shuffle=False)
 key = jr.key(0)
 
-
+from quantbayes.stochax.layers import JVPCirculantProcess, JVPBlockCirculant
 class EQNet(eqx.Module):
-    l1: eqx.nn.Linear
+    l1: eqx.Module
     l2: eqx.nn.Linear
 
     def __init__(self, key):
         k1, k2 = jr.split(key, 2)
-        self.l1 = eqx.nn.Linear(5, 10, key=k1)
-        self.l2 = eqx.nn.Linear(10, 1, key=k2)
+        self.l1 = JVPCirculantProcess(5, key=k1)
+        self.l2 = eqx.nn.Linear(5, 1, key=k2)
 
     def __call__(self, x, key=None, state=None):
         x = self.l1(x)
@@ -48,7 +48,7 @@ class EQNet(eqx.Module):
 
 
 model = EQNet(key)
-model = apply_custom_initialization(model, xavier_init, key=key)
+# model = apply_custom_initialization(model, xavier_init, key=key)
 state = None
 optimizer = optax.adam(1e-3)
 opt_state = optimizer.init(eqx.filter(model, eqx.is_inexact_array))
