@@ -8,6 +8,11 @@ from torch.utils.data import DataLoader, Dataset, random_split
 from sklearn.metrics import log_loss
 
 from quantbayes.fake_data import generate_binary_classification_data
+from quantbayes.bnn.utils import (
+    plot_calibration_curve,
+    plot_roc_curve,
+    expected_calibration_error,
+)
 
 df = generate_binary_classification_data()
 X, y = df.drop("target", axis=1), df["target"]
@@ -38,15 +43,11 @@ val_loader = DataLoader(val_set, shuffle=False, batch_size=200)
 class TorchNet(nn.Module):
     def __init__(self):
         super(TorchNet, self).__init__()
-        self.batchnorm = nn.BatchNorm1d(5)
-        self.dropout = nn.Dropout(0.1)
         self.fcl1 = nn.Linear(5, 10)
         self.fcl2 = nn.Linear(10, 1)
 
     def forward(self, x):
-        x = self.batchnorm(x)
         x = self.fcl1(x)
-        x = self.dropout(x)
         x = F.relu(x)
         return self.fcl2(x)
 
@@ -156,8 +157,16 @@ def eval(model: nn.Module, val_loader: DataLoader):
     targets = torch.cat(targets).detach().numpy()
 
     loss = log_loss(targets, preds)
+    ece = expected_calibration_error(targets, preds)
 
-    return loss
+    return loss, ece
+
+
+def predict(model: nn.Module, X: torch.Tensor):
+    model.eval()
+    with torch.no_grad():
+        outputs = model(X)
+    return outputs.detach().cpu().numpy()
 
 
 if __name__ == "__main__":
@@ -171,5 +180,6 @@ if __name__ == "__main__":
         num_epochs=1000,
         patience=100,
     )
-    loss = eval(trained_model, val_loader)
+    loss, ece = eval(trained_model, val_loader)
     print(f"Loss: {loss:.3f}")
+    print(f"ECE: {ece:.3f}")

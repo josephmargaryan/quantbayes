@@ -14,7 +14,7 @@ from . import (
 from .trainer.train import (
     data_loader,
     train,
-    evaluate,
+    predict,
     regression_loss,
     binary_loss,
     multiclass_loss,
@@ -37,5 +37,5 @@ __all__ = [
     "multiclass_loss",
     "regression_loss",
     "train",
-    "evaluate",
+    "predict",
 ]

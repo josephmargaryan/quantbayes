@@ -15,7 +15,7 @@ __all__ = [
     "multiclass_loss",
     "regression_loss",
     "train",
-    "evaluate",
+    "predict",
 ]
 # -------------------------------
 # Data Loading Utilities
@@ -89,7 +89,21 @@ class EQNet(eqx.Module):
 def binary_loss(model, state, x, y, key):
     """
     Binary cross-entropy loss with logits.
-    Assumes y is of shape (batch, 1) and contains binary targets.
+
+    This loss function computes the elementwise binary cross-entropy
+    between the logits produced by the model and the binary targets.
+
+    Expected inputs:
+      - x: Input features of shape [batch_size, feature_dim].
+      - y: Targets of shape [batch_size, 1] as float32 values (with values 0. or 1.).
+      - key: A PRNG key for randomness, used for any stochastic operations in the model.
+      - model: A callable that accepts inputs x along with a per-example key and state,
+               and returns logits of shape [batch_size, 1] (or broadcastable to y) and updated state.
+      - state: Optional model state (e.g., for BatchNorm), can be None if unused.
+
+    Returns:
+      - loss: A scalar representing the mean binary cross-entropy loss over the batch.
+      - state: The updated state after processing the batch.
     """
     batch_size = x.shape[0]
     keys = jr.split(key, batch_size)
@@ -97,14 +111,34 @@ def binary_loss(model, state, x, y, key):
         model, in_axes=(0, 0, None), out_axes=(0, None), axis_name="batch"
     )
     logits, state = batched_model(x, keys, state)
+    # The loss function expects logits and y to be float and of matching shape.
     loss = jnp.mean(optax.sigmoid_binary_cross_entropy(logits, y))
     return loss, state
 
 
 def multiclass_loss(model, state, x, y, key):
     """
-    Softmax cross-entropy loss.
-    Assumes y is of shape (batch,) with integer class labels.
+    Softmax cross-entropy loss for multiclass classification.
+
+    This loss function computes the categorical cross-entropy loss between the
+    logits and the integer class labels.
+
+    Expected inputs:
+      - x: Input features of shape [batch_size, feature_dim].
+      - y: Integer targets of shape [batch_size] (each entry is in the range 0 to num_classes-1).
+      - key: A PRNG key for any stochastic operations in the model.
+      - model: A callable that accepts inputs x along with a per-example key and state,
+               and returns logits of shape [batch_size, num_classes] and updated state.
+      - state: Optional model state (e.g., for BatchNorm), can be None if unused.
+
+    Note:
+      The loss function `optax.softmax_cross_entropy_with_integer_labels` is used,
+      which expects integer labels (not one-hot). Therefore, do NOT convert y to one-hot.
+
+    Returns:
+      - loss: A vector of shape [batch_size] with the loss for each example,
+              or a scalar mean loss if reduced (here we take the mean).
+      - state: The updated state after processing the batch.
     """
     batch_size = x.shape[0]
     keys = jr.split(key, batch_size)
@@ -112,17 +146,31 @@ def multiclass_loss(model, state, x, y, key):
         model, in_axes=(0, 0, None), out_axes=(0, None), axis_name="batch"
     )
     logits, state = batched_model(x, keys, state)
-    # Convert integer labels to one-hot assuming logits.shape[-1] gives the number of classes.
-    num_classes = logits.shape[-1]
-    y_onehot = jax.nn.one_hot(y, num_classes)
-    loss = jnp.mean(optax.softmax_cross_entropy(logits, y_onehot))
+    # Use integer labels directly; optax.softmax_cross_entropy_with_integer_labels expects:
+    # logits: [batch_size, num_classes] and labels: [batch_size] integers.
+    loss = jnp.mean(optax.softmax_cross_entropy_with_integer_labels(logits, y))
     return loss, state
 
 
 def regression_loss(model, state, x, y, key):
     """
-    Mean squared error loss.
-    Assumes y is of shape (batch, output_dim) and is a continuous target.
+    Mean Squared Error (MSE) loss for regression tasks.
+
+    This loss function computes the mean squared error between the model's predictions
+    and the continuous targets.
+
+    Expected inputs:
+      - x: Input features of shape [batch_size, feature_dim].
+      - y: Continuous target values of shape [batch_size, output_dim] as float32.
+           For single-output regression, output_dim should be 1.
+      - key: A PRNG key for any stochastic operations in the model.
+      - model: A callable that accepts inputs x along with a per-example key and state,
+               and returns predictions of shape [batch_size, output_dim] and updated state.
+      - state: Optional model state, can be None if unused.
+
+    Returns:
+      - loss: A scalar representing the mean squared error loss over the batch.
+      - state: The updated state after processing the batch.
     """
     batch_size = x.shape[0]
     keys = jr.split(key, batch_size)
@@ -276,38 +324,25 @@ def train(
     return best_model, best_state, train_losses, val_losses
 
 
-def evaluate(model, state, loss_fn, X_val, y_val, batch_size, key, metric_fn):
+def predict(model, state, X, key):
     """
-    Generic evaluation loop.
+    Predict function for computing probabilities from the model.
 
     Args:
         model: Equinox model.
         state: Model state.
-        loss_fn: Loss function.
-        X_val, y_val: Validation data.
-        batch_size: Batch size.
+        X: Input data as a jax.numpy.ndarray.
         key: PRNG key.
-        metric_fn: A function that accepts (targets, predictions) and returns a metric value.
 
     Returns:
-        Computed metric over the validation set.
+        Predictions (logits) computed by the model.
     """
-    # When in inference mode, stochastic layers are deactivated.
-    dummy_key = jr.PRNGKey(0)
-    all_logits = []
-    all_targets = []
+    # Vectorize the model over the first axis of X.
     batched_inference = jax.vmap(
         model, in_axes=(0, None, None), out_axes=(0, None), axis_name="batch"
     )
-    for xb, yb in data_loader(X_val, y_val, batch_size, shuffle=False, key=key):
-        logits, _ = batched_inference(xb, dummy_key, state)
-        all_logits.append(logits)
-        all_targets.append(yb)
-    all_logits = jnp.concatenate(all_logits, axis=0)
-    all_targets = jnp.concatenate(all_targets, axis=0)
-    # For binary classification, use sigmoid activation.
-    probs = jax.nn.sigmoid(all_logits)
-    return metric_fn(np.array(all_targets), np.array(probs))
+    logits, _ = batched_inference(X, key, state)
+    return logits
 
 
 # -------------------------------
@@ -369,17 +404,6 @@ if __name__ == "__main__":
     # Switch to inference mode.
     inference_model = eqx.nn.inference_mode(best_model)
     # Evaluate using log_loss as metric (you could also use mean_squared_error for regression, etc.)
-    final_metric = evaluate(
-        inference_model,
-        best_state,
-        loss_fn,
-        X_val,
-        y_val,
-        batch_size,
-        eval_key,
-        log_loss,
-    )
-    print(f"Final validation log loss: {final_metric:.3f}")
 
     # Plot training curves.
     plt.figure(figsize=(10, 6))
