@@ -1,430 +1,347 @@
-import math
-import os
-import time
-from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, Union
+import copy
+import matplotlib.pyplot as plt
+import numpy as np
+from sklearn.metrics import log_loss
 
 import jax
 import jax.numpy as jnp
-import optax
+import jax.random as jr
 import equinox as eqx
+import optax
 
-from equinox import filter_jit, filter_grad, apply_updates
-from equinox import tree_serialise_leaves, tree_deserialise_leaves
+__all__ = [
+    "data_loader",
+    "binary_loss",
+    "multiclass_loss",
+    "regression_loss",
+    "train",
+    "evaluate"
+]
+# -------------------------------
+# Data Loading Utilities
+# -------------------------------
 
-
-###############################################################################
-# Helper: A simple Python-based data loader
-###############################################################################
-def jax_data_loader(
-    X: jnp.ndarray,
-    Y: jnp.ndarray,
-    batch_size: int,
-    shuffle: bool = True,
-    rng: Optional[jax.random.PRNGKey] = None,
-) -> Iterator[Tuple[jnp.ndarray, jnp.ndarray]]:
+def data_loader(X, y, batch_size, shuffle=True, key=jr.PRNGKey(0)):
     """
-    Simple generator that yields (X_batch, Y_batch) in increments of batch_size.
-    By default, it shuffles the data (requires rng if you want reproducible shuffling).
-
+    Generator that yields minibatches from X and y.
+    
     Args:
-        X: shape (N, ...) 
-        Y: shape (N, ...) with matching first dimension
-        batch_size: int
-        shuffle: bool
-        rng: optional jax.random.PRNGKey for reproducible shuffle
-
-    Returns:
-        Iterator over (X_batch, Y_batch)
+        X: Input data (JAX array).
+        y: Target data (JAX array).
+        batch_size: Number of samples per batch.
+        shuffle: Whether to shuffle the indices.
+        key: JAX PRNG key for shuffling.
+    
+    Yields:
+        Tuples (X_batch, y_batch)
     """
-    assert X.shape[0] == Y.shape[0], "X and Y must have the same first dimension"
-    N = X.shape[0]
-
+    n = X.shape[0]
+    indices = jnp.arange(n)
     if shuffle:
-        if rng is None:
-            raise ValueError("Please provide a PRNGKey if shuffle=True.")
-        perm = jax.random.permutation(rng, jnp.arange(N))
-        X = X[perm]
-        Y = Y[perm]
-
-    # Python-based iteration
-    for start_idx in range(0, N, batch_size):
-        end_idx = min(start_idx + batch_size, N)
-        yield X[start_idx:end_idx], Y[start_idx:end_idx]
+        indices = jr.permutation(key, indices)
+    for i in range(0, n, batch_size):
+        batch_idx = indices[i : i + batch_size]
+        yield X[batch_idx], y[batch_idx]
 
 
-###############################################################################
-# A tiny helper to replicate a tree "shallowly" across `count` copies.
-###############################################################################
-def replicate_tree(pytree: Any, count: int) -> List[Any]:
+# -------------------------------
+# Example Model Definition
+# -------------------------------
+
+class EQNet(eqx.Module):
     """
-    Returns a list of `count` copies of `pytree`. We just replicate the same 
-    structure, referencing the same leaves. 
-    (If you need truly distinct leaf references, you'd have to copy them yourself.)
+    Example Equinox model analogous to a TorchNet:
+      BatchNorm1d(5) -> Linear(5,10) -> Dropout(0.1) -> ReLU -> Linear(10,1)
+    
+    If your model does not require stochasticity or state (e.g. no dropout or batchnorm),
+    simply ignore the `key` and `state` inputs.
     """
-    leaves, treedef = jax.tree_util.tree_flatten(pytree)
-    return [treedef.unflatten(leaves) for _ in range(count)]
+    bn: eqx.nn.BatchNorm
+    dropout: eqx.nn.Dropout
+    fc1: eqx.nn.Linear
+    fc2: eqx.nn.Linear
+
+    def __init__(self, key):
+        key1, key2, key3, key4 = jr.split(key, 4)
+        self.bn = eqx.nn.BatchNorm(input_size=5, axis_name="batch")
+        self.dropout = eqx.nn.Dropout(0.1)
+        self.fc1 = eqx.nn.Linear(in_features=5, out_features=10, key=key1)
+        self.fc2 = eqx.nn.Linear(in_features=10, out_features=1, key=key2)
+
+    def __call__(self, x, key, state):
+        # If your model does not use state, you can simply pass None and ignore it.
+        x, state = self.bn(x, state)
+        x = self.fc1(x)
+        x = self.dropout(x, key=key)
+        x = jax.nn.relu(x)
+        x = self.fc2(x)
+        return x, state
 
 
-###############################################################################
-# Key function: wrap forward pass in a vmap if we detect a batch dimension
-###############################################################################
-def maybe_vmap_forward(
-    model: eqx.Module,
-    state: Any,
-    x_batch: jnp.ndarray,
-    y_batch: jnp.ndarray,
-    rng: jax.random.PRNGKey,
-    inference: bool,
-):
+# -------------------------------
+# Generic Loss Function & Steps
+# -------------------------------
+
+def binary_loss(model, state, x, y, key):
     """
-    If x_batch has a leading dimension we treat as "batch size", then vmap
-    the single-sample `model(x, state, key=rng, inference=...)` over that dimension.
-    Otherwise, call model once (single sample).
+    Binary cross-entropy loss with logits.
+    Assumes y is of shape (batch, 1) and contains binary targets.
+    """
+    batch_size = x.shape[0]
+    keys = jr.split(key, batch_size)
+    batched_model = jax.vmap(
+        model, in_axes=(0, 0, None), out_axes=(0, None), axis_name="batch"
+    )
+    logits, state = batched_model(x, keys, state)
+    loss = jnp.mean(optax.sigmoid_binary_cross_entropy(logits, y))
+    return loss, state
 
+
+def multiclass_loss(model, state, x, y, key):
+    """
+    Softmax cross-entropy loss.
+    Assumes y is of shape (batch,) with integer class labels.
+    """
+    batch_size = x.shape[0]
+    keys = jr.split(key, batch_size)
+    batched_model = jax.vmap(
+        model, in_axes=(0, 0, None), out_axes=(0, None), axis_name="batch"
+    )
+    logits, state = batched_model(x, keys, state)
+    # Convert integer labels to one-hot assuming logits.shape[-1] gives the number of classes.
+    num_classes = logits.shape[-1]
+    y_onehot = jax.nn.one_hot(y, num_classes)
+    loss = jnp.mean(optax.softmax_cross_entropy(logits, y_onehot))
+    return loss, state
+
+
+def regression_loss(model, state, x, y, key):
+    """
+    Mean squared error loss.
+    Assumes y is of shape (batch, output_dim) and is a continuous target.
+    """
+    batch_size = x.shape[0]
+    keys = jr.split(key, batch_size)
+    batched_model = jax.vmap(
+        model, in_axes=(0, 0, None), out_axes=(0, None), axis_name="batch"
+    )
+    preds, state = batched_model(x, keys, state)
+    loss = jnp.mean((preds - y) ** 2)
+    return loss, state
+
+
+@eqx.filter_jit
+def train_step(model, state, opt_state, x, y, key, loss_fn, optimizer):
+    """
+    Generic training step.
+    
+    Args:
+        model: Equinox model.
+        state: Model state (e.g. BatchNorm statistics); use None if unused.
+        opt_state: Optimizer state.
+        x, y: Batch data.
+        key: PRNG key.
+        loss_fn: A function with signature (model, state, x, y, key) -> (loss, state).
+        optimizer: An optax optimizer.
+    
     Returns:
-       (pred_y, new_state):
-         - If vmap is used, pred_y has shape [batch_size, ...]
-         - If no vmap is used, pred_y has shape model(...) would produce
-         - new_state is "one" final state or a simplification. 
-           (For fully correct BN merges, you'd need a more advanced approach.)
+        Updated (model, state, opt_state).
     """
+    grad_fn = eqx.filter_grad(loss_fn, has_aux=True)
+    grads, state = grad_fn(model, state, x, y, key)
+    updates, opt_state = optimizer.update(grads, opt_state)
+    model = eqx.apply_updates(model, updates)
+    return model, state, opt_state
 
-    # Detect if x_batch has shape (batch_size, ...).
-    if x_batch.ndim >= 1:
-        batch_size = x_batch.shape[0]
-    else:
-        batch_size = None
-
-    # If no batch dimension or zero, just call once.
-    if batch_size is None or batch_size == 0:
-        pred_y, new_state = model(x_batch, state, key=rng, inference=inference)
-        return pred_y, new_state
-
-    # Otherwise, we define a per-sample function that calls the single-sample model
-    def per_sample_forward(x, y, s, r):
-        # We ignore y except for matching shape
-        return model(x, s, key=r, inference=inference)
-
-    # We'll replicate the entire state for each sample. 
-    # This is "toy" for BN, etc.:
-    state_list = replicate_tree(state, batch_size)
-
-    # vmap across axis=0 of x,y, state_list, but keep rng the same
-    f_vmap = jax.vmap(per_sample_forward, in_axes=(0, 0, 0, None), out_axes=(0, 0))
-
-    pred_y, new_state_batch = f_vmap(x_batch, y_batch, state_list, rng)
-
-    # We'll just return the "last" new_state across the batch. 
-    # (You could do a reduce or something else if desired.)
-    new_state_single = jax.tree_map(lambda sarr: sarr[-1], new_state_batch)
-    return pred_y, new_state_single
-
-
-###############################################################################
-# A universal trainer that can handle single-sample models with vmap
-###############################################################################
-class EquinoxTrainer:
+@eqx.filter_jit
+def eval_step(model, state, x, y, key, loss_fn):
     """
-    A class to encapsulate training, evaluation, prediction for Equinox-based models:
-      - single-sample models automatically vectorized across batch dimension 
-        via maybe_vmap_forward
-      - Dropout or other random layers (fresh PRNGKey)
-      - Potentially stateful layers (BatchNorm) - though fully correct 
-        BN merges require more advanced logic
-      - Toggling inference/training mode
+    Generic evaluation step returning the loss.
+    
+    Args:
+        model: Equinox model.
+        state: Model state.
+        x, y: Batch data.
+        key: PRNG key.
+        loss_fn: Loss function.
+    
+    Returns:
+        Loss value.
     """
+    loss, _ = loss_fn(model, state, x, y, key)
+    return loss
 
-    def __init__(
-        self,
-        model: eqx.Module,
-        state: Any,
-        loss_fn: Callable[[jnp.ndarray, jnp.ndarray], jnp.ndarray],
-        optimizer: optax.GradientTransformation,
-        rng: jax.random.PRNGKey,
-        use_jit: bool = True,
-    ):
-        """
-        Args:
-            model: An equinox.Module expecting a single sample shape
-            state: The state PyTree if model is stateful (e.g. BN)
-            loss_fn: A function (pred_y, true_y) -> scalar
-            optimizer: An optax optimizer
-            rng: PRNGKey for random layers
-            use_jit: Whether to JIT-compile the training step
-        """
-        self.model = model
-        self.state = state
-        self.loss_fn = loss_fn
-        self.optimizer = optimizer
-        self.opt_state = self.optimizer.init(eqx.filter(self.model, eqx.is_array))
-        self.rng = rng
-        self.use_jit = use_jit
 
-        def train_step(model, state, opt_state, x_batch, y_batch, rng):
-            """
-            Single step over one batch. 
-            Returns: (model, state, opt_state, loss_val).
-            """
+# -------------------------------
+# Generic Training and Evaluation Loops
+# -------------------------------
 
-            def _loss_fn(m, s, xb, yb):
-                # forward pass
-                pred_y, s_out = maybe_vmap_forward(m, s, xb, yb, rng, inference=False)
-                return self.loss_fn(pred_y, yb), s_out
+def train(model, state, opt_state, optimizer, loss_fn,
+                  X_train, y_train, X_val, y_val,
+                  batch_size, num_epochs, patience, key):
+    """
+    Generic training loop with early stopping and checkpointing.
+    
+    Args:
+        model: Equinox model.
+        state: Model state.
+        opt_state: Optimizer state.
+        optimizer: An optax optimizer.
+        loss_fn: Loss function.
+        X_train, y_train: Training data.
+        X_val, y_val: Validation data.
+        batch_size: Batch size.
+        num_epochs: Maximum number of epochs.
+        patience: Patience for early stopping.
+        key: PRNG key.
+    
+    Returns:
+        best_model: The best model (in training mode).
+        best_state: Corresponding best state.
+        train_losses, val_losses: Lists of per-epoch losses.
+    """
+    train_losses = []
+    val_losses = []
+    best_val_loss = float("inf")
+    best_model = None
+    best_state = None
+    patience_counter = 0
 
-            # Take gradient wrt model & state
-            (loss_val, new_state), grads = filter_grad(_loss_fn, has_aux=True)(
-                model, state, x_batch, y_batch
-            )
-            updates, new_opt_state = self.optimizer.update(grads, opt_state)
-            new_model = apply_updates(model, updates)
-            return new_model, new_state, new_opt_state, loss_val
+    # Split key for training and evaluation.
+    train_key, eval_key = jr.split(key)
+    for epoch in range(num_epochs):
+        epoch_train_loss = 0.0
+        total_train_samples = 0
+        train_key, loader_key = jr.split(train_key)
+        # Training loop
+        for xb, yb in data_loader(X_train, y_train, batch_size, shuffle=True, key=loader_key):
+            train_key, subkey = jr.split(train_key)
+            model, state, opt_state = train_step(model, state, opt_state, xb, yb, subkey, loss_fn, optimizer)
+            loss_val, _ = loss_fn(model, state, xb, yb, subkey)
+            epoch_train_loss += loss_val * xb.shape[0]
+            total_train_samples += xb.shape[0]
+        epoch_train_loss /= total_train_samples
 
-        # Possibly JIT-compile
-        if use_jit:
-            self._train_step = eqx.filter_jit(train_step)
+        # Evaluation loop
+        epoch_val_loss = 0.0
+        total_val_samples = 0
+        for xb, yb in data_loader(X_val, y_val, batch_size, shuffle=False, key=eval_key):
+            eval_key, subkey = jr.split(eval_key)
+            loss_val = eval_step(model, state, xb, yb, subkey, loss_fn)
+            epoch_val_loss += loss_val * xb.shape[0]
+            total_val_samples += xb.shape[0]
+        epoch_val_loss /= total_val_samples
+
+        train_losses.append(epoch_train_loss)
+        val_losses.append(epoch_val_loss)
+        print(f"Epoch {epoch+1:4d} | Train Loss: {epoch_train_loss:.4f} | Val Loss: {epoch_val_loss:.4f}")
+
+        if epoch_val_loss < best_val_loss:
+            best_val_loss = epoch_val_loss
+            best_model = copy.deepcopy(model)
+            best_state = copy.deepcopy(state)
+            patience_counter = 0
         else:
-            self._train_step = train_step
+            patience_counter += 1
+            if patience_counter > patience:
+                print(f"Early stopping at epoch {epoch+1}")
+                break
 
-    def fit(
-        self,
-        X_train: jnp.ndarray,
-        Y_train: jnp.ndarray,
-        batch_size: int,
-        num_epochs: int,
-        shuffle: bool = True,
-    ) -> None:
-        """
-        Train for `num_epochs`, automatically doing vmap if X_train has shape (N, ...).
+    return best_model, best_state, train_losses, val_losses
 
-        Args:
-            X_train, Y_train: shape (N, ...)
-            batch_size: int
-            num_epochs: number of epochs
-            shuffle: whether to shuffle
-        """
-        t0 = time.time()
-        for epoch in range(num_epochs):
-            # new subkey for data shuffling
-            self.rng, shuffle_key = jax.random.split(self.rng)
-            loader = jax_data_loader(X_train, Y_train, batch_size, shuffle, shuffle_key)
-
-            epoch_losses = []
-            for x_batch, y_batch in loader:
-                # new subkey for forward pass
-                self.rng, subkey = jax.random.split(self.rng)
-                self.model, self.state, self.opt_state, loss_val = self._train_step(
-                    self.model, self.state, self.opt_state, x_batch, y_batch, subkey
-                )
-                epoch_losses.append(loss_val)
-
-            mean_loss = jnp.mean(jnp.stack(epoch_losses))
-            print(
-                f"[Epoch {epoch+1:03d}/{num_epochs}] "
-                f"Loss={mean_loss.item():.4f} "
-                f"(elapsed: {time.time()-t0:.1f}s)"
-            )
-
-    def evaluate(self, X_val: jnp.ndarray, Y_val: jnp.ndarray, batch_size: int) -> float:
-        """
-        Evaluate the model in inference mode. 
-        We'll do single-sample model calls but vmap if there's a leading dimension.
-
-        Args:
-            X_val, Y_val: shape (N, ...)
-            batch_size: int
-
-        Returns:
-            float: Mean loss over the entire dataset
-        """
-        # Inference mode
-        inference_model = eqx.nn.inference_mode(self.model)
-        inference_model = eqx.Partial(inference_model, state=self.state)
-
-        all_losses = []
-        for x_batch, y_batch in jax_data_loader(X_val, Y_val, batch_size, shuffle=False):
-            pred_y, _ = maybe_vmap_forward(
-                inference_model.__self__,
-                inference_model.state,
-                x_batch,
-                y_batch,
-                rng=None,  # no dropout randomness
-                inference=True
-            )
-            loss_val = self.loss_fn(pred_y, y_batch)
-            all_losses.append(loss_val)
-
-        return float(jnp.mean(jnp.stack(all_losses)))
-
-    def predict(
-        self,
-        X_test: jnp.ndarray,
-        batch_size: int,
-        return_np: bool = True,
-    ) -> Union[jnp.ndarray, Any]:
-        """
-        Predict in inference mode, returning model outputs.
-
-        Args:
-            X_test: shape (N, ...)
-            batch_size: int
-            return_np: if True => return a numpy array, else a JAX array.
-
-        Returns:
-            predictions shape (N, ...)
-        """
-        inference_model = eqx.nn.inference_mode(self.model)
-        inference_model = eqx.Partial(inference_model, state=self.state)
-
-        preds_collected = []
-        for x_batch, _ in jax_data_loader(X_test, X_test, batch_size, shuffle=False):
-            pred_y, _ = maybe_vmap_forward(
-                inference_model.__self__,
-                inference_model.state,
-                x_batch,
-                x_batch,  # dummy Y
-                rng=None,
-                inference=True
-            )
-            preds_collected.append(pred_y)
-
-        preds = jnp.concatenate(preds_collected, axis=0)
-        if return_np:
-            return preds.to_py()
-        else:
-            return preds
-
-    def save(self, path: str) -> None:
-        """
-        Save model+state+opt_state to a single file.
-        """
-        packed = (self.model, self.state, self.opt_state)
-        with open(path, "wb") as f:
-            tree_serialise_leaves(packed, f)
-
-    @classmethod
-    def load(cls, path: str, loss_fn=None, optimizer=None, rng=None, use_jit=True):
-        """
-        Load model+state+opt_state from a file, returning a new trainer.
-        """
-        with open(path, "rb") as f:
-            model, state, opt_state = tree_deserialise_leaves(f)
-
-        if loss_fn is None:
-            raise ValueError("Must provide `loss_fn` to load a trainer.")
-        if optimizer is None:
-            optimizer = optax.adam(1e-3)
-        if rng is None:
-            rng = jax.random.PRNGKey(0)
-
-        trainer = cls(
-            model=model,
-            state=state,
-            loss_fn=loss_fn,
-            optimizer=optimizer,
-            rng=rng,
-            use_jit=use_jit,
-        )
-        trainer.opt_state = opt_state
-        return trainer
+def evaluate(model, state, loss_fn, X_val, y_val, batch_size, key, metric_fn):
+    """
+    Generic evaluation loop.
+    
+    Args:
+        model: Equinox model.
+        state: Model state.
+        loss_fn: Loss function.
+        X_val, y_val: Validation data.
+        batch_size: Batch size.
+        key: PRNG key.
+        metric_fn: A function that accepts (targets, predictions) and returns a metric value.
+    
+    Returns:
+        Computed metric over the validation set.
+    """
+    # When in inference mode, stochastic layers are deactivated.
+    dummy_key = jr.PRNGKey(0)
+    all_logits = []
+    all_targets = []
+    batched_inference = jax.vmap(
+        model, in_axes=(0, None, None), out_axes=(0, None), axis_name="batch"
+    )
+    for xb, yb in data_loader(X_val, y_val, batch_size, shuffle=False, key=key):
+        logits, _ = batched_inference(xb, dummy_key, state)
+        all_logits.append(logits)
+        all_targets.append(yb)
+    all_logits = jnp.concatenate(all_logits, axis=0)
+    all_targets = jnp.concatenate(all_targets, axis=0)
+    # For binary classification, use sigmoid activation.
+    probs = jax.nn.sigmoid(all_logits)
+    return metric_fn(np.array(all_targets), np.array(probs))
 
 
-###############################################################################
-# EXAMPLE USAGE
-###############################################################################
+# -------------------------------
+# Main Routine (Demonstration)
+# -------------------------------
+
 if __name__ == "__main__":
-    import jax
-    import jax.numpy as jnp
-    import optax
-    import equinox as eqx
+    # For demonstration, we use synthetic binary classification data.
+    # In practice, you can replace this with any dataset.
+    num_samples = 1000
+    features = 5
+    rng = np.random.RandomState(0)
+    X_np = rng.randn(num_samples, features)
+    # Create binary targets via a random linear process.
+    true_w = rng.randn(features, 1)
+    logits = X_np @ true_w
+    p = 1 / (1 + np.exp(-logits))
+    y_np = (rng.rand(num_samples, 1) < p).astype(np.float32)
 
-    class TinyMLP(eqx.Module):
-        bn: eqx.nn.BatchNorm
-        linear1: eqx.nn.Linear
-        dropout: eqx.nn.Dropout
-        linear2: eqx.nn.Linear
-        linear3: eqx.nn.Linear
+    X = jnp.array(X_np, dtype=jnp.float32)
+    y = jnp.array(y_np, dtype=jnp.float32)
+    train_size = int(0.8 * X.shape[0])
+    X_train, X_val = X[:train_size], X[train_size:]
+    y_train, y_val = y[:train_size], y[train_size:]
 
-        def __init__(self, key):
-            k1, k2, k3, k4, k5 = jax.random.split(key, 5)
-            input_dim = 4
-            hidden_dim = 16
-            output_dim = 3
+    # Hyperparameters.
+    learning_rate = 1e-3
+    num_epochs = 1000
+    patience = 100
+    batch_size = 800
+    key = jr.PRNGKey(42)
 
-            self.bn = eqx.nn.BatchNorm(
-                input_size=hidden_dim, axis_name="batch", inference=False
-            )
-            self.linear1 = eqx.nn.Linear(
-                in_features=input_dim, out_features=hidden_dim, key=k1
-            )
-            self.dropout = eqx.nn.Dropout(p=0.2, inference=False)
-            self.linear2 = eqx.nn.Linear(
-                in_features=hidden_dim, out_features=hidden_dim, key=k2
-            )
-            self.linear3 = eqx.nn.Linear(
-                in_features=hidden_dim, out_features=output_dim, key=k3
-            )
+    # Set up model, state, optimizer, and opt_state.
+    model_key, _, train_key, eval_key = jr.split(key, 4)
+    model, state = eqx.nn.make_with_state(EQNet)(model_key)
+    optimizer = optax.adam(learning_rate)
+    opt_state = optimizer.init(eqx.filter(model, eqx.is_inexact_array))
 
-        def __call__(self, x: jnp.ndarray, state: eqx.nn.State, *, key, inference: bool):
-            x = self.linear1(x, key=None)
-            x = self.dropout(x, key=key, inference=inference)
-            x = jax.nn.relu(self.linear2(x, key=None))
-            x, new_state = self.bn(x, state, key=None, inference=inference)
-            x = jax.nn.relu(x)
-            x = self.linear3(x, key=None)
-            return x, new_state
+    # Use our generic loss; here we use binary cross-entropy with logits.
+    loss_fn = binary_loss
 
-    def create_synthetic_data(num_samples=1000):
-        rng = jax.random.PRNGKey(42)
-        X = jax.random.normal(rng, (num_samples, 4))
-        sums = jnp.sum(X, axis=1)
-        Y = jnp.where(sums > 2, 2, jnp.where(sums > 0, 1, 0))
-        return X, Y
+    # Train the model.
+    best_model, best_state, train_losses, val_losses = train(
+        model, state, opt_state, optimizer, loss_fn,
+        X_train, y_train, X_val, y_val,
+        batch_size, num_epochs, patience, train_key
+    )
 
-    def multiclass_loss_fn(pred_logits, true_labels):
-        return optax.softmax_cross_entropy_with_integer_labels(pred_logits, true_labels).mean()
+    # Switch to inference mode.
+    inference_model = eqx.nn.inference_mode(best_model)
+    # Evaluate using log_loss as metric (you could also use mean_squared_error for regression, etc.)
+    final_metric = evaluate(inference_model, best_state, loss_fn, X_val, y_val, batch_size, eval_key, log_loss)
+    print(f"Final validation log loss: {final_metric:.3f}")
 
-    def main():
-        # create data
-        X, Y = create_synthetic_data(num_samples=5000)
-
-        # build model + state
-        init_key = jax.random.PRNGKey(0)
-        model_init_fn = eqx.nn.make_with_state(TinyMLP)
-        model, state = model_init_fn(init_key)
-
-        # build trainer
-        trainer = EquinoxTrainer(
-            model=model,
-            state=state,
-            loss_fn=multiclass_loss_fn,
-            optimizer=optax.adam(1e-3),
-            rng=jax.random.PRNGKey(123),
-        )
-
-        # train
-        trainer.fit(X, Y, batch_size=64, num_epochs=5)
-
-        # evaluate
-        val_loss = trainer.evaluate(X, Y, batch_size=64)
-        print("Validation Loss:", val_loss)
-
-        # predict
-        preds = trainer.predict(X[:10], batch_size=5)
-        pred_labels = jnp.argmax(preds, axis=1)
-        print("Predicted labels on first 10:", pred_labels)
-
-        # save
-        trainer.save("model_checkpoint.eqx")
-
-        # load
-        new_trainer = EquinoxTrainer.load(
-            "model_checkpoint.eqx",
-            loss_fn=multiclass_loss_fn,
-            optimizer=optax.adam(1e-3),
-            rng=jax.random.PRNGKey(999),
-            use_jit=True,
-        )
-        val_loss_loaded = new_trainer.evaluate(X, Y, batch_size=64)
-        print("Val Loss (loaded model):", val_loss_loaded)
-
-    main()
+    # Plot training curves.
+    plt.figure(figsize=(10, 6))
+    plt.plot(np.arange(1, len(train_losses)+1), np.array(train_losses), label="Train Loss")
+    plt.plot(np.arange(1, len(val_losses)+1), np.array(val_losses), label="Validation Loss")
+    plt.xlabel("Epochs")
+    plt.ylabel("Loss")
+    plt.title("Loss over Epochs")
+    plt.legend()
+    plt.tight_layout()
+    plt.show()

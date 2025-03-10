@@ -1,4 +1,3 @@
-# Import submodules
 from . import (
     deepar,
     diffusion,
@@ -12,6 +11,7 @@ from . import (
     vision_classification,
     vision_segmentation,
 )
+from .trainer.train import data_loader, train, evaluate, regression_loss, binary_loss, multiclass_loss
 
 __all__ = [
     "deepar",
@@ -25,4 +25,10 @@ __all__ = [
     "vae",
     "vision_classification",
     "vision_segmentation",
+    "data_loader",
+    "binary_loss",
+    "multiclass_loss",
+    "regression_loss",
+    "train",
+    "evaluate"
 ]
