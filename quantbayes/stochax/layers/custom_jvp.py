@@ -379,12 +379,12 @@ def spectral_circulant_matmul_jvp(primals, tangents):
 
 class JVPCirculantProcess(eqx.Module):
     """
-    Equinox-based 'spectral' circulant layer with a custom JVP.
-    This layer uses real and imaginary half-spectrum parameters and a bias.
-    Instead of mutating an internal state to store the Fourier coefficients,
-    the forward pass returns both the output and the full Fourier coefficients.
+    Spectral circulant layer with custom JVP.
     
-    The parameter count thus matches that of JVPCirculant: 2 * padded_dim total.
+    This layer parameterizes the circulant weight matrix via a half-spectrum
+    (w_real and w_imag) to enforce Hermitian symmetry (ensuring real outputs)
+    and imposes a spectral prior. The Fourier coefficients are computed on the fly
+    in get_fourier_coeffs(), so __call__ remains pure and immutable.
     """
     in_features: int
     padded_dim: int
@@ -392,9 +392,9 @@ class JVPCirculantProcess(eqx.Module):
     K: int
     k_half: int = eqx.static_field()
 
-    w_real: jnp.ndarray  # shape (k_half,)
-    w_imag: jnp.ndarray  # shape (k_half,)
-    bias: jnp.ndarray  # shape (padded_dim,)
+    w_real: jnp.ndarray  # shape: (k_half,)
+    w_imag: jnp.ndarray  # shape: (k_half,)
+    bias: jnp.ndarray    # shape: (padded_dim,)
 
     def __init__(
         self,
@@ -407,60 +407,32 @@ class JVPCirculantProcess(eqx.Module):
         init_scale: float = 0.1,
         bias_init_scale: float = 0.1,
     ):
-        """
-        :param in_features: size of input
-        :param padded_dim: if not None, we pad/truncate input to padded_dim;
-                           defaults to in_features.
-        :param alpha: used in frequency scaling (example usage)
-        :param K: number of active frequencies; if None or > half, defaults to half.
-        :param key: a PRNGKey.
-        :param init_scale: scale for the spectral coefficients.
-        :param bias_init_scale: scale for the bias.
-        """
         self.in_features = in_features
         self.padded_dim = padded_dim if padded_dim is not None else in_features
         self.alpha = alpha
         self.k_half = (self.padded_dim // 2) + 1
-
         if (K is None) or (K > self.k_half):
             K = self.k_half
         self.K = K
 
-        # Initialize real/imag for half-spectrum
         key_r, key_i, key_b = jr.split(key, 3)
         w_r = jr.normal(key_r, (self.k_half,)) * init_scale
         w_i = jr.normal(key_i, (self.k_half,)) * init_scale
-
-        # Force DC (index 0) and maybe Nyquist (if even padded_dim) to be purely real.
+        # Enforce DC (index 0) and Nyquist (if applicable) to be purely real.
         w_i = w_i.at[0].set(0.0)
         if (self.padded_dim % 2 == 0) and (self.k_half > 1):
             w_i = w_i.at[-1].set(0.0)
-
         self.w_real = w_r
         self.w_imag = w_i
-
-        # Initialize the bias: shape = (padded_dim,)
         self.bias = jr.normal(key_b, (self.padded_dim,)) * bias_init_scale
 
-    def __call__(self, x: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    def get_fourier_coeffs(self) -> jnp.ndarray:
         """
-        Forward pass:
-         1) Create a half-complex array from (w_real, w_imag), zeroing out
-            the imaginary part at DC (and Nyquist if needed).
-         2) Mirror to get the full FFT spectrum.
-         3) Multiply via spectral_circulant_matmul.
-         4) Add the bias.
-         
-        Returns:
-            A tuple (output, fft_full) where fft_full contains the full Fourier coefficients.
+        Compute and return the full Fourier coefficients from the half-spectrum.
         """
-        # "Active frequencies" logic: zero out frequencies beyond K.
         freq_mask = jnp.arange(self.k_half) < self.K
         half_complex = (self.w_real * freq_mask) + 1j * (self.w_imag * freq_mask)
-
-        # Mirror to get the full-length FFT spectrum.
         if (self.padded_dim % 2 == 0) and (self.k_half > 1):
-            # even-length case: separate out the Nyquist frequency.
             nyquist = half_complex[-1].real[None]
             fft_full = jnp.concatenate(
                 [half_complex[:-1], nyquist, jnp.conjugate(half_complex[1:-1])[::-1]]
@@ -469,51 +441,36 @@ class JVPCirculantProcess(eqx.Module):
             fft_full = jnp.concatenate(
                 [half_complex, jnp.conjugate(half_complex[1:])[::-1]]
             )
+        return fft_full
 
-        # Perform circulant multiplication using the custom JVP rule.
+    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
+        fft_full = self.get_fourier_coeffs()
         out = spectral_circulant_matmul(x, fft_full)
-        # Add bias: broadcast along batch dimension if needed.
         if out.ndim == 2:
             out = out + self.bias[None, :]
         else:
             out = out + self.bias
-
-        # Instead of mutating self, return fft_full along with the output.
         return out
-
-    def get_fourier_coeffs(self, x: jnp.ndarray) -> jnp.ndarray:
-        """
-        Convenience method to compute and retrieve the Fourier coefficients
-        by performing a forward pass.
-        """
-        _, fft_full = self(x)
-        return fft_full
-
 
 
 class JVPBlockCirculantProcess(eqx.Module):
     """
-    Equinox module for a block-circulant layer that uses a custom JVP rule.
-
-    The layer stores a block of circulant parameters (each block is defined by its first row)
-    and (optionally) a Bernoulli diagonal. The forward pass computes:
-
-         out = block_circulant_matmul_custom(W, x, D_bernoulli) + bias
-
-    where the custom JVP rule for block_circulant_matmul_custom reuses FFT computations.
+    Block-circulant layer with custom JVP.
+    
+    This layer partitions the weight matrix into blocks where each block is circulant.
+    The forward pass computes:
+       out = block_circulant_matmul_custom(W, x, D_bernoulli) + bias
+    without mutating internal state. The Fourier coefficients for each block are
+    computed on the fly in get_fourier_coeffs().
     """
-
-    W: jnp.ndarray  # shape (k_out, k_in, block_size)
-    D_bernoulli: Optional[jnp.ndarray]  # shape (in_features,) or None
-    bias: jnp.ndarray  # shape (out_features,)
+    W: jnp.ndarray  # shape: (k_out, k_in, block_size)
+    D_bernoulli: Optional[jnp.ndarray]  # shape: (in_features,) or None
+    bias: jnp.ndarray  # shape: (out_features,)
     in_features: int = eqx.static_field()
     out_features: int = eqx.static_field()
     block_size: int = eqx.static_field()
     k_in: int = eqx.static_field()
     k_out: int = eqx.static_field()
-
-    # Store the last computed full block FFT coefficients.
-    _last_block_fft: jnp.ndarray = eqx.field(default=None, repr=False)
 
     def __init__(
         self,
@@ -529,37 +486,35 @@ class JVPBlockCirculantProcess(eqx.Module):
         self.in_features = in_features
         self.out_features = out_features
         self.block_size = block_size
-        self.k_in = (in_features + block_size - 1) // block_size
-        self.k_out = (out_features + block_size - 1) // block_size
+        k_in = (in_features + block_size - 1) // block_size
+        k_out = (out_features + block_size - 1) // block_size
+        object.__setattr__(self, "k_in", k_in)
+        object.__setattr__(self, "k_out", k_out)
 
         k1, k2, k3 = jr.split(key, 3)
-        self.W = jr.normal(k1, (self.k_out, self.k_in, block_size)) * init_scale
-
+        self.W = jr.normal(k1, (k_out, k_in, block_size)) * init_scale
         if use_diag:
             diag = jr.bernoulli(k2, p=0.5, shape=(in_features,))
             self.D_bernoulli = jnp.where(diag, 1.0, -1.0)
         else:
             self.D_bernoulli = None
-
         if use_bias:
             self.bias = jr.normal(k3, (out_features,)) * init_scale
         else:
             self.bias = jnp.zeros((out_features,))
 
+    def get_fourier_coeffs(self) -> jnp.ndarray:
+        """
+        Compute and return the Fourier coefficients for each circulant block.
+        Expected shape: (k_out, k_in, block_size)
+        """
+        return jnp.fft.fft(self.W, axis=-1)
+
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
-        # Assume block_circulant_matmul_custom is defined elsewhere with a custom JVP rule.
         out = block_circulant_matmul_custom(self.W, x, self.D_bernoulli)
         if self.k_out * self.block_size > self.out_features:
-            out = out[..., : self.out_features]
+            out = out[..., :self.out_features]
         if out.ndim == 1:
-            out = out + self.bias
+            return out + self.bias
         else:
-            out = out + self.bias[None, :]
-        return out
-
-    def get_fourier_coeffs(self) -> jnp.ndarray:
-        if self._last_block_fft is None:
-            raise ValueError(
-                "No Fourier coefficients available. Call the layer on some input first."
-            )
-        return self._last_block_fft
+            return out + self.bias[None, :]
