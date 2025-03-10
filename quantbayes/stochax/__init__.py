@@ -11,7 +11,14 @@ from . import (
     vision_classification,
     vision_segmentation,
 )
-from .trainer.train import data_loader, train, evaluate, regression_loss, binary_loss, multiclass_loss
+from .trainer.train import (
+    data_loader,
+    train,
+    evaluate,
+    regression_loss,
+    binary_loss,
+    multiclass_loss,
+)
 
 __all__ = [
     "deepar",
@@ -30,5 +37,5 @@ __all__ = [
     "multiclass_loss",
     "regression_loss",
     "train",
-    "evaluate"
+    "evaluate",
 ]

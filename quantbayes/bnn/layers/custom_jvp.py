@@ -287,7 +287,7 @@ class JVPBlockCirculant:
 @jax.custom_jvp
 def spectral_circulant_matmul(x: jnp.ndarray, fft_full: jnp.ndarray) -> jnp.ndarray:
     padded_dim = fft_full.shape[0]
-    single_example = (x.ndim == 1)
+    single_example = x.ndim == 1
     if single_example:
         x = x[None, :]
     d_in = x.shape[-1]
@@ -313,7 +313,7 @@ def spectral_circulant_matmul_jvp(primals, tangents):
     dx, dfft = tangents
     padded_dim = fft_full.shape[0]
 
-    single_example = (x.ndim == 1)
+    single_example = x.ndim == 1
     if single_example:
         x = x[None, :]
         if dx is not None:
@@ -456,6 +456,7 @@ class JVPCirculantProcess:
         if self._last_fft_full is None:
             raise ValueError("No Fourier coefficients available; call the layer first.")
         return self._last_fft_full
+
 
 # ------------------------------------------------------------------
 

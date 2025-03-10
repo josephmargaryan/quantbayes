@@ -59,11 +59,11 @@ def train_torch(
     val_loader: DataLoader,
     num_epochs: int,
     patience: int,
-    device: str = "cuda" if torch.cuda.is_available() else "cpu"
+    device: str = "cuda" if torch.cuda.is_available() else "cpu",
 ):
     # Move model to the appropriate device
     model.to(device)
-    
+
     train_losses = []
     val_losses = []
     best_val_loss = float("inf")
@@ -75,7 +75,7 @@ def train_torch(
         model.train()
         epoch_train_loss = 0.0
         total_train_samples = 0
-        
+
         for x, y in train_loader:
             x, y = x.to(device), y.to(device)
             optimizer.zero_grad()
@@ -87,7 +87,7 @@ def train_torch(
             batch_size = x.size(0)
             epoch_train_loss += loss.item() * batch_size
             total_train_samples += batch_size
-        
+
         epoch_train_loss /= total_train_samples
 
         # ----- Evaluation -----
@@ -109,7 +109,9 @@ def train_torch(
         val_losses.append(epoch_val_loss)
 
         # Log progress for this epoch
-        print(f"Epoch [{epoch + 1}/{num_epochs}] Train Loss: {epoch_train_loss:.4f} | Val Loss: {epoch_val_loss:.4f}")
+        print(
+            f"Epoch [{epoch + 1}/{num_epochs}] Train Loss: {epoch_train_loss:.4f} | Val Loss: {epoch_val_loss:.4f}"
+        )
 
         # ----- Early Stopping and Model Checkpointing -----
         if epoch_val_loss < best_val_loss:
@@ -139,9 +141,8 @@ def train_torch(
 
     return model
 
-def eval(
-        model: nn.Module, val_loader: DataLoader
-):
+
+def eval(model: nn.Module, val_loader: DataLoader):
     preds = []
     targets = []
     model.eval()
@@ -155,8 +156,9 @@ def eval(
     targets = torch.cat(targets).detach().numpy()
 
     loss = log_loss(targets, preds)
-    
+
     return loss
+
 
 if __name__ == "__main__":
     torch_model = TorchNet()

@@ -314,7 +314,7 @@ def spectral_circulant_matmul(x: jnp.ndarray, fft_full: jnp.ndarray) -> jnp.ndar
     x can be (batch, d_in) or just (d_in,). Operation is along the last dimension.
     """
     padded_dim = fft_full.shape[0]
-    single_example = (x.ndim == 1)
+    single_example = x.ndim == 1
     if single_example:
         x = x[None, :]
     d_in = x.shape[-1]
@@ -337,7 +337,7 @@ def spectral_circulant_matmul_jvp(primals, tangents):
     x, fft_full = primals
     dx, dfft = tangents
     padded_dim = fft_full.shape[0]
-    single_example = (x.ndim == 1)
+    single_example = x.ndim == 1
     if single_example:
         x = x[None, :]
         if dx is not None:
@@ -394,7 +394,7 @@ class JVPCirculantProcess(eqx.Module):
 
     w_real: jnp.ndarray  # shape (k_half,)
     w_imag: jnp.ndarray  # shape (k_half,)
-    bias: jnp.ndarray    # shape (padded_dim,)
+    bias: jnp.ndarray  # shape (padded_dim,)
 
     _last_fft_full: jnp.ndarray = eqx.field(default=None, repr=False)
 
@@ -481,7 +481,9 @@ class JVPCirculantProcess(eqx.Module):
     def get_fourier_coeffs(self) -> jnp.ndarray:
         """Retrieve the last full FFT vector used in forward pass."""
         if self._last_fft_full is None:
-            raise ValueError("Must call the layer at least once before calling this method.")
+            raise ValueError(
+                "Must call the layer at least once before calling this method."
+            )
         return self._last_fft_full
 
 

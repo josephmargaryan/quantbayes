@@ -15,23 +15,24 @@ __all__ = [
     "multiclass_loss",
     "regression_loss",
     "train",
-    "evaluate"
+    "evaluate",
 ]
 # -------------------------------
 # Data Loading Utilities
 # -------------------------------
 
+
 def data_loader(X, y, batch_size, shuffle=True, key=jr.PRNGKey(0)):
     """
     Generator that yields minibatches from X and y.
-    
+
     Args:
         X: Input data (JAX array).
         y: Target data (JAX array).
         batch_size: Number of samples per batch.
         shuffle: Whether to shuffle the indices.
         key: JAX PRNG key for shuffling.
-    
+
     Yields:
         Tuples (X_batch, y_batch)
     """
@@ -48,14 +49,16 @@ def data_loader(X, y, batch_size, shuffle=True, key=jr.PRNGKey(0)):
 # Example Model Definition
 # -------------------------------
 
+
 class EQNet(eqx.Module):
     """
     Example Equinox model analogous to a TorchNet:
       BatchNorm1d(5) -> Linear(5,10) -> Dropout(0.1) -> ReLU -> Linear(10,1)
-    
+
     If your model does not require stochasticity or state (e.g. no dropout or batchnorm),
     simply ignore the `key` and `state` inputs.
     """
+
     bn: eqx.nn.BatchNorm
     dropout: eqx.nn.Dropout
     fc1: eqx.nn.Linear
@@ -81,6 +84,7 @@ class EQNet(eqx.Module):
 # -------------------------------
 # Generic Loss Function & Steps
 # -------------------------------
+
 
 def binary_loss(model, state, x, y, key):
     """
@@ -134,7 +138,7 @@ def regression_loss(model, state, x, y, key):
 def train_step(model, state, opt_state, x, y, key, loss_fn, optimizer):
     """
     Generic training step.
-    
+
     Args:
         model: Equinox model.
         state: Model state (e.g. BatchNorm statistics); use None if unused.
@@ -143,7 +147,7 @@ def train_step(model, state, opt_state, x, y, key, loss_fn, optimizer):
         key: PRNG key.
         loss_fn: A function with signature (model, state, x, y, key) -> (loss, state).
         optimizer: An optax optimizer.
-    
+
     Returns:
         Updated (model, state, opt_state).
     """
@@ -153,18 +157,19 @@ def train_step(model, state, opt_state, x, y, key, loss_fn, optimizer):
     model = eqx.apply_updates(model, updates)
     return model, state, opt_state
 
+
 @eqx.filter_jit
 def eval_step(model, state, x, y, key, loss_fn):
     """
     Generic evaluation step returning the loss.
-    
+
     Args:
         model: Equinox model.
         state: Model state.
         x, y: Batch data.
         key: PRNG key.
         loss_fn: Loss function.
-    
+
     Returns:
         Loss value.
     """
@@ -176,12 +181,25 @@ def eval_step(model, state, x, y, key, loss_fn):
 # Generic Training and Evaluation Loops
 # -------------------------------
 
-def train(model, state, opt_state, optimizer, loss_fn,
-                  X_train, y_train, X_val, y_val,
-                  batch_size, num_epochs, patience, key):
+
+def train(
+    model,
+    state,
+    opt_state,
+    optimizer,
+    loss_fn,
+    X_train,
+    y_train,
+    X_val,
+    y_val,
+    batch_size,
+    num_epochs,
+    patience,
+    key,
+):
     """
     Generic training loop with early stopping and checkpointing.
-    
+
     Args:
         model: Equinox model.
         state: Model state.
@@ -194,7 +212,7 @@ def train(model, state, opt_state, optimizer, loss_fn,
         num_epochs: Maximum number of epochs.
         patience: Patience for early stopping.
         key: PRNG key.
-    
+
     Returns:
         best_model: The best model (in training mode).
         best_state: Corresponding best state.
@@ -214,9 +232,13 @@ def train(model, state, opt_state, optimizer, loss_fn,
         total_train_samples = 0
         train_key, loader_key = jr.split(train_key)
         # Training loop
-        for xb, yb in data_loader(X_train, y_train, batch_size, shuffle=True, key=loader_key):
+        for xb, yb in data_loader(
+            X_train, y_train, batch_size, shuffle=True, key=loader_key
+        ):
             train_key, subkey = jr.split(train_key)
-            model, state, opt_state = train_step(model, state, opt_state, xb, yb, subkey, loss_fn, optimizer)
+            model, state, opt_state = train_step(
+                model, state, opt_state, xb, yb, subkey, loss_fn, optimizer
+            )
             loss_val, _ = loss_fn(model, state, xb, yb, subkey)
             epoch_train_loss += loss_val * xb.shape[0]
             total_train_samples += xb.shape[0]
@@ -225,7 +247,9 @@ def train(model, state, opt_state, optimizer, loss_fn,
         # Evaluation loop
         epoch_val_loss = 0.0
         total_val_samples = 0
-        for xb, yb in data_loader(X_val, y_val, batch_size, shuffle=False, key=eval_key):
+        for xb, yb in data_loader(
+            X_val, y_val, batch_size, shuffle=False, key=eval_key
+        ):
             eval_key, subkey = jr.split(eval_key)
             loss_val = eval_step(model, state, xb, yb, subkey, loss_fn)
             epoch_val_loss += loss_val * xb.shape[0]
@@ -234,7 +258,9 @@ def train(model, state, opt_state, optimizer, loss_fn,
 
         train_losses.append(epoch_train_loss)
         val_losses.append(epoch_val_loss)
-        print(f"Epoch {epoch+1:4d} | Train Loss: {epoch_train_loss:.4f} | Val Loss: {epoch_val_loss:.4f}")
+        print(
+            f"Epoch {epoch+1:4d} | Train Loss: {epoch_train_loss:.4f} | Val Loss: {epoch_val_loss:.4f}"
+        )
 
         if epoch_val_loss < best_val_loss:
             best_val_loss = epoch_val_loss
@@ -249,10 +275,11 @@ def train(model, state, opt_state, optimizer, loss_fn,
 
     return best_model, best_state, train_losses, val_losses
 
+
 def evaluate(model, state, loss_fn, X_val, y_val, batch_size, key, metric_fn):
     """
     Generic evaluation loop.
-    
+
     Args:
         model: Equinox model.
         state: Model state.
@@ -261,7 +288,7 @@ def evaluate(model, state, loss_fn, X_val, y_val, batch_size, key, metric_fn):
         batch_size: Batch size.
         key: PRNG key.
         metric_fn: A function that accepts (targets, predictions) and returns a metric value.
-    
+
     Returns:
         Computed metric over the validation set.
     """
@@ -324,21 +351,44 @@ if __name__ == "__main__":
 
     # Train the model.
     best_model, best_state, train_losses, val_losses = train(
-        model, state, opt_state, optimizer, loss_fn,
-        X_train, y_train, X_val, y_val,
-        batch_size, num_epochs, patience, train_key
+        model,
+        state,
+        opt_state,
+        optimizer,
+        loss_fn,
+        X_train,
+        y_train,
+        X_val,
+        y_val,
+        batch_size,
+        num_epochs,
+        patience,
+        train_key,
     )
 
     # Switch to inference mode.
     inference_model = eqx.nn.inference_mode(best_model)
     # Evaluate using log_loss as metric (you could also use mean_squared_error for regression, etc.)
-    final_metric = evaluate(inference_model, best_state, loss_fn, X_val, y_val, batch_size, eval_key, log_loss)
+    final_metric = evaluate(
+        inference_model,
+        best_state,
+        loss_fn,
+        X_val,
+        y_val,
+        batch_size,
+        eval_key,
+        log_loss,
+    )
     print(f"Final validation log loss: {final_metric:.3f}")
 
     # Plot training curves.
     plt.figure(figsize=(10, 6))
-    plt.plot(np.arange(1, len(train_losses)+1), np.array(train_losses), label="Train Loss")
-    plt.plot(np.arange(1, len(val_losses)+1), np.array(val_losses), label="Validation Loss")
+    plt.plot(
+        np.arange(1, len(train_losses) + 1), np.array(train_losses), label="Train Loss"
+    )
+    plt.plot(
+        np.arange(1, len(val_losses) + 1), np.array(val_losses), label="Validation Loss"
+    )
     plt.xlabel("Epochs")
     plt.ylabel("Loss")
     plt.title("Loss over Epochs")
