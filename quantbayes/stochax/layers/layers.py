@@ -14,6 +14,7 @@ __all__ = [
     "SpectralDenseBlock",
     "FourierNeuralOperator1D",
     "MixtureOfTwoLayers",
+    "SpectralMultiheadAttention",
 ]
 
 
@@ -398,3 +399,118 @@ class MixtureOfTwoLayers(eqx.Module):
         else:
             raise ValueError(f"Unrecognized gating_mode={self.gating_mode}")
         return gate * outA + (1.0 - gate) * outB
+
+
+class SpectralMultiheadAttention(eqx.Module):
+    """
+    A multihead self-attention layer that applies FFT-based spectral modulation
+    to the input before performing standard multihead attention.
+    """
+
+    in_features: int = eqx.static_field()
+    num_heads: int = eqx.static_field()
+    head_dim: int = eqx.static_field()
+    W_q: Array
+    W_k: Array
+    W_v: Array
+    W_o: Array
+    base_filter: Array  # shape: (in_features//2 + 1,)
+    base_bias: Array  # shape: (in_features//2 + 1,)
+
+    def __init__(self, in_features: int, num_heads: int, *, key: PRNGKeyArray):
+        self.in_features = in_features
+        self.num_heads = num_heads
+        if in_features % num_heads != 0:
+            raise ValueError("in_features must be divisible by num_heads")
+        self.head_dim = in_features // num_heads
+
+        dtype = jnp.float32
+        lim = math.sqrt(1 / in_features)
+        keys = jr.split(key, 5)
+        self.W_q = jr.uniform(
+            keys[0], (in_features, in_features), minval=-lim, maxval=lim, dtype=dtype
+        )
+        self.W_k = jr.uniform(
+            keys[1], (in_features, in_features), minval=-lim, maxval=lim, dtype=dtype
+        )
+        self.W_v = jr.uniform(
+            keys[2], (in_features, in_features), minval=-lim, maxval=lim, dtype=dtype
+        )
+        self.W_o = jr.uniform(
+            keys[3], (in_features, in_features), minval=-lim, maxval=lim, dtype=dtype
+        )
+        freq_bins = in_features // 2 + 1
+        # For simplicity, we use the same key for both spectral parameters.
+        self.base_filter = jr.uniform(
+            keys[4], (freq_bins,), minval=0.9, maxval=1.1, dtype=dtype
+        )
+        self.base_bias = jr.uniform(
+            keys[4], (freq_bins,), minval=-0.1, maxval=0.1, dtype=dtype
+        )
+
+    def spectral_transform(self, x: Array) -> Array:
+        """
+        Applies FFT-based modulation to the input tensor along its last dimension.
+        Args:
+            x: Input array of shape (..., in_features)
+        Returns:
+            x_mod: Spectrally modulated array, shape (..., in_features)
+        """
+        # Compute real FFT along the last axis.
+        x_fft = jnp.fft.rfft(x, norm="ortho")
+        x_fft_mod = x_fft * self.base_filter + self.base_bias
+        # Inverse FFT to return to the original space.
+        x_mod = jnp.fft.irfft(x_fft_mod, n=self.in_features, norm="ortho")
+        return x_mod
+
+    def __call__(self, x: Array, *, key: Optional[PRNGKeyArray] = None) -> Array:
+        """
+        Args:
+            x: Input tensor of shape (seq_len, in_features)
+            key: Ignored; provided for API compatibility.
+        Returns:
+            output: Tensor of shape (seq_len, in_features) after attention.
+        """
+        # Apply spectral modulation to the input.
+        x_mod = self.spectral_transform(x)
+
+        # Compute query, key, and value matrices.
+        Q = x_mod @ self.W_q  # shape: (seq_len, in_features)
+        K = x_mod @ self.W_k
+        V = x_mod @ self.W_v
+
+        # Split each into heads.
+        def split_heads(t: Array) -> Array:
+            seq_len = t.shape[0]
+            return t.reshape(seq_len, self.num_heads, self.head_dim)
+
+        Q = split_heads(Q)
+        K = split_heads(K)
+        V = split_heads(V)
+
+        # Transpose to shape (num_heads, seq_len, head_dim)
+        Q = jnp.transpose(Q, (1, 0, 2))
+        K = jnp.transpose(K, (1, 0, 2))
+        V = jnp.transpose(V, (1, 0, 2))
+
+        # Compute scaled dot-product attention.
+        scale = math.sqrt(self.head_dim)
+        attn_scores = (
+            jnp.einsum("hqd,hkd->hqk", Q, K) / scale
+        )  # shape: (num_heads, seq_len, seq_len)
+        attn_weights = jax.nn.softmax(attn_scores, axis=-1)
+        attn_output = jnp.einsum(
+            "hqk,hkd->hqd", attn_weights, V
+        )  # shape: (num_heads, seq_len, head_dim)
+
+        # Transpose and combine heads back.
+        attn_output = jnp.transpose(
+            attn_output, (1, 0, 2)
+        )  # shape: (seq_len, num_heads, head_dim)
+        combined = attn_output.reshape(
+            x.shape[0], self.in_features
+        )  # shape: (seq_len, in_features)
+
+        # Final linear projection.
+        output = combined @ self.W_o
+        return output

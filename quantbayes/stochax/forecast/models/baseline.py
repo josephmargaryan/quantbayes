@@ -5,9 +5,19 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 
-from quantbayes.stochax.layers import SpectralGRUCell, SpectralLSTMCell
+from quantbayes.stochax.layers import (
+    SpectralGRUCell,
+    SpectralLSTMCell,
+    SpectralMultiheadAttention,
+)
 
-__all__ = ["GRU", "LSTM", "SpectralGRUModel", "SpectralLSTMModel"]
+__all__ = [
+    "GRU",
+    "LSTM",
+    "SpectralGRUModel",
+    "SpectralLSTMModel",
+    "SpectralAttentionModel",
+]
 
 
 class GRU(eqx.Module):
@@ -142,4 +152,35 @@ class SpectralLSTMModel(eqx.Module):
         final_h, _ = final_hidden
         # Use the final hidden state to predict the next value.
         pred = self.linear(final_h)
+        return pred[0], state
+
+
+class SpectralAttentionModel(eqx.Module):
+    """
+    A simple model that uses the SpectralMultiheadAttention layer.
+    It processes a sequence and outputs a scalar prediction based on an aggregated representation.
+    """
+
+    attn: SpectralMultiheadAttention
+    linear: eqx.nn.Linear  # Maps aggregated representation to scalar output
+
+    def __init__(self, in_features: int, num_heads: int, *, key: PRNGKeyArray):
+        attn_key, lin_key = jr.split(key)
+        self.attn = SpectralMultiheadAttention(in_features, num_heads, key=attn_key)
+        self.linear = eqx.nn.Linear(in_features, 1, key=lin_key)
+
+    def __call__(self, inputs: Array, key, state) -> Tuple[Array, any]:
+        """
+        Args:
+            inputs: Array of shape (seq_len, in_features)
+            key: Ignored in this model.
+            state: Additional state (passed through unchanged)
+        Returns:
+            (prediction, state) where prediction is a scalar.
+        """
+        # Apply spectral attention.
+        attn_out = self.attn(inputs)
+        # Aggregate across the sequence (using mean).
+        agg = jnp.mean(attn_out, axis=0)
+        pred = self.linear(agg)
         return pred[0], state

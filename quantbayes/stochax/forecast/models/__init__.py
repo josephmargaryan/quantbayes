@@ -1,5 +1,11 @@
 from .autoformer import Autoformer
-from .baseline import GRU, LSTM, SpectralGRUModel, SpectralLSTMModel
+from .baseline import (
+    GRU,
+    LSTM,
+    SpectralGRUModel,
+    SpectralLSTMModel,
+    SpectralAttentionModel,
+)
 from .fedformer import FedformerForecast
 from .infoformer import InfoFormerForecast
 from .mamba import MambaStateSpaceForecast
@@ -14,6 +20,7 @@ __all__ = [
     "Autoformer",
     "SpectralGRUModel",
     "SpectralLSTMModel",
+    "SpectralAttentionModel",
     "GRU",
     "LSTM",
     "FedformerForecast",

@@ -13,11 +13,13 @@ from .layers import (
     SpectralDenseBlock,
     SpectralGRUCell,
     SpectralLSTMCell,
+    SpectralMultiheadAttention,
 )
 
 __all__ = [
     "SpectralGRUCell",
     "SpectralLSTMCell",
+    "SpectralMultiheadAttention",
     "SpectralDenseBlock",
     "FourierNeuralOperator1D",
     "BlockCirculant",

@@ -1,6 +1,12 @@
 from .forecast import ForecastingModel
 from .models.autoformer import Autoformer
-from .models.baseline import GRU, LSTM, SpectralGRUModel, SpectralLSTMModel
+from .models.baseline import (
+    GRU,
+    LSTM,
+    SpectralGRUModel,
+    SpectralLSTMModel,
+    SpectralAttentionModel,
+)
 from .models.fedformer import FedformerForecast
 from .models.infoformer import InfoFormerForecast
 from .models.mamba import MambaStateSpaceForecast
@@ -16,6 +22,7 @@ __all__ = [
     "GRU",
     "SpectralGRUModel",
     "SpectralLSTMModel",
+    "SpectralAttentionModel",
     "LSTM",
     "FedformerForecast",
     "InfoFormerForecast",
