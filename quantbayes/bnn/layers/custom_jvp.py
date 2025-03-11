@@ -7,10 +7,10 @@ import numpyro.distributions as dist
 from numpyro.distributions import transforms
 
 __all__ = [
-    "JVPCirculant",
-    "JVPBlockCirculant",
-    "JVPCirculantProcess",
-    "JVPBlockCirculantProcess",
+    "Circulant",
+    "BlockCirculant",
+    "CirculantProcess",
+    "BlockCirculantProcess",
 ]
 
 
@@ -168,7 +168,7 @@ def block_circulant_matmul_custom_jvp(primals, tangents):
     return primal_out, tangent_out
 
 
-class JVPCirculant:
+class Circulant:
     """
     FFT–based circulant layer that uses a custom JVP rule for faster gradients.
     The forward pass computes:
@@ -213,7 +213,7 @@ class JVPCirculant:
         return hidden
 
 
-class JVPBlockCirculant:
+class BlockCirculant:
     """
     Block–circulant layer with custom JVP rules.
 
@@ -350,7 +350,7 @@ def spectral_circulant_matmul_jvp(primals, tangents):
     return primal_y, dY
 
 
-class JVPCirculantProcess:
+class CirculantProcess:
     """
     NumPyro-based 'spectral' circulant layer with a custom JVP and an explicit bias.
     Matches JVPCirculant's parameter count: we have padded_dim for the bias,
@@ -560,7 +560,7 @@ def block_circulant_spectral_matmul_custom_jvp(primals, tangents):
 
 # ----------------------------------------------------------------
 # Frequency–domain block circulant layer with custom JVP.
-class JVPBlockCirculantProcess:
+class BlockCirculantProcess:
     """
     JVP version of BlockCirculantProcess: a frequency–domain block-circulant layer
     that is identical to BlockCirculantProcess except that it uses a custom JVP–decorated

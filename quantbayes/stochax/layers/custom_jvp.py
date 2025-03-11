@@ -6,10 +6,10 @@ import jax.numpy as jnp
 import jax.random as jr
 
 __all__ = [
-    "JVPCirculant",
-    "JVPBlockCirculant",
-    "JVPCirculantProcess",
-    "JVPBlockCirculantProcess",
+    "Circulant",
+    "BlockCirculant",
+    "CirculantProcess",
+    "BlockCirculantProcess",
 ]
 
 
@@ -48,7 +48,7 @@ def circulant_matmul_jvp(primals, tangents):
     return y, dy_dx + dy_df
 
 
-class JVPCirculant(eqx.Module):
+class Circulant(eqx.Module):
     """
     A circulant layer that uses a circulant weight matrix defined by its first row.
     The layer stores only the first row (a vector of shape (n,)) and a bias vector (shape (n,)).
@@ -232,7 +232,7 @@ def block_circulant_matmul_jvp(primals, tangents):
     return out, d_out
 
 
-class JVPBlockCirculant(eqx.Module):
+class BlockCirculant(eqx.Module):
     """
     Equinox module implementing a block-circulant layer that uses a custom JVP rule.
 
@@ -377,15 +377,16 @@ def spectral_circulant_matmul_jvp(primals, tangents):
     return primal_y, dY
 
 
-class JVPCirculantProcess(eqx.Module):
+class CirculantProcess(eqx.Module):
     """
     Spectral circulant layer with custom JVP.
-    
+
     This layer parameterizes the circulant weight matrix via a half-spectrum
     (w_real and w_imag) to enforce Hermitian symmetry (ensuring real outputs)
     and imposes a spectral prior. The Fourier coefficients are computed on the fly
     in get_fourier_coeffs(), so __call__ remains pure and immutable.
     """
+
     in_features: int
     padded_dim: int
     alpha: float
@@ -394,7 +395,7 @@ class JVPCirculantProcess(eqx.Module):
 
     w_real: jnp.ndarray  # shape: (k_half,)
     w_imag: jnp.ndarray  # shape: (k_half,)
-    bias: jnp.ndarray    # shape: (padded_dim,)
+    bias: jnp.ndarray  # shape: (padded_dim,)
 
     def __init__(
         self,
@@ -453,16 +454,17 @@ class JVPCirculantProcess(eqx.Module):
         return out
 
 
-class JVPBlockCirculantProcess(eqx.Module):
+class BlockCirculantProcess(eqx.Module):
     """
     Block-circulant layer with custom JVP.
-    
+
     This layer partitions the weight matrix into blocks where each block is circulant.
     The forward pass computes:
        out = block_circulant_matmul_custom(W, x, D_bernoulli) + bias
     without mutating internal state. The Fourier coefficients for each block are
     computed on the fly in get_fourier_coeffs().
     """
+
     W: jnp.ndarray  # shape: (k_out, k_in, block_size)
     D_bernoulli: Optional[jnp.ndarray]  # shape: (in_features,) or None
     bias: jnp.ndarray  # shape: (out_features,)
@@ -513,7 +515,7 @@ class JVPBlockCirculantProcess(eqx.Module):
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
         out = block_circulant_matmul_custom(self.W, x, self.D_bernoulli)
         if self.k_out * self.block_size > self.out_features:
-            out = out[..., :self.out_features]
+            out = out[..., : self.out_features]
         if out.ndim == 1:
             return out + self.bias
         else:

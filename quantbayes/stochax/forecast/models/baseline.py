@@ -1,7 +1,12 @@
 import equinox as eqx
+from jaxtyping import Array, PRNGKeyArray
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+
+from quantbayes.stochax.layers import SpectralGRUCell
+
+__all__ = ["GRU", "LSTM", "SpectralGRUModel"]
 
 
 class GRU(eqx.Module):
@@ -54,3 +59,41 @@ class LSTM(eqx.Module):
         final_state, _ = jax.lax.scan(step, init_state, x)
         final_h, final_c = final_state
         return self.fc(final_h), state
+
+
+class SpectralGRUModel(eqx.Module):
+    """
+    A simple time series prediction model using the SpectralGRUCell.
+    It scans over a sequence and uses the final hidden state to predict the next value.
+    """
+
+    cell: SpectralGRUCell
+    linear: eqx.nn.Linear  # maps hidden state to output
+
+    def __init__(self, input_size: int, hidden_size: int, *, key: PRNGKeyArray):
+        cell_key, lin_key = jr.split(key)
+        self.cell = SpectralGRUCell(
+            input_size=input_size, hidden_size=hidden_size, key=cell_key
+        )
+        self.linear = eqx.nn.Linear(hidden_size, 1, key=lin_key)
+
+    def __call__(self, inputs: Array, key, state) -> Array:
+        """
+        Args:
+            inputs: array of shape (seq_len, input_size)
+        Returns:
+            prediction: scalar prediction (next time step)
+        """
+        seq_len = inputs.shape[0]
+        # initial hidden state
+        hidden = jnp.zeros((self.cell.hidden_size,))
+
+        # scan over the sequence
+        def step(hidden, x):
+            new_hidden = self.cell(x, hidden)
+            return new_hidden, new_hidden
+
+        final_hidden, _ = jax.lax.scan(step, hidden, inputs)
+        # Use the final hidden state to predict the next value
+        pred = self.linear(final_hidden)
+        return pred[0], state

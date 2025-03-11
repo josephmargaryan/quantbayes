@@ -1,4 +1,4 @@
-from .spectral_vit import SpectralVisionTransformer
+from .spectral_vit import CircViT
 from .vit import VisionTransformer
 
-__all__ = ["VisionTransformer", "SpectralVisionTransformer"]
+__all__ = ["VisionTransformer", "CircViT"]

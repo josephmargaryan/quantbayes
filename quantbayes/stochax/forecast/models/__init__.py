@@ -1,5 +1,5 @@
 from .autoformer import Autoformer
-from .baseline import GRU, LSTM
+from .baseline import GRU, LSTM, SpectralGRUModel
 from .fedformer import FedformerForecast
 from .infoformer import InfoFormerForecast
 from .mamba import MambaStateSpaceForecast
@@ -12,6 +12,7 @@ from .wave_net import WaveNetForecast
 
 __all__ = [
     "Autoformer",
+    "SpectralGRUModel",
     "GRU",
     "LSTM",
     "FedformerForecast",

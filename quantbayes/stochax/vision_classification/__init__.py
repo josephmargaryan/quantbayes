@@ -1,9 +1,7 @@
-from .vision_classification import VisionClassificationModel
-from .models.spectral_vit import SpectralVisionTransformer
+from .models.spectral_vit import CircViT
 from .models.vit import VisionTransformer
 
 __all__ = [
-    "VisionClassificationModel",
     "VisionTransformer",
-    "SpectralVisionTransformer",
+    "CircViT",
 ]

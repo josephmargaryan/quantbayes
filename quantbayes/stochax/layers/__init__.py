@@ -1,29 +1,23 @@
 from .custom_jvp import (
-    JVPBlockCirculant,
-    JVPBlockCirculantProcess,
-    JVPCirculant,
-    JVPCirculantProcess,
-)
-from .layers import (
     BlockCirculant,
     BlockCirculantProcess,
     Circulant,
     CirculantProcess,
+)
+from .layers import (
     FourierNeuralOperator1D,
     MixtureOfTwoLayers,
     SpectralDenseBlock,
+    SpectralGRUCell,
 )
 
 __all__ = [
-    "Circulant",
-    "BlockCirculant",
-    "CirculantProcess",
-    "BlockCirculantProcess",
+    "SpectralGRUCell",
     "SpectralDenseBlock",
     "FourierNeuralOperator1D",
-    "JVPBlockCirculant",
-    "JVPCirculant",
-    "JVPBlockCirculantProcess",
-    "JVPCirculantProcess",
+    "BlockCirculant",
+    "Circulant",
+    "BlockCirculantProcess",
+    "CirculantProcess",
     "MixtureOfTwoLayers",
 ]

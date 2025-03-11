@@ -3,81 +3,125 @@ import equinox as eqx
 import jax.numpy as jnp
 from jaxtyping import Array, Float, PRNGKeyArray
 
-from quantbayes.stochax.layers import JVPCirculantProcess
-from quantbayes.stochax.vision_classification.models.vit import PatchEmbedding, AttentionBlock
+from quantbayes.stochax.layers import JVPBlockCirculantProcess
+from quantbayes.stochax.vision_classification.models.vit import (
+    PatchEmbedding,
+    AttentionBlock,
+)
 
-class SpectralVisionTransformer(eqx.Module):
-    # Same patch_embedding, positional_embedding, cls_token, etc.
+
+class CircViT(eqx.Module):
     patch_embedding: PatchEmbedding
     positional_embedding: jnp.ndarray
     cls_token: jnp.ndarray
     attention_blocks: list[AttentionBlock]
     dropout: eqx.nn.Dropout
-    spectral_mlp: list[JVPCirculantProcess]  # List of JVPCirculantProcess layers
-    final_linear: eqx.nn.Linear  # Final projection to num_classes
+    circ_head: "JVPBlockCirculantProcess"  # Use your custom circulant layer.
     num_layers: int
 
-    def __init__(self, embedding_dim: int, hidden_dim: int, num_heads: int,
-                 num_layers: int, dropout_rate: float, patch_size: int,
-                 num_patches: int, num_classes: int, key: PRNGKeyArray,
-                 channels: int, spectral_padded_dim: int = None, alpha: float = 1.0, K: int = None):
-        # Create keys.
+    def __init__(
+        self,
+        embedding_dim: int,
+        hidden_dim: int,
+        num_heads: int,
+        num_layers: int,
+        dropout_rate: float,
+        patch_size: int,
+        num_patches: int,
+        num_classes: int,
+        circ_block_size: int,
+        key: PRNGKeyArray,
+        channels: int,
+    ):
         key1, key2, key3, key4, key5, key6 = jr.split(key, 6)
         self.patch_embedding = PatchEmbedding(channels, embedding_dim, patch_size, key1)
+
+        # +1 for the CLS token.
         self.positional_embedding = jr.normal(key2, (num_patches + 1, embedding_dim))
         self.cls_token = jr.normal(key3, (1, embedding_dim))
         self.num_layers = num_layers
-        # Use same attention blocks.
+
+        # Create transformer (attention) blocks.
         self.attention_blocks = [
             AttentionBlock(embedding_dim, hidden_dim, num_heads, dropout_rate, key4)
             for _ in range(num_layers)
         ]
-        self.dropout = eqx.nn.Dropout(dropout_rate)
-        
-        # Define spectral MLP layers replacing traditional dense layers.
-        # For example, two spectral layers.
-        spectral_padded_dim = spectral_padded_dim if spectral_padded_dim is not None else hidden_dim
-        sp_key1, sp_key2 = jr.split(key5)
-        self.spectral_mlp = [
-            JVPCirculantProcess(in_features=embedding_dim, padded_dim=spectral_padded_dim, alpha=alpha, K=K, key=sp_key1),
-            JVPCirculantProcess(in_features=spectral_padded_dim, padded_dim=spectral_padded_dim, alpha=alpha, K=K, key=sp_key2)
-        ]
-        # Final projection to num_classes (a standard dense layer).
-        self.final_linear = eqx.nn.Linear(spectral_padded_dim, num_classes, key=key6)
 
-    def __call__(self, x: Float[Array, "channels height width"], key: PRNGKeyArray, state):
+        self.dropout = eqx.nn.Dropout(dropout_rate)
+
+        # Final classification head using the circulant layer.
+        # Here, in_features is embedding_dim (from the CLS token),
+        # out_features is num_classes, and we set block_size to circ_block_size.
+        self.circ_head = JVPBlockCirculantProcess(
+            in_features=embedding_dim,
+            out_features=num_classes,
+            block_size=circ_block_size,
+            key=key5,
+            init_scale=0.1,
+            use_diag=True,
+            use_bias=True,
+        )
+        # Create transformer (attention) blocks.
+        self.attention_blocks = [
+            AttentionBlock(embedding_dim, hidden_dim, num_heads, dropout_rate, key4)
+            for _ in range(num_layers)
+        ]
+
+        self.dropout = eqx.nn.Dropout(dropout_rate)
+
+        # Final classification head using the circulant layer.
+        # Here, in_features is embedding_dim (from the CLS token),
+        # out_features is num_classes, and we set block_size to circ_block_size.
+        self.circ_head = JVPBlockCirculantProcess(
+            in_features=embedding_dim,
+            out_features=num_classes,
+            block_size=circ_block_size,
+            key=key5,
+            init_scale=0.1,
+            use_diag=True,
+            use_bias=True,
+        )
+
+    def __call__(self, x: Float[Array, "channels height width"], key: PRNGKeyArray, state) -> tuple[Float[Array, "num_classes"], any]:
+        # Embed patches.
         x = self.patch_embedding(x)
+        # Prepend the CLS token.
         x = jnp.concatenate((self.cls_token, x), axis=0)
-        x += self.positional_embedding[:x.shape[0]]
+        x += self.positional_embedding[: x.shape[0]]
+
+        # Split keys: one for the initial dropout and one per transformer block.
         keys = jr.split(key, self.num_layers + 1)
         x = self.dropout(x, key=keys[0])
         for block, block_key in zip(self.attention_blocks, keys[1:]):
             x = block(x, key=block_key)
-        x = x[0]  # CLS token
-        # Pass through spectral MLP layers.
-        for layer in self.spectral_mlp:
-            x = layer(x)
-        logits = self.final_linear(x)
+
+        # Use only the CLS token for classification.
+        cls_embedding = x[0]
+        # Apply the circulant classification head.
+        logits = self.circ_head(cls_embedding)
         return logits, state
     
-# Quick test
-def test_spectral_vit():
-    key = jr.PRNGKey(0)
-    # Dummy hyperparameters.
-    channels = 3
-    height, width = 32, 32
-    patch_size = 4
-    num_patches = (height // patch_size) * (width // patch_size)
+# Example test function for CircViT with MNIST-like configuration.
+def test_circvit_mnist_output_shape():
+    # Configuration parameters.
     embedding_dim = 64
-    hidden_dim = 128
+    hidden_dim = embedding_dim * 4
     num_heads = 4
-    num_layers = 2
+    num_layers = 6
     dropout_rate = 0.1
+    patch_size = 7
+    img_height = 28
+    img_width = 28
+    channels = 1
+    num_patches = (img_height // patch_size) * (img_width // patch_size)  # 16 patches.
     num_classes = 10
-    spectral_padded_dim = 128  # Could be different from hidden_dim.
-    
-    # Instantiate the model.
-    model = SpectralVisionTransformer(
+    circ_block_size = 8  # For example; must be chosen appropriately relative to embedding_dim.
+
+    # Create PRNG keys.
+    key = jr.PRNGKey(42)
+    key, model_key, run_key, input_key = jr.split(key, 4)
+
+    circvit = CircViT(
         embedding_dim=embedding_dim,
         hidden_dim=hidden_dim,
         num_heads=num_heads,
@@ -86,25 +130,18 @@ def test_spectral_vit():
         patch_size=patch_size,
         num_patches=num_patches,
         num_classes=num_classes,
-        key=key,
+        circ_block_size=circ_block_size,
+        key=model_key,
         channels=channels,
-        spectral_padded_dim=spectral_padded_dim
     )
-    
-    # Create a dummy input image.
-    dummy_input = jr.normal(key, (channels, height, width))
-    
-    # Dummy state (if your model uses any state; otherwise, pass None)
-    state = None
-    
-    # Run a forward pass.
-    logits, state_out = model(dummy_input, key, state)
-    
-    print("Logits shape:", logits.shape)
-    # Optionally, test visualization functions:
-    # For example, visualize the Fourier coefficients from the first spectral layer.
-    fft_coeffs = model.spectral_mlp[0].get_fourier_coeffs()
-    print("First spectral layer Fourier coefficients shape:", fft_coeffs.shape)
+
+    # Create a random input image of shape [channels, height, width].
+    x = jr.normal(input_key, (channels, img_height, img_width))
+    logits, _ = circvit(x, key=run_key, state=None)
+
+    # Check that the output has shape (num_classes,).
+    assert logits.shape == (num_classes,), f"Expected output shape ({num_classes},), got {logits.shape}"
+    print("CircViT MNIST test passed!")
 
 if __name__ == "__main__":
-    test_spectral_vit()
+    test_circvit_mnist_output_shape()

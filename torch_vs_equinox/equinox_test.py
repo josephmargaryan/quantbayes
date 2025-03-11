@@ -7,9 +7,12 @@ import jax.numpy as jnp
 from sklearn.metrics import log_loss
 import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
-from quantbayes.fake_data import generate_binary_classification_data
+from quantbayes.fake_data import (
+    generate_binary_classification_data,
+    generate_regression_data,
+)
 from quantbayes.stochax.utils import xavier_init, apply_custom_initialization
-from quantbayes.stochax import train, data_loader, binary_loss, predict
+from quantbayes.stochax import train, data_loader, binary_loss, predict, regression_loss
 from quantbayes.bnn.utils import (
     plot_roc_curve,
     plot_calibration_curve,
@@ -17,7 +20,7 @@ from quantbayes.bnn.utils import (
 )
 
 
-df = generate_binary_classification_data()
+df = generate_regression_data()
 X, y = df.drop("target", axis=1), df["target"]
 X_train, X_test, y_train, y_test = train_test_split(X.values, y.values, test_size=0.2)
 X_train = jnp.array(X_train)
@@ -31,7 +34,12 @@ val_loader = data_loader(X=X_test, y=y_test, batch_size=200, shuffle=False)
 key = jr.key(0)
 
 from quantbayes.stochax.layers import JVPCirculantProcess, JVPBlockCirculantProcess
-from quantbayes.stochax.utils import visualize_deterministic_block_fft, visualize_deterministic_fft
+from quantbayes.stochax.utils import (
+    visualize_deterministic_block_fft,
+    visualize_deterministic_fft,
+)
+
+
 class EQNet(eqx.Module):
     l1: eqx.Module
     l2: eqx.nn.Linear
@@ -58,7 +66,7 @@ best_model, best_state, train_losses, val_losses = train(
     state=state,
     opt_state=opt_state,
     optimizer=optimizer,
-    loss_fn=binary_loss,
+    loss_fn=regression_loss,
     X_train=X_train,
     y_train=y_train,
     X_val=X_test,

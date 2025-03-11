@@ -1,20 +1,14 @@
 from .base import Module
 from .custom_jvp import (
-    JVPBlockCirculant,
-    JVPBlockCirculantProcess,
-    JVPCirculant,
-    JVPCirculantProcess,
-)
-from .layers import (
-    LSTM,
     BlockCirculant,
     BlockCirculantProcess,
     Circulant,
     CirculantProcess,
+)
+from .layers import (
+    LSTM,
     Conv1d,
     Conv2d,
-    DeepKerneBlockCirc,
-    DeepKernelCirc,
     FFTConv1d,
     FFTConv2d,
     FFTParticleLinear,
@@ -42,8 +36,6 @@ __all__ = [
     "BlockCirculant",
     "CirculantProcess",
     "BlockCirculantProcess",
-    "DeepKernelCirc",
-    "DeepKerneBlockCirc",
     "FourierNeuralOperator1D",
     "ParticleLinear",
     "FFTParticleLinear",
@@ -63,9 +55,5 @@ __all__ = [
     "GaussianProcessLayer",
     "VariationalLayer",
     "SpectralDenseBlock",
-    "JVPBlockCirculant",
-    "JVPCirculant",
-    "JVPCirculantProcess",
-    "JVPBlockCirculantProcess",
     "MixtureOfTwoLayers",
 ]
