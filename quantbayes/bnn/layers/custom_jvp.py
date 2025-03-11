@@ -13,7 +13,7 @@ __all__ = [
     "BlockCirculantProcess",
     "SpectralConv1d",
     "SpectralConv2d",
-    "SpectralTransposed2d"
+    "SpectralTransposed2d",
 ]
 
 
@@ -698,11 +698,14 @@ class BlockCirculantProcess:
 # Custom JVP functions for spectral convolution operations
 # =============================================================================
 
+
 # -----------------------------
 # 1D Spectral Convolution
 # -----------------------------
 @jax.custom_jvp
-def spectral_conv1d_func(x: jnp.ndarray, weight_fft: jnp.ndarray, bias: jnp.ndarray) -> jnp.ndarray:
+def spectral_conv1d_func(
+    x: jnp.ndarray, weight_fft: jnp.ndarray, bias: jnp.ndarray
+) -> jnp.ndarray:
     """
     x: shape (B, Cin, W)
     weight_fft: shape (Cout, Cin, rfft_length)
@@ -717,12 +720,13 @@ def spectral_conv1d_func(x: jnp.ndarray, weight_fft: jnp.ndarray, bias: jnp.ndar
         x = jnp.pad(x, ((0, 0), (0, 0), (0, pad_amount)))
     X_fft = jnp.fft.rfft(x, n=fft_size, axis=-1)
     # Expand dimensions to align for multiplication.
-    X_fft_exp = X_fft[:, None, :, :]         # (B, 1, Cin, rfft_length)
-    W_fft_exp = weight_fft[None, :, :, :]      # (1, Cout, Cin, rfft_length)
+    X_fft_exp = X_fft[:, None, :, :]  # (B, 1, Cin, rfft_length)
+    W_fft_exp = weight_fft[None, :, :, :]  # (1, Cout, Cin, rfft_length)
     Y_fft = jnp.sum(X_fft_exp * W_fft_exp, axis=2)  # (B, Cout, rfft_length)
     y = jnp.fft.irfft(Y_fft, n=fft_size, axis=-1)
     y = y[..., :W]  # Crop back to original width.
     return y + bias[None, :, None]
+
 
 @spectral_conv1d_func.defjvp
 def spectral_conv1d_func_jvp(primals, tangents):
@@ -738,11 +742,14 @@ def spectral_conv1d_func_jvp(primals, tangents):
         dy += dbias[None, :, None]
     return y, dy
 
+
 # -----------------------------
 # 2D Spectral Convolution
 # -----------------------------
 @jax.custom_jvp
-def spectral_conv2d_func(x: jnp.ndarray, weight_fft: jnp.ndarray, bias: jnp.ndarray) -> jnp.ndarray:
+def spectral_conv2d_func(
+    x: jnp.ndarray, weight_fft: jnp.ndarray, bias: jnp.ndarray
+) -> jnp.ndarray:
     """
     x: shape (B, Cin, H, W)
     weight_fft: shape (Cout, Cin, Hf, Wf_rfft)
@@ -759,13 +766,16 @@ def spectral_conv2d_func(x: jnp.ndarray, weight_fft: jnp.ndarray, bias: jnp.ndar
         x = jnp.pad(x, ((0, 0), (0, 0), (0, pad_h), (0, pad_w)))
     X_fft = jnp.fft.rfft2(x, s=(Hf, W_full), axes=(2, 3))
     # Expand dimensions for broadcasting.
-    X_fft_exp = X_fft[:, None, :, :, :]       # (B, 1, Cin, Hf, Wf_rfft)
+    X_fft_exp = X_fft[:, None, :, :, :]  # (B, 1, Cin, Hf, Wf_rfft)
     # Use the conjugate of weight_fft (as in your derivation).
-    W_fft_exp = jnp.conjugate(weight_fft)[None, :, :, :, :]  # (1, Cout, Cin, Hf, Wf_rfft)
+    W_fft_exp = jnp.conjugate(weight_fft)[
+        None, :, :, :, :
+    ]  # (1, Cout, Cin, Hf, Wf_rfft)
     Y_fft = jnp.sum(X_fft_exp * W_fft_exp, axis=2)  # (B, Cout, Hf, Wf_rfft)
     y = jnp.fft.irfft2(Y_fft, s=(Hf, W_full), axes=(2, 3))
     y = y[..., :H, :W]
     return y + bias[None, :, None, None]
+
 
 @spectral_conv2d_func.defjvp
 def spectral_conv2d_func_jvp(primals, tangents):
@@ -781,11 +791,14 @@ def spectral_conv2d_func_jvp(primals, tangents):
         dy += dbias[None, :, None, None]
     return y, dy
 
+
 # -----------------------------
 # 2D Spectral Transposed Convolution
 # -----------------------------
 @jax.custom_jvp
-def spectral_transposed_conv2d_func(x: jnp.ndarray, weight_fft: jnp.ndarray, bias: jnp.ndarray) -> jnp.ndarray:
+def spectral_transposed_conv2d_func(
+    x: jnp.ndarray, weight_fft: jnp.ndarray, bias: jnp.ndarray
+) -> jnp.ndarray:
     """
     x: shape (B, Cout, H, W)
     weight_fft: shape (Cin, Cout, Hf, Wf_rfft)
@@ -798,11 +811,14 @@ def spectral_transposed_conv2d_func(x: jnp.ndarray, weight_fft: jnp.ndarray, bia
     # Expand X_fft: (B, Cout, 1, Hf, Wf_rfft)
     X_fft_exp = X_fft[:, :, None, :, :]
     W_fft_exp = weight_fft[None, :, :, :, :]  # (1, Cin, Cout, Hf, Wf_rfft)
-    Z_fft = jnp.sum(X_fft_exp * W_fft_exp, axis=1)  # Sum over the original Cout dimension → (B, Cin, Hf, Wf_rfft)
+    Z_fft = jnp.sum(
+        X_fft_exp * W_fft_exp, axis=1
+    )  # Sum over the original Cout dimension → (B, Cin, Hf, Wf_rfft)
     W_full = 2 * (Wf_rfft - 1) if Wf_rfft > 1 else 1
     y = jnp.fft.irfft2(Z_fft, s=(Hf, W_full), axes=(2, 3))
     y = y[..., :H, :W]
     return y + (bias[None, :, None, None] if bias is not None else 0.0)
+
 
 @spectral_transposed_conv2d_func.defjvp
 def spectral_transposed_conv2d_func_jvp(primals, tangents):
@@ -818,9 +834,11 @@ def spectral_transposed_conv2d_func_jvp(primals, tangents):
         dy += dbias[None, :, None, None]
     return y, dy
 
+
 # =============================================================================
 # NumPyro layer classes that use the above custom functions
 # =============================================================================
+
 
 # -----------------------------
 # SpectralConv1d in NumPyro
@@ -851,12 +869,16 @@ class SpectralConv1d:
         self.alpha = alpha
         self.K = K if (K is not None and K <= self.rfft_length) else self.rfft_length
         self.name = name
-        self.prior_fn = prior_fn if prior_fn is not None else (lambda scale: dist.Normal(0.0, scale))
+        self.prior_fn = (
+            prior_fn
+            if prior_fn is not None
+            else (lambda scale: dist.Normal(0.0, scale))
+        )
 
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
         # x: shape (B, in_channels, W)
         freq_idx = jnp.arange(self.rfft_length, dtype=jnp.float32)
-        prior_std = 1.0 / jnp.sqrt(1.0 + (freq_idx ** self.alpha))
+        prior_std = 1.0 / jnp.sqrt(1.0 + (freq_idx**self.alpha))
         active_idx = jnp.arange(self.K)
         active_shape = (self.out_channels, self.in_channels, self.K)
         active_real = numpyro.sample(
@@ -881,6 +903,7 @@ class SpectralConv1d:
             dist.Normal(0.0, 1.0).expand([self.out_channels]).to_event(1),
         )
         return spectral_conv1d_func(x, weight_fft, bias)
+
 
 # -----------------------------
 # SpectralConv2d in NumPyro
@@ -913,14 +936,18 @@ class SpectralConv2d:
         else:
             self.K_h, self.K_w = K
         self.name = name
-        self.prior_fn = prior_fn if prior_fn is not None else (lambda scale: dist.Normal(0.0, scale))
+        self.prior_fn = (
+            prior_fn
+            if prior_fn is not None
+            else (lambda scale: dist.Normal(0.0, scale))
+        )
 
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
         # x: shape (B, in_channels, H, W)
         freq_idx_h = jnp.arange(self.Hf, dtype=jnp.float32)
         freq_idx_w = jnp.arange(self.Wf_rfft, dtype=jnp.float32)
-        decay_h = 1.0 / jnp.sqrt(1.0 + (freq_idx_h ** self.alpha))
-        decay_w = 1.0 / jnp.sqrt(1.0 + (freq_idx_w ** self.alpha))
+        decay_h = 1.0 / jnp.sqrt(1.0 + (freq_idx_h**self.alpha))
+        decay_w = 1.0 / jnp.sqrt(1.0 + (freq_idx_w**self.alpha))
         prior_std = jnp.outer(decay_h, decay_w)  # shape (Hf, Wf_rfft)
         active_idx_h = jnp.arange(self.K_h)
         active_idx_w = jnp.arange(self.K_w)
@@ -937,11 +964,19 @@ class SpectralConv2d:
             .expand(active_shape)
             .to_event(4),
         )
-        full_real = jnp.zeros((self.out_channels, self.in_channels, self.Hf, self.Wf_rfft))
-        full_imag = jnp.zeros((self.out_channels, self.in_channels, self.Hf, self.Wf_rfft))
+        full_real = jnp.zeros(
+            (self.out_channels, self.in_channels, self.Hf, self.Wf_rfft)
+        )
+        full_imag = jnp.zeros(
+            (self.out_channels, self.in_channels, self.Hf, self.Wf_rfft)
+        )
         # Fill the top–left active block.
-        full_real = full_real.at[:, :, active_idx_h[:, None], active_idx_w].set(active_real)
-        full_imag = full_imag.at[:, :, active_idx_h[:, None], active_idx_w].set(active_imag)
+        full_real = full_real.at[:, :, active_idx_h[:, None], active_idx_w].set(
+            active_real
+        )
+        full_imag = full_imag.at[:, :, active_idx_h[:, None], active_idx_w].set(
+            active_imag
+        )
         # Enforce the DC component (top–left element) to be real.
         full_imag = full_imag.at[:, :, 0, 0].set(0.0)
         if self.W_fft % 2 == 0 and self.Wf_rfft > 1:
@@ -952,6 +987,7 @@ class SpectralConv2d:
             dist.Normal(0.0, 1.0).expand([self.out_channels]).to_event(1),
         )
         return spectral_conv2d_func(x, weight_fft, bias)
+
 
 # -----------------------------
 # SpectralTransposed2d in NumPyro
@@ -971,8 +1007,8 @@ class SpectralTransposed2d:
         Here the layer maps an input of shape (B, out_channels, H, W) to an output of shape (B, in_channels, H, W).
         Note: the roles of in_channels and out_channels are swapped relative to SpectralConv2d.
         """
-        self.in_channels = in_channels   # output channels of the transposed layer
-        self.out_channels = out_channels # input channels of the transposed layer
+        self.in_channels = in_channels  # output channels of the transposed layer
+        self.out_channels = out_channels  # input channels of the transposed layer
         self.fft_size = fft_size
         self.H_fft, self.W_fft = fft_size
         self.Wf_rfft = self.W_fft // 2 + 1 if self.W_fft > 1 else 1
@@ -983,14 +1019,18 @@ class SpectralTransposed2d:
         else:
             self.K_h, self.K_w = K
         self.name = name
-        self.prior_fn = prior_fn if prior_fn is not None else (lambda scale: dist.Normal(0.0, scale))
+        self.prior_fn = (
+            prior_fn
+            if prior_fn is not None
+            else (lambda scale: dist.Normal(0.0, scale))
+        )
 
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
         # x: shape (B, out_channels, H, W)
         freq_idx_h = jnp.arange(self.Hf, dtype=jnp.float32)
         freq_idx_w = jnp.arange(self.Wf_rfft, dtype=jnp.float32)
-        decay_h = 1.0 / jnp.sqrt(1.0 + (freq_idx_h ** self.alpha))
-        decay_w = 1.0 / jnp.sqrt(1.0 + (freq_idx_w ** self.alpha))
+        decay_h = 1.0 / jnp.sqrt(1.0 + (freq_idx_h**self.alpha))
+        decay_w = 1.0 / jnp.sqrt(1.0 + (freq_idx_w**self.alpha))
         prior_std = jnp.outer(decay_h, decay_w)
         active_idx_h = jnp.arange(self.K_h)
         active_idx_w = jnp.arange(self.K_w)
@@ -1007,10 +1047,18 @@ class SpectralTransposed2d:
             .expand(active_shape)
             .to_event(4),
         )
-        full_real = jnp.zeros((self.in_channels, self.out_channels, self.Hf, self.Wf_rfft))
-        full_imag = jnp.zeros((self.in_channels, self.out_channels, self.Hf, self.Wf_rfft))
-        full_real = full_real.at[:, :, active_idx_h[:, None], active_idx_w].set(active_real)
-        full_imag = full_imag.at[:, :, active_idx_h[:, None], active_idx_w].set(active_imag)
+        full_real = jnp.zeros(
+            (self.in_channels, self.out_channels, self.Hf, self.Wf_rfft)
+        )
+        full_imag = jnp.zeros(
+            (self.in_channels, self.out_channels, self.Hf, self.Wf_rfft)
+        )
+        full_real = full_real.at[:, :, active_idx_h[:, None], active_idx_w].set(
+            active_real
+        )
+        full_imag = full_imag.at[:, :, active_idx_h[:, None], active_idx_w].set(
+            active_imag
+        )
         full_imag = full_imag.at[:, :, 0, 0].set(0.0)
         if self.W_fft % 2 == 0 and self.Wf_rfft > 1:
             full_imag = full_imag.at[:, :, :, -1].set(0.0)

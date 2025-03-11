@@ -82,7 +82,9 @@ class CircViT(eqx.Module):
             use_bias=True,
         )
 
-    def __call__(self, x: Float[Array, "channels height width"], key: PRNGKeyArray, state) -> tuple[Float[Array, "num_classes"], any]:
+    def __call__(
+        self, x: Float[Array, "channels height width"], key: PRNGKeyArray, state
+    ) -> tuple[Float[Array, "num_classes"], any]:
         # Embed patches.
         x = self.patch_embedding(x)
         # Prepend the CLS token.
@@ -100,7 +102,8 @@ class CircViT(eqx.Module):
         # Apply the circulant classification head.
         logits = self.circ_head(cls_embedding)
         return logits, state
-    
+
+
 # Example test function for CircViT with MNIST-like configuration.
 def test_circvit_mnist_output_shape():
     # Configuration parameters.
@@ -115,7 +118,9 @@ def test_circvit_mnist_output_shape():
     channels = 1
     num_patches = (img_height // patch_size) * (img_width // patch_size)  # 16 patches.
     num_classes = 10
-    circ_block_size = 8  # For example; must be chosen appropriately relative to embedding_dim.
+    circ_block_size = (
+        8  # For example; must be chosen appropriately relative to embedding_dim.
+    )
 
     # Create PRNG keys.
     key = jr.PRNGKey(42)
@@ -140,8 +145,11 @@ def test_circvit_mnist_output_shape():
     logits, _ = circvit(x, key=run_key, state=None)
 
     # Check that the output has shape (num_classes,).
-    assert logits.shape == (num_classes,), f"Expected output shape ({num_classes},), got {logits.shape}"
+    assert logits.shape == (
+        num_classes,
+    ), f"Expected output shape ({num_classes},), got {logits.shape}"
     print("CircViT MNIST test passed!")
+
 
 if __name__ == "__main__":
     test_circvit_mnist_output_shape()

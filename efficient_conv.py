@@ -4,6 +4,7 @@ import jax.random as jr
 import equinox as eqx
 import math
 
+
 # ----------------------------------------------------------------------
 # 1D SPECTRAL CONV
 # ----------------------------------------------------------------------
@@ -46,6 +47,7 @@ def spectral_conv1d(x: jnp.ndarray, weight_fft: jnp.ndarray, bias: jnp.ndarray):
     y = y + bias[None, :, None]
     return y
 
+
 @spectral_conv1d.defjvp
 def spectral_conv1d_jvp(primals, tangents):
     x, weight_fft, bias = primals
@@ -61,16 +63,26 @@ def spectral_conv1d_jvp(primals, tangents):
         dy += dbias[None, :, None]
     return y, dy
 
+
 class SpectralConv1d(eqx.Module):
     """A 1D convolution layer using FFT-based multiplication in the frequency domain."""
+
     weight_fft: jnp.ndarray  # shape: (out_channels, in_channels, rfft_length)
-    bias: jnp.ndarray        # shape: (out_channels,)
+    bias: jnp.ndarray  # shape: (out_channels,)
     in_channels: int = eqx.static_field()
     out_channels: int = eqx.static_field()
     kernel_size: int = eqx.static_field()
     fft_size: int = eqx.static_field()
 
-    def __init__(self, in_channels: int, out_channels: int, kernel_size: int, fft_size: int, key, init_scale: float = 0.1):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: int,
+        fft_size: int,
+        key,
+        init_scale: float = 0.1,
+    ):
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.kernel_size = kernel_size
@@ -86,7 +98,9 @@ class SpectralConv1d(eqx.Module):
             w_spatial = jnp.pad(w_spatial, ((0, 0), (0, 0), (0, pad_amount)))
 
         # Compute rFFT on the last dimension.
-        w_fft = jnp.fft.rfft(w_spatial, axis=-1)  # shape: (out_channels, in_channels, fft_size//2+1)
+        w_fft = jnp.fft.rfft(
+            w_spatial, axis=-1
+        )  # shape: (out_channels, in_channels, fft_size//2+1)
         b = jr.normal(k2, (out_channels,)) * init_scale
 
         object.__setattr__(self, "weight_fft", w_fft)
@@ -98,6 +112,7 @@ class SpectralConv1d(eqx.Module):
         Returns: (batch, out_channels, width)
         """
         return spectral_conv1d(x, self.weight_fft, self.bias)
+
 
 # ----------------------------------------------------------------------
 # 2D SPECTRAL CONV
@@ -119,8 +134,10 @@ def spectral_conv2d(x: jnp.ndarray, weight_fft: jnp.ndarray, bias: jnp.ndarray):
     # Compute rFFT2 on x.
     X_fft = jnp.fft.rfft2(x, axes=(2, 3))  # shape: (B, Cin, H', W')
     # Expand dimensions for broadcasting.
-    X_fft_expanded = X_fft[:, None, :, :, :]           # (B, 1, Cin, H', W')
-    W_fft_expanded = jnp.conjugate(weight_fft)[None, :, :, :, :]  # (1, Cout, Cin, Hf, Wf')
+    X_fft_expanded = X_fft[:, None, :, :, :]  # (B, 1, Cin, H', W')
+    W_fft_expanded = jnp.conjugate(weight_fft)[
+        None, :, :, :, :
+    ]  # (1, Cout, Cin, Hf, Wf')
     Y_fft = jnp.sum(X_fft_expanded * W_fft_expanded, axis=2)  # (B, Cout, H', W')
 
     # Determine the real width from the rFFT output.
@@ -134,6 +151,7 @@ def spectral_conv2d(x: jnp.ndarray, weight_fft: jnp.ndarray, bias: jnp.ndarray):
     y = y[..., :H, :W]
     y = y + bias[None, :, None, None]
     return y
+
 
 @spectral_conv2d.defjvp
 def spectral_conv2d_jvp(primals, tangents):
@@ -150,18 +168,28 @@ def spectral_conv2d_jvp(primals, tangents):
         dy += dbias[None, :, None, None]
     return y, dy
 
+
 class SpectralConv2d(eqx.Module):
     """
     2D FFT-based convolution with precomputed kernel in the frequency domain.
     """
+
     weight_fft: jnp.ndarray  # (out_channels, in_channels, Hf, Wf//2+1)
-    bias: jnp.ndarray        # (out_channels,)
+    bias: jnp.ndarray  # (out_channels,)
     in_channels: int = eqx.static_field()
     out_channels: int = eqx.static_field()
     kernel_size: tuple = eqx.static_field()
     fft_size: tuple = eqx.static_field()
 
-    def __init__(self, in_channels: int, out_channels: int, kernel_size: tuple, fft_size: tuple, key, init_scale: float = 0.1):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        kernel_size: tuple,
+        fft_size: tuple,
+        key,
+        init_scale: float = 0.1,
+    ):
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.kernel_size = kernel_size
@@ -190,11 +218,14 @@ class SpectralConv2d(eqx.Module):
         """
         return spectral_conv2d(x, self.weight_fft, self.bias)
 
+
 # ----------------------------------------------------------------------
 # 2D SPECTRAL TRANSPOSED CONV
 # ----------------------------------------------------------------------
 @jax.custom_jvp
-def spectral_transposed_conv2d(x: jnp.ndarray, weight_fft: jnp.ndarray, bias: jnp.ndarray):
+def spectral_transposed_conv2d(
+    x: jnp.ndarray, weight_fft: jnp.ndarray, bias: jnp.ndarray
+):
     """
     Spectral transposed (deconvolution) 2D convolution.
 
@@ -228,6 +259,7 @@ def spectral_transposed_conv2d(x: jnp.ndarray, weight_fft: jnp.ndarray, bias: jn
         y = y + bias[None, :, None, None]
     return y
 
+
 @spectral_transposed_conv2d.defjvp
 def spectral_transposed_conv2d_jvp(primals, tangents):
     x, weight_fft, bias = primals
@@ -243,6 +275,7 @@ def spectral_transposed_conv2d_jvp(primals, tangents):
         dy += dbias[None, :, None, None]
     return y, dy
 
+
 class SpectralTransposed2d(eqx.Module):
     """
     2D spectral transposed convolution.
@@ -252,17 +285,26 @@ class SpectralTransposed2d(eqx.Module):
     this layer takes an input of shape (batch, out_channels, H, W)
     and produces an output of shape (batch, in_channels, H, W).
     """
+
     weight_fft: jnp.ndarray  # (out_channels, in_channels, Hf, Wf//2+1)
-    bias: jnp.ndarray        # (in_channels,)
+    bias: jnp.ndarray  # (in_channels,)
     out_channels: int = eqx.static_field()  # from forward conv (now input channels)
-    in_channels: int = eqx.static_field()   # from forward conv (now output channels)
+    in_channels: int = eqx.static_field()  # from forward conv (now output channels)
     kernel_size: tuple = eqx.static_field()
     fft_size: tuple = eqx.static_field()
 
-    def __init__(self, out_channels: int, in_channels: int, kernel_size: tuple, fft_size: tuple, key, init_scale: float = 0.1):
+    def __init__(
+        self,
+        out_channels: int,
+        in_channels: int,
+        kernel_size: tuple,
+        fft_size: tuple,
+        key,
+        init_scale: float = 0.1,
+    ):
         """
         Initialize the spectral transposed convolution.
-        
+
         :param out_channels: Number of channels from the forward conv (input channels for transposed conv).
         :param in_channels: Number of channels of the forward conv input (output channels for transposed conv).
         :param kernel_size: (Kh, Kw) filter size.
@@ -295,6 +337,7 @@ class SpectralTransposed2d(eqx.Module):
         Returns: (batch, in_channels, H, W)
         """
         return spectral_transposed_conv2d(x, self.weight_fft, self.bias)
+
 
 # ----------------------------------------------------------------------
 # SpectralLeNet (for completeness)
@@ -348,6 +391,7 @@ class SpectralLeNet(eqx.Module):
         logits = jax.vmap(self.fc)(x)
         return logits
 
+
 # ----------------------------------------------------------------------
 # SPECTRAL UNET
 # ----------------------------------------------------------------------
@@ -359,52 +403,102 @@ def pool(x):
     pooled = jax.lax.reduce_window(x, 0.0, jax.lax.add, window, strides, padding="SAME")
     return pooled / 4.0
 
+
 def upsample(x, factor=2):
     """Nearest neighbor upsampling by repeating along spatial dims."""
     return jnp.repeat(jnp.repeat(x, factor, axis=-2), factor, axis=-1)
 
+
 class SpectralUNet(eqx.Module):
     # Encoder
-    conv1: SpectralConv2d   # Input conv (e.g. 1 -> 16 channels)
-    conv2: SpectralConv2d   # Second encoder conv (16 -> 32 channels)
+    conv1: SpectralConv2d  # Input conv (e.g. 1 -> 16 channels)
+    conv2: SpectralConv2d  # Second encoder conv (16 -> 32 channels)
     bottleneck: SpectralConv2d  # Bottleneck (32 -> 64 channels)
     # Decoder
     upconv1: SpectralTransposed2d  # Upsample: (64 -> 32 channels)
-    conv3: SpectralConv2d          # After skip concatenation (64 -> 32 channels)
+    conv3: SpectralConv2d  # After skip concatenation (64 -> 32 channels)
     upconv2: SpectralTransposed2d  # Upsample: (32 -> 16 channels)
-    conv4: SpectralConv2d          # Final conv after skip concatenation (32 -> out_channels)
+    conv4: SpectralConv2d  # Final conv after skip concatenation (32 -> out_channels)
     # Configuration
     out_channels: int = eqx.static_field()
 
-    def __init__(self, in_channels: int = 1, out_channels: int = 1, base_channels: int = 16, key: jax.random.PRNGKey = jr.PRNGKey(0)):
+    def __init__(
+        self,
+        in_channels: int = 1,
+        out_channels: int = 1,
+        base_channels: int = 16,
+        key: jax.random.PRNGKey = jr.PRNGKey(0),
+    ):
         self.out_channels = out_channels
         # Assume input image resolution is 128x128.
         keys = jr.split(key, 7)
         # Encoder:
         # conv1: 1 -> base_channels, fft_size = (128, 128)
-        self.conv1 = SpectralConv2d(in_channels, base_channels, kernel_size=(3, 3), fft_size=(128, 128), key=keys[0])
+        self.conv1 = SpectralConv2d(
+            in_channels,
+            base_channels,
+            kernel_size=(3, 3),
+            fft_size=(128, 128),
+            key=keys[0],
+        )
         # After pooling, resolution becomes 64x64.
         # conv2: base_channels -> base_channels*2, fft_size = (64, 64)
-        self.conv2 = SpectralConv2d(base_channels, base_channels*2, kernel_size=(3, 3), fft_size=(64, 64), key=keys[1])
+        self.conv2 = SpectralConv2d(
+            base_channels,
+            base_channels * 2,
+            kernel_size=(3, 3),
+            fft_size=(64, 64),
+            key=keys[1],
+        )
         # After another pooling, resolution becomes 32x32.
         # Bottleneck: base_channels*2 -> base_channels*4, fft_size = (32, 32)
-        self.bottleneck = SpectralConv2d(base_channels*2, base_channels*4, kernel_size=(3, 3), fft_size=(32, 32), key=keys[2])
+        self.bottleneck = SpectralConv2d(
+            base_channels * 2,
+            base_channels * 4,
+            kernel_size=(3, 3),
+            fft_size=(32, 32),
+            key=keys[2],
+        )
         # Decoder:
         # upconv1: transforms from bottleneck channels (base_channels*4) to base_channels*2.
         # For SpectralTransposed2d, we specify forward conv parameters:
         #   forward conv had: out_channels = base_channels*4, in_channels = base_channels*2,
         # so here: out_channels=base_channels*4, in_channels=base_channels*2, fft_size = (64,64)
-        self.upconv1 = SpectralTransposed2d(out_channels=base_channels*4, in_channels=base_channels*2, kernel_size=(3, 3), fft_size=(64, 64), key=keys[3])
+        self.upconv1 = SpectralTransposed2d(
+            out_channels=base_channels * 4,
+            in_channels=base_channels * 2,
+            kernel_size=(3, 3),
+            fft_size=(64, 64),
+            key=keys[3],
+        )
         # After concatenating with conv2 output (which has base_channels*2 channels), we get 2*base_channels*2 channels.
         # conv3: (base_channels*2 + base_channels*2) = base_channels*4 -> base_channels*2, fft_size = (64,64)
-        self.conv3 = SpectralConv2d(base_channels*4, base_channels*2, kernel_size=(3, 3), fft_size=(64, 64), key=keys[4])
+        self.conv3 = SpectralConv2d(
+            base_channels * 4,
+            base_channels * 2,
+            kernel_size=(3, 3),
+            fft_size=(64, 64),
+            key=keys[4],
+        )
         # upconv2: transforms from base_channels*2 to base_channels.
         # For forward conv: out_channels = base_channels*2, in_channels = base_channels,
         # so here: out_channels=base_channels*2, in_channels=base_channels, fft_size = (128,128)
-        self.upconv2 = SpectralTransposed2d(out_channels=base_channels*2, in_channels=base_channels, kernel_size=(3, 3), fft_size=(128, 128), key=keys[5])
+        self.upconv2 = SpectralTransposed2d(
+            out_channels=base_channels * 2,
+            in_channels=base_channels,
+            kernel_size=(3, 3),
+            fft_size=(128, 128),
+            key=keys[5],
+        )
         # After concatenating with conv1 output (base_channels channels), total channels = base_channels + base_channels = base_channels*2.
         # conv4: (base_channels*2) -> out_channels, fft_size = (128,128)
-        self.conv4 = SpectralConv2d(base_channels*2, out_channels, kernel_size=(3, 3), fft_size=(128, 128), key=keys[6])
+        self.conv4 = SpectralConv2d(
+            base_channels * 2,
+            out_channels,
+            kernel_size=(3, 3),
+            fft_size=(128, 128),
+            key=keys[6],
+        )
 
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
         """
@@ -439,6 +533,7 @@ class SpectralUNet(eqx.Module):
         x7 = self.conv4(x6_cat)  # (B, out_channels, 128, 128)
         return x7
 
+
 # ----------------------------------------------------------------------
 # Test functions
 # ----------------------------------------------------------------------
@@ -454,11 +549,14 @@ def test_spectral_unet():
     print("  Output shape:", y.shape)
     # Expected output shape: (2, 1, 128, 128)
 
+
 def test_spectral_conv1d():
     print("Testing SpectralConv1d...")
     key = jr.PRNGKey(0)
     # Create a 1D conv: in_channels=3, out_channels=5, kernel_size=7, fft_size=16.
-    conv1d = SpectralConv1d(in_channels=3, out_channels=5, kernel_size=7, fft_size=16, key=key)
+    conv1d = SpectralConv1d(
+        in_channels=3, out_channels=5, kernel_size=7, fft_size=16, key=key
+    )
     # Create random input: (batch, in_channels, width)
     x = jr.normal(key, (4, 3, 20))
     y = conv1d(x)
@@ -474,7 +572,9 @@ def test_spectral_transposed2d():
     #   out_channels=8 and in_channels=3.
     # Thus the transposed conv takes input of shape (batch, 8, H, W)
     # and produces output of shape (batch, 3, H, W).
-    trans_conv = SpectralTransposed2d(out_channels=8, in_channels=3, kernel_size=(3, 3), fft_size=(28, 28), key=key)
+    trans_conv = SpectralTransposed2d(
+        out_channels=8, in_channels=3, kernel_size=(3, 3), fft_size=(28, 28), key=key
+    )
     x = jr.normal(key, (4, 8, 28, 28))
     y = trans_conv(x)
     print("  Input shape :", x.shape)

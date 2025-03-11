@@ -1,5 +1,5 @@
 import math
-from typing import Optional
+from typing import Optional, Tuple
 from jaxtyping import Array, PRNGKeyArray
 from typing import Optional
 import equinox as eqx
@@ -10,6 +10,7 @@ import jax.random as jr
 
 __all__ = [
     "SpectralGRUCell",
+    "SpectralLSTMCell",
     "SpectralDenseBlock",
     "FourierNeuralOperator1D",
     "MixtureOfTwoLayers",
@@ -21,13 +22,14 @@ class SpectralGRUCell(eqx.Module):
     A GRU cell that applies FFT-based spectral modulation to its input
     before computing standard GRU gate operations.
     """
+
     weight_ih: Array  # (3 * hidden_size, input_size)
     weight_hh: Array  # (3 * hidden_size, hidden_size)
     bias: Optional[Array]  # (3 * hidden_size,)
     bias_n: Optional[Array]  # (hidden_size,)
     base_filter: Array  # (freq_bins,)
-    base_bias: Array    # (freq_bins,)
-    
+    base_bias: Array  # (freq_bins,)
+
     input_size: int = eqx.static_field()
     hidden_size: int = eqx.static_field()
     use_bias: bool = eqx.static_field()
@@ -46,22 +48,34 @@ class SpectralGRUCell(eqx.Module):
         dtype = jnp.float32
         lim = math.sqrt(1 / hidden_size)
         ihkey, hhkey, bkey, sfkey, sbkey, bnkey = jr.split(key, 6)
-        
+
         # Standard GRU weights
         ihshape = (3 * hidden_size, input_size)
-        self.weight_ih = jr.uniform(ihkey, shape=ihshape, minval=-lim, maxval=lim, dtype=dtype)
+        self.weight_ih = jr.uniform(
+            ihkey, shape=ihshape, minval=-lim, maxval=lim, dtype=dtype
+        )
         hhshape = (3 * hidden_size, hidden_size)
-        self.weight_hh = jr.uniform(hhkey, shape=hhshape, minval=-lim, maxval=lim, dtype=dtype)
+        self.weight_hh = jr.uniform(
+            hhkey, shape=hhshape, minval=-lim, maxval=lim, dtype=dtype
+        )
         if use_bias:
-            self.bias = jr.uniform(bkey, shape=(3 * hidden_size,), minval=-lim, maxval=lim, dtype=dtype)
-            self.bias_n = jr.uniform(bnkey, shape=(hidden_size,), minval=-lim, maxval=lim, dtype=dtype)
+            self.bias = jr.uniform(
+                bkey, shape=(3 * hidden_size,), minval=-lim, maxval=lim, dtype=dtype
+            )
+            self.bias_n = jr.uniform(
+                bnkey, shape=(hidden_size,), minval=-lim, maxval=lim, dtype=dtype
+            )
         else:
             self.bias = None
             self.bias_n = None
 
         # Parameters for spectral modulation on the input.
-        self.base_filter = jr.uniform(sfkey, shape=(input_size // 2 + 1,), minval=0.9, maxval=1.1, dtype=dtype)
-        self.base_bias = jr.uniform(sbkey, shape=(input_size // 2 + 1,), minval=-0.1, maxval=0.1, dtype=dtype)
+        self.base_filter = jr.uniform(
+            sfkey, shape=(input_size // 2 + 1,), minval=0.9, maxval=1.1, dtype=dtype
+        )
+        self.base_bias = jr.uniform(
+            sbkey, shape=(input_size // 2 + 1,), minval=-0.1, maxval=0.1, dtype=dtype
+        )
 
     def spectral_transform(self, x: Array) -> Array:
         """
@@ -75,8 +89,10 @@ class SpectralGRUCell(eqx.Module):
         x_fft_mod = x_fft * self.base_filter + self.base_bias
         x_mod = jnp.fft.irfft(x_fft_mod, n=self.input_size, norm="ortho")
         return x_mod
-    
-    def __call__(self, input: Array, hidden: Array, *, key: Optional[PRNGKeyArray] = None) -> Array:
+
+    def __call__(
+        self, input: Array, hidden: Array, *, key: Optional[PRNGKeyArray] = None
+    ) -> Array:
         """
         One time step of the spectral GRU cell.
         Args:
@@ -93,12 +109,127 @@ class SpectralGRUCell(eqx.Module):
         else:
             igates = jnp.split(self.weight_ih @ input_mod, 3)
         hgates = jnp.split(self.weight_hh @ hidden, 3)
-        
+
         reset = jax.nn.sigmoid(igates[0] + hgates[0])
         inp = jax.nn.sigmoid(igates[1] + hgates[1])
-        new = jnp.tanh(igates[2] + reset * (hgates[2] + (self.bias_n if self.use_bias else 0)))
+        new = jnp.tanh(
+            igates[2] + reset * (hgates[2] + (self.bias_n if self.use_bias else 0))
+        )
         new_hidden = new + inp * (hidden - new)
         return new_hidden
+
+
+class SpectralLSTMCell(eqx.Module):
+    """
+    A LSTM cell that applies FFT-based spectral modulation to its input
+    before computing standard LSTM gate operations.
+    """
+
+    weight_ih: Array  # (4 * hidden_size, input_size)
+    weight_hh: Array  # (4 * hidden_size, hidden_size)
+    bias: Optional[Array]  # (4 * hidden_size,)
+    base_filter: Array  # (freq_bins,) where freq_bins = input_size // 2 + 1
+    base_bias: Array  # (freq_bins,)
+
+    input_size: int = eqx.static_field()
+    hidden_size: int = eqx.static_field()
+    use_bias: bool = eqx.static_field()
+
+    def __init__(
+        self,
+        input_size: int,
+        hidden_size: int,
+        use_bias: bool = True,
+        *,
+        key: PRNGKeyArray,
+    ):
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.use_bias = use_bias
+
+        dtype = jnp.float32
+        lim = math.sqrt(1 / hidden_size)
+        # Split key into parts for weight initialization and spectral parameters.
+        ihkey, hhkey, bkey, sfkey, sbkey = jr.split(key, 5)
+
+        # Standard LSTM weights
+        ihshape = (4 * hidden_size, input_size)
+        self.weight_ih = jr.uniform(
+            ihkey, shape=ihshape, minval=-lim, maxval=lim, dtype=dtype
+        )
+        hhshape = (4 * hidden_size, hidden_size)
+        self.weight_hh = jr.uniform(
+            hhkey, shape=hhshape, minval=-lim, maxval=lim, dtype=dtype
+        )
+        if use_bias:
+            bshape = (4 * hidden_size,)
+            self.bias = jr.uniform(
+                bkey, shape=bshape, minval=-lim, maxval=lim, dtype=dtype
+            )
+        else:
+            self.bias = None
+
+        # Spectral modulation parameters.
+        # Number of frequency bins: input_size//2 + 1 (for real FFT)
+        freq_bins = input_size // 2 + 1
+        self.base_filter = jr.uniform(
+            sfkey, shape=(freq_bins,), minval=0.9, maxval=1.1, dtype=dtype
+        )
+        self.base_bias = jr.uniform(
+            sbkey, shape=(freq_bins,), minval=-0.1, maxval=0.1, dtype=dtype
+        )
+
+    def spectral_transform(self, x: Array) -> Array:
+        """
+        Applies FFT-based modulation to the input vector.
+        Args:
+            x: Input vector of shape (input_size,)
+        Returns:
+            x_mod: Spectrally modulated vector, shape (input_size,)
+        """
+        # Compute real FFT.
+        x_fft = jnp.fft.rfft(x, norm="ortho")  # shape: (freq_bins,)
+        # Apply learned spectral modulation.
+        x_fft_mod = x_fft * self.base_filter + self.base_bias
+        # Inverse FFT to return to time-domain.
+        x_mod = jnp.fft.irfft(x_fft_mod, n=self.input_size, norm="ortho")
+        return x_mod
+
+    def __call__(
+        self,
+        input: Array,
+        hidden: Tuple[Array, Array],
+        *,
+        key: Optional[PRNGKeyArray] = None,
+    ) -> Tuple[Array, Array]:
+        """
+        One time step of the spectral LSTM cell.
+
+        Args:
+            input: JAX array of shape (input_size,).
+            hidden: Tuple (h, c), each of shape (hidden_size,).
+            key: Ignored; provided for compatibility with Equinox API.
+
+        Returns:
+            new_hidden: Tuple (new_h, new_c) representing the updated hidden state.
+        """
+        h, c = hidden
+        # Apply spectral modulation to the input.
+        input_mod = self.spectral_transform(input)
+        # Compute combined linear transformation.
+        lin = self.weight_ih @ input_mod + self.weight_hh @ h
+        if self.use_bias:
+            lin = lin + self.bias
+        # Split into four components.
+        i, f, g, o = jnp.split(lin, 4)
+        i = jax.nn.sigmoid(i)
+        f = jax.nn.sigmoid(f)
+        g = jnp.tanh(g)
+        o = jax.nn.sigmoid(o)
+        new_c = f * c + i * g
+        new_h = o * jnp.tanh(new_c)
+        return new_h, new_c
+
 
 class SpectralDenseBlock(eqx.Module):
     """

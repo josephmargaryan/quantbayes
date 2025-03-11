@@ -7,8 +7,9 @@ import math
 from quantbayes.stochax.layers import (
     SpectralTransposed2d,
     SpectralConv1d,
-    SpectralConv2d
+    SpectralConv2d,
 )
+
 
 # ---------------------------------------------------------------
 # SpectralLeNet_Direct (using the direct spectral layers)
@@ -40,7 +41,9 @@ class SpectralLeNet_Direct(eqx.Module):
             init_scale=0.1,
             alpha=1.0,
         )
-        self.fc = eqx.nn.Linear(in_features=out_channels2 * 28 * 28, out_features=10, key=k3)
+        self.fc = eqx.nn.Linear(
+            in_features=out_channels2 * 28 * 28, out_features=10, key=k3
+        )
 
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
         x = self.conv1(x)
@@ -60,8 +63,10 @@ def pool(x):
     pooled = jax.lax.reduce_window(x, 0.0, jax.lax.add, window, strides, padding="SAME")
     return pooled / 4.0
 
+
 def upsample(x, factor=2):
     return jnp.repeat(jnp.repeat(x, factor, axis=-2), factor, axis=-1)
+
 
 class SpectralUNet_Direct(eqx.Module):
     conv1: SpectralConv2d
@@ -73,16 +78,69 @@ class SpectralUNet_Direct(eqx.Module):
     conv4: SpectralConv2d
     out_channels: int = eqx.static_field()
 
-    def __init__(self, in_channels: int = 1, out_channels: int = 1, base_channels: int = 16, key: jax.random.PRNGKey = jr.PRNGKey(0)):
+    def __init__(
+        self,
+        in_channels: int = 1,
+        out_channels: int = 1,
+        base_channels: int = 16,
+        key: jax.random.PRNGKey = jr.PRNGKey(0),
+    ):
         self.out_channels = out_channels
         keys = jr.split(key, 7)
-        self.conv1 = SpectralConv2d(in_channels, base_channels, fft_size=(128, 128), key=keys[0], init_scale=0.1, alpha=1.0)
-        self.conv2 = SpectralConv2d(base_channels, base_channels*2, fft_size=(64, 64), key=keys[1], init_scale=0.1, alpha=1.0)
-        self.bottleneck = SpectralConv2d(base_channels*2, base_channels*4, fft_size=(32, 32), key=keys[2], init_scale=0.1, alpha=1.0)
-        self.upconv1 = SpectralTransposed2d(out_channels=base_channels*4, in_channels=base_channels*2, fft_size=(64, 64), key=keys[3], init_scale=0.1)
-        self.conv3 = SpectralConv2d(base_channels*4, base_channels*2, fft_size=(64, 64), key=keys[4], init_scale=0.1, alpha=1.0)
-        self.upconv2 = SpectralTransposed2d(out_channels=base_channels*2, in_channels=base_channels, fft_size=(128, 128), key=keys[5], init_scale=0.1)
-        self.conv4 = SpectralConv2d(base_channels*2, out_channels, fft_size=(128, 128), key=keys[6], init_scale=0.1, alpha=1.0)
+        self.conv1 = SpectralConv2d(
+            in_channels,
+            base_channels,
+            fft_size=(128, 128),
+            key=keys[0],
+            init_scale=0.1,
+            alpha=1.0,
+        )
+        self.conv2 = SpectralConv2d(
+            base_channels,
+            base_channels * 2,
+            fft_size=(64, 64),
+            key=keys[1],
+            init_scale=0.1,
+            alpha=1.0,
+        )
+        self.bottleneck = SpectralConv2d(
+            base_channels * 2,
+            base_channels * 4,
+            fft_size=(32, 32),
+            key=keys[2],
+            init_scale=0.1,
+            alpha=1.0,
+        )
+        self.upconv1 = SpectralTransposed2d(
+            out_channels=base_channels * 4,
+            in_channels=base_channels * 2,
+            fft_size=(64, 64),
+            key=keys[3],
+            init_scale=0.1,
+        )
+        self.conv3 = SpectralConv2d(
+            base_channels * 4,
+            base_channels * 2,
+            fft_size=(64, 64),
+            key=keys[4],
+            init_scale=0.1,
+            alpha=1.0,
+        )
+        self.upconv2 = SpectralTransposed2d(
+            out_channels=base_channels * 2,
+            in_channels=base_channels,
+            fft_size=(128, 128),
+            key=keys[5],
+            init_scale=0.1,
+        )
+        self.conv4 = SpectralConv2d(
+            base_channels * 2,
+            out_channels,
+            fft_size=(128, 128),
+            key=keys[6],
+            init_scale=0.1,
+            alpha=1.0,
+        )
 
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
         x1 = self.conv1(x)
@@ -111,20 +169,26 @@ class SpectralUNet_Direct(eqx.Module):
 def test_spectral_conv1d_direct():
     print("Testing SpectralConv1d_Direct...")
     key = jr.PRNGKey(0)
-    conv1d = SpectralConv1d(in_channels=3, out_channels=5, fft_size=16, key=key, init_scale=0.1, alpha=1.0)
+    conv1d = SpectralConv1d(
+        in_channels=3, out_channels=5, fft_size=16, key=key, init_scale=0.1, alpha=1.0
+    )
     x = jr.normal(key, (4, 3, 20))
     y = conv1d(x)
     print("  Input shape :", x.shape)
     print("  Output shape:", y.shape)
 
+
 def test_spectral_transposed2d_direct():
     print("Testing SpectralTransposed2d_Direct...")
     key = jr.PRNGKey(1)
-    trans_conv = SpectralTransposed2d(out_channels=8, in_channels=3, fft_size=(28, 28), key=key, init_scale=0.1)
+    trans_conv = SpectralTransposed2d(
+        out_channels=8, in_channels=3, fft_size=(28, 28), key=key, init_scale=0.1
+    )
     x = jr.normal(key, (4, 8, 28, 28))
     y = trans_conv(x)
     print("  Input shape :", x.shape)
     print("  Output shape:", y.shape)
+
 
 def test_spectral_le_net_direct():
     print("Testing SpectralLeNet_Direct...")
@@ -135,14 +199,18 @@ def test_spectral_le_net_direct():
     print("  Input shape :", x.shape)
     print("  Output shape:", logits.shape)
 
+
 def test_spectral_unet_direct():
     print("Testing SpectralUNet_Direct...")
     key = jr.PRNGKey(123)
-    model = SpectralUNet_Direct(in_channels=1, out_channels=1, base_channels=16, key=key)
+    model = SpectralUNet_Direct(
+        in_channels=1, out_channels=1, base_channels=16, key=key
+    )
     x = jr.normal(key, (2, 1, 128, 128))
     y = model(x)
     print("  Input shape :", x.shape)
     print("  Output shape:", y.shape)
+
 
 if __name__ == "__main__":
     test_spectral_conv1d_direct()

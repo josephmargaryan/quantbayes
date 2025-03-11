@@ -1,12 +1,13 @@
 import equinox as eqx
+from typing import Tuple
 from jaxtyping import Array, PRNGKeyArray
 import jax
 import jax.numpy as jnp
 import jax.random as jr
 
-from quantbayes.stochax.layers import SpectralGRUCell
+from quantbayes.stochax.layers import SpectralGRUCell, SpectralLSTMCell
 
-__all__ = ["GRU", "LSTM", "SpectralGRUModel"]
+__all__ = ["GRU", "LSTM", "SpectralGRUModel", "SpectralLSTMModel"]
 
 
 class GRU(eqx.Module):
@@ -96,4 +97,49 @@ class SpectralGRUModel(eqx.Module):
         final_hidden, _ = jax.lax.scan(step, hidden, inputs)
         # Use the final hidden state to predict the next value
         pred = self.linear(final_hidden)
+        return pred[0], state
+
+
+class SpectralLSTMModel(eqx.Module):
+    """
+    A time series prediction model using the SpectralLSTMCell.
+    It scans over a sequence and uses the final hidden state to predict the next value.
+    """
+
+    cell: SpectralLSTMCell
+    linear: eqx.nn.Linear  # Maps hidden state to output
+
+    def __init__(self, input_size: int, hidden_size: int, *, key: PRNGKeyArray):
+        cell_key, lin_key = jr.split(key)
+        self.cell = SpectralLSTMCell(
+            input_size=input_size, hidden_size=hidden_size, key=cell_key
+        )
+        # Linear layer: from hidden state (hidden_size) to a scalar output.
+        self.linear = eqx.nn.Linear(hidden_size, 1, key=lin_key)
+
+    def __call__(self, inputs: Array, key, state) -> Tuple[Array, any]:
+        """
+        Args:
+            inputs: Array of shape (seq_len, input_size)
+            key: Random key (ignored in this implementation)
+            state: Additional state (passed through unchanged)
+
+        Returns:
+            A tuple of (prediction, state), where prediction is a scalar value.
+        """
+        seq_len = inputs.shape[0]
+        # Initialize hidden state: h and c.
+        h = jnp.zeros((self.cell.hidden_size,))
+        c = jnp.zeros((self.cell.hidden_size,))
+        hidden = (h, c)
+
+        # Scan over the sequence.
+        def step(hidden, x):
+            new_hidden = self.cell(x, hidden)
+            return new_hidden, new_hidden
+
+        final_hidden, _ = jax.lax.scan(step, hidden, inputs)
+        final_h, _ = final_hidden
+        # Use the final hidden state to predict the next value.
+        pred = self.linear(final_h)
         return pred[0], state

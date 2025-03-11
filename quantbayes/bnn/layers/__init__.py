@@ -6,7 +6,7 @@ from .custom_jvp import (
     CirculantProcess,
     SpectralConv1d,
     SpectralConv2d,
-    SpectralTransposed2d
+    SpectralTransposed2d,
 )
 from .layers import (
     LSTM,
@@ -61,5 +61,5 @@ __all__ = [
     "MixtureOfTwoLayers",
     "SpectralConv1d",
     "SpectralConv2d",
-    "SpectralTransposed2d"
+    "SpectralTransposed2d",
 ]
