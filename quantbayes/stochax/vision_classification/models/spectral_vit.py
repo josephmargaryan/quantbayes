@@ -3,7 +3,7 @@ import equinox as eqx
 import jax.numpy as jnp
 from jaxtyping import Array, Float, PRNGKeyArray
 
-from quantbayes.stochax.layers import JVPBlockCirculantProcess
+from quantbayes.stochax.layers import BlockCirculantProcess
 from quantbayes.stochax.vision_classification.models.vit import (
     PatchEmbedding,
     AttentionBlock,
@@ -16,7 +16,7 @@ class CircViT(eqx.Module):
     cls_token: jnp.ndarray
     attention_blocks: list[AttentionBlock]
     dropout: eqx.nn.Dropout
-    circ_head: "JVPBlockCirculantProcess"  # Use your custom circulant layer.
+    circ_head: "BlockCirculantProcess"  # Use your custom circulant layer.
     num_layers: int
 
     def __init__(
@@ -52,7 +52,7 @@ class CircViT(eqx.Module):
         # Final classification head using the circulant layer.
         # Here, in_features is embedding_dim (from the CLS token),
         # out_features is num_classes, and we set block_size to circ_block_size.
-        self.circ_head = JVPBlockCirculantProcess(
+        self.circ_head = BlockCirculantProcess(
             in_features=embedding_dim,
             out_features=num_classes,
             block_size=circ_block_size,
@@ -72,7 +72,7 @@ class CircViT(eqx.Module):
         # Final classification head using the circulant layer.
         # Here, in_features is embedding_dim (from the CLS token),
         # out_features is num_classes, and we set block_size to circ_block_size.
-        self.circ_head = JVPBlockCirculantProcess(
+        self.circ_head = BlockCirculantProcess(
             in_features=embedding_dim,
             out_features=num_classes,
             block_size=circ_block_size,

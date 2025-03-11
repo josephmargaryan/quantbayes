@@ -1,4 +1,4 @@
-from typing import Optional, Tuple
+from typing import Optional
 
 import equinox as eqx
 import jax
@@ -10,6 +10,9 @@ __all__ = [
     "BlockCirculant",
     "CirculantProcess",
     "BlockCirculantProcess",
+    "SpectralConv1d",
+    "SpectralConv2d",
+    "SpectralTransposed2d"
 ]
 
 
@@ -520,3 +523,213 @@ class BlockCirculantProcess(eqx.Module):
             return out + self.bias
         else:
             return out + self.bias[None, :]
+# ---------------------------------------------------------------
+# Helper: Frequency-dependent decay factor
+# ---------------------------------------------------------------
+def decay_factor(frequencies: jnp.ndarray, alpha: float = 1.0) -> jnp.ndarray:
+    return 1.0 / jnp.sqrt(1.0 + (frequencies ** alpha))
+
+
+# ---------------------------------------------------------------
+# 1D SPECTRAL CONV (VECTORIZED DIRECT SPECTRAL PARAMETERIZATION)
+# ---------------------------------------------------------------
+@jax.custom_jvp
+def spectral_conv1d(x: jnp.ndarray, weight_fft: jnp.ndarray, bias: jnp.ndarray):
+    B, Cin, W = x.shape
+    fft_size = 2 * (weight_fft.shape[-1] - 1) if weight_fft.shape[-1] > 1 else 1
+    if fft_size > W:
+        pad_amount = fft_size - W
+        x = jnp.pad(x, ((0, 0), (0, 0), (0, pad_amount)))
+    X_fft = jnp.fft.rfft(x, n=fft_size, axis=-1)
+    X_fft_expanded = X_fft[:, None, :, :]
+    W_fft_expanded = weight_fft[None, :, :, :]
+    Y_fft = jnp.sum(X_fft_expanded * W_fft_expanded, axis=2)
+    y = jnp.fft.irfft(Y_fft, n=fft_size, axis=-1)
+    y = y[..., :W] + bias[None, :, None]
+    return y
+
+@spectral_conv1d.defjvp
+def spectral_conv1d_jvp(primals, tangents):
+    x, weight_fft, bias = primals
+    dx, dweight_fft, dbias = tangents
+    y = spectral_conv1d(x, weight_fft, bias)
+    dy = jnp.zeros_like(y)
+    if dx is not None:
+        dy += spectral_conv1d(dx, weight_fft, jnp.zeros_like(bias))
+    if dweight_fft is not None:
+        dy += spectral_conv1d(x, dweight_fft, jnp.zeros_like(bias))
+    if dbias is not None:
+        dy += dbias[None, :, None]
+    return y, dy
+
+class SpectralConv1d(eqx.Module):
+    """
+    1D convolution layer with direct spectral parameterization.
+    The Fourier coefficients are sampled in a vectorized way with frequency decay.
+    """
+    weight_fft: jnp.ndarray  # (out_channels, in_channels, rfft_length)
+    bias: jnp.ndarray        # (out_channels,)
+    in_channels: int = eqx.static_field()
+    out_channels: int = eqx.static_field()
+    fft_size: int = eqx.static_field()
+    alpha: float = eqx.static_field()
+
+    def __init__(self, in_channels: int, out_channels: int, fft_size: int, key, init_scale: float = 0.1, alpha: float = 1.0):
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.fft_size = fft_size
+        self.alpha = alpha
+        rfft_length = fft_size // 2 + 1
+
+        # Create frequency indices and corresponding decay factors.
+        freqs = jnp.arange(rfft_length, dtype=jnp.float32)
+        decay = decay_factor(freqs, alpha)  # shape: (rfft_length,)
+        # Broadcast decay to shape (1, 1, rfft_length)
+        decay = decay[None, None, :]
+
+        # Vectorized sampling of real and imaginary parts.
+        key_re, key_im, key_bias = jr.split(key, 3)
+        re = jr.normal(key_re, (out_channels, in_channels, rfft_length)) * init_scale * decay
+        im = jr.normal(key_im, (out_channels, in_channels, rfft_length)) * init_scale * decay
+
+        # Enforce DC frequency (index 0) to be real.
+        im = im.at[:, :, 0].set(0.0)
+        # If fft_size is even, enforce Nyquist frequency (last index) to be real.
+        if fft_size % 2 == 0:
+            im = im.at[:, :, -1].set(0.0)
+        self.weight_fft = re + 1j * im
+        self.bias = jr.normal(key_bias, (out_channels,)) * init_scale
+
+    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
+        return spectral_conv1d(x, self.weight_fft, self.bias)
+
+
+# ---------------------------------------------------------------
+# 2D SPECTRAL CONV (VECTORIZED DIRECT SPECTRAL PARAMETERIZATION)
+# ---------------------------------------------------------------
+@jax.custom_jvp
+def spectral_conv2d(x: jnp.ndarray, weight_fft: jnp.ndarray, bias: jnp.ndarray):
+    B, Cin, H, W = x.shape
+    Cout, _, Hf, Wf_rfft = weight_fft.shape
+    X_fft = jnp.fft.rfft2(x, axes=(2, 3))
+    X_fft_expanded = X_fft[:, None, :, :, :]
+    # Use conjugate of weight_fft to match the derivation.
+    W_fft_expanded = jnp.conjugate(weight_fft)[None, :, :, :, :]
+    Y_fft = jnp.sum(X_fft_expanded * W_fft_expanded, axis=2)
+    real_Wf = 2 * (Wf_rfft - 1) if Wf_rfft > 1 else 1
+    y = jnp.fft.irfft2(Y_fft, s=(Hf, real_Wf), axes=(2, 3))
+    y = y[..., :H, :W] + bias[None, :, None, None]
+    return y
+
+@spectral_conv2d.defjvp
+def spectral_conv2d_jvp(primals, tangents):
+    x, weight_fft, bias = primals
+    dx, dweight_fft, dbias = tangents
+    y = spectral_conv2d(x, weight_fft, bias)
+    dy = jnp.zeros_like(y)
+    if dx is not None:
+        dy += spectral_conv2d(dx, weight_fft, jnp.zeros_like(bias))
+    if dweight_fft is not None:
+        dy += spectral_conv2d(x, dweight_fft, jnp.zeros_like(bias))
+    if dbias is not None:
+        dy += dbias[None, :, None, None]
+    return y, dy
+
+class SpectralConv2d(eqx.Module):
+    """
+    2D convolution layer with direct spectral parameterization.
+    The Fourier coefficients are sampled in a vectorized fashion with frequency-dependent decay.
+    """
+    weight_fft: jnp.ndarray  # (out_channels, in_channels, Hf, Wf_rfft)
+    bias: jnp.ndarray        # (out_channels,)
+    in_channels: int = eqx.static_field()
+    out_channels: int = eqx.static_field()
+    fft_size: tuple = eqx.static_field()  # (Hf, Wf)
+    alpha: float = eqx.static_field()
+
+    def __init__(self, in_channels: int, out_channels: int, fft_size: tuple, key, init_scale: float = 0.1, alpha: float = 1.0):
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.fft_size = fft_size  # e.g., (28, 28)
+        self.alpha = alpha
+        Hf, Wf = fft_size
+        Wf_rfft = Wf // 2 + 1
+        # Create frequency indices for both dimensions.
+        freqs_h = jnp.arange(Hf, dtype=jnp.float32)
+        freqs_w = jnp.arange(Wf_rfft, dtype=jnp.float32)
+        decay_h = decay_factor(freqs_h, alpha)  # shape: (Hf,)
+        decay_w = decay_factor(freqs_w, alpha)  # shape: (Wf_rfft,)
+        decay_2d = jnp.outer(decay_h, decay_w)  # shape: (Hf, Wf_rfft)
+        # Broadcast decay to shape (1, 1, Hf, Wf_rfft)
+        decay_2d = decay_2d[None, None, :, :]
+        key_re, key_im, key_bias = jr.split(key, 3)
+        # Vectorized sampling for real and imaginary parts.
+        re = jr.normal(key_re, (out_channels, in_channels, Hf, Wf_rfft)) * init_scale * decay_2d
+        im = jr.normal(key_im, (out_channels, in_channels, Hf, Wf_rfft)) * init_scale * decay_2d
+        # Enforce DC frequency (index (0,0)) to be real.
+        im = im.at[:, :, 0, 0].set(0.0)
+        # If width is even, enforce Nyquist frequency (last column) to be real.
+        if Wf % 2 == 0:
+            im = im.at[:, :, :, -1].set(0.0)
+        self.weight_fft = re + 1j * im
+        self.bias = jr.normal(key_bias, (out_channels,)) * init_scale
+
+    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
+        return spectral_conv2d(x, self.weight_fft, self.bias)
+
+
+# ---------------------------------------------------------------
+# 2D SPECTRAL TRANSPOSED CONV (DIRECT)
+# ---------------------------------------------------------------
+@jax.custom_jvp
+def spectral_transposed_conv2d(x: jnp.ndarray, weight_fft: jnp.ndarray, bias: jnp.ndarray):
+    B, Cout, H, W = x.shape
+    _, Cin, Hf, Wf_rfft = weight_fft.shape
+    X_fft = jnp.fft.rfft2(x, axes=(2, 3))
+    X_fft_expanded = X_fft[:, :, None, :, :]
+    W_fft_expanded = weight_fft[None, :, :, :, :]
+    Z_fft = jnp.sum(X_fft_expanded * W_fft_expanded, axis=1)
+    real_Wf = 2 * (Wf_rfft - 1) if Wf_rfft > 1 else 1
+    y = jnp.fft.irfft2(Z_fft, s=(Hf, real_Wf), axes=(2, 3))
+    y = y[..., :H, :W]
+    if bias is not None:
+        y = y + bias[None, :, None, None]
+    return y
+
+@spectral_transposed_conv2d.defjvp
+def spectral_transposed_conv2d_jvp(primals, tangents):
+    x, weight_fft, bias = primals
+    dx, dweight_fft, dbias = tangents
+    y = spectral_transposed_conv2d(x, weight_fft, bias)
+    dy = jnp.zeros_like(y)
+    if dx is not None:
+        dy += spectral_transposed_conv2d(dx, weight_fft, jnp.zeros_like(bias))
+    if dweight_fft is not None:
+        dy += spectral_transposed_conv2d(x, dweight_fft, jnp.zeros_like(bias))
+    if dbias is not None:
+        dy += dbias[None, :, None, None]
+    return y, dy
+
+class SpectralTransposed2d(eqx.Module):
+    """
+    2D spectral transposed convolution with direct spectral parameterization.
+    """
+    weight_fft: jnp.ndarray  # (out_channels, in_channels, Hf, Wf_rfft)
+    bias: jnp.ndarray        # (in_channels,)
+    out_channels: int = eqx.static_field()
+    in_channels: int = eqx.static_field()
+    fft_size: tuple = eqx.static_field()
+
+    def __init__(self, out_channels: int, in_channels: int, fft_size: tuple, key, init_scale: float = 0.1):
+        self.out_channels = out_channels
+        self.in_channels = in_channels
+        self.fft_size = fft_size
+        Hf, Wf = fft_size
+        Wf_rfft = Wf // 2 + 1
+        # For simplicity, here we initialize forward conv coefficients without decay.
+        # You could also vectorize sampling with decay similarly as above.
+        self.weight_fft = jr.normal(key, (out_channels, in_channels, Hf, Wf_rfft)) * init_scale
+        self.bias = jr.normal(key, (in_channels,)) * init_scale
+
+    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
+        return spectral_transposed_conv2d(x, self.weight_fft, self.bias)

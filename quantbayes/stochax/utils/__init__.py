@@ -1,5 +1,4 @@
 from .bayesianize import bayesianize, prior_fn
-from .calibration import CalibratedClassifier
 from .viz import (
     analyze_pre_activations,
     get_block_fft_full_for_given_params,
@@ -18,7 +17,6 @@ from .w_init import (
 )
 
 __all__ = [
-    "CalibratedClassifier",
     "bayesianize",
     "prior_fn",
     "xavier_init",

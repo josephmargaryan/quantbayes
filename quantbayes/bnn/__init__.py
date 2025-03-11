@@ -4,6 +4,9 @@ from .layers.custom_jvp import (
     BlockCirculantProcess,
     Circulant,
     CirculantProcess,
+    SpectralTransposed2d,
+    SpectralConv2d,
+    SpectralConv1d
 )
 from .layers import (
     LSTM,
@@ -56,4 +59,7 @@ __all__ = [
     "VariationalLayer",
     "SpectralDenseBlock",
     "MixtureOfTwoLayers",
+    "SpectralTransposed2d",
+    "SpectralConv2d",
+    "SpectralConv1d"
 ]

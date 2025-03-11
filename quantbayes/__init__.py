@@ -15,7 +15,6 @@ from . import (
     torch_based,
     var,
 )
-from .in_batches import in_batches
 
 __all__ = [
     "bnn",
@@ -32,6 +31,5 @@ __all__ = [
     "fake_data",
     "preprocessing",
     "ensemble",
-    "in_batches",
     "hyperparameter_tune",
 ]

@@ -3,6 +3,9 @@ from .custom_jvp import (
     BlockCirculantProcess,
     Circulant,
     CirculantProcess,
+    SpectralConv1d,
+    SpectralConv2d,
+    SpectralTransposed2d
 )
 from .layers import (
     FourierNeuralOperator1D,
@@ -20,4 +23,7 @@ __all__ = [
     "BlockCirculantProcess",
     "CirculantProcess",
     "MixtureOfTwoLayers",
+    "SpectralConv1d",
+    "SpectralConv2d",
+    "SpectralTransposed2d"
 ]
