@@ -309,7 +309,6 @@ def spectral_circulant_matmul(x: jnp.ndarray, fft_full: jnp.ndarray) -> jnp.ndar
         return y[0]
     return y
 
-
 @spectral_circulant_matmul.defjvp
 def spectral_circulant_matmul_jvp(primals, tangents):
     x, fft_full = primals
@@ -352,17 +351,15 @@ def spectral_circulant_matmul_jvp(primals, tangents):
         return primal_y[0], dY[0]
     return primal_y, dY
 
-
 class CirculantProcess:
     """
     NumPyro-based 'spectral' circulant layer with a custom JVP and an explicit bias.
-    Matches JVPCirculant's parameter count: we have padded_dim for the bias,
-    plus real/imag spectral params. In practice, this code uses the half-spectrum
-    representation (so it's slightly fewer than 2*padded_dim parameters), but you
-    can store the full real/imag arrays if you want an exact 2*padded_dim count.
-
+    This layer uses a half-spectrum representation and a hyperprior on the frequency
+    scaling exponent α. If no fixed α is provided (i.e. alpha is None), a Uniform(0.0, 1.5)
+    hyperprior is used.
+    
     Usage:
-      layer = JVPCirculantProcess(in_features=..., padded_dim=..., name="...", ...)
+      layer = CirculantProcess(in_features=..., padded_dim=..., name="...", alpha=None, ...)
       y = layer(x)  # inside a numpyro model
     """
 
@@ -370,7 +367,7 @@ class CirculantProcess:
         self,
         in_features: int,
         padded_dim: int = None,
-        alpha: float = 1.0,
+        alpha: float = None,  # If None, a hyperprior on α will be used
         K: int = None,
         name: str = "spectral_circ_jvp",
         prior_fn=None,  # a function: scale -> distribution
@@ -378,14 +375,14 @@ class CirculantProcess:
         """
         :param in_features: input dimension
         :param padded_dim: if not None, zero-pad/truncate to that dimension
-        :param alpha: exponent for frequency-dependent scale
+        :param alpha: fixed value for exponent α; if None, a hyperprior is used
         :param K: number of active frequencies to keep
         :param name: base name for NumPyro samples
         :param prior_fn: a callable scale -> distribution (default Normal(0, scale))
         """
         self.in_features = in_features
         self.padded_dim = padded_dim if padded_dim is not None else in_features
-        self.alpha = alpha
+        self.alpha = alpha  # if None, hyperprior will be sampled in __call__
         self.name = name
 
         self.k_half = (self.padded_dim // 2) + 1
@@ -402,10 +399,17 @@ class CirculantProcess:
         self._last_fft_full = None
 
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
-        # 1) Sample real + imag parts for active frequencies
-        freq_idx = jnp.arange(self.k_half)
-        prior_std = 1.0 / jnp.sqrt(1.0 + freq_idx**self.alpha)
+        # If alpha is not fixed, sample it from a Uniform(0.0, 1.5) hyperprior.
+        if self.alpha is None:
+            alpha = numpyro.sample(f"{self.name}_alpha", dist.Uniform(0.0, 1.5))
+        else:
+            alpha = self.alpha
 
+        # 1) Compute frequency indices and prior standard deviation
+        freq_idx = jnp.arange(self.k_half)
+        prior_std = 1.0 / jnp.sqrt(1.0 + freq_idx**alpha)
+
+        # 2) Sample real and imaginary parts for active frequencies
         active_idx = jnp.arange(self.K)
         active_real = numpyro.sample(
             f"{self.name}_real",
@@ -416,7 +420,7 @@ class CirculantProcess:
             self.prior_fn(prior_std[active_idx]).expand([self.K]).to_event(1),
         )
 
-        # 2) Build up full real/imag up to k_half
+        # 3) Build up full real/imag arrays up to k_half
         full_real = jnp.zeros((self.k_half,))
         full_imag = jnp.zeros((self.k_half,))
         full_real = full_real.at[active_idx].set(active_real)
@@ -424,13 +428,13 @@ class CirculantProcess:
 
         # Force DC component purely real
         full_imag = full_imag.at[0].set(0.0)
-        # If even length, also force Nyquist purely real
+        # If even length, force Nyquist component purely real
         if (self.padded_dim % 2 == 0) and (self.k_half > 1):
             full_imag = full_imag.at[-1].set(0.0)
 
         half_complex = full_real + 1j * full_imag
 
-        # 3) Mirror to get the full FFT mask
+        # 4) Mirror the half-spectrum to form the full FFT mask
         if (self.padded_dim % 2 == 0) and (self.k_half > 1):
             nyquist = half_complex[-1].real[None]
             fft_full = jnp.concatenate(
@@ -443,7 +447,7 @@ class CirculantProcess:
 
         self._last_fft_full = jax.lax.stop_gradient(fft_full)
 
-        # 4) Sample a bias (padded_dim) and do the spectral matmul
+        # 5) Sample a bias (of dimension padded_dim) and perform the spectral matrix multiplication
         bias_spectral = numpyro.sample(
             f"{self.name}_bias_spectral",
             dist.Normal(0.0, 1.0).expand([self.padded_dim]).to_event(1),
