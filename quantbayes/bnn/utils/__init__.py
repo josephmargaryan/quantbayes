@@ -15,17 +15,23 @@ from .model_calibration import (
     expected_calibration_error,
     plot_calibration_curve,
     plot_roc_curve,
+    maximum_calibration_error,
+    multiclass_brier_score,
 )
 from .vis_classification import (
     visualize_uncertainty_binary,
     visualize_uncertainty_multiclass,
 )
+from .log_density import PredictiveLogDensityCalculator
 
 __all__ = [
+    "PredictiveLogDensityCalculator",
     "CalibratedBNN",
     "EntropyAndMutualInformation",
     "BayesianAnalysis",
     "plot_roc_curve",
+    "maximum_calibration_error",
+    "multiclass_brier_score",
     "plot_calibration_curve",
     "expected_calibration_error",
     "plot_hdi",

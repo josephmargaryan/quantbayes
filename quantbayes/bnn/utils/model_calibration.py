@@ -10,6 +10,8 @@ __all__ = [
     "plot_roc_curve",
     "plot_calibration_curve",
     "expected_calibration_error",
+    "maximum_calibration_error",
+    "multiclass_brier_score",
 ]
 
 
@@ -383,45 +385,121 @@ def plot_calibration_curve(y_true, y_prob, num_bins=10, plot_type="binary"):
         raise ValueError("Invalid plot_type. Choose either 'binary' or 'multiclass'.")
 
 
+def multiclass_brier_score(y_true, y_prob):
+    """
+    Compute the multiclass Brier score.
+
+    Parameters:
+      y_true (array-like): True labels (integer encoded).
+      y_prob (array-like): Predicted probabilities for each class.
+
+    Returns:
+      brier_score (float): The multiclass Brier score.
+    """
+    # One-hot encode y_true
+    n_samples = y_prob.shape[0]
+    n_classes = y_prob.shape[1]
+    y_true_onehot = np.zeros((n_samples, n_classes))
+    y_true_onehot[np.arange(n_samples), y_true] = 1
+
+    # Compute squared differences
+    squared_diff = (y_prob - y_true_onehot) ** 2
+
+    # Average over classes and samples
+    brier_score = np.mean(np.sum(squared_diff, axis=1))
+    return brier_score
+
+
+def maximum_calibration_error(y_true, y_prob, num_bins=10):
+    """
+    Computes the Maximum Calibration Error (MCE) for binary or multiclass classification.
+
+    For each bin, the absolute difference between the empirical accuracy and the mean predicted probability is computed,
+    and then the maximum error is returned. For multiclass, this function averages the MCE across classes (one-vs-all).
+
+    Parameters:
+      y_true (array-like): True labels.
+      y_prob (array-like): Predicted probabilities.
+          For multiclass, shape should be (n_samples, n_classes).
+      num_bins (int): Number of bins to use for calibration.
+
+    Returns:
+      mce (float): The maximum calibration error.
+    """
+    if y_prob.ndim == 1:
+        # Binary classification
+        prob_true, prob_pred = calibration_curve(
+            y_true, y_prob, n_bins=num_bins, strategy="uniform"
+        )
+        mce = np.max(np.abs(prob_true - prob_pred))
+    else:
+        # Multiclass: Compute MCE for each class and average.
+        num_classes = y_prob.shape[1]
+        mce_total = 0.0
+        for class_idx in range(num_classes):
+            binary_true = y_true == class_idx
+            prob_class = y_prob[:, class_idx]
+            prob_true, prob_pred = calibration_curve(
+                binary_true, prob_class, n_bins=num_bins, strategy="uniform"
+            )
+            mce_total += np.max(np.abs(prob_true - prob_pred))
+        mce = mce_total / num_classes
+    return mce
+
+
 def expected_calibration_error(y_true, y_prob, num_bins=10):
     """
     Computes the Expected Calibration Error (ECE) for binary or multiclass classification.
 
     Parameters:
-    - y_true (array-like): True labels.
-    - y_prob (array-like): Predicted probabilities.
-    - num_bins (int): Number of bins for calibration.
+      y_true (array-like): True labels.
+      y_prob (array-like): Predicted probabilities.
+          For multiclass, shape should be (n_samples, n_classes).
+      num_bins (int): Number of bins to use for calibration.
 
     Returns:
-    - ece (float): Expected Calibration Error.
+      ece (float): The expected calibration error.
     """
-    if len(y_prob.shape) == 1:  # Binary classification
+
+    # Binary classification: y_prob is 1D.
+    if y_prob.ndim == 1:
+        # Compute calibration curve; both arrays have length equal to number of non-empty bins.
         prob_true, prob_pred = calibration_curve(
             y_true, y_prob, n_bins=num_bins, strategy="uniform"
         )
+        # To weight the error by bin frequency, we compute bin counts using the same bin edges.
         bin_edges = np.linspace(0, 1, num_bins + 1)
         bin_indices = np.digitize(y_prob, bin_edges, right=True) - 1
+        # Clip negative indices to 0.
+        bin_indices = np.clip(bin_indices, 0, num_bins - 1)
         bin_counts = np.bincount(bin_indices, minlength=num_bins)
-        valid_bins = bin_counts > 0  # Use only bins with samples
+        # Filter out bins with no samples.
+        valid_bins = bin_counts > 0
+        # ECE is the sum over bins of |accuracy - confidence| weighted by the fraction of samples.
         ece = np.sum(
             np.abs(prob_true - prob_pred) * (bin_counts[valid_bins] / len(y_true))
         )
-    else:  # Multiclass classification
+    else:
+        # Multiclass classification: average the ECE over each class (one-vs-all).
         num_classes = y_prob.shape[1]
-        ece_total = 0
+        ece_total = 0.0
         for class_idx in range(num_classes):
+            # Create binary labels for the current class.
+            binary_true = y_true == class_idx
+            # Get predicted probability for the current class.
+            prob_class = y_prob[:, class_idx]
             prob_true, prob_pred = calibration_curve(
-                y_true == class_idx,
-                y_prob[:, class_idx],
-                n_bins=num_bins,
-                strategy="uniform",
+                binary_true, prob_class, n_bins=num_bins, strategy="uniform"
             )
             bin_edges = np.linspace(0, 1, num_bins + 1)
-            bin_indices = np.digitize(y_prob[:, class_idx], bin_edges, right=True) - 1
+            bin_indices = np.digitize(prob_class, bin_edges, right=True) - 1
+            # Clip negative indices to 0.
+            bin_indices = np.clip(bin_indices, 0, num_bins - 1)
             bin_counts = np.bincount(bin_indices, minlength=num_bins)
-            valid_bins = bin_counts > 0  # Use only bins with samples
-            ece_total += np.sum(
+            valid_bins = bin_counts > 0
+            ece_class = np.sum(
                 np.abs(prob_true - prob_pred) * (bin_counts[valid_bins] / len(y_true))
             )
+            ece_total += ece_class
         ece = ece_total / num_classes
     return ece
