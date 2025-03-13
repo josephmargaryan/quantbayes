@@ -134,7 +134,6 @@ class PredictiveLogDensityCalculator:
             likelihood_matrix[:, s] = self.compute_likelihood_sample(sample, X, y)
 
         # Average likelihood over samples for each data point; add eps to prevent log(0)
-        eps = 1e-9
-        avg_likelihood = np.mean(likelihood_matrix, axis=1) + eps
-        lppd = np.sum(np.log(avg_likelihood))
+        log_likelihoods = np.log(likelihood_matrix + 1e-9)  # Prevent log(0)
+        lppd = np.sum(logsumexp(log_likelihoods, axis=1) - np.log(n_mcmc))
         return lppd
