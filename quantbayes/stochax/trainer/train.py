@@ -22,16 +22,16 @@ __all__ = [
 # -------------------------------
 
 
-def data_loader(X, y, batch_size, shuffle=True, key=jr.PRNGKey(0)):
+def data_loader(X, y, batch_size, shuffle=True, key=None):
     """
     Generator that yields minibatches from X and y.
 
     Args:
-        X: Input data (JAX array).
-        y: Target data (JAX array).
+        X: Input data (JAX array) with shape [N, ...].
+        y: Target data (JAX array) with shape [N, ...].
         batch_size: Number of samples per batch.
         shuffle: Whether to shuffle the indices.
-        key: JAX PRNG key for shuffling.
+        key: JAX PRNG key for shuffling. If None, no shuffling is done.
 
     Yields:
         Tuples (X_batch, y_batch)
@@ -39,6 +39,8 @@ def data_loader(X, y, batch_size, shuffle=True, key=jr.PRNGKey(0)):
     n = X.shape[0]
     indices = jnp.arange(n)
     if shuffle:
+        if key is None:
+            raise ValueError("Shuffling requested but no key provided.")
         indices = jr.permutation(key, indices)
     for i in range(0, n, batch_size):
         batch_idx = indices[i : i + batch_size]
@@ -186,50 +188,50 @@ def regression_loss(model, state, x, y, key):
 def train_step(model, state, opt_state, x, y, key, loss_fn, optimizer):
     """
     Generic training step.
-
+    
     Args:
         model: Equinox model.
-        state: Model state (e.g. BatchNorm statistics); use None if unused.
+        state: Model state (can be None).
         opt_state: Optimizer state.
         x, y: Batch data.
         key: PRNG key.
-        loss_fn: A function with signature (model, state, x, y, key) -> (loss, state).
+        loss_fn: Loss function with signature (model, state, x, y, key) -> (loss, new_state).
         optimizer: An optax optimizer.
-
+    
     Returns:
         Updated (model, state, opt_state).
     """
+    # Compute gradients; use filter_grad to ignore non-differentiable parts.
     grad_fn = eqx.filter_grad(loss_fn, has_aux=True)
-    grads, state = grad_fn(model, state, x, y, key)
+    grads, new_state = grad_fn(model, state, x, y, key)
     updates, opt_state = optimizer.update(grads, opt_state)
     model = eqx.apply_updates(model, updates)
-    return model, state, opt_state
+    return model, new_state, opt_state
 
-
+# -------------------------------
+# Evaluation Step
+# -------------------------------
 @eqx.filter_jit
 def eval_step(model, state, x, y, key, loss_fn):
     """
     Generic evaluation step returning the loss.
-
+    
     Args:
         model: Equinox model.
         state: Model state.
         x, y: Batch data.
         key: PRNG key.
         loss_fn: Loss function.
-
+    
     Returns:
         Loss value.
     """
     loss, _ = loss_fn(model, state, x, y, key)
     return loss
 
-
 # -------------------------------
-# Generic Training and Evaluation Loops
+# Training Loop
 # -------------------------------
-
-
 def train(
     model,
     state,
@@ -247,20 +249,20 @@ def train(
 ):
     """
     Generic training loop with early stopping and checkpointing.
-
+    
     Args:
         model: Equinox model.
         state: Model state.
         opt_state: Optimizer state.
         optimizer: An optax optimizer.
         loss_fn: Loss function.
-        X_train, y_train: Training data.
-        X_val, y_val: Validation data.
+        X_train, y_train: Training data as JAX arrays.
+        X_val, y_val: Validation data as JAX arrays.
         batch_size: Batch size.
         num_epochs: Maximum number of epochs.
         patience: Patience for early stopping.
         key: PRNG key.
-
+    
     Returns:
         best_model: The best model (in training mode).
         best_state: Corresponding best state.
@@ -279,14 +281,10 @@ def train(
         epoch_train_loss = 0.0
         total_train_samples = 0
         train_key, loader_key = jr.split(train_key)
-        # Training loop
-        for xb, yb in data_loader(
-            X_train, y_train, batch_size, shuffle=True, key=loader_key
-        ):
+        # Training loop: note that each call to data_loader uses its own key.
+        for xb, yb in data_loader(X_train, y_train, batch_size, shuffle=True, key=loader_key):
             train_key, subkey = jr.split(train_key)
-            model, state, opt_state = train_step(
-                model, state, opt_state, xb, yb, subkey, loss_fn, optimizer
-            )
+            model, state, opt_state = train_step(model, state, opt_state, xb, yb, subkey, loss_fn, optimizer)
             loss_val, _ = loss_fn(model, state, xb, yb, subkey)
             epoch_train_loss += loss_val * xb.shape[0]
             total_train_samples += xb.shape[0]
@@ -295,9 +293,7 @@ def train(
         # Evaluation loop
         epoch_val_loss = 0.0
         total_val_samples = 0
-        for xb, yb in data_loader(
-            X_val, y_val, batch_size, shuffle=False, key=eval_key
-        ):
+        for xb, yb in data_loader(X_val, y_val, batch_size, shuffle=False, key=eval_key):
             eval_key, subkey = jr.split(eval_key)
             loss_val = eval_step(model, state, xb, yb, subkey, loss_fn)
             epoch_val_loss += loss_val * xb.shape[0]
@@ -306,10 +302,9 @@ def train(
 
         train_losses.append(epoch_train_loss)
         val_losses.append(epoch_val_loss)
-        print(
-            f"Epoch {epoch+1:4d} | Train Loss: {epoch_train_loss:.4f} | Val Loss: {epoch_val_loss:.4f}"
-        )
+        print(f"Epoch {epoch+1:4d} | Train Loss: {epoch_train_loss:.4f} | Val Loss: {epoch_val_loss:.4f}")
 
+        # Checkpointing and early stopping.
         if epoch_val_loss < best_val_loss:
             best_val_loss = epoch_val_loss
             best_model = copy.deepcopy(model)
@@ -323,24 +318,24 @@ def train(
 
     return best_model, best_state, train_losses, val_losses
 
-
+# -------------------------------
+# Prediction / Inference
+# -------------------------------
 def predict(model, state, X, key):
     """
-    Predict function for computing probabilities from the model.
-
+    Predict function for computing model outputs (logits) for input data.
+    
     Args:
         model: Equinox model.
         state: Model state.
-        X: Input data as a jax.numpy.ndarray.
+        X: Input data as a JAX array.
         key: PRNG key.
-
+    
     Returns:
-        Predictions (logits) computed by the model.
+        logits: The model outputs (before sigmoid), vectorized over the batch.
     """
-    # Vectorize the model over the first axis of X.
-    batched_inference = jax.vmap(
-        model, in_axes=(0, None, None), out_axes=(0, None), axis_name="batch"
-    )
+    # For inference, if your model uses dropout, you may wish to disable it (or use a fixed key).
+    batched_inference = jax.vmap(model, in_axes=(0, None, None))
     logits, _ = batched_inference(X, key, state)
     return logits
 
