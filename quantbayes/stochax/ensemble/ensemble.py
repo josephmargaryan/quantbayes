@@ -1,663 +1,511 @@
 import copy
-
+import jax
+import jax.numpy as jnp
+import jax.random as jr
 import numpy as np
-from sklearn.model_selection import KFold
+import equinox as eqx
+import optax
+from sklearn.linear_model import LogisticRegression
 
-__all__ = [
-    "EnsembleBinary",
-    "EnsembleMulticlass",
-    "EnsembleRegression",
-    "EnsembleForecast",
-]
-
-"""
-Demonstration:
-key1, key2 = jr.split(jr.PRNGKey(1))
-model1 = SimpleBinaryModel(X_train.shape[1], 32, key1)
-model2 = SimpleBinaryModel(X_train.shape[1], 32, key2)
-
-# Their state is None (since we're not using BN/Dropout) and we create BinaryModel wrappers.
-wrapper1 = BinaryModel(lr=1e-2)
-wrapper2 = BinaryModel(lr=1e-2)
-
-# Build a dictionary of base models.
-base_models = {
-    "model1": {"wrapper": wrapper1, "model": model1, "state": None},
-    "model2": {"wrapper": wrapper2, "model": model2, "state": None},
-}
-
-# 4. Create an EnsembleBinary instance.
-# Here, we use stacking and let the ensemble create a default meta learner.
-ensemble = EnsembleBinary(
-    models=base_models,
-    n_splits=3,  # Using 3 folds for a quicker demo.
-    ensemble_method="stacking"
-)
-
-# 5. Fit the ensemble on the training data.
-# We'll use the same hyperparameters as in the base model fit methods.
-ensemble.fit(
-    X_train=jnp.array(X_train),
-    y_train=jnp.array(y_train),
-    X_val=jnp.array(X_test),
-    y_val=jnp.array(y_test),
-    num_epochs=100,
-    patience=5,
-    key=jr.PRNGKey(999)
-)
-
-# 6. Make predictions and visualize performance.
-preds = ensemble.predict(jnp.array(X_test), key=jr.PRNGKey(123))
-print("Ensemble predictions (raw logits):", preds)
-
-# Visualize using ROC and calibration plots.
-ensemble.visualize(jnp.array(X_test), np.array(y_test))
-"""
+from quantbayes.stochax.trainer.train import data_loader, train, predict, binary_loss, multiclass_loss, regression_loss
 
 
-# ================= Ensemble for Binary Classification ====================
-class EnsembleBinary:
+
+# ------------------------------------------------------------------------
+# Base Class for Ensemble
+# ------------------------------------------------------------------------
+
+class _BaseEquinoxEnsemble:
     """
-    Ensemble wrapper for binary classification.
+    A base class that trains multiple Equinox models and can combine predictions
+    either via weighted average or stacking with a meta-learner.
 
-    Expected parameters:
-      - models (dict): keys are model names, values are dicts with keys:
-            "wrapper": instance of BinaryModel wrapper,
-            "model": Equinox model instance,
-            "state": any state (or None) used in the wrapper.
-      - n_splits (int): number of CV folds for stacking.
-      - ensemble_method (str): "weighted_average" or "stacking".
-      - weights (dict or None): for weighted averaging; if None, all models are equal.
-      - meta_learner: a scikit-learn estimator (must support fit() and predict());
-            if None and ensemble_method=="stacking", a default LogisticRegression is used.
+    Child classes override how predictions are interpreted (e.g., sigmoid vs softmax vs raw).
     """
 
     def __init__(
         self,
-        models,
-        n_splits=5,
+        model_constructors,
+        loss_fn,
+        optimizer,
         ensemble_method="weighted_average",
-        weights=None,
         meta_learner=None,
+        weights=None,
     ):
-        self.models = models
-        self.n_splits = n_splits
+        """
+        Parameters
+        ----------
+        model_constructors : list of callables
+            Each callable takes a PRNG key and returns a freshly initialized Equinox model.
+        loss_fn : callable
+            The loss function used for training (binary_loss, multiclass_loss, or regression_loss).
+        optimizer : optax.GradientTransformation
+            The optimizer to use for training each model in the ensemble.
+        ensemble_method : str
+            "weighted_average" or "stacking".
+        meta_learner : sklearn-like estimator, optional
+            Used only if ensemble_method == "stacking".
+            Defaults to LogisticRegression() if None.
+        weights : list of floats or None
+            Per-model weights if using weighted averaging. Must match length of model_constructors.
+            If None, defaults to uniform weights.
+        """
+
+        self.model_constructors = model_constructors
+        self.loss_fn = loss_fn
+        self.optimizer = optimizer
         self.ensemble_method = ensemble_method
-        self.weights = weights
-        self.meta_learner = meta_learner
-        self.fitted_models = {}  # will store fitted base models (wrapper, model, state)
 
-    def fit(self, X_train, y_train, X_val, y_val, **fit_kwargs):
+        if meta_learner is None:
+            self.meta_learner = LogisticRegression()
+        else:
+            self.meta_learner = meta_learner
+
+        # Will hold tuples of (best_model, best_state) for each ensemble member
+        self.ensemble_members = []
+
+        # If weighting is not provided, use uniform
         if self.ensemble_method == "weighted_average":
-            # Simply fit each base model on full training data.
-            for name, base in self.models.items():
-                wrapper = base["wrapper"]
-                model = base["model"]
-                state = base["state"]
-                fitted_model, fitted_state = wrapper.fit(
-                    model, state, X_train, y_train, X_val, y_val, **fit_kwargs
-                )
-                self.fitted_models[name] = {
-                    "wrapper": wrapper,
-                    "model": fitted_model,
-                    "state": fitted_state,
-                }
-        elif self.ensemble_method == "stacking":
-            # First, generate out-of-fold predictions for each base model.
-            kf = KFold(n_splits=self.n_splits, shuffle=True, random_state=42)
-            oof_preds = {name: np.zeros(len(y_train)) for name in self.models.keys()}
-            for name, base in self.models.items():
-                wrapper = base["wrapper"]
-                preds_model = np.zeros(len(y_train))
-                for train_idx, val_idx in kf.split(X_train):
-                    # Clone the base model/state for each fold.
-                    model_clone = copy.deepcopy(base["model"])
-                    state_clone = copy.deepcopy(base["state"])
-                    X_tr, y_tr = X_train[train_idx], y_train[train_idx]
-                    X_val_fold, y_val_fold = X_train[val_idx], y_train[val_idx]
-                    fitted_model, fitted_state = wrapper.fit(
-                        model_clone,
-                        state_clone,
-                        X_tr,
-                        y_tr,
-                        X_val_fold,
-                        y_val_fold,
-                        **fit_kwargs,
-                    )
-                    preds = wrapper.predict(
-                        fitted_model, fitted_state, X_train[val_idx]
-                    )
-                    # Assume output is logits; store (you can change to probabilities if needed)
-                    preds_model[val_idx] = np.array(preds).flatten()
-                oof_preds[name] = preds_model
-                # Refit the base model on full data.
-                fitted_model, fitted_state = wrapper.fit(
-                    copy.deepcopy(base["model"]),
-                    copy.deepcopy(base["state"]),
-                    X_train,
-                    y_train,
-                    X_val,
-                    y_val,
-                    **fit_kwargs,
-                )
-                self.fitted_models[name] = {
-                    "wrapper": wrapper,
-                    "model": fitted_model,
-                    "state": fitted_state,
-                }
-            # Stack the out-of-fold predictions (each column is one model)
-            X_meta = np.column_stack(
-                [oof_preds[name] for name in sorted(self.models.keys())]
-            )
-            if self.meta_learner is None:
-                from sklearn.linear_model import LogisticRegression
-
-                self.meta_learner = LogisticRegression()
-            self.meta_learner.fit(X_meta, np.array(y_train))
-        return self
-
-    def predict(self, X, **predict_kwargs):
-        if self.ensemble_method == "weighted_average":
-            preds_list = []
-            for name in sorted(self.fitted_models.keys()):
-                base = self.fitted_models[name]
-                wrapper = base["wrapper"]
-                model = base["model"]
-                state = base["state"]
-                pred = wrapper.predict(model, state, X, **predict_kwargs)
-                preds_list.append(np.array(pred))
-            preds_arr = np.array(preds_list)  # shape: (n_models, n_samples)
-            if self.weights is None:
-                avg_pred = np.mean(preds_arr, axis=0)
+            if weights is None:
+                self.weights = [1.0] * len(model_constructors)
             else:
-                # Use weights from the provided dictionary (default to 1.0 if missing).
-                w = np.array(
-                    [
-                        self.weights.get(name, 1.0)
-                        for name in sorted(self.fitted_models.keys())
-                    ]
+                assert len(weights) == len(model_constructors), (
+                    "Length of weights must match number of model_constructors"
                 )
-                w = w / np.sum(w)
-                avg_pred = np.average(preds_arr, axis=0, weights=w)
-            return avg_pred
-        elif self.ensemble_method == "stacking":
-            preds_list = []
-            for name in sorted(self.fitted_models.keys()):
-                base = self.fitted_models[name]
-                wrapper = base["wrapper"]
-                model = base["model"]
-                state = base["state"]
-                pred = wrapper.predict(model, state, X, **predict_kwargs)
-                preds_list.append(np.array(pred).flatten())
-            X_meta = np.column_stack(preds_list)
-            return self.meta_learner.predict(X_meta)
+                self.weights = weights
+        else:
+            self.weights = None  # Not used in stacking
 
-    def visualize(self, X, y, **viz_kwargs):
-        # For binary classification we show ROC and calibration plots.
-        preds = self.predict(X, **viz_kwargs)
-        # Convert raw logits to probabilities via sigmoid.
-        probs = 1 / (1 + np.exp(-preds))
-        import matplotlib.pyplot as plt
-        from sklearn.metrics import auc, calibration_curve, roc_curve
-
-        fpr, tpr, _ = roc_curve(y, probs)
-        roc_auc = auc(fpr, tpr)
-        fig, axs = plt.subplots(1, 2, figsize=(12, 5))
-        axs[0].plot(fpr, tpr, label=f"ROC (AUC = {roc_auc:.2f})", color="darkred")
-        axs[0].plot([0, 1], [0, 1], linestyle="--", color="gray")
-        axs[0].set_xlabel("False Positive Rate")
-        axs[0].set_ylabel("True Positive Rate")
-        axs[0].set_title("ROC Curve")
-        axs[0].legend()
-        prob_true, prob_pred = calibration_curve(y, probs, n_bins=10)
-        axs[1].plot(prob_pred, prob_true, marker="o", linewidth=1, label="Calibration")
-        axs[1].plot([0, 1], [0, 1], linestyle="--", label="Ideal", color="gray")
-        axs[1].set_xlabel("Mean Predicted Probability")
-        axs[1].set_ylabel("Fraction of Positives")
-        axs[1].set_title("Calibration Plot")
-        axs[1].legend()
-        plt.suptitle("Ensemble Binary Performance")
-        plt.tight_layout()
-        plt.show()
-
-
-# ================= Ensemble for Multiclass Classification ====================
-class EnsembleMulticlass:
-    """
-    Ensemble wrapper for multiclass classification.
-
-    Expects a dictionary of base models (each as a dict with keys:
-      "wrapper", "model", "state").
-
-    For stacking the out-of-fold predictions from each base model (each providing
-    a vector of logits per sample) are concatenated into a feature matrix.
-    A default LogisticRegression (multinomial) is used as meta learner if not provided.
-    """
-
-    def __init__(
+    def fit(
         self,
-        models,
-        n_splits=5,
-        ensemble_method="weighted_average",
-        weights=None,
-        meta_learner=None,
+        X_train,
+        y_train,
+        X_val,
+        y_val,
+        batch_size,
+        num_epochs,
+        patience,
+        key,
     ):
-        self.models = models
-        self.n_splits = n_splits
-        self.ensemble_method = ensemble_method
-        self.weights = weights
-        self.meta_learner = meta_learner
-        self.fitted_models = {}
+        """
+        Train each ensemble member, then (if stacking) train the meta-learner on the validation set.
+        """
+        num_models = len(self.model_constructors)
+        keys = jr.split(key, num_models)
 
-    def fit(self, X_train, y_train, X_val, y_val, **fit_kwargs):
-        if self.ensemble_method == "weighted_average":
-            for name, base in self.models.items():
-                wrapper = base["wrapper"]
-                model = base["model"]
-                state = base["state"]
-                fitted_model, fitted_state = wrapper.fit(
-                    model, state, X_train, y_train, X_val, y_val, **fit_kwargs
-                )
-                self.fitted_models[name] = {
-                    "wrapper": wrapper,
-                    "model": fitted_model,
-                    "state": fitted_state,
-                }
-        elif self.ensemble_method == "stacking":
-            kf = KFold(n_splits=self.n_splits, shuffle=True, random_state=42)
-            # For each base model, we will collect out-of-fold predictions.
-            # Here, each prediction is an array of shape (n_samples, n_classes).
-            oof_preds = {
-                name: np.zeros((len(y_train), None)).tolist()
-                for name in self.models.keys()
-            }
-            # We will first determine n_classes from the first model's prediction.
-            for name, base in self.models.items():
-                wrapper = base["wrapper"]
-                preds_list = [None] * len(y_train)
-                for train_idx, val_idx in kf.split(X_train):
-                    model_clone = copy.deepcopy(base["model"])
-                    state_clone = copy.deepcopy(base["state"])
-                    X_tr, y_tr = X_train[train_idx], y_train[train_idx]
-                    X_val_fold, y_val_fold = X_train[val_idx], y_train[val_idx]
-                    fitted_model, fitted_state = wrapper.fit(
-                        model_clone,
-                        state_clone,
-                        X_tr,
-                        y_tr,
-                        X_val_fold,
-                        y_val_fold,
-                        **fit_kwargs,
-                    )
-                    preds = wrapper.predict(
-                        fitted_model, fitted_state, X_train[val_idx]
-                    )
-                    # Ensure preds is a 2D array.
-                    preds = np.atleast_2d(np.array(preds))
-                    for i, idx in enumerate(val_idx):
-                        preds_list[idx] = preds[i]
-                # Stack predictions for this model.
-                oof_preds[name] = np.vstack(preds_list)
-                # Refit the base model on full data.
-                fitted_model, fitted_state = wrapper.fit(
-                    copy.deepcopy(base["model"]),
-                    copy.deepcopy(base["state"]),
-                    X_train,
-                    y_train,
-                    X_val,
-                    y_val,
-                    **fit_kwargs,
-                )
-                self.fitted_models[name] = {
-                    "wrapper": wrapper,
-                    "model": fitted_model,
-                    "state": fitted_state,
-                }
-            # Concatenate features: for each sample, concatenate predictions from all models.
-            meta_features = np.hstack(
-                [oof_preds[name] for name in sorted(self.models.keys())]
+        self.ensemble_members = []
+        for i, constructor in enumerate(self.model_constructors):
+            print(f"\n=== Training Model {i+1}/{num_models} ===")
+            model_key = keys[i]
+            model = constructor(model_key)
+            state = None  # For models that track state (e.g., BatchNorm), adapt as needed
+            opt_state = self.optimizer.init(eqx.filter(model, eqx.is_inexact_array))
+
+            best_model, best_state, _, _ = train(
+                model=model,
+                state=state,
+                opt_state=opt_state,
+                optimizer=self.optimizer,
+                loss_fn=self.loss_fn,
+                X_train=X_train,
+                y_train=y_train,
+                X_val=X_val,
+                y_val=y_val,
+                batch_size=batch_size,
+                num_epochs=num_epochs,
+                patience=patience,
+                key=model_key,
             )
-            if self.meta_learner is None:
-                from sklearn.linear_model import LogisticRegression
+            self.ensemble_members.append((best_model, best_state))
 
-                self.meta_learner = LogisticRegression(
-                    multi_class="multinomial", max_iter=1000
-                )
-            self.meta_learner.fit(meta_features, np.array(y_train))
-        return self
+        # If stacking, gather predictions for the meta-learner
+        if self.ensemble_method == "stacking":
+            print("\n=== Fitting Meta-Learner (Stacking) ===")
+            # Use the logic specific to the child class to get meta-features from validation data
+            meta_features = self._build_meta_features(X_val, key=jr.PRNGKey(9999))  # separate key
+            y_val_np = np.array(y_val).ravel()
+            self.meta_learner.fit(meta_features, y_val_np)
 
-    def predict(self, X, **predict_kwargs):
+    def predict(self, X, key):
+        """
+        Returns final predictions (discrete classes for classification or real values for regression).
+        Child classes can override or call `_combine_predictions(...)`.
+        """
+        raise NotImplementedError("Override in child class.")
+
+    def _combine_predictions(self, raw_predictions):
+        """
+        Combine the raw model outputs (logits or real values) using the chosen ensemble method.
+
+        raw_predictions: list of JAX arrays, each shape (N, output_dim).
+        Returns a single JAX array or NumPy array of shape (N, output_dim).
+        """
         if self.ensemble_method == "weighted_average":
-            preds_list = []
-            for name in sorted(self.fitted_models.keys()):
-                base = self.fitted_models[name]
-                wrapper = base["wrapper"]
-                model = base["model"]
-                state = base["state"]
-                pred = wrapper.predict(model, state, X, **predict_kwargs)
-                preds_list.append(
-                    np.array(pred)
-                )  # each of shape (n_samples, n_classes)
-            preds_arr = np.array(preds_list)  # shape: (n_models, n_samples, n_classes)
-            if self.weights is None:
-                avg_pred = np.mean(preds_arr, axis=0)
+            # Weighted average of raw predictions
+            weighted_sum = 0.0
+            total_weight = sum(self.weights)
+            for w, p in zip(self.weights, raw_predictions):
+                weighted_sum += w * p
+            avg_preds = weighted_sum / total_weight
+            return avg_preds
+
+        elif self.ensemble_method == "stacking":
+            # For stacking, we do not directly combine here. Instead, we rely on
+            # the meta-learner's predict or predict_proba using stacked features.
+            # This base method won't be used in stacking logic. Child classes can override.
+            raise ValueError("Shouldn't directly combine predictions when using 'stacking' method.")
+
+        else:
+            raise ValueError(f"Unknown ensemble method: {self.ensemble_method}")
+
+    def _build_meta_features(self, X, key):
+        """
+        Return model-level features for stacking, e.g. probabilities or raw outputs
+        stacked horizontally. Child classes define how to convert raw outputs (logits, etc.)
+        into features (e.g., apply sigmoid or softmax).
+        """
+        raise NotImplementedError("Override in child class.")
+
+
+# ------------------------------------------------------------------------
+# 1) Binary Classification Ensemble
+# ------------------------------------------------------------------------
+
+class EnsembleBinary(_BaseEquinoxEnsemble):
+    """
+    Ensemble specialized for binary classification:
+      - Applies sigmoid to logits.
+      - `predict_proba` returns probabilities in [0, 1].
+      - `predict` returns discrete 0/1 (or possibly 0/1 classes from the meta-learner).
+    """
+
+    def predict(self, X, key):
+        """
+        Predict discrete class labels for binary classification.
+        If stacking, uses meta-learner. Otherwise, uses threshold=0.5 on averaged probabilities.
+        """
+        num_models = len(self.ensemble_members)
+        keys = jr.split(key, num_models)
+
+        # Collect raw logits from each model
+        model_logits = []
+        for i, (model, state) in enumerate(self.ensemble_members):
+            logits = predict(model, state, X, keys[i])  # shape (N, 1)
+            model_logits.append(logits)
+
+        if self.ensemble_method == "weighted_average":
+            # Weighted average of logits -> apply sigmoid -> threshold
+            logits_avg = self._combine_predictions(model_logits)
+            probs = jax.nn.sigmoid(logits_avg)
+            # Discrete 0/1
+            return np.array(probs >= 0.5, dtype=int).ravel()
+
+        elif self.ensemble_method == "stacking":
+            # Build stacking features (sigmoid probabilities)
+            meta_features = self._build_meta_features(X, key)
+            # Use meta-learner's predict (classes)
+            final_preds = self.meta_learner.predict(meta_features)
+            return final_preds
+
+        else:
+            raise ValueError(f"Unknown ensemble method: {self.ensemble_method}")
+
+    def predict_proba(self, X, key):
+        """
+        Return probabilities for binary classification in [0, 1].
+        If stacking, uses meta-learner's predict_proba. Otherwise, does weighted avg of sigmoids.
+        """
+        num_models = len(self.ensemble_members)
+        keys = jr.split(key, num_models)
+
+        model_logits = []
+        for i, (model, state) in enumerate(self.ensemble_members):
+            logits = predict(model, state, X, keys[i])
+            model_logits.append(logits)
+
+        if self.ensemble_method == "weighted_average":
+            # Weighted average of logits -> apply sigmoid
+            logits_avg = self._combine_predictions(model_logits)
+            probs = jax.nn.sigmoid(logits_avg)
+            return np.array(probs).ravel()  # shape (N,)
+
+        elif self.ensemble_method == "stacking":
+            # Build stacking features (sigmoids from each model)
+            meta_features = self._build_meta_features(X, key)
+            if hasattr(self.meta_learner, "predict_proba"):
+                # shape (N, 2) for binary
+                final_probs = self.meta_learner.predict_proba(meta_features)
+                return final_probs[:, 1]  # Probability of class "1"
             else:
-                w = np.array(
-                    [
-                        self.weights.get(name, 1.0)
-                        for name in sorted(self.fitted_models.keys())
-                    ]
-                )
-                w = w / np.sum(w)
-                # Weighted average along axis 0.
-                avg_pred = np.tensordot(w, preds_arr, axes=([0], [0]))
-            return avg_pred
-        elif self.ensemble_method == "stacking":
-            preds_list = []
-            for name in sorted(self.fitted_models.keys()):
-                base = self.fitted_models[name]
-                wrapper = base["wrapper"]
-                model = base["model"]
-                state = base["state"]
-                pred = wrapper.predict(model, state, X, **predict_kwargs)
-                preds_list.append(np.atleast_2d(np.array(pred)))
-            meta_features = np.hstack(preds_list)
-            return self.meta_learner.predict(meta_features)
+                # fallback: if meta-learner lacks predict_proba, use predict and interpret as 0/1
+                preds = self.meta_learner.predict(meta_features)
+                return preds  # 0 or 1, you can adapt as needed
 
-    def visualize(self, X, y, **viz_kwargs):
-        # For multiclass, we can use a confusion matrix and a bar plot of average predicted probabilities.
-        preds = self.predict(X, **viz_kwargs)
-        # Get predicted class labels.
-        pred_classes = np.argmax(preds, axis=-1)
-        import matplotlib.pyplot as plt
-        import seaborn as sns
-        from sklearn.metrics import confusion_matrix
+        else:
+            raise ValueError(f"Unknown ensemble method: {self.ensemble_method}")
 
-        cm = confusion_matrix(y, pred_classes)
-        fig, axs = plt.subplots(1, 2, figsize=(14, 6))
-        sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", ax=axs[0])
-        axs[0].set_xlabel("Predicted")
-        axs[0].set_ylabel("True")
-        axs[0].set_title("Confusion Matrix")
-        avg_probs = np.mean(preds, axis=0)
-        axs[1].bar(
-            range(len(avg_probs)), avg_probs, color="mediumseagreen", edgecolor="black"
-        )
-        axs[1].set_xlabel("Class")
-        axs[1].set_ylabel("Average Predicted Probability")
-        axs[1].set_title("Average Predicted Probabilities")
-        plt.suptitle("Ensemble Multiclass Performance")
-        plt.tight_layout()
-        plt.show()
+    def _build_meta_features(self, X, key):
+        """
+        For binary classification, each model's feature is sigmoid(logits).
+        Stacked horizontally => shape (N, num_models).
+        """
+        num_models = len(self.ensemble_members)
+        keys = jr.split(key, num_models)
+
+        all_probs = []
+        for i, (model, state) in enumerate(self.ensemble_members):
+            logits = predict(model, state, X, keys[i])  # shape (N, 1)
+            probs = jax.nn.sigmoid(logits)
+            all_probs.append(np.array(probs).reshape(-1, 1))
+
+        meta_features = np.hstack(all_probs)  # shape (N, num_models)
+        return meta_features
 
 
-# ================= Ensemble for Regression ====================
-class EnsembleRegression:
+# ------------------------------------------------------------------------
+# 2) Multiclass Classification Ensemble
+# ------------------------------------------------------------------------
+
+class EnsembleMulticlass(_BaseEquinoxEnsemble):
     """
-    Ensemble wrapper for regression.
-
-    Expects models (dict) similarly to the above wrappers.
-    For stacking, out-of-fold predictions are concatenated and a meta learner
-    (default is LinearRegression) is used.
+    Ensemble specialized for multi-class classification:
+      - Applies softmax to logits for each model.
+      - `predict_proba` returns a distribution over classes (N, C).
+      - `predict` returns argmax class.
+      - If stacking, you can feed per-class probabilities as meta-features to the meta-learner.
+        Make sure your meta-learner is scikit-learn multi-class capable (e.g. `multi_class='multinomial'`).
     """
 
-    def __init__(
-        self,
-        models,
-        n_splits=5,
-        ensemble_method="weighted_average",
-        weights=None,
-        meta_learner=None,
-    ):
-        self.models = models
-        self.n_splits = n_splits
-        self.ensemble_method = ensemble_method
-        self.weights = weights
-        self.meta_learner = meta_learner
-        self.fitted_models = {}
+    def predict(self, X, key):
+        """
+        Predict argmax class for multiclass classification.
+        If stacking, use meta-learner. Otherwise, average probabilities.
+        """
+        num_models = len(self.ensemble_members)
+        keys = jr.split(key, num_models)
 
-    def fit(self, X_train, y_train, X_val, y_val, **fit_kwargs):
+        # Collect raw logits from each model
+        model_logits = []
+        for i, (model, state) in enumerate(self.ensemble_members):
+            logits = predict(model, state, X, keys[i])  # shape (N, num_classes)
+            model_logits.append(logits)
+
         if self.ensemble_method == "weighted_average":
-            for name, base in self.models.items():
-                wrapper = base["wrapper"]
-                model = base["model"]
-                state = base["state"]
-                fitted_model, fitted_state = wrapper.fit(
-                    model, state, X_train, y_train, X_val, y_val, **fit_kwargs
-                )
-                self.fitted_models[name] = {
-                    "wrapper": wrapper,
-                    "model": fitted_model,
-                    "state": fitted_state,
-                }
+            # Weighted average of logits -> softmax -> argmax
+            logits_avg = self._combine_predictions(model_logits)  # shape (N, C)
+            probs = jax.nn.softmax(logits_avg, axis=-1)
+            return np.array(jnp.argmax(probs, axis=-1))
+
         elif self.ensemble_method == "stacking":
-            kf = KFold(n_splits=self.n_splits, shuffle=True, random_state=42)
-            oof_preds = {name: np.zeros(len(y_train)) for name in self.models.keys()}
-            for name, base in self.models.items():
-                wrapper = base["wrapper"]
-                preds_model = np.zeros(len(y_train))
-                for train_idx, val_idx in kf.split(X_train):
-                    model_clone = copy.deepcopy(base["model"])
-                    state_clone = copy.deepcopy(base["state"])
-                    X_tr, y_tr = X_train[train_idx], y_train[train_idx]
-                    X_val_fold, y_val_fold = X_train[val_idx], y_train[val_idx]
-                    fitted_model, fitted_state = wrapper.fit(
-                        model_clone,
-                        state_clone,
-                        X_tr,
-                        y_tr,
-                        X_val_fold,
-                        y_val_fold,
-                        **fit_kwargs,
-                    )
-                    preds = wrapper.predict(
-                        fitted_model, fitted_state, X_train[val_idx]
-                    )
-                    preds_model[val_idx] = np.array(preds).flatten()
-                oof_preds[name] = preds_model
-                fitted_model, fitted_state = wrapper.fit(
-                    copy.deepcopy(base["model"]),
-                    copy.deepcopy(base["state"]),
-                    X_train,
-                    y_train,
-                    X_val,
-                    y_val,
-                    **fit_kwargs,
-                )
-                self.fitted_models[name] = {
-                    "wrapper": wrapper,
-                    "model": fitted_model,
-                    "state": fitted_state,
-                }
-            meta_features = np.column_stack(
-                [oof_preds[name] for name in sorted(self.models.keys())]
-            )
-            if self.meta_learner is None:
-                from sklearn.linear_model import LinearRegression
+            # Build meta-features from each model's softmax
+            meta_features = self._build_meta_features(X, key)
+            # meta_learner must handle multi-class
+            final_preds = self.meta_learner.predict(meta_features)
+            return final_preds
 
-                self.meta_learner = LinearRegression()
-            self.meta_learner.fit(meta_features, np.array(y_train))
-        return self
+        else:
+            raise ValueError(f"Unknown ensemble method: {self.ensemble_method}")
 
-    def predict(self, X, **predict_kwargs):
+    def predict_proba(self, X, key):
+        """
+        Return class probabilities (N, C) for multiclass classification.
+        If stacking, uses meta-learner's predict_proba. Otherwise, weighted average of softmaxes.
+        """
+        num_models = len(self.ensemble_members)
+        keys = jr.split(key, num_models)
+
+        model_logits = []
+        for i, (model, state) in enumerate(self.ensemble_members):
+            logits = predict(model, state, X, keys[i])
+            model_logits.append(logits)
+
         if self.ensemble_method == "weighted_average":
-            preds_list = []
-            for name in sorted(self.fitted_models.keys()):
-                base = self.fitted_models[name]
-                wrapper = base["wrapper"]
-                model = base["model"]
-                state = base["state"]
-                pred = wrapper.predict(model, state, X, **predict_kwargs)
-                preds_list.append(np.array(pred).flatten())
-            preds_arr = np.array(preds_list)
-            if self.weights is None:
-                avg_pred = np.mean(preds_arr, axis=0)
+            # Weighted average of logits -> softmax
+            logits_avg = self._combine_predictions(model_logits)
+            probs = jax.nn.softmax(logits_avg, axis=-1)
+            return np.array(probs)
+
+        elif self.ensemble_method == "stacking":
+            # Build meta-features from each model's softmax
+            meta_features = self._build_meta_features(X, key)
+            if hasattr(self.meta_learner, "predict_proba"):
+                # shape = (N, #classes)
+                final_probs = self.meta_learner.predict_proba(meta_features)
+                return final_probs
             else:
-                w = np.array(
-                    [
-                        self.weights.get(name, 1.0)
-                        for name in sorted(self.fitted_models.keys())
-                    ]
-                )
-                w = w / np.sum(w)
-                avg_pred = np.average(preds_arr, axis=0, weights=w)
-            return avg_pred
-        elif self.ensemble_method == "stacking":
-            preds_list = []
-            for name in sorted(self.fitted_models.keys()):
-                base = self.fitted_models[name]
-                wrapper = base["wrapper"]
-                model = base["model"]
-                state = base["state"]
-                pred = wrapper.predict(model, state, X, **predict_kwargs)
-                preds_list.append(np.array(pred).flatten())
-            meta_features = np.column_stack(preds_list)
-            return self.meta_learner.predict(meta_features)
+                # fallback: use predict => discrete classes => one-hot? (or adapt as needed)
+                preds = self.meta_learner.predict(meta_features)
+                # you might want to convert discrete predictions to one-hot
+                # but normally you want a meta-learner that has predict_proba
+                # For simplicity, return discrete classes
+                return preds
+        else:
+            raise ValueError(f"Unknown ensemble method: {self.ensemble_method}")
 
-    def visualize(self, X, y, **viz_kwargs):
-        preds = self.predict(X, **viz_kwargs)
-        import matplotlib.pyplot as plt
+    def _build_meta_features(self, X, key):
+        """
+        For multiclass classification, each model's feature is softmax(logits).
+        We flatten or keep them separate? 
+        Suppose each model outputs (N, C) => we flatten row-wise => shape (N, C * num_models).
+        """
+        num_models = len(self.ensemble_members)
+        keys = jr.split(key, num_models)
 
-        plt.figure(figsize=(8, 6))
-        plt.scatter(np.array(y), preds, alpha=0.7)
-        plt.plot([np.min(y), np.max(y)], [np.min(y), np.max(y)], "k--", lw=2)
-        plt.xlabel("True Values")
-        plt.ylabel("Predicted Values")
-        plt.title("Ensemble Regression Predictions vs. True")
-        plt.show()
+        all_probs = []
+        for i, (model, state) in enumerate(self.ensemble_members):
+            logits = predict(model, state, X, keys[i])  # shape (N, C)
+            probs = jax.nn.softmax(logits, axis=-1)     # shape (N, C)
+            # Flatten each row if you want them all in a single feature vector:
+            all_probs.append(np.array(probs))
+
+        # Concatenate along the feature dimension => (N, C * num_models)
+        meta_features = np.concatenate(all_probs, axis=-1)
+        return meta_features
 
 
-# ================= Ensemble for Forecasting ====================
-class EnsembleForecast:
+# ------------------------------------------------------------------------
+# 3) Regression Ensemble
+# ------------------------------------------------------------------------
+
+class EnsembleRegression(_BaseEquinoxEnsemble):
     """
-    Ensemble wrapper for forecasting (real-valued sequential predictions).
-
-    Its design is similar to the regression ensemble. For stacking, out‐of‐fold predictions
-    are generated and a meta learner (default is LinearRegression) is used.
+    Ensemble specialized for regression tasks:
+      - Models output raw real values (shape (N, 1) or (N,)).
+      - Weighted average sums them up, or stacking can use a meta-regressor (e.g., LinearRegression).
+      - No 'predict_proba' method is provided here.
     """
 
-    def __init__(
-        self,
-        models,
-        n_splits=5,
-        ensemble_method="weighted_average",
-        weights=None,
-        meta_learner=None,
-    ):
-        self.models = models
-        self.n_splits = n_splits
-        self.ensemble_method = ensemble_method
-        self.weights = weights
-        self.meta_learner = meta_learner
-        self.fitted_models = {}
+    def predict(self, X, key):
+        """
+        Returns final regression predictions. 
+        If stacking, uses meta-regressor's prediction on the stacked model outputs.
+        """
+        num_models = len(self.ensemble_members)
+        keys = jr.split(key, num_models)
 
-    def fit(self, X_train, Y_train, X_val, Y_val, **fit_kwargs):
+        # Collect raw predictions from each model
+        model_outputs = []
+        for i, (model, state) in enumerate(self.ensemble_members):
+            preds = predict(model, state, X, keys[i])  # shape (N,) or (N, 1)
+            model_outputs.append(preds)
+
         if self.ensemble_method == "weighted_average":
-            for name, base in self.models.items():
-                wrapper = base["wrapper"]
-                model = base["model"]
-                state = base["state"]
-                fitted_model, fitted_state = wrapper.fit(
-                    model, state, X_train, Y_train, X_val, Y_val, **fit_kwargs
-                )
-                self.fitted_models[name] = {
-                    "wrapper": wrapper,
-                    "model": fitted_model,
-                    "state": fitted_state,
-                }
+            avg_preds = self._combine_predictions(model_outputs)  # shape (N,) or (N,1)
+            return np.array(avg_preds).ravel()
+
         elif self.ensemble_method == "stacking":
-            kf = KFold(n_splits=self.n_splits, shuffle=True, random_state=42)
-            oof_preds = {name: np.zeros(len(Y_train)) for name in self.models.keys()}
-            for name, base in self.models.items():
-                wrapper = base["wrapper"]
-                preds_model = np.zeros(len(Y_train))
-                for train_idx, val_idx in kf.split(X_train):
-                    model_clone = copy.deepcopy(base["model"])
-                    state_clone = copy.deepcopy(base["state"])
-                    X_tr, Y_tr = X_train[train_idx], Y_train[train_idx]
-                    X_val_fold, Y_val_fold = X_train[val_idx], Y_train[val_idx]
-                    fitted_model, fitted_state = wrapper.fit(
-                        model_clone,
-                        state_clone,
-                        X_tr,
-                        Y_tr,
-                        X_val_fold,
-                        Y_val_fold,
-                        **fit_kwargs,
-                    )
-                    preds = wrapper.predict(
-                        fitted_model, fitted_state, X_train[val_idx]
-                    )
-                    preds_model[val_idx] = np.array(preds).flatten()
-                oof_preds[name] = preds_model
-                fitted_model, fitted_state = wrapper.fit(
-                    copy.deepcopy(base["model"]),
-                    copy.deepcopy(base["state"]),
-                    X_train,
-                    Y_train,
-                    X_val,
-                    Y_val,
-                    **fit_kwargs,
-                )
-                self.fitted_models[name] = {
-                    "wrapper": wrapper,
-                    "model": fitted_model,
-                    "state": fitted_state,
-                }
-            meta_features = np.column_stack(
-                [oof_preds[name] for name in sorted(self.models.keys())]
-            )
-            if self.meta_learner is None:
-                from sklearn.linear_model import LinearRegression
+            meta_features = self._build_meta_features(X, key)
+            final_preds = self.meta_learner.predict(meta_features)
+            return final_preds
 
-                self.meta_learner = LinearRegression()
-            self.meta_learner.fit(meta_features, np.array(Y_train))
-        return self
+        else:
+            raise ValueError(f"Unknown ensemble method: {self.ensemble_method}")
 
-    def predict(self, X, **predict_kwargs):
-        if self.ensemble_method == "weighted_average":
-            preds_list = []
-            for name in sorted(self.fitted_models.keys()):
-                base = self.fitted_models[name]
-                wrapper = base["wrapper"]
-                model = base["model"]
-                state = base["state"]
-                pred = wrapper.predict(model, state, X, **predict_kwargs)
-                preds_list.append(np.array(pred).flatten())
-            preds_arr = np.array(preds_list)
-            if self.weights is None:
-                avg_pred = np.mean(preds_arr, axis=0)
-            else:
-                w = np.array(
-                    [
-                        self.weights.get(name, 1.0)
-                        for name in sorted(self.fitted_models.keys())
-                    ]
-                )
-                w = w / np.sum(w)
-                avg_pred = np.average(preds_arr, axis=0, weights=w)
-            return avg_pred
-        elif self.ensemble_method == "stacking":
-            preds_list = []
-            for name in sorted(self.fitted_models.keys()):
-                base = self.fitted_models[name]
-                wrapper = base["wrapper"]
-                model = base["model"]
-                state = base["state"]
-                pred = wrapper.predict(model, state, X, **predict_kwargs)
-                preds_list.append(np.array(pred).flatten())
-            meta_features = np.column_stack(preds_list)
-            return self.meta_learner.predict(meta_features)
+    def _build_meta_features(self, X, key):
+        """
+        For regression, each model's feature is just the raw output (N,1).
+        Stacked horizontally => shape (N, num_models).
+        """
+        num_models = len(self.ensemble_members)
+        keys = jr.split(key, num_models)
 
-    def visualize(self, Y_true, Y_pred, title="Forecast vs. Ground Truth"):
-        import matplotlib.pyplot as plt
+        all_preds = []
+        for i, (model, state) in enumerate(self.ensemble_members):
+            preds = predict(model, state, X, keys[i])  # shape (N,) or (N,1)
+            preds_np = np.array(preds).reshape(-1, 1)  # enforce (N,1)
+            all_preds.append(preds_np)
 
-        Y_true = np.array(Y_true).flatten()
-        Y_pred = np.array(Y_pred).flatten()
-        plt.figure(figsize=(10, 4))
-        plt.plot(Y_true, marker="o", label="Ground Truth")
-        plt.plot(Y_pred, marker="x", label="Predictions")
-        plt.title(title)
-        plt.xlabel("Sample Index")
-        plt.legend()
-        plt.show()
+        meta_features = np.hstack(all_preds)  # shape (N, num_models)
+        return meta_features
+
+    # No predict_proba for regression
+    def predict_proba(self, X, key):
+        raise NotImplementedError("`predict_proba` is not applicable for regression tasks.")
+
+
+# ------------------------------------------------------------------------
+# Example Usage (Replace placeholders with real data/model definitions)
+# ------------------------------------------------------------------------
+if __name__ == "__main__":
+    import jax 
+    import equinox as eqx 
+    import optax
+    import jax.numpy as jnp 
+    import numpy as np 
+    import jax.random as jr 
+    from sklearn.model_selection import train_test_split
+    from sklearn.metrics import log_loss
+
+    from quantbayes.fake_data import generate_binary_classification_data
+    from quantbayes.stochax.layers import CirculantProcess
+    df = generate_binary_classification_data()
+    X, y = df.drop("target", axis=1), df["target"]
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
+    X_train = jnp.array(X_train)
+    X_test = jnp.array(X_test)
+    y_train = jnp.array(y_train)
+    y_test = jnp.array(y_test)
+
+    class EQXNet1(eqx.Module):
+        l1: eqx.nn.Linear
+        def __init__(self, in_features, key):
+            self.l1 = eqx.nn.Linear(in_features, 1, key=key)
+        def __call__(self, x, key, state):
+            x = self.l1(x)
+            logits = jnp.squeeze(x, axis=-1)
+            return logits, state
+        
+    class EQXNet2(eqx.Module):
+        l1: eqx.Module
+        l2: eqx.nn.Linear
+        def __init__(self, in_features, key):
+            k1, k2 = jr.split(key, 2)
+            self.l1 = CirculantProcess(in_features, key=k1)
+            self.l2 = eqx.nn.Linear(in_features, 1, key=k2)
+        def __call__(self, x, key, state):
+            x = self.l1(x)
+            x = jax.nn.tanh(x)
+            x = self.l2(x)
+            logits = jnp.squeeze(x, axis=-1)
+            return logits, state
+
+
+
+    # Create ensemble for binary classification
+    in_features = X_train.shape[-1]
+    ensemble_binary = EnsembleBinary(
+        model_constructors=[
+            lambda key: EQXNet1(in_features, key),
+            lambda key: EQXNet2(in_features, key),
+        ],
+        loss_fn=binary_loss,
+        optimizer=optax.adam(learning_rate=1e-3),
+        ensemble_method="stacking",  # or "weighted_average"
+        meta_learner=LogisticRegression(),
+        weights=None,  # Not used if stacking
+    )
+
+    # Fit ensemble
+    key = jr.PRNGKey(42)
+    ensemble_binary.fit(
+        X_train=X_train,
+        y_train=y_train,
+        X_val=X_test,
+        y_val=y_test,
+        batch_size=1000,
+        num_epochs=10000,
+        patience=100,
+        key=key,
+    )
+
+    # Predict
+    test_key = jr.PRNGKey(999)
+    y_pred = ensemble_binary.predict(X_test, test_key)       # discrete classes for binary
+    y_prob = ensemble_binary.predict_proba(X_test, test_key) # probabilities for binary
+
+    loss = log_loss(np.array(y_test), np.array(y_prob))
+    print(f"Log loss: {loss:.3f}")
+
+
+    # You can similarly instantiate EnsembleMulticlass or EnsembleRegression
+    # for multiclass or regression tasks!

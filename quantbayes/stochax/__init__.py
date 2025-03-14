@@ -9,6 +9,7 @@ from . import (
     vae,
     vision_classification,
     vision_segmentation,
+    ensemble
 )
 from .trainer.train import (
     data_loader,
@@ -36,4 +37,5 @@ __all__ = [
     "regression_loss",
     "train",
     "predict",
+    "ensemble"
 ]

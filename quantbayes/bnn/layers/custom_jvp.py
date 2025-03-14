@@ -368,6 +368,7 @@ class CirculantProcess:
         in_features: int,
         padded_dim: int = None,
         alpha: float = None,  # If None, a hyperprior on α will be used
+        alpha_prior = dist.HalfNormal(1),
         K: int = None,
         name: str = "spectral_circ_jvp",
         prior_fn=None,  # a function: scale -> distribution
@@ -376,6 +377,7 @@ class CirculantProcess:
         :param in_features: input dimension
         :param padded_dim: if not None, zero-pad/truncate to that dimension
         :param alpha: fixed value for exponent α; if None, a hyperprior is used
+        :param alpha_prior: Custom prior distribution on alpha, if None, HalfNormal(1)
         :param K: number of active frequencies to keep
         :param name: base name for NumPyro samples
         :param prior_fn: a callable scale -> distribution (default Normal(0, scale))
@@ -383,6 +385,7 @@ class CirculantProcess:
         self.in_features = in_features
         self.padded_dim = padded_dim if padded_dim is not None else in_features
         self.alpha = alpha  # if None, hyperprior will be sampled in __call__
+        self.alpha_prior = alpha_prior
         self.name = name
 
         self.k_half = (self.padded_dim // 2) + 1
@@ -401,7 +404,7 @@ class CirculantProcess:
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
         # If alpha is not fixed, sample it from a Uniform(0.0, 1.5) hyperprior.
         if self.alpha is None:
-            alpha = numpyro.sample(f"{self.name}_alpha", dist.Uniform(0.0, 1.5))
+            alpha = numpyro.sample(f"{self.name}_alpha", self.alpha_prior)
         else:
             alpha = self.alpha
 
