@@ -533,21 +533,29 @@ def decay_factor(frequencies: jnp.ndarray, alpha: float = 1.0) -> jnp.ndarray:
 
 
 # ---------------------------------------------------------------
-# 1D SPECTRAL CONV (VECTORIZED DIRECT SPECTRAL PARAMETERIZATION)
+# 1D SPECTRAL CONV (now works on single samples)
 # ---------------------------------------------------------------
 @jax.custom_jvp
 def spectral_conv1d(x: jnp.ndarray, weight_fft: jnp.ndarray, bias: jnp.ndarray):
+    # If x is missing a batch dimension (shape: [Cin, W]), add one.
+    added_batch = False
+    if x.ndim == 2:
+        x = x[None, ...]  # now shape (1, Cin, W)
+        added_batch = True
+
     B, Cin, W = x.shape
     fft_size = 2 * (weight_fft.shape[-1] - 1) if weight_fft.shape[-1] > 1 else 1
     if fft_size > W:
         pad_amount = fft_size - W
         x = jnp.pad(x, ((0, 0), (0, 0), (0, pad_amount)))
     X_fft = jnp.fft.rfft(x, n=fft_size, axis=-1)
-    X_fft_expanded = X_fft[:, None, :, :]
-    W_fft_expanded = weight_fft[None, :, :, :]
+    X_fft_expanded = X_fft[:, None, :, :]  # shape (B, 1, Cin, fft_size//2+1)
+    W_fft_expanded = weight_fft[None, :, :, :]  # shape (1, out_channels, Cin, fft_size//2+1)
     Y_fft = jnp.sum(X_fft_expanded * W_fft_expanded, axis=2)
     y = jnp.fft.irfft(Y_fft, n=fft_size, axis=-1)
     y = y[..., :W] + bias[None, :, None]
+    if added_batch:
+        y = y[0]  # remove dummy batch dimension
     return y
 
 
@@ -562,7 +570,11 @@ def spectral_conv1d_jvp(primals, tangents):
     if dweight_fft is not None:
         dy += spectral_conv1d(x, dweight_fft, jnp.zeros_like(bias))
     if dbias is not None:
-        dy += dbias[None, :, None]
+        # For single sample output, y is 2D (C, W)
+        if y.ndim == 2:
+            dy += dbias[:, None]
+        else:
+            dy += dbias[None, :, None]
     return y, dy
 
 
@@ -626,20 +638,28 @@ class SpectralConv1d(eqx.Module):
 
 
 # ---------------------------------------------------------------
-# 2D SPECTRAL CONV (VECTORIZED DIRECT SPECTRAL PARAMETERIZATION)
+# 2D SPECTRAL CONV (now works on single samples)
 # ---------------------------------------------------------------
 @jax.custom_jvp
 def spectral_conv2d(x: jnp.ndarray, weight_fft: jnp.ndarray, bias: jnp.ndarray):
+    # If x is missing a batch dimension (shape: [Cin, H, W]), add one.
+    added_batch = False
+    if x.ndim == 3:
+        x = x[None, ...]  # now (1, Cin, H, W)
+        added_batch = True
+
     B, Cin, H, W = x.shape
     Cout, _, Hf, Wf_rfft = weight_fft.shape
     X_fft = jnp.fft.rfft2(x, axes=(2, 3))
-    X_fft_expanded = X_fft[:, None, :, :, :]
+    X_fft_expanded = X_fft[:, None, :, :, :]  # shape (B, 1, Cin, H, Wf_rfft)
     # Use conjugate of weight_fft to match the derivation.
     W_fft_expanded = jnp.conjugate(weight_fft)[None, :, :, :, :]
     Y_fft = jnp.sum(X_fft_expanded * W_fft_expanded, axis=2)
     real_Wf = 2 * (Wf_rfft - 1) if Wf_rfft > 1 else 1
     y = jnp.fft.irfft2(Y_fft, s=(Hf, real_Wf), axes=(2, 3))
     y = y[..., :H, :W] + bias[None, :, None, None]
+    if added_batch:
+        y = y[0]  # remove dummy batch dimension
     return y
 
 
@@ -654,7 +674,11 @@ def spectral_conv2d_jvp(primals, tangents):
     if dweight_fft is not None:
         dy += spectral_conv2d(x, dweight_fft, jnp.zeros_like(bias))
     if dbias is not None:
-        dy += dbias[None, :, None, None]
+        # For single sample output, y is (C, H, W); so reshape dbias to (C,1,1)
+        if y.ndim == 3:
+            dy += dbias[:, None, None]
+        else:
+            dy += dbias[None, :, None, None]
     return y, dy
 
 
@@ -719,23 +743,30 @@ class SpectralConv2d(eqx.Module):
 
 
 # ---------------------------------------------------------------
-# 2D SPECTRAL TRANSPOSED CONV (DIRECT)
+# 2D SPECTRAL TRANSPOSED CONV (now works on single samples)
 # ---------------------------------------------------------------
 @jax.custom_jvp
-def spectral_transposed_conv2d(
-    x: jnp.ndarray, weight_fft: jnp.ndarray, bias: jnp.ndarray
-):
+def spectral_transposed_conv2d(x: jnp.ndarray, weight_fft: jnp.ndarray, bias: jnp.ndarray):
+    # If x is missing a batch dimension (shape: [Cout, H, W]), add one.
+    added_batch = False
+    if x.ndim == 3:
+        x = x[None, ...]  # now (1, Cout, H, W)
+        added_batch = True
+
     B, Cout, H, W = x.shape
     _, Cin, Hf, Wf_rfft = weight_fft.shape
     X_fft = jnp.fft.rfft2(x, axes=(2, 3))
-    X_fft_expanded = X_fft[:, :, None, :, :]
-    W_fft_expanded = weight_fft[None, :, :, :, :]
+    X_fft_expanded = X_fft[:, :, None, :, :]  # shape (B, Cout, 1, H, Wf_rfft)
+    W_fft_expanded = weight_fft[None, :, :, :, :]  # shape (1, out_channels, Cin, Hf, Wf_rfft)
+    # Sum over Cout dimension.
     Z_fft = jnp.sum(X_fft_expanded * W_fft_expanded, axis=1)
     real_Wf = 2 * (Wf_rfft - 1) if Wf_rfft > 1 else 1
     y = jnp.fft.irfft2(Z_fft, s=(Hf, real_Wf), axes=(2, 3))
     y = y[..., :H, :W]
     if bias is not None:
         y = y + bias[None, :, None, None]
+    if added_batch:
+        y = y[0]  # remove dummy batch dimension
     return y
 
 
@@ -750,7 +781,11 @@ def spectral_transposed_conv2d_jvp(primals, tangents):
     if dweight_fft is not None:
         dy += spectral_transposed_conv2d(x, dweight_fft, jnp.zeros_like(bias))
     if dbias is not None:
-        dy += dbias[None, :, None, None]
+        # For single sample output (3D), reshape bias derivative to (C,1,1)
+        if y.ndim == 3:
+            dy += dbias[:, None, None]
+        else:
+            dy += dbias[None, :, None, None]
     return y, dy
 
 
@@ -779,7 +814,6 @@ class SpectralTransposed2d(eqx.Module):
         Hf, Wf = fft_size
         Wf_rfft = Wf // 2 + 1
         # For simplicity, here we initialize forward conv coefficients without decay.
-        # You could also vectorize sampling with decay similarly as above.
         self.weight_fft = (
             jr.normal(key, (out_channels, in_channels, Hf, Wf_rfft)) * init_scale
         )
