@@ -309,6 +309,7 @@ def spectral_circulant_matmul(x: jnp.ndarray, fft_full: jnp.ndarray) -> jnp.ndar
         return y[0]
     return y
 
+
 @spectral_circulant_matmul.defjvp
 def spectral_circulant_matmul_jvp(primals, tangents):
     x, fft_full = primals
@@ -351,13 +352,14 @@ def spectral_circulant_matmul_jvp(primals, tangents):
         return primal_y[0], dY[0]
     return primal_y, dY
 
+
 class CirculantProcess:
     """
     NumPyro-based 'spectral' circulant layer with a custom JVP and an explicit bias.
     This layer uses a half-spectrum representation and a hyperprior on the frequency
     scaling exponent α. If no fixed α is provided (i.e. alpha is None), a Uniform(0.0, 1.5)
     hyperprior is used.
-    
+
     Usage:
       layer = CirculantProcess(in_features=..., padded_dim=..., name="...", alpha=None, ...)
       y = layer(x)  # inside a numpyro model
@@ -368,7 +370,7 @@ class CirculantProcess:
         in_features: int,
         padded_dim: int = None,
         alpha: float = None,  # If None, a hyperprior on α will be used
-        alpha_prior = dist.HalfNormal(1),
+        alpha_prior=dist.HalfNormal(1),
         K: int = None,
         name: str = "spectral_circ_jvp",
         prior_fn=None,  # a function: scale -> distribution

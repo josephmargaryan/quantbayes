@@ -7,13 +7,20 @@ import equinox as eqx
 import optax
 from sklearn.linear_model import LogisticRegression
 
-from quantbayes.stochax.trainer.train import data_loader, train, predict, binary_loss, multiclass_loss, regression_loss
-
+from quantbayes.stochax.trainer.train import (
+    data_loader,
+    train,
+    predict,
+    binary_loss,
+    multiclass_loss,
+    regression_loss,
+)
 
 
 # ------------------------------------------------------------------------
 # Base Class for Ensemble
 # ------------------------------------------------------------------------
+
 
 class _BaseEquinoxEnsemble:
     """
@@ -69,9 +76,9 @@ class _BaseEquinoxEnsemble:
             if weights is None:
                 self.weights = [1.0] * len(model_constructors)
             else:
-                assert len(weights) == len(model_constructors), (
-                    "Length of weights must match number of model_constructors"
-                )
+                assert len(weights) == len(
+                    model_constructors
+                ), "Length of weights must match number of model_constructors"
                 self.weights = weights
         else:
             self.weights = None  # Not used in stacking
@@ -98,7 +105,9 @@ class _BaseEquinoxEnsemble:
             print(f"\n=== Training Model {i+1}/{num_models} ===")
             model_key = keys[i]
             model = constructor(model_key)
-            state = None  # For models that track state (e.g., BatchNorm), adapt as needed
+            state = (
+                None  # For models that track state (e.g., BatchNorm), adapt as needed
+            )
             opt_state = self.optimizer.init(eqx.filter(model, eqx.is_inexact_array))
 
             best_model, best_state, _, _ = train(
@@ -122,7 +131,9 @@ class _BaseEquinoxEnsemble:
         if self.ensemble_method == "stacking":
             print("\n=== Fitting Meta-Learner (Stacking) ===")
             # Use the logic specific to the child class to get meta-features from validation data
-            meta_features = self._build_meta_features(X_val, key=jr.PRNGKey(9999))  # separate key
+            meta_features = self._build_meta_features(
+                X_val, key=jr.PRNGKey(9999)
+            )  # separate key
             y_val_np = np.array(y_val).ravel()
             self.meta_learner.fit(meta_features, y_val_np)
 
@@ -153,7 +164,9 @@ class _BaseEquinoxEnsemble:
             # For stacking, we do not directly combine here. Instead, we rely on
             # the meta-learner's predict or predict_proba using stacked features.
             # This base method won't be used in stacking logic. Child classes can override.
-            raise ValueError("Shouldn't directly combine predictions when using 'stacking' method.")
+            raise ValueError(
+                "Shouldn't directly combine predictions when using 'stacking' method."
+            )
 
         else:
             raise ValueError(f"Unknown ensemble method: {self.ensemble_method}")
@@ -170,6 +183,7 @@ class _BaseEquinoxEnsemble:
 # ------------------------------------------------------------------------
 # 1) Binary Classification Ensemble
 # ------------------------------------------------------------------------
+
 
 class EnsembleBinary(_BaseEquinoxEnsemble):
     """
@@ -266,6 +280,7 @@ class EnsembleBinary(_BaseEquinoxEnsemble):
 # 2) Multiclass Classification Ensemble
 # ------------------------------------------------------------------------
 
+
 class EnsembleMulticlass(_BaseEquinoxEnsemble):
     """
     Ensemble specialized for multi-class classification:
@@ -345,7 +360,7 @@ class EnsembleMulticlass(_BaseEquinoxEnsemble):
     def _build_meta_features(self, X, key):
         """
         For multiclass classification, each model's feature is softmax(logits).
-        We flatten or keep them separate? 
+        We flatten or keep them separate?
         Suppose each model outputs (N, C) => we flatten row-wise => shape (N, C * num_models).
         """
         num_models = len(self.ensemble_members)
@@ -354,7 +369,7 @@ class EnsembleMulticlass(_BaseEquinoxEnsemble):
         all_probs = []
         for i, (model, state) in enumerate(self.ensemble_members):
             logits = predict(model, state, X, keys[i])  # shape (N, C)
-            probs = jax.nn.softmax(logits, axis=-1)     # shape (N, C)
+            probs = jax.nn.softmax(logits, axis=-1)  # shape (N, C)
             # Flatten each row if you want them all in a single feature vector:
             all_probs.append(np.array(probs))
 
@@ -367,6 +382,7 @@ class EnsembleMulticlass(_BaseEquinoxEnsemble):
 # 3) Regression Ensemble
 # ------------------------------------------------------------------------
 
+
 class EnsembleRegression(_BaseEquinoxEnsemble):
     """
     Ensemble specialized for regression tasks:
@@ -377,7 +393,7 @@ class EnsembleRegression(_BaseEquinoxEnsemble):
 
     def predict(self, X, key):
         """
-        Returns final regression predictions. 
+        Returns final regression predictions.
         If stacking, uses meta-regressor's prediction on the stacked model outputs.
         """
         num_models = len(self.ensemble_members)
@@ -420,24 +436,27 @@ class EnsembleRegression(_BaseEquinoxEnsemble):
 
     # No predict_proba for regression
     def predict_proba(self, X, key):
-        raise NotImplementedError("`predict_proba` is not applicable for regression tasks.")
+        raise NotImplementedError(
+            "`predict_proba` is not applicable for regression tasks."
+        )
 
 
 # ------------------------------------------------------------------------
 # Example Usage (Replace placeholders with real data/model definitions)
 # ------------------------------------------------------------------------
 if __name__ == "__main__":
-    import jax 
-    import equinox as eqx 
+    import jax
+    import equinox as eqx
     import optax
-    import jax.numpy as jnp 
-    import numpy as np 
-    import jax.random as jr 
+    import jax.numpy as jnp
+    import numpy as np
+    import jax.random as jr
     from sklearn.model_selection import train_test_split
     from sklearn.metrics import log_loss
 
     from quantbayes.fake_data import generate_binary_classification_data
     from quantbayes.stochax.layers import CirculantProcess
+
     df = generate_binary_classification_data()
     X, y = df.drop("target", axis=1), df["target"]
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
@@ -448,28 +467,30 @@ if __name__ == "__main__":
 
     class EQXNet1(eqx.Module):
         l1: eqx.nn.Linear
+
         def __init__(self, in_features, key):
             self.l1 = eqx.nn.Linear(in_features, 1, key=key)
+
         def __call__(self, x, key, state):
             x = self.l1(x)
             logits = jnp.squeeze(x, axis=-1)
             return logits, state
-        
+
     class EQXNet2(eqx.Module):
         l1: eqx.Module
         l2: eqx.nn.Linear
+
         def __init__(self, in_features, key):
             k1, k2 = jr.split(key, 2)
             self.l1 = CirculantProcess(in_features, key=k1)
             self.l2 = eqx.nn.Linear(in_features, 1, key=k2)
+
         def __call__(self, x, key, state):
             x = self.l1(x)
             x = jax.nn.tanh(x)
             x = self.l2(x)
             logits = jnp.squeeze(x, axis=-1)
             return logits, state
-
-
 
     # Create ensemble for binary classification
     in_features = X_train.shape[-1]
@@ -500,12 +521,11 @@ if __name__ == "__main__":
 
     # Predict
     test_key = jr.PRNGKey(999)
-    y_pred = ensemble_binary.predict(X_test, test_key)       # discrete classes for binary
-    y_prob = ensemble_binary.predict_proba(X_test, test_key) # probabilities for binary
+    y_pred = ensemble_binary.predict(X_test, test_key)  # discrete classes for binary
+    y_prob = ensemble_binary.predict_proba(X_test, test_key)  # probabilities for binary
 
     loss = log_loss(np.array(y_test), np.array(y_prob))
     print(f"Log loss: {loss:.3f}")
-
 
     # You can similarly instantiate EnsembleMulticlass or EnsembleRegression
     # for multiclass or regression tasks!
