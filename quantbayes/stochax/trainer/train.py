@@ -204,7 +204,8 @@ def train_step(model, state, opt_state, x, y, key, loss_fn, optimizer):
     # Compute gradients; use filter_grad to ignore non-differentiable parts.
     grad_fn = eqx.filter_grad(loss_fn, has_aux=True)
     grads, new_state = grad_fn(model, state, x, y, key)
-    updates, opt_state = optimizer.update(grads, opt_state)
+    params = eqx.filter(model, eqx.is_inexact_array)
+    updates, opt_state = optimizer.update(grads, opt_state, params=params)
     model = eqx.apply_updates(model, updates)
     return model, new_state, opt_state
 
@@ -384,7 +385,19 @@ if __name__ == "__main__":
     # Set up model, state, optimizer, and opt_state.
     model_key, _, train_key, eval_key = jr.split(key, 4)
     model, state = eqx.nn.make_with_state(EQNet)(model_key)
-    optimizer = optax.adam(learning_rate)
+    # Define a linear learning rate schedule that decays from 1e-3 to 1e-4 over 3000 steps.
+    lr_schedule = optax.linear_schedule(
+        init_value=1e-3,
+        end_value=1e-4,
+        transition_steps=1000,
+    )
+
+    # Create the optimizer by chaining gradient clipping and AdamW with the learning rate schedule and weight decay.
+    optimizer = optax.chain(
+        optax.clip_by_global_norm(1.0),  # Clip gradients with a global norm of 1.0
+        optax.adamw(learning_rate=lr_schedule, weight_decay=1e-4)
+    )
+
     opt_state = optimizer.init(eqx.filter(model, eqx.is_inexact_array))
 
     # Use our generic loss; here we use binary cross-entropy with logits.
