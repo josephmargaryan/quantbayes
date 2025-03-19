@@ -395,7 +395,7 @@ if __name__ == "__main__":
     # Create the optimizer by chaining gradient clipping and AdamW with the learning rate schedule and weight decay.
     optimizer = optax.chain(
         optax.clip_by_global_norm(1.0),  # Clip gradients with a global norm of 1.0
-        optax.adamw(learning_rate=lr_schedule, weight_decay=1e-4)
+        optax.adamw(learning_rate=lr_schedule, weight_decay=1e-4),
     )
 
     opt_state = optimizer.init(eqx.filter(model, eqx.is_inexact_array))

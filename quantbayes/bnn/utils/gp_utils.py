@@ -86,10 +86,10 @@ def sample_gp_prior(gp_layer, X, num_samples=5):
 
 def predict_gp(model, X_train, y_train, X_test):
     try:
-        # Compute the training covariance matrix (with noise)
+        # Compute the training covariance matrix (noise already added inside gp_layer)
         K_train = jax.device_get(model.gp_layer(X_train))
-    except:
-        raise ValueError("Model must have self.gp_layer")
+    except Exception as e:
+        raise ValueError("Model must have self.gp_layer") from e
 
     # Compute the cross-covariance between test and train data
     K_cross = jax.device_get(model.gp_layer(X_test, X_train))
@@ -97,22 +97,16 @@ def predict_gp(model, X_train, y_train, X_test):
     # Compute the test covariance (for predictive variance)
     K_test = jax.device_get(model.gp_layer(X_test))
 
-    # Retrieve the noise parameter (as a concrete number) from the gp_layer attribute
-    noise = jax.device_get(model.gp_layer.noise)
+    # Do not add noise here since it is already included in K_train
+    L = np.linalg.cholesky(K_train)
 
-    # Add noise to training covariance matrix
-    # (Note: Depending on your intended model, you might add noise once already in the kernel;
-    # here we're following your original code which squares the noise value.)
-    K_train_noise = K_train + (noise**2) * np.eye(K_train.shape[0])
-    L = np.linalg.cholesky(K_train_noise + 1e-6 * np.eye(K_train.shape[0]))
-
-    # Solve for alpha: K_train_noise⁻¹ y_train = L⁻T (L⁻¹ y_train)
+    # Solve for alpha: K_train⁻¹ y_train = L⁻T (L⁻¹ y_train)
     alpha = np.linalg.solve(L.T, np.linalg.solve(L, np.array(y_train)))
 
     # Predictive mean: K_cross @ alpha
     mean_pred = K_cross.dot(alpha)
 
-    # Predictive variance: diag(K_test) - sum(v**2, axis=0) where v = L⁻¹ K_cross^T
+    # Predictive variance: diag(K_test) - sum(v², axis=0) where v = L⁻¹ K_cross^T
     v = np.linalg.solve(L, K_cross.T)
     var_pred = np.diag(K_test) - np.sum(v**2, axis=0)
 
@@ -123,42 +117,22 @@ def predict_gp_binary(model, X_train, y_train, X_test, num_samples=100):
     """
     Computes the predictive distribution for a GP binary classifier by drawing multiple samples
     from the approximate posterior of the latent function and then applying the sigmoid transformation.
-
-    Parameters:
-      model: the fitted GP binary classification model.
-      X_train: training inputs.
-      y_train: training binary labels.
-      X_test: test inputs.
-      num_samples: number of posterior samples to draw.
-
-    Returns:
-      mean_prob: the mean predicted probability for class 1 (array of shape [n_test]).
-      std_prob: the standard deviation of the predicted probabilities (array of shape [n_test]).
-      all_probs: an array of shape [num_samples, n_test] containing all probability samples.
     """
-    import numpy as np
-
-    # Compute covariance matrices using the fitted GP layer.
+    # Compute covariance matrices using the fitted GP layer (noise is already added)
     K_train = jax.device_get(model.gp_layer(X_train))
     K_cross = jax.device_get(model.gp_layer(X_test, X_train))
     K_test = jax.device_get(model.gp_layer(X_test))
-    noise = jax.device_get(model.gp_layer.noise)
 
-    # Add noise to the training covariance matrix and compute its Cholesky decomposition.
-    K_train_noise = K_train + (noise**2) * np.eye(K_train.shape[0])
-    L = np.linalg.cholesky(K_train_noise + 1e-6 * np.eye(K_train.shape[0]))
+    # Use the training covariance matrix as-is (noise already included)
+    L = np.linalg.cholesky(K_train)
 
-    # A naive posterior mean calculation as used in regression is not fully appropriate for classification.
-    # Here we assume a Laplace approximation where the posterior of the latent function f is Gaussian.
     # Compute a "regression-style" mean for f at test points.
     alpha = np.linalg.solve(L.T, np.linalg.solve(L, np.array(y_train)))
     f_mean = K_cross.dot(alpha)
 
     # Approximate the posterior covariance for f at test points.
-    # In regression, the predictive covariance is given by:
-    V = K_test - K_cross.dot(np.linalg.solve(K_train_noise, K_cross.T))
-    # Ensure numerical stability.
-    V += 1e-6 * np.eye(V.shape[0])
+    V = K_test - K_cross.dot(np.linalg.solve(K_train, K_cross.T))
+    V += 1e-6 * np.eye(V.shape[0])  # Ensure numerical stability
     L_V = np.linalg.cholesky(V)
 
     # Draw samples from the approximate Gaussian posterior of f at test points.

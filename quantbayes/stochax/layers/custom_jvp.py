@@ -550,7 +550,9 @@ def spectral_conv1d(x: jnp.ndarray, weight_fft: jnp.ndarray, bias: jnp.ndarray):
         x = jnp.pad(x, ((0, 0), (0, 0), (0, pad_amount)))
     X_fft = jnp.fft.rfft(x, n=fft_size, axis=-1)
     X_fft_expanded = X_fft[:, None, :, :]  # shape (B, 1, Cin, fft_size//2+1)
-    W_fft_expanded = weight_fft[None, :, :, :]  # shape (1, out_channels, Cin, fft_size//2+1)
+    W_fft_expanded = weight_fft[
+        None, :, :, :
+    ]  # shape (1, out_channels, Cin, fft_size//2+1)
     Y_fft = jnp.sum(X_fft_expanded * W_fft_expanded, axis=2)
     y = jnp.fft.irfft(Y_fft, n=fft_size, axis=-1)
     y = y[..., :W] + bias[None, :, None]
@@ -746,7 +748,9 @@ class SpectralConv2d(eqx.Module):
 # 2D SPECTRAL TRANSPOSED CONV (now works on single samples)
 # ---------------------------------------------------------------
 @jax.custom_jvp
-def spectral_transposed_conv2d(x: jnp.ndarray, weight_fft: jnp.ndarray, bias: jnp.ndarray):
+def spectral_transposed_conv2d(
+    x: jnp.ndarray, weight_fft: jnp.ndarray, bias: jnp.ndarray
+):
     # If x is missing a batch dimension (shape: [Cout, H, W]), add one.
     added_batch = False
     if x.ndim == 3:
@@ -757,7 +761,9 @@ def spectral_transposed_conv2d(x: jnp.ndarray, weight_fft: jnp.ndarray, bias: jn
     _, Cin, Hf, Wf_rfft = weight_fft.shape
     X_fft = jnp.fft.rfft2(x, axes=(2, 3))
     X_fft_expanded = X_fft[:, :, None, :, :]  # shape (B, Cout, 1, H, Wf_rfft)
-    W_fft_expanded = weight_fft[None, :, :, :, :]  # shape (1, out_channels, Cin, Hf, Wf_rfft)
+    W_fft_expanded = weight_fft[
+        None, :, :, :, :
+    ]  # shape (1, out_channels, Cin, Hf, Wf_rfft)
     # Sum over Cout dimension.
     Z_fft = jnp.sum(X_fft_expanded * W_fft_expanded, axis=1)
     real_Wf = 2 * (Wf_rfft - 1) if Wf_rfft > 1 else 1
