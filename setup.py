@@ -9,7 +9,7 @@ setup(
     url="https://github.com/josephmargaryan/quantbayes",
     packages=find_packages(),
     install_requires=[
-        "numpy>=1.26.4",
+        "numpy>=1.25.0",
         "numpyro>=0.18.0",
         "jax>=0.5.2",
         "jaxlib>=0.5.1",
