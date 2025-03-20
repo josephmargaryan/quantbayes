@@ -10,7 +10,7 @@ setup(
     packages=find_packages(),
     install_requires=[
         "pandas>=2.2.0,<2.3",
-        "numpy>=1.26.0,<1.27",
+        "numpy>=1.26.0",
         "numpyro>=0.17.2,<0.19",
         "jax>=0.4.20,<0.6",
         "jaxlib>=0.4.20,<0.6",
