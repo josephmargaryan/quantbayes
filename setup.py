@@ -9,7 +9,8 @@ setup(
     url="https://github.com/josephmargaryan/quantbayes",
     packages=find_packages(),
     install_requires=[
-        "pandas>=2.2.0,<2.3",
+        "pandas>=2.1.0,<2.2",  # Downgraded pandas to avoid compatibility issues
+        "numpy>=1.26.2,<1.28",  # Upgraded numpy to prevent binary incompatibility errors
         "numpyro>=0.17.2,<0.19",
         "jax>=0.4.20,<0.6",
         "jaxlib>=0.4.20,<0.6",
@@ -27,7 +28,6 @@ setup(
         "catboost>=1.2.0,<1.3",
         "lightgbm>=4.0.0,<4.7",
         "equinox>=0.11.0,<0.12",
-        "numpy>=1.26.0",
     ],
     python_requires=">=3.8",
 )
