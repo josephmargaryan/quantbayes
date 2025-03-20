@@ -10,7 +10,6 @@ setup(
     packages=find_packages(),
     install_requires=[
         "pandas>=2.2.0,<2.3",
-        "numpy>=1.26.0",
         "numpyro>=0.17.2,<0.19",
         "jax>=0.4.20,<0.6",
         "jaxlib>=0.4.20,<0.6",
@@ -28,6 +27,7 @@ setup(
         "catboost>=1.2.0,<1.3",
         "lightgbm>=4.0.0,<4.7",
         "equinox>=0.11.0,<0.12",
+        "numpy>=1.26.0",
     ],
     python_requires=">=3.8",
 )
