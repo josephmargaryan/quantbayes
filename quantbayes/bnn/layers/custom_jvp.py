@@ -468,6 +468,19 @@ class CirculantProcess:
         if self._last_fft_full is None:
             raise ValueError("No Fourier coefficients available; call the layer first.")
         return self._last_fft_full
+    def get_kernel(self) -> jnp.ndarray:
+        """
+        Returns the covariance kernel (impulse response) computed from the PSD,
+        without any additional bias/latent function.
+        """
+        impulse = jnp.zeros(self.padded_dim)
+        impulse = impulse.at[0].set(1.0)
+        fft_full = self.get_fourier_coeffs()
+        X_fft = jnp.fft.fft(impulse)
+        PSD = jnp.abs(fft_full)**2
+        kernel_fft = X_fft * PSD
+        kernel = jnp.fft.ifft(kernel_fft).real
+        return kernel
 
 
 # ------------------------------------------------------------------
