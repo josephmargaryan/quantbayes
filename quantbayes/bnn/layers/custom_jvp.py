@@ -298,7 +298,6 @@ def spectral_circulant_matmul(x: jnp.ndarray, fft_full: jnp.ndarray) -> jnp.ndar
         pad_len = padded_dim - d_in
         x_pad = jnp.pad(x, ((0, 0), (0, pad_len)))
     elif d_in > padded_dim:
-        # truncate if needed
         x_pad = x[..., :padded_dim]
     else:
         x_pad = x
@@ -354,41 +353,33 @@ def spectral_circulant_matmul_jvp(primals, tangents):
 
 
 class CirculantProcess:
-    """
-    NumPyro-based 'spectral' circulant layer with a custom JVP and an explicit bias.
-    This layer uses a half-spectrum representation and a hyperprior on the frequency
-    scaling exponent α. If no fixed α is provided (i.e. alpha is None), a Uniform(0.0, 1.5)
-    hyperprior is used.
-
-    Usage:
-      layer = CirculantProcess(in_features=..., padded_dim=..., name="...", alpha=None, ...)
-      y = layer(x)  # inside a numpyro model
-    """
-
     def __init__(
         self,
         in_features: int,
         padded_dim: int = None,
-        alpha: float = None,  # If None, a hyperprior on α will be used
+        alpha: float = None,
         alpha_prior=dist.HalfNormal(1),
         K: int = None,
         name: str = "spectral_circ_jvp",
-        prior_fn=None,  # a function: scale -> distribution
+        prior_fn=None,
+        use_bias: bool = True,
     ):
         """
-        :param in_features: input dimension
-        :param padded_dim: if not None, zero-pad/truncate to that dimension
-        :param alpha: fixed value for exponent α; if None, a hyperprior is used
-        :param alpha_prior: Custom prior distribution on alpha, if None, HalfNormal(1)
-        :param K: number of active frequencies to keep
-        :param name: base name for NumPyro samples
-        :param prior_fn: a callable scale -> distribution (default Normal(0, scale))
+        :param in_features: Input dimension.
+        :param padded_dim: If provided, pad/truncate inputs to this dimension.
+        :param alpha: Fixed value for the decay exponent; if None, a hyperprior is used.
+        :param alpha_prior: Prior distribution for alpha if it is not fixed.
+        :param K: Number of active frequencies to keep; if None, use full half-spectrum.
+        :param name: Base name for NumPyro sample sites.
+        :param prior_fn: Function mapping a scale to a distribution (default: Normal(0, scale)).
+        :param use_bias: If True, add a simple bias term; if False, sample a latent function from CirculantNormal.
         """
         self.in_features = in_features
         self.padded_dim = padded_dim if padded_dim is not None else in_features
-        self.alpha = alpha  # if None, hyperprior will be sampled in __call__
+        self.alpha = alpha
         self.alpha_prior = alpha_prior
         self.name = name
+        self.use_bias = use_bias
 
         self.k_half = (self.padded_dim // 2) + 1
         if (K is None) or (K > self.k_half):
@@ -396,7 +387,6 @@ class CirculantProcess:
         self.K = K
 
         if prior_fn is None:
-            # By default, Normal(0, scale)
             self.prior_fn = lambda scale: dist.Normal(0.0, scale)
         else:
             self.prior_fn = prior_fn
@@ -404,17 +394,14 @@ class CirculantProcess:
         self._last_fft_full = None
 
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
-        # If alpha is not fixed, sample it from a Uniform(0.0, 1.5) hyperprior.
         if self.alpha is None:
             alpha = numpyro.sample(f"{self.name}_alpha", self.alpha_prior)
         else:
             alpha = self.alpha
 
-        # 1) Compute frequency indices and prior standard deviation
         freq_idx = jnp.arange(self.k_half)
         prior_std = 1.0 / jnp.sqrt(1.0 + freq_idx**alpha)
 
-        # 2) Sample real and imaginary parts for active frequencies
         active_idx = jnp.arange(self.K)
         active_real = numpyro.sample(
             f"{self.name}_real",
@@ -425,21 +412,17 @@ class CirculantProcess:
             self.prior_fn(prior_std[active_idx]).expand([self.K]).to_event(1),
         )
 
-        # 3) Build up full real/imag arrays up to k_half
         full_real = jnp.zeros((self.k_half,))
         full_imag = jnp.zeros((self.k_half,))
         full_real = full_real.at[active_idx].set(active_real)
         full_imag = full_imag.at[active_idx].set(active_imag)
 
-        # Force DC component purely real
         full_imag = full_imag.at[0].set(0.0)
-        # If even length, force Nyquist component purely real
         if (self.padded_dim % 2 == 0) and (self.k_half > 1):
             full_imag = full_imag.at[-1].set(0.0)
 
         half_complex = full_real + 1j * full_imag
 
-        # 4) Mirror the half-spectrum to form the full FFT mask
         if (self.padded_dim % 2 == 0) and (self.k_half > 1):
             nyquist = half_complex[-1].real[None]
             fft_full = jnp.concatenate(
@@ -452,32 +435,40 @@ class CirculantProcess:
 
         self._last_fft_full = jax.lax.stop_gradient(fft_full)
 
-        # 5) Sample a bias (of dimension padded_dim) and perform the spectral matrix multiplication
-        bias_spectral = numpyro.sample(
-            f"{self.name}_bias_spectral",
-            dist.Normal(0.0, 1.0).expand([self.padded_dim]).to_event(1),
-        )
+        cov_row = jnp.fft.ifft(jnp.abs(fft_full) ** 2).real
+
+        if self.use_bias:
+            additional = numpyro.sample(
+                f"{self.name}_bias_spectral",
+                dist.Normal(0.0, 1.0).expand([self.padded_dim]).to_event(1),
+            )
+        else:
+            circ_dist = dist.CirculantNormal(
+                loc=jnp.zeros(self.padded_dim), covariance_row=cov_row
+            )
+            additional = numpyro.sample(f"{self.name}_latent_function", circ_dist)
 
         out = spectral_circulant_matmul(x, fft_full)
         if out.ndim == 2:
-            return out + bias_spectral[None, :]
+            return out + additional[None, :]
         else:
-            return out + bias_spectral
+            return out + additional
 
     def get_fourier_coeffs(self) -> jnp.ndarray:
         if self._last_fft_full is None:
             raise ValueError("No Fourier coefficients available; call the layer first.")
         return self._last_fft_full
+
     def get_kernel(self) -> jnp.ndarray:
         """
         Returns the covariance kernel (impulse response) computed from the PSD,
-        without any additional bias/latent function.
+        without any additional bias or latent function.
         """
         impulse = jnp.zeros(self.padded_dim)
         impulse = impulse.at[0].set(1.0)
         fft_full = self.get_fourier_coeffs()
         X_fft = jnp.fft.fft(impulse)
-        PSD = jnp.abs(fft_full)**2
+        PSD = jnp.abs(fft_full) ** 2
         kernel_fft = X_fft * PSD
         kernel = jnp.fft.ifft(kernel_fft).real
         return kernel

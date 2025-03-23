@@ -1,6 +1,6 @@
 from numpyro.infer import MCMC, NUTS
-import jax.numpy as jnp 
-import numpyro 
+import jax.numpy as jnp
+import numpyro
 import numpyro.distributions as dist
 import jax.random as jr
 
@@ -11,11 +11,10 @@ from jax import random as jr
 import numpyro
 import numpyro.distributions as dist
 
+
 @jax.custom_jvp
 def spectral_conv1d_psd_func(
-    x: jnp.ndarray, 
-    L_factors: jnp.ndarray, 
-    bias: jnp.ndarray
+    x: jnp.ndarray, L_factors: jnp.ndarray, bias: jnp.ndarray
 ) -> jnp.ndarray:
     """
     1D multi-channel convolution in the frequency domain, with a per-frequency
@@ -23,8 +22,8 @@ def spectral_conv1d_psd_func(
 
     Args:
       x: shape (B, C, W)
-      L_factors: shape (rfft_length, C, C_lower) 
-                 where C_lower = C*(C+1)//2, storing the distinct elements of 
+      L_factors: shape (rfft_length, C, C_lower)
+                 where C_lower = C*(C+1)//2, storing the distinct elements of
                  each lower-triangular L_f.
       bias: shape (C,)
 
@@ -33,7 +32,7 @@ def spectral_conv1d_psd_func(
     """
     B, C, W = x.shape
     rfft_length = L_factors.shape[0]
-    fft_size = 2*(rfft_length - 1) if rfft_length > 1 else 1
+    fft_size = 2 * (rfft_length - 1) if rfft_length > 1 else 1
 
     # 1) Possibly zero-pad x if fft_size > W
     if fft_size > W:
@@ -41,14 +40,14 @@ def spectral_conv1d_psd_func(
         x = jnp.pad(x, ((0, 0), (0, 0), (0, pad_amount)))
 
     # 2) rFFT along the spatial dimension
-    X_fft = jnp.fft.rfft(x, n=fft_size, axis=-1)   # shape (B, C, rfft_length)
+    X_fft = jnp.fft.rfft(x, n=fft_size, axis=-1)  # shape (B, C, rfft_length)
 
     # 3) For each frequency f, build M_f = L_f @ L_f^T, and multiply
-    #    We'll do this with a "vmap" over f. 
+    #    We'll do this with a "vmap" over f.
     def apply_freq_matrix(X_f, L_tri):
         # L_tri: shape (C_lower,) => reshape to (C, C), zero upper triangle
         L = fill_lower_triangle(L_tri, C)  # We'll define fill_lower_triangle below
-        M = L @ L.T   # shape (C, C), real PSD
+        M = L @ L.T  # shape (C, C), real PSD
         # Now multiply X_f => (C,) => M @ X_f => shape (C,)
         return M @ X_f
 
@@ -57,9 +56,9 @@ def spectral_conv1d_psd_func(
     X_fft_t = jnp.transpose(X_fft, (2, 0, 1))  # shape (rfft_length, B, C)
     # L_factors: shape (rfft_length, C_lower)
     # vmap along first axis => (rfft_length, B, C)
-    # We'll need an outer 'vmap' over B or just do a matrix multiply inside. 
+    # We'll need an outer 'vmap' over B or just do a matrix multiply inside.
     # The easiest is to vmap over f, then we do a batch matmul for dimension B?
-    # But (B, C) is not a single vector. We can do a vmap over B as well. 
+    # But (B, C) is not a single vector. We can do a vmap over B as well.
     # Let's combine them carefully.
 
     def freq_apply_fn(carry, data):
@@ -92,10 +91,11 @@ def spectral_conv1d_psd_func(
 
     return y
 
+
 @spectral_conv1d_psd_func.defjvp
 def spectral_conv1d_psd_func_jvp(primals, tangents):
     """A simple JVP definition. We just do a direct linearization:
-       d/dx [M_f x_f] => M_f * dx_f + d(M_f)* x_f
+    d/dx [M_f x_f] => M_f * dx_f + d(M_f)* x_f
     """
     x, L_factors, bias = primals
     dx, dL_factors, dbias = tangents
@@ -110,7 +110,7 @@ def spectral_conv1d_psd_func_jvp(primals, tangents):
     if dL_factors is not None:
         # we must incorporate "dM_f * X_f". This is more advanced; for brevity,
         # we reuse the same function but it's not strictly correct for dM_f*x.
-        # A correct approach would explicitly multiply each freq's partial derivative. 
+        # A correct approach would explicitly multiply each freq's partial derivative.
         # For demonstration, we approximate by re-calling with dL_factors as if it were L_factors.
         dy += spectral_conv1d_psd_func(x, dL_factors, jnp.zeros_like(bias))
     if dbias is not None:
@@ -121,7 +121,7 @@ def spectral_conv1d_psd_func_jvp(primals, tangents):
 
 def fill_lower_triangle(L_tri: jnp.ndarray, C: int) -> jnp.ndarray:
     """
-    Fill a (C, C) zeroed matrix with the lower-triangular elements from L_tri, 
+    Fill a (C, C) zeroed matrix with the lower-triangular elements from L_tri,
     which has length C*(C+1)//2.
 
     Returns: shape (C, C)
@@ -179,6 +179,7 @@ class Conv1dPSD:
         # Apply the spectral PSD convolution
         return spectral_conv1d_psd_func(x, L_factors, bias)
 
+
 @jax.custom_jvp
 def spectral_conv2d_psd_func(
     x: jnp.ndarray,
@@ -203,7 +204,7 @@ def spectral_conv2d_psd_func(
     # rfft2 uses (H, W/2+1) => W_full = 2*(Wf-1) if Wf>1
     # pad if needed:
     # For brevity, assume Hf==H, Wf==(W//2+1).
-    X_fft = jnp.fft.rfft2(x, s=(H, 2*(Wf-1)), axes=(2, 3))  # shape (B, C, Hf, Wf)
+    X_fft = jnp.fft.rfft2(x, s=(H, 2 * (Wf - 1)), axes=(2, 3))  # shape (B, C, Hf, Wf)
 
     # We'll reorder to (Hf, Wf, B, C) so we can vmap or scan
     X_fft_t = jnp.transpose(X_fft, (2, 3, 0, 1))  # (Hf, Wf, B, C)
@@ -221,9 +222,9 @@ def spectral_conv2d_psd_func(
     # We can do a double-scan or double-vmap over (h, w).
     # Let's do nested vmap for simplicity:
     apply_w = jax.vmap(
-        lambda X_w, L_w: jax.vmap(
-            apply_freq_matrix, in_axes=(0, 0), out_axes=0
-        )(X_w, L_w),
+        lambda X_w, L_w: jax.vmap(apply_freq_matrix, in_axes=(0, 0), out_axes=0)(
+            X_w, L_w
+        ),
         in_axes=(0, 0),
         out_axes=0,
     )
@@ -236,10 +237,11 @@ def spectral_conv2d_psd_func(
     Y_fft = jnp.transpose(out_fft_t, (2, 3, 0, 1))
 
     # iFFT2
-    y_full = jnp.fft.irfft2(Y_fft, s=(H, 2*(Wf-1)), axes=(2, 3))
+    y_full = jnp.fft.irfft2(Y_fft, s=(H, 2 * (Wf - 1)), axes=(2, 3))
     y_full = y_full[..., :H, :W]  # crop if needed
     y = y_full + bias[None, :, None, None]
     return y
+
 
 @spectral_conv2d_psd_func.defjvp
 def spectral_conv2d_psd_func_jvp(primals, tangents):
@@ -258,7 +260,7 @@ def spectral_conv2d_psd_func_jvp(primals, tangents):
 
 class Conv2dPSD:
     """
-    NumPyro-based 2D convolution layer with a per-frequency PSD matrix 
+    NumPyro-based 2D convolution layer with a per-frequency PSD matrix
     (C x C for each freq).
     Assumes in_channels=out_channels=C.
     """
@@ -283,6 +285,7 @@ class Conv2dPSD:
         )
         return spectral_conv2d_psd_func(x, L_factors_2d, bias)
 
+
 @jax.custom_jvp
 def spectral_transposed_conv2d_psd_func(
     x: jnp.ndarray,
@@ -290,14 +293,14 @@ def spectral_transposed_conv2d_psd_func(
     bias: jnp.ndarray,
 ) -> jnp.ndarray:
     """
-    2D spectral transposed convolution with PSD. 
-    For each freq (h,w), M_{h,w} = L_f L_f^T in R^{C x C}, 
+    2D spectral transposed convolution with PSD.
+    For each freq (h,w), M_{h,w} = L_f L_f^T in R^{C x C},
     multiply it by X_fft[..., h, w].
     """
     B, C, H, W = x.shape
     Hf, Wf, C_lower = L_factors_2d.shape
 
-    X_fft = jnp.fft.rfft2(x, s=(H, 2*(Wf-1)), axes=(2, 3))  # shape (B, C, Hf, Wf)
+    X_fft = jnp.fft.rfft2(x, s=(H, 2 * (Wf - 1)), axes=(2, 3))  # shape (B, C, Hf, Wf)
     X_fft_t = X_fft.transpose(2, 3, 0, 1)  # (Hf, Wf, B, C)
 
     def freq_apply_fn(X_hw, L_tri_hw):
@@ -314,9 +317,10 @@ def spectral_transposed_conv2d_psd_func(
 
     out_fft_t = apply_hw(X_fft_t, L_factors_2d)  # shape (Hf, Wf, B, C)
     Y_fft = out_fft_t.transpose(2, 3, 0, 1)  # (B, C, Hf, Wf)
-    y_full = jnp.fft.irfft2(Y_fft, s=(H, 2*(Wf-1)), axes=(2, 3))
+    y_full = jnp.fft.irfft2(Y_fft, s=(H, 2 * (Wf - 1)), axes=(2, 3))
     y = y_full[..., :H, :W] + bias[None, :, None, None]
     return y
+
 
 @spectral_transposed_conv2d_psd_func.defjvp
 def spectral_transposed_conv2d_psd_func_jvp(primals, tangents):
@@ -325,9 +329,13 @@ def spectral_transposed_conv2d_psd_func_jvp(primals, tangents):
     y = spectral_transposed_conv2d_psd_func(x, L_factors_2d, bias)
     dy = jnp.zeros_like(y)
     if dx is not None:
-        dy += spectral_transposed_conv2d_psd_func(dx, L_factors_2d, jnp.zeros_like(bias))
+        dy += spectral_transposed_conv2d_psd_func(
+            dx, L_factors_2d, jnp.zeros_like(bias)
+        )
     if dL_factors_2d is not None:
-        dy += spectral_transposed_conv2d_psd_func(x, dL_factors_2d, jnp.zeros_like(bias))
+        dy += spectral_transposed_conv2d_psd_func(
+            x, dL_factors_2d, jnp.zeros_like(bias)
+        )
     if dbias is not None:
         dy += dbias[None, :, None, None]
     return y, dy
@@ -359,16 +367,19 @@ class TransposedConv2dPSD:
 
 
 def Model(X, y=None):
-    
+
     B, C, H, W = X.shape
     X = Conv2dPSD(C, H, W)(X)
-    X = jnp.reshape(-1, 28*28)
-    W = numpyro.sample("W", dist.Normal(0, 1).expand([28*28, 10]).to_event(len(X.shape)))
+    X = jnp.reshape(-1, 28 * 28)
+    W = numpyro.sample(
+        "W", dist.Normal(0, 1).expand([28 * 28, 10]).to_event(len(X.shape))
+    )
     b = numpyro.sample("W", dist.Normal(0, 1).expand(10).to_event(len(1)))
     X = jnp.dot(X, W) + b
     numpyro.deterministic("logits", X)
     with numpyro.plate("data", B):
         numpyro.sample("obs", dist.Categorical(logits=X), obs=y)
+
 
 key = jr.key(0)
 X = jr.normal(key, (10, 1, 28, 28))
