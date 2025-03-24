@@ -9,7 +9,7 @@ from numpyro.distributions import transforms
 __all__ = [
     "Circulant",
     "BlockCirculant",
-    "CirculantProcess",
+    "SpectralCirculantLayer",
     "BlockCirculantProcess",
     "SpectralConv1d",
     "SpectralConv2d",
@@ -352,7 +352,7 @@ def spectral_circulant_matmul_jvp(primals, tangents):
     return primal_y, dY
 
 
-class CirculantProcess:
+class SpectralCirculantLayer:
     def __init__(
         self,
         in_features: int,
@@ -362,7 +362,6 @@ class CirculantProcess:
         K: int = None,
         name: str = "spectral_circ_jvp",
         prior_fn=None,
-        use_bias: bool = True,
     ):
         """
         :param in_features: Input dimension.
@@ -372,36 +371,35 @@ class CirculantProcess:
         :param K: Number of active frequencies to keep; if None, use full half-spectrum.
         :param name: Base name for NumPyro sample sites.
         :param prior_fn: Function mapping a scale to a distribution (default: Normal(0, scale)).
-        :param use_bias: If True, add a simple bias term; if False, sample a latent function from CirculantNormal.
         """
         self.in_features = in_features
         self.padded_dim = padded_dim if padded_dim is not None else in_features
         self.alpha = alpha
         self.alpha_prior = alpha_prior
         self.name = name
-        self.use_bias = use_bias
 
+        # Length of half spectrum including DC (and Nyquist when applicable)
         self.k_half = (self.padded_dim // 2) + 1
         if (K is None) or (K > self.k_half):
             K = self.k_half
         self.K = K
 
-        if prior_fn is None:
-            self.prior_fn = lambda scale: dist.Normal(0.0, scale)
-        else:
-            self.prior_fn = prior_fn
-
+        self.prior_fn = prior_fn if prior_fn is not None else (lambda scale: dist.Normal(0.0, scale))
         self._last_fft_full = None
 
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
+        # Sample or fix alpha (decay exponent)
         if self.alpha is None:
             alpha = numpyro.sample(f"{self.name}_alpha", self.alpha_prior)
         else:
             alpha = self.alpha
 
+        # Frequency indices for half spectrum
         freq_idx = jnp.arange(self.k_half)
+        # Theoretical standard deviation per frequency: s(f)=1/sqrt(1+f^alpha)
         prior_std = 1.0 / jnp.sqrt(1.0 + freq_idx**alpha)
 
+        # Only sample active frequencies (truncation)
         active_idx = jnp.arange(self.K)
         active_real = numpyro.sample(
             f"{self.name}_real",
@@ -412,17 +410,20 @@ class CirculantProcess:
             self.prior_fn(prior_std[active_idx]).expand([self.K]).to_event(1),
         )
 
+        # Construct full half-spectrum (fill unused frequencies with zero)
         full_real = jnp.zeros((self.k_half,))
         full_imag = jnp.zeros((self.k_half,))
         full_real = full_real.at[active_idx].set(active_real)
         full_imag = full_imag.at[active_idx].set(active_imag)
 
+        # Enforce real-valued DC and (if even) Nyquist terms
         full_imag = full_imag.at[0].set(0.0)
         if (self.padded_dim % 2 == 0) and (self.k_half > 1):
             full_imag = full_imag.at[-1].set(0.0)
 
         half_complex = full_real + 1j * full_imag
 
+        # Construct full Fourier coefficients via Hermitian symmetry
         if (self.padded_dim % 2 == 0) and (self.k_half > 1):
             nyquist = half_complex[-1].real[None]
             fft_full = jnp.concatenate(
@@ -435,43 +436,54 @@ class CirculantProcess:
 
         self._last_fft_full = jax.lax.stop_gradient(fft_full)
 
-        cov_row = jnp.fft.ifft(jnp.abs(fft_full) ** 2).real
-
-        if self.use_bias:
-            additional = numpyro.sample(
-                f"{self.name}_bias_spectral",
-                dist.Normal(0.0, 1.0).expand([self.padded_dim]).to_event(1),
-            )
-        else:
-            circ_dist = dist.CirculantNormal(
-                loc=jnp.zeros(self.padded_dim), covariance_row=cov_row
-            )
-            additional = numpyro.sample(f"{self.name}_latent_function", circ_dist)
-
-        out = spectral_circulant_matmul(x, fft_full)
-        if out.ndim == 2:
-            return out + additional[None, :]
-        else:
-            return out + additional
+        # Sample bias and add to output (or you could remove bias and use a latent function instead)
+        bias = numpyro.sample(
+            f"{self.name}_bias_spectral",
+            dist.Normal(0.0, 1.0).expand([self.padded_dim]).to_event(1),
+        )
+        out = spectral_circulant_matmul(x, fft_full) + bias
+        return out 
 
     def get_fourier_coeffs(self) -> jnp.ndarray:
         if self._last_fft_full is None:
             raise ValueError("No Fourier coefficients available; call the layer first.")
         return self._last_fft_full
 
-    def get_kernel(self) -> jnp.ndarray:
-        """
-        Returns the covariance kernel (impulse response) computed from the PSD,
-        without any additional bias or latent function.
-        """
-        impulse = jnp.zeros(self.padded_dim)
-        impulse = impulse.at[0].set(1.0)
-        fft_full = self.get_fourier_coeffs()
-        X_fft = jnp.fft.fft(impulse)
-        PSD = jnp.abs(fft_full) ** 2
-        kernel_fft = X_fft * PSD
-        kernel = jnp.fft.ifft(kernel_fft).real
-        return kernel
+    # -------------------------------------------------------------------
+    # The following is an example of how you might compute the theoretical
+    # covariance kernel from the prior PSD. This is commented out because in
+    # practice, for sampling function values in a GP, you would use the theoretical
+    # PSD (i.e. s(f)^2) to compute the covariance via the inverse FFT, and then
+    # construct the Toeplitz covariance matrix.
+    # -------------------------------------------------------------------
+    # def compute_covariance_kernel(self):
+    #     """
+    #     Compute the theoretical covariance kernel using the inverse FFT of the
+    #     theoretical PSD. Here, the PSD is defined as s(f)^2, with s(f)=1/sqrt(1+f^alpha).
+    #     This kernel represents the autocovariance function of the GP.
+    #     """
+    #     if self.alpha is None:
+    #         raise ValueError("Alpha must be set to compute the covariance kernel.")
+    #     freq_idx = jnp.arange(self.k_half)
+    #     prior_std = 1.0 / jnp.sqrt(1.0 + freq_idx**self.alpha)
+    #     theoretical_psd = prior_std**2
+    #
+    #     # Build a full PSD vector with Hermitian symmetry.
+    #     if (self.padded_dim % 2 == 0) and (self.k_half > 1):
+    #         nyquist = theoretical_psd[-1][None]
+    #         full_psd = jnp.concatenate(
+    #             [theoretical_psd[:-1], nyquist, jnp.conjugate(theoretical_psd[1:-1])[::-1]]
+    #         )
+    #     else:
+    #         full_psd = jnp.concatenate(
+    #             [theoretical_psd, jnp.conjugate(theoretical_psd[1:])[::-1]]
+    #         )
+    #
+    #     # Compute the autocovariance function (kernel) via the inverse FFT of the PSD.
+    #     kernel = jnp.fft.ifft(full_psd).real
+    #     # For a GP over inputs 0,1,...,N-1, the covariance matrix is Toeplitz:
+    #     # K[i,j] = kernel[|i-j|]
+    #     return kernel
 
 
 # ------------------------------------------------------------------
