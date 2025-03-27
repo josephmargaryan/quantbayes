@@ -311,9 +311,10 @@ def train(
 
         train_losses.append(epoch_train_loss)
         val_losses.append(epoch_val_loss)
-        print(
-            f"Epoch {epoch+1:4d} | Train Loss: {epoch_train_loss:.4f} | Val Loss: {epoch_val_loss:.4f}"
-        )
+        if (epoch + 1) % max(1, num_epochs // 10) == 0 or epoch == num_epochs - 1:
+            print(
+                f"Epoch {epoch+1:4d} | Train Loss: {epoch_train_loss:.4f} | Val Loss: {epoch_val_loss:.4f}"
+            )
 
         # Checkpointing and early stopping.
         if epoch_val_loss < best_val_loss:

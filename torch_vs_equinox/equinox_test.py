@@ -33,7 +33,7 @@ train_loader = data_loader(X=X_train, y=y_train, batch_size=800, shuffle=True)
 val_loader = data_loader(X=X_test, y=y_test, batch_size=200, shuffle=False)
 key = jr.key(0)
 
-from quantbayes.stochax.layers import JVPCirculantProcess, JVPBlockCirculantProcess
+from quantbayes.stochax.layers import CirculantProcess
 from quantbayes.stochax.utils import (
     visualize_deterministic_block_fft,
     visualize_deterministic_fft,
@@ -46,7 +46,7 @@ class EQNet(eqx.Module):
 
     def __init__(self, key):
         k1, k2 = jr.split(key, 2)
-        self.l1 = JVPCirculantProcess(5, key=k1)
+        self.l1 = CirculantProcess(5, key=k1)
         self.l2 = eqx.nn.Linear(5, 1, key=k2)
 
     def __call__(self, x, key=None, state=None):
