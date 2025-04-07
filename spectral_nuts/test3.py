@@ -7,7 +7,7 @@ A full example that:
      the momentum generation and kinetic energy for a site named "spectral" (using a fixed spectral mass),
      and an adaptive version (AdaptiveSpectralNUTS) that updates the spectral mass.
   5. Runs inference with default NUTS, fixed SpectralNUTS, and AdaptiveSpectralNUTS so that the test MSE can be compared.
-  
+
 In our modified kernels the spectral site is sampled as usual but when generating momentum
 for that site, we scale by a provided spectral mass and compute its kinetic energy accordingly.
 If spectral_mass is set to 1, the behavior is identical to standard NUTS.
@@ -31,16 +31,22 @@ import numpyro
 import numpyro.distributions as dist
 import numpyro.handlers as handlers
 from numpyro.infer import MCMC, NUTS, Predictive
-from numpyro.infer.hmc_util import euclidean_kinetic_energy, IntegratorState, velocity_verlet, warmup_adapter
+from numpyro.infer.hmc_util import (
+    euclidean_kinetic_energy,
+    IntegratorState,
+    velocity_verlet,
+    warmup_adapter,
+)
 
 # =============================================================================
 # FFT-based circulant multiplication with custom JVP.
 # =============================================================================
 
+
 @jax.custom_jvp
 def spectral_circulant_matmul(x: jnp.ndarray, fft_full: jnp.ndarray) -> jnp.ndarray:
     padded_dim = fft_full.shape[0]
-    single_example = (x.ndim == 1)
+    single_example = x.ndim == 1
     if single_example:
         x = x[None, :]
     d_in = x.shape[-1]
@@ -58,13 +64,14 @@ def spectral_circulant_matmul(x: jnp.ndarray, fft_full: jnp.ndarray) -> jnp.ndar
         return y[0]
     return y
 
+
 @spectral_circulant_matmul.defjvp
 def spectral_circulant_matmul_jvp(primals, tangents):
     x, fft_full = primals
     dx, dfft = tangents
     padded_dim = fft_full.shape[0]
-    
-    single_example = (x.ndim == 1)
+
+    single_example = x.ndim == 1
     if single_example:
         x = x[None, :]
     if dx is not None and dx.ndim == 1:
@@ -98,9 +105,11 @@ def spectral_circulant_matmul_jvp(primals, tangents):
         return primal_y[0], dY[0]
     return primal_y, dY
 
+
 # =============================================================================
 # CirculantProcess: a spectral layer using circulant covariance.
 # =============================================================================
+
 
 class CirculantProcess:
     def __init__(
@@ -228,9 +237,11 @@ class CirculantProcess:
         kernel = jnp.fft.ifft(kernel_fft).real
         return kernel
 
+
 # =============================================================================
 # Spectral model that uses the CirculantProcess.
 # =============================================================================
+
 
 def spectral_model(X, y=None):
     """
@@ -246,7 +257,9 @@ def spectral_model(X, y=None):
 
     X_transformed = jax.nn.tanh(X_transformed)
 
-    W = numpyro.sample("W", dist.Normal(jnp.zeros((D, 1)), jnp.ones((D, 1))).to_event(2))
+    W = numpyro.sample(
+        "W", dist.Normal(jnp.zeros((D, 1)), jnp.ones((D, 1))).to_event(2)
+    )
     b = numpyro.sample("b", dist.Normal(0, 1))
     mu = jnp.dot(X_transformed, W) + b
     sigma = numpyro.sample("sigma", dist.Exponential(1.0))
@@ -254,24 +267,30 @@ def spectral_model(X, y=None):
         numpyro.sample("obs", dist.Normal(mu.squeeze(), sigma), obs=y)
     return mu
 
+
 # =============================================================================
 # SpectralNUTS: slight modification with fixed spectral mass.
 # =============================================================================
 
+
 class SpectralNUTS(NUTS):
-    def __init__(self, model, init_spectral_mass, param_names=('_real', '_imag'), **kwargs):
+    def __init__(
+        self, model, init_spectral_mass, param_names=("_real", "_imag"), **kwargs
+    ):
         self.spectral_mass = init_spectral_mass
         self.param_names = param_names  # Names of real/imag parameters
-        
+
         def spectral_kinetic_energy(mass_inv, r):
             energy = 0.0
             for key in self.param_names:
                 if key in r:
                     energy += 0.5 * jnp.sum((r[key] ** 2) / self.spectral_mass)
             # Handle other parameters with identity mass
-            other_energy = 0.5 * sum(jnp.sum(v**2) for k,v in r.items() if k not in self.param_names)
+            other_energy = 0.5 * sum(
+                jnp.sum(v**2) for k, v in r.items() if k not in self.param_names
+            )
             return energy + other_energy
-        
+
         super().__init__(model, kinetic_fn=spectral_kinetic_energy, **kwargs)
 
     def momentum_generator(self, prototype_r, rng_key):
@@ -279,34 +298,43 @@ class SpectralNUTS(NUTS):
         keys = random.split(rng_key, len(prototype_r))
         for i, (key, value) in enumerate(prototype_r.items()):
             if key in self.param_names:
-                new_r[key] = random.normal(keys[i], shape=value.shape) * jnp.sqrt(self.spectral_mass)
+                new_r[key] = random.normal(keys[i], shape=value.shape) * jnp.sqrt(
+                    self.spectral_mass
+                )
             else:
                 new_r[key] = random.normal(keys[i], shape=value.shape)
         return new_r
+
 
 # =============================================================================
 # AdaptiveSpectralNUTS: adaptive update of the spectral mass.
 # =============================================================================
 
+
 class AdaptiveSpectralNUTS(SpectralNUTS):
     """
     Extends SpectralNUTS by adaptively updating the spectral mass using an exponential moving average.
     """
+
     def __init__(self, model, init_spectral_mass, adapt_rate=0.05, **kwargs):
         self.adapt_rate = adapt_rate
         super().__init__(model, init_spectral_mass, **kwargs)
-    
+
     def update_spectral_mass(self, spectral_sample):
         # spectral_sample is expected to be the Fourier coefficients from the "spectral" site.
         k_half = self.spectral_mass.shape[0]
         # Extract the first k_half coefficients (the half-spectrum)
         fourier_half = spectral_sample[:k_half]
         new_estimate = jnp.abs(fourier_half) ** 2
-        self.spectral_mass = (1 - self.adapt_rate) * self.spectral_mass + self.adapt_rate * new_estimate
+        self.spectral_mass = (
+            1 - self.adapt_rate
+        ) * self.spectral_mass + self.adapt_rate * new_estimate
+
 
 # =============================================================================
 # Helper: generate synthetic regression data.
 # =============================================================================
+
 
 def generate_regression_data(n_continuous=12, random_seed=24):
     np.random.seed(random_seed)
@@ -315,13 +343,16 @@ def generate_regression_data(n_continuous=12, random_seed=24):
     X = np.random.randn(N, D)
     y = X @ np.random.randn(D) + np.random.randn(N) * 0.5
     import pandas as pd
+
     df = pd.DataFrame(X, columns=[f"x{i}" for i in range(D)])
     df["target"] = y
     return df
 
+
 # =============================================================================
 # Helper: get kernel for a given parameter set.
 # =============================================================================
+
 
 def get_kernel_for_params(model, X, param_dict, rng_key=random.PRNGKey(0)):
     with handlers.seed(rng_seed=rng_key):
@@ -330,9 +361,11 @@ def get_kernel_for_params(model, X, param_dict, rng_key=random.PRNGKey(0)):
     kernel = model.fft_layer.get_kernel()
     return jax.device_get(kernel)
 
+
 # =============================================================================
 # Main: run experiments with default NUTS, fixed SpectralNUTS, and AdaptiveSpectralNUTS.
 # =============================================================================
+
 
 def main():
     from sklearn.metrics import mean_squared_error
@@ -341,7 +374,9 @@ def main():
     df = generate_regression_data(n_continuous=12, random_seed=24)
     X = df.drop("target", axis=1).values.astype(np.float32)
     y = df["target"].values.astype(np.float32)
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=24)
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=24
+    )
     X_train = jnp.array(X_train)
     X_test = jnp.array(X_test)
     y_train = jnp.array(y_train)
@@ -419,7 +454,9 @@ def main():
         dense_mass=dense_mass,
         target_accept_prob=target_accept_prob,
     )
-    mcmc_adaptive = MCMC(adaptive_spectral_nuts_kernel, num_warmup=500, num_samples=1000)
+    mcmc_adaptive = MCMC(
+        adaptive_spectral_nuts_kernel, num_warmup=500, num_samples=1000
+    )
     mcmc_adaptive.run(rng_key, X=X_train, y=y_train)
     samples_adaptive = mcmc_adaptive.get_samples()
     # Update the spectral mass using the average Fourier coefficients from the adaptive run.
@@ -431,6 +468,7 @@ def main():
     mean_preds_adaptive = preds_adaptive["obs"].mean(axis=0)
     mse_adaptive = mean_squared_error(np.array(y_test), np.array(mean_preds_adaptive))
     print("AdaptiveSpectralNUTS Test MSE:", mse_adaptive)
+
 
 if __name__ == "__main__":
     main()

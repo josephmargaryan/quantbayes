@@ -384,7 +384,11 @@ class SpectralCirculantLayer:
             K = self.k_half
         self.K = K
 
-        self.prior_fn = prior_fn if prior_fn is not None else (lambda scale: dist.Normal(0.0, scale))
+        self.prior_fn = (
+            prior_fn
+            if prior_fn is not None
+            else (lambda scale: dist.Normal(0.0, scale))
+        )
         self._last_fft_full = None
 
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
@@ -442,7 +446,7 @@ class SpectralCirculantLayer:
             dist.Normal(0.0, 1.0).expand([self.padded_dim]).to_event(1),
         )
         out = spectral_circulant_matmul(x, fft_full) + bias
-        return out 
+        return out
 
     def get_fourier_coeffs(self) -> jnp.ndarray:
         if self._last_fft_full is None:
@@ -467,18 +471,22 @@ class SpectralCirculantLayer:
         freq_idx = jnp.arange(self.k_half)
         prior_std = 1.0 / jnp.sqrt(1.0 + freq_idx**self.alpha)
         theoretical_psd = prior_std**2
-    
+
         # Build a full PSD vector with Hermitian symmetry.
         if (self.padded_dim % 2 == 0) and (self.k_half > 1):
             nyquist = theoretical_psd[-1][None]
             full_psd = jnp.concatenate(
-                [theoretical_psd[:-1], nyquist, jnp.conjugate(theoretical_psd[1:-1])[::-1]]
+                [
+                    theoretical_psd[:-1],
+                    nyquist,
+                    jnp.conjugate(theoretical_psd[1:-1])[::-1],
+                ]
             )
         else:
             full_psd = jnp.concatenate(
                 [theoretical_psd, jnp.conjugate(theoretical_psd[1:])[::-1]]
             )
-    
+
         # Compute the autocovariance function (kernel) via the inverse FFT of the PSD.
         kernel = jnp.fft.ifft(full_psd).real
         # For a GP over inputs 0,1,...,N-1, the covariance matrix is Toeplitz:
