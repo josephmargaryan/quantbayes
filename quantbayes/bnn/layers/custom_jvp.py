@@ -450,40 +450,40 @@ class SpectralCirculantLayer:
         return self._last_fft_full
 
     # -------------------------------------------------------------------
-    # The following is an example of how you might compute the theoretical
+    # compute the theoretical
     # covariance kernel from the prior PSD. This is commented out because in
     # practice, for sampling function values in a GP, you would use the theoretical
     # PSD (i.e. s(f)^2) to compute the covariance via the inverse FFT, and then
     # construct the Toeplitz covariance matrix.
     # -------------------------------------------------------------------
-    # def compute_covariance_kernel(self):
-    #     """
-    #     Compute the theoretical covariance kernel using the inverse FFT of the
-    #     theoretical PSD. Here, the PSD is defined as s(f)^2, with s(f)=1/sqrt(1+f^alpha).
-    #     This kernel represents the autocovariance function of the GP.
-    #     """
-    #     if self.alpha is None:
-    #         raise ValueError("Alpha must be set to compute the covariance kernel.")
-    #     freq_idx = jnp.arange(self.k_half)
-    #     prior_std = 1.0 / jnp.sqrt(1.0 + freq_idx**self.alpha)
-    #     theoretical_psd = prior_std**2
-    #
-    #     # Build a full PSD vector with Hermitian symmetry.
-    #     if (self.padded_dim % 2 == 0) and (self.k_half > 1):
-    #         nyquist = theoretical_psd[-1][None]
-    #         full_psd = jnp.concatenate(
-    #             [theoretical_psd[:-1], nyquist, jnp.conjugate(theoretical_psd[1:-1])[::-1]]
-    #         )
-    #     else:
-    #         full_psd = jnp.concatenate(
-    #             [theoretical_psd, jnp.conjugate(theoretical_psd[1:])[::-1]]
-    #         )
-    #
-    #     # Compute the autocovariance function (kernel) via the inverse FFT of the PSD.
-    #     kernel = jnp.fft.ifft(full_psd).real
-    #     # For a GP over inputs 0,1,...,N-1, the covariance matrix is Toeplitz:
-    #     # K[i,j] = kernel[|i-j|]
-    #     return kernel
+    def compute_covariance_kernel(self):
+        """
+        Compute the theoretical covariance kernel using the inverse FFT of the
+        theoretical PSD. Here, the PSD is defined as s(f)^2, with s(f)=1/sqrt(1+f^alpha).
+        This kernel represents the autocovariance function of the GP.
+        """
+        if self.alpha is None:
+            raise ValueError("Alpha must be set to compute the covariance kernel.")
+        freq_idx = jnp.arange(self.k_half)
+        prior_std = 1.0 / jnp.sqrt(1.0 + freq_idx**self.alpha)
+        theoretical_psd = prior_std**2
+    
+        # Build a full PSD vector with Hermitian symmetry.
+        if (self.padded_dim % 2 == 0) and (self.k_half > 1):
+            nyquist = theoretical_psd[-1][None]
+            full_psd = jnp.concatenate(
+                [theoretical_psd[:-1], nyquist, jnp.conjugate(theoretical_psd[1:-1])[::-1]]
+            )
+        else:
+            full_psd = jnp.concatenate(
+                [theoretical_psd, jnp.conjugate(theoretical_psd[1:])[::-1]]
+            )
+    
+        # Compute the autocovariance function (kernel) via the inverse FFT of the PSD.
+        kernel = jnp.fft.ifft(full_psd).real
+        # For a GP over inputs 0,1,...,N-1, the covariance matrix is Toeplitz:
+        # K[i,j] = kernel[|i-j|]
+        return kernel
 
 
 # ------------------------------------------------------------------
