@@ -15,6 +15,10 @@ This imputer can handle both numeric and categorical columns:
     numeric columns get mean/median, while categorical columns use most_frequent by default.
   - Forward/backward fill uses pandas .fillna(method=...) and thus works on all columns.
   - Iterative imputation trains separate regressors/classifiers for numeric/categorical targets.
+  
+New in this version:
+  - An additional parameter, `categorical_threshold`, is used to decide whether a numeric
+    column (e.g. int dtype) with few unique values should be treated as categorical.
 """
 
 import logging
@@ -77,6 +81,10 @@ class MissingValueImputer(BaseEstimator, TransformerMixin):
     random_state : int, default=42
         Random seed for reproducibility in ML models.
 
+    categorical_threshold : int, default=10
+        For numeric columns: if the number of unique (non-null) values is less than this threshold,
+        the column will be treated as categorical.
+
     Raises
     ------
     ValueError
@@ -88,7 +96,7 @@ class MissingValueImputer(BaseEstimator, TransformerMixin):
     ...     'num_col': [1, 2, np.nan, 4],
     ...     'cat_col': ['A', 'B', 'A', np.nan]
     ... })
-    >>> imputer = MissingValueImputer(strategy='mean')
+    >>> imputer = MissingValueImputer(strategy='mean', categorical_threshold=5)
     >>> df_transformed = imputer.fit_transform(df)
     """
 
@@ -103,6 +111,7 @@ class MissingValueImputer(BaseEstimator, TransformerMixin):
         iterative_max_iter=10,
         iterative_tune=False,
         random_state=42,
+        categorical_threshold=10,
     ):
         self.strategy = strategy
         self.fill_value = fill_value
@@ -122,6 +131,7 @@ class MissingValueImputer(BaseEstimator, TransformerMixin):
         self.iterative_max_iter = iterative_max_iter
         self.iterative_tune = iterative_tune
         self.random_state = random_state
+        self.categorical_threshold = categorical_threshold
 
         # Internal attributes
         self.column_order_ = None
@@ -154,22 +164,27 @@ class MissingValueImputer(BaseEstimator, TransformerMixin):
         X = self._validate_input(X)
         self.column_order_ = X.columns.tolist()
 
-        # Identify numeric vs. categorical columns
-        numeric_cols = X.select_dtypes(include=[np.number]).columns.tolist()
-        categorical_cols = [c for c in X.columns if c not in numeric_cols]
+        # Identify numeric vs. categorical columns robustly.
+        # If a column is numeric but has fewer unique values than the threshold,
+        # treat it as categorical.
+        for col in X.columns:
+            if pd.api.types.is_numeric_dtype(X[col]):
+                unique_count = X[col].nunique(dropna=True)
+                if unique_count < self.categorical_threshold:
+                    self.col_is_categorical_[col] = True
+                else:
+                    self.col_is_categorical_[col] = False
+            else:
+                self.col_is_categorical_[col] = True
 
-        # Mark columns in a dict for quick lookup
-        for col in numeric_cols:
-            self.col_is_categorical_[col] = False
-        for col in categorical_cols:
-            self.col_is_categorical_[col] = True
+        numeric_cols = [col for col in X.columns if not self.col_is_categorical_[col]]
+        categorical_cols = [col for col in X.columns if self.col_is_categorical_[col]]
 
         if self.strategy in ["mean", "median", "most_frequent", "constant"]:
             # Create separate imputers for numeric vs. categorical if needed
             self._build_simple_imputers(numeric_cols, categorical_cols)
 
             # Fit them
-            # We must isolate numeric/cat data for each sub-imputer
             if numeric_cols:
                 numeric_data = X[numeric_cols]
                 self._numeric_imputer.fit(numeric_data)
@@ -282,7 +297,6 @@ class MissingValueImputer(BaseEstimator, TransformerMixin):
             self._categorical_imputer = SimpleImputer(strategy="most_frequent")
 
         else:
-            # Should not happen if we call this function only for known strategies
             raise ValueError(
                 f"Invalid strategy '{self.strategy}' in _build_simple_imputers."
             )
@@ -446,6 +460,8 @@ if __name__ == "__main__":
         {
             "numeric1": [1, 2, np.nan, 4, 5, np.nan, 7],
             "numeric2": [10, np.nan, 12, 13, np.nan, 15, 16],
+            # Although these are stored as numbers, they have few unique values so will be treated as categorical.
+            "categorical_numeric": [0, 1, 0, np.nan, 1, 0, 1],
             "categorical1": ["A", "B", np.nan, "B", "A", "A", np.nan],
             "categorical2": ["X", "Y", "X", "Y", "X", np.nan, "Y"],
         }
@@ -453,15 +469,15 @@ if __name__ == "__main__":
 
     logger.info("Original dataset with NaNs:\n%s", df)
 
-    # Example 1: Mean strategy (for numeric), fallback to most_frequent for categorical
-    imputer_mean = MissingValueImputer(strategy="mean")
+    # Example 1: Mean strategy (for numeric), fallback to most_frequent for categorical.
+    imputer_mean = MissingValueImputer(strategy="mean", categorical_threshold=3)
     df_mean_imputed = imputer_mean.fit_transform(df)
     logger.info(
         "Mean-imputed (numeric) + most_frequent-imputed (categorical):\n%s",
         df_mean_imputed,
     )
 
-    # Example 2: Forward fill
+    # Example 2: Forward fill.
     imputer_ffill = MissingValueImputer(strategy="forward_fill")
     df_ffill_imputed = imputer_ffill.fit_transform(df)
     logger.info("Forward-fill-imputed dataset:\n%s", df_ffill_imputed)
