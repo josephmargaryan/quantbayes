@@ -15,6 +15,7 @@ from .temporal_conv import TCNForecast
 from .temporal_fusion import TemporalFusionTransformerForecast
 from .timegpt import TimeGPTForecast
 from .wave_net import WaveNetForecast
+from .totem import TOTEMForecast
 
 __all__ = [
     "Autoformer",
@@ -32,4 +33,5 @@ __all__ = [
     "TimeGPTForecast",
     "WaveNetForecast",
     "SpectralTemporalFusionTransformer",
+    "TOTEMForecast",
 ]

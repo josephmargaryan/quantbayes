@@ -1,4 +1,3 @@
-from .forecast import ForecastingModel
 from .models.autoformer import Autoformer
 from .models.baseline import (
     GRU,
@@ -16,6 +15,7 @@ from .models.temporal_conv import TCNForecast
 from .models.temporal_fusion import TemporalFusionTransformerForecast
 from .models.timegpt import TimeGPTForecast
 from .models.wave_net import WaveNetForecast
+from .models.totem import TOTEMForecast
 
 __all__ = [
     "Autoformer",
@@ -32,6 +32,6 @@ __all__ = [
     "TemporalFusionTransformerForecast",
     "TimeGPTForecast",
     "WaveNetForecast",
-    "ForecastingModel",
     "SpectralTemporalFusionTransformer",
+    "TOTEMForecast",
 ]

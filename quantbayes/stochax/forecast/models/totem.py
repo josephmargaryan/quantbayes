@@ -286,9 +286,7 @@ class TOTEMForecast(eqx.Module):
             key=key,
         )
 
-    def __call__(
-        self, x: jnp.ndarray, state: eqx.nn.State, *, key=None
-    ) -> tuple[jnp.ndarray, eqx.nn.State]:
+    def __call__(self, x: jnp.ndarray, key, state) -> tuple[jnp.ndarray, eqx.nn.State]:
         """
         Args:
           x: Input tensor of shape [N, seq_len, in_channels]
