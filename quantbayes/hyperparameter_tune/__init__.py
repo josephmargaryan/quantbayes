@@ -1,8 +1,8 @@
 from .tune import (
     CatBoostClassifierTuner,
     CatBoostRegressorTuner,
-    HistGradientBoostingClassifier,
     HistGradientBoostingClassifierTuner,
+    HistGradientBoostingRegressorTuner,
     LGBMClassifierTuner,
     LGBMRegressorTuner,
     XGBClassifierTuner,
