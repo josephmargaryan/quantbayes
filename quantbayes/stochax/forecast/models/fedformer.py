@@ -191,9 +191,7 @@ class FedformerForecast(eqx.Module):
             input_dim, embed_dim, num_heads, mlp_ratio, dropout_p, kernel_size, key=key
         )
 
-    def __call__(
-        self, x: jnp.ndarray, state: eqx.nn.State, *, key=None
-    ) -> tuple[jnp.ndarray, eqx.nn.State]:
+    def __call__(self, x: jnp.ndarray, key, state) -> tuple[jnp.ndarray, eqx.nn.State]:
         # Return prediction and pass through the state.
         return self.model(x, key=key), state
 

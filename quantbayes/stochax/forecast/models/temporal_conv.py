@@ -160,9 +160,7 @@ class TCNForecast(eqx.Module):
         self.final_linear = eqx.nn.Linear(num_filters, 1, key=keys[1])
         self.in_channels = in_channels
 
-    def __call__(
-        self, x: jnp.ndarray, state: eqx.nn.State, *, key=None
-    ) -> tuple[jnp.ndarray, any]:
+    def __call__(self, x: jnp.ndarray, key, state) -> tuple[jnp.ndarray, any]:
         """
         Args:
           x: A single sample of shape [seq_len, D], where D == in_channels.

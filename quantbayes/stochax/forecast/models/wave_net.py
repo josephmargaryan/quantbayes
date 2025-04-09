@@ -209,9 +209,7 @@ class WaveNetForecast(eqx.Module):
         )
         self.final_linear = eqx.nn.Linear(skip_channels, 1, key=keys[1])
 
-    def __call__(
-        self, x: jnp.ndarray, state: eqx.nn.State, *, key=None
-    ) -> tuple[jnp.ndarray, any]:
+    def __call__(self, x: jnp.ndarray, key, state) -> tuple[jnp.ndarray, any]:
         """
         Args:
           x: Single-sample input tensor of shape [seq_len, D]

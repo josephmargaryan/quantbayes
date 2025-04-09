@@ -15,7 +15,7 @@ This imputer can handle both numeric and categorical columns:
     numeric columns get mean/median, while categorical columns use most_frequent by default.
   - Forward/backward fill uses pandas .fillna(method=...) and thus works on all columns.
   - Iterative imputation trains separate regressors/classifiers for numeric/categorical targets.
-  
+
 New in this version:
   - An additional parameter, `categorical_threshold`, is used to decide whether a numeric
     column (e.g. int dtype) with few unique values should be treated as categorical.

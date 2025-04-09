@@ -153,9 +153,7 @@ class TemporalFusionTransformerForecast(eqx.Module):
             input_size, hidden_size, num_heads, key=key
         )
 
-    def __call__(
-        self, x: jnp.ndarray, state: eqx.nn.State, *, key=None
-    ) -> tuple[jnp.ndarray, any]:
+    def __call__(self, x: jnp.ndarray, key, state) -> tuple[jnp.ndarray, any]:
         # x: single sample of shape [seq_len, input_size]
         return self.model(x, key=key), state
 

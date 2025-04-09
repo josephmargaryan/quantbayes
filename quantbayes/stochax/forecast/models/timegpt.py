@@ -234,9 +234,7 @@ class TimeGPTForecast(eqx.Module):
             key=key,
         )
 
-    def __call__(
-        self, x: jnp.ndarray, state: eqx.nn.State, *, key=None
-    ) -> tuple[jnp.ndarray, any]:
+    def __call__(self, x: jnp.ndarray, key, state) -> tuple[jnp.ndarray, any]:
         """
         Args:
           x: Input tensor of shape [N, seq_len, input_dim]

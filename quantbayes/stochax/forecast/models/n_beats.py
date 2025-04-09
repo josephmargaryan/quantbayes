@@ -122,9 +122,7 @@ class NBeatsForecast(eqx.Module):
         self.seq_len = seq_len
         self.d = d
 
-    def __call__(
-        self, x: jnp.ndarray, state: eqx.nn.State, *, key=None
-    ) -> tuple[jnp.ndarray, any]:
+    def __call__(self, x: jnp.ndarray, key, state) -> tuple[jnp.ndarray, any]:
         """
         Args:
           x: Input tensor of shape [N, seq_len, d]

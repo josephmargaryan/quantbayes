@@ -126,9 +126,7 @@ class SpectralTemporalFusionTransformer(eqx.Module):
         self.final_linear = eqx.nn.Linear(hidden_size, 1, key=k4)
         self.hidden_size = hidden_size
 
-    def __call__(
-        self, x: jnp.ndarray, state: eqx.nn.State, *, key: PRNGKeyArray
-    ) -> jnp.ndarray:
+    def __call__(self, x: jnp.ndarray, key, state) -> jnp.ndarray:
         """
         x: input sequence of shape (seq_len, input_size)
         """

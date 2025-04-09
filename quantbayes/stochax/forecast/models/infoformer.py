@@ -250,7 +250,7 @@ class InfoFormerForecast(eqx.Module):
             key=key,
         )
 
-    def __call__(self, x, state: eqx.nn.State, *, key=None) -> tuple[jnp.ndarray, any]:
+    def __call__(self, x, key, state) -> tuple[jnp.ndarray, any]:
         return self.model(x, state=state, key=key)
 
 
