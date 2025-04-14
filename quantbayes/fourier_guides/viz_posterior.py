@@ -22,7 +22,6 @@ import matplotlib.pyplot as plt
 
 # Example spectral model: uses the SpectralCirculantLayer from quantbayes.bnn.
 from quantbayes.bnn import SpectralCirculantLayer  # your custom spectral layer
-from fourier_family import AutoFourier
 from guides import SpectralImagGuide, SpectralRealGuide
 
 from quantbayes.fake_data import generate_regression_data
