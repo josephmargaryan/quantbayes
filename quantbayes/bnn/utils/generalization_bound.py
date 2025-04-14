@@ -215,3 +215,56 @@ class BayesianAnalysis:
             mean_posterior, std_posterior, prior_mean, prior_std
         )
         return kl_divergence / self.num_samples
+
+    def compute_bernstein_pac_bayes_bound(
+        self,
+        predictions: jax.Array,
+        y_true: jax.Array,
+        prior_mean: float = 0.0,
+        prior_std: float = 1.0,
+        C: float = 1.0,
+        D: float = 1.0
+    ) -> float:
+        """
+        Computes a Bernstein-PAC Bayesian Bound.
+
+        :param predictions: Array of predictions (could be posterior samples).
+        :param y_true: Ground truth labels.
+        :param prior_mean: Mean of the Gaussian prior.
+        :param prior_std: Standard deviation of the Gaussian prior.
+        :param C: Constant in the confidence term.
+        :param D: Constant multiplier for the linear term.
+        :return: Bernstein-PAC Bayesian bound value.
+        """
+        loss_fn = self.get_loss_function()
+        # Compute the empirical risk (mean loss over the dataset)
+        empirical_risk = self.compute_empirical_risk(predictions, y_true, loss_fn)
+        
+        # Compute losses per sample to estimate variance.
+        # This requires that `loss_fn` returns a scalar loss for a single sample.
+        losses = self.compute_losses_per_sample(predictions, y_true, loss_fn)
+        empirical_variance = jnp.var(losses, ddof=1)
+        
+        # Compute KL divergence as before:
+        mean_posterior, std_posterior = self.extract_posteriors()
+        kl_divergence = self.compute_kl_divergence(
+            mean_posterior, std_posterior, prior_mean, prior_std
+        )
+        
+        # Compute the complexity term
+        complexity = kl_divergence + jnp.log(C / self.delta)
+        # Bernstein type terms: variance term & linear term in complexity
+        variance_term = jnp.sqrt((2 * empirical_variance * complexity) / self.num_samples)
+        linear_term = (D * complexity) / self.num_samples
+        
+        # Bernstein-PAC Bayes bound
+        bernstein_bound = empirical_risk + variance_term + linear_term
+        
+        print(f"Empirical risk: {empirical_risk:.3f}")
+        print(f"Empirical variance: {empirical_variance:.3f}")
+        print(f"KL-Divergence: {kl_divergence:.3f}")
+        print(f"Variance term: {variance_term:.3f}")
+        print(f"Linear term: {linear_term:.3f}")
+        print(f"Bernstein-PAC Bayes Bound: {bernstein_bound:.3f}")
+        
+        return bernstein_bound
