@@ -1,4 +1,5 @@
 from typing import Callable
+import numpy as np
 import jax.numpy as jnp
 import numpyro
 import numpyro.distributions as dist
