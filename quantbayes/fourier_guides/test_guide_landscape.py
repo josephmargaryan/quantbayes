@@ -75,6 +75,8 @@ if use_custom_guides:
     K_value = 9
     spectral_real_guide = LowRankSpectralGuide(model, K=K_value, site_name="spectral_circ_jvp_real", rank=5)
     spectral_imag_guide = LowRankSpectralGuide(model, K=K_value, site_name="spectral_circ_jvp_imag", rank=5)
+    # spectral_real_guide = SpectralRealGuide(model, K=K_value)
+    # spectral_imag_guide = SpectralImagGuide(model, K=K_value)
     # Hide the Fourier coefficient sites from the default guide.
     other_guide = AutoNormal(numpyro.handlers.block(model, hide=["spectral_circ_jvp_real", "spectral_circ_jvp_imag"]))
     guide = AutoGuideList(model)

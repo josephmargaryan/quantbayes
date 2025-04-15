@@ -1,14 +1,19 @@
 from typing import Callable
+import jax
 import numpy as np
 import jax.numpy as jnp
 import numpyro
 import numpyro.distributions as dist
 from numpyro.infer.autoguide import AutoGuide
+from numpyro.distributions import constraints
+from numpyro.distributions.transforms import AffineTransform, ComposeTransform
 
 __all__ = [
     "SpectralRealGuide",
     "SpectralImagGuide",
     "LowRankSpectralGuide",
+    "FlowSpectralGuide",
+    "MixtureSpectralGuide",
     "MultiScaleSpectralRealGuide",
     "MultiScaleSpectralImagGuide",
     "LowRankMultiScaleSpectralGuide",
@@ -129,6 +134,106 @@ class LowRankSpectralGuide(AutoGuide):
         dist_mv = dist.MultivariateNormal(mean, cov)
         samples = dist_mv.sample(rng_key, sample_shape=sample_shape)
         return {self.site_name: samples}
+    
+class FlowSpectralGuide(AutoGuide):
+    def __init__(self, model, K, site_name, num_flows=2):
+        self.K = K
+        self.site_name = site_name  # e.g., "spectral_circ_jvp_real" or "spectral_circ_jvp_imag"
+        self.num_flows = num_flows
+        super().__init__(model)
+
+    def __call__(self, *args, **kwargs):
+        # Define the base distribution parameters.
+        base_mean = numpyro.param(f"{self.site_name}_flow_mean", jnp.zeros((self.K,)))
+        base_log_std = numpyro.param(f"{self.site_name}_flow_log_std", -3.0 * jnp.ones((self.K,)))
+        base_dist = dist.Normal(base_mean, jnp.exp(base_log_std)).to_event(1)
+        
+        # Create a chain of affine transforms.
+        transforms = []
+        for i in range(self.num_flows):
+            shift = numpyro.param(f"{self.site_name}_flow_shift_{i}", jnp.zeros((self.K,)))
+            scale = numpyro.param(
+                f"{self.site_name}_flow_scale_{i}", jnp.ones((self.K,)),
+                constraint=constraints.positive
+            )
+            transforms.append(AffineTransform(loc=shift, scale=scale))
+            
+        flow_transform = ComposeTransform(transforms)
+        flow_dist = dist.TransformedDistribution(base_dist, flow_transform)
+        
+        # Sample from the variational distribution.
+        spectral_sample = numpyro.sample(self.site_name, flow_dist)
+        return {self.site_name: spectral_sample}
+
+    def sample_posterior(self, rng_key, params, sample_shape=()):
+        # Use the learned parameters stored in params.
+        base_mean = params[f"{self.site_name}_flow_mean"]
+        base_log_std = params[f"{self.site_name}_flow_log_std"]
+        base_std = jnp.exp(base_log_std)
+        base_dist = dist.Normal(base_mean, base_std).to_event(1)
+        
+        # Reconstruct the chain of affine transforms using the learned parameters.
+        transforms = []
+        for i in range(self.num_flows):
+            shift = params[f"{self.site_name}_flow_shift_{i}"]
+            scale = params[f"{self.site_name}_flow_scale_{i}"]
+            transforms.append(AffineTransform(loc=shift, scale=scale))
+            
+        flow_transform = ComposeTransform(transforms)
+        flow_dist = dist.TransformedDistribution(base_dist, flow_transform)
+        
+        spectral_sample = flow_dist.sample(rng_key, sample_shape)
+        return {self.site_name: spectral_sample}
+
+class MixtureSpectralGuide(AutoGuide):
+    def __init__(self, model, K, site_name, num_components=3):
+        """
+        Mixture of Gaussians guide for spectral coefficients.
+        
+        Args:
+            model: the model function.
+            K: the dimensionality of the spectral coefficients (e.g., length of half spectrum).
+            site_name: the name of the sample site to target (e.g., "spectral_circ_jvp_real" 
+                       or "spectral_circ_jvp_imag").
+            num_components: number of mixture components.
+        """
+        self.K = K
+        self.site_name = site_name
+        self.num_components = num_components
+        super().__init__(model)
+
+    def __call__(self, *args, **kwargs):
+        # Mixture weight parameters (logits)
+        logits = numpyro.param(f"{self.site_name}_mixture_logits", jnp.zeros((self.num_components,)))
+        # Convert logits to probabilities via softmax.
+        weights = jax.nn.softmax(logits)
+        
+        # Parameters for each Gaussian component.
+        means = numpyro.param(f"{self.site_name}_mixture_means", jnp.zeros((self.num_components, self.K)))
+        log_stds = numpyro.param(f"{self.site_name}_mixture_log_stds", -3.0 * jnp.ones((self.num_components, self.K)))
+        
+        # Build a component distribution: an independent Normal for each component.
+        component_dist = dist.Independent(dist.Normal(means, jnp.exp(log_stds)), 1)
+        
+        # Create a MixtureSameFamily distribution using positional arguments.
+        mixture_dist = dist.MixtureSameFamily(dist.Categorical(probs=weights), component_dist)
+        
+        # Sample from the variational distribution using the target site_name.
+        spectral_sample = numpyro.sample(self.site_name, mixture_dist)
+        return {self.site_name: spectral_sample}
+
+    def sample_posterior(self, rng_key, params, sample_shape=()):
+        # Retrieve learned parameters.
+        logits = params[f"{self.site_name}_mixture_logits"]
+        weights = jax.nn.softmax(logits)
+        means = params[f"{self.site_name}_mixture_means"]
+        log_stds = params[f"{self.site_name}_mixture_log_stds"]
+        
+        component_dist = dist.Independent(dist.Normal(means, jnp.exp(log_stds)), 1)
+        mixture_dist = dist.MixtureSameFamily(dist.Categorical(probs=weights), component_dist)
+        
+        spectral_sample = mixture_dist.sample(rng_key, sample_shape)
+        return {self.site_name: spectral_sample}
     
 
 #############################################
