@@ -12,7 +12,6 @@ __all__ = [
     "BlockCirculantProcess",
     "SpectralConv1d",
     "SpectralConv2d",
-    "SpectralTransposed2d",
 ]
 
 
@@ -525,305 +524,294 @@ class BlockCirculantProcess(eqx.Module):
             return out + self.bias[None, :]
 
 
-# ---------------------------------------------------------------
-# Helper: Frequency-dependent decay factor
-# ---------------------------------------------------------------
-def decay_factor(frequencies: jnp.ndarray, alpha: float = 1.0) -> jnp.ndarray:
-    return 1.0 / jnp.sqrt(1.0 + (frequencies**alpha))
-
-
-# ---------------------------------------------------------------
-# 1D SPECTRAL CONV (now works on single samples)
-# ---------------------------------------------------------------
 @jax.custom_jvp
-def spectral_conv1d(x: jnp.ndarray, weight_fft: jnp.ndarray, bias: jnp.ndarray):
-    # If x is missing a batch dimension (shape: [Cin, W]), add one.
-    added_batch = False
-    if x.ndim == 2:
-        x = x[None, ...]  # now shape (1, Cin, W)
-        added_batch = True
+def spectral_conv1d(x: jnp.ndarray, fft_kernel_1d: jnp.ndarray) -> jnp.ndarray:
+    """
+    x: shape (batch, length) or (length,)
+    fft_kernel_1d: shape (padded_len,) – the 1D FFT of the kernel
+    Returns shape (batch, padded_len) or (padded_len,) by default.
+    """
+    padded_len = fft_kernel_1d.shape[0]
+    single_example = (x.ndim == 1)
+    if single_example:
+        x = x[None, :]  # add batch dim
 
-    B, Cin, W = x.shape
-    fft_size = 2 * (weight_fft.shape[-1] - 1) if weight_fft.shape[-1] > 1 else 1
-    if fft_size > W:
-        pad_amount = fft_size - W
-        x = jnp.pad(x, ((0, 0), (0, 0), (0, pad_amount)))
-    X_fft = jnp.fft.rfft(x, n=fft_size, axis=-1)
-    X_fft_expanded = X_fft[:, None, :, :]  # shape (B, 1, Cin, fft_size//2+1)
-    W_fft_expanded = weight_fft[
-        None, :, :, :
-    ]  # shape (1, out_channels, Cin, fft_size//2+1)
-    Y_fft = jnp.sum(X_fft_expanded * W_fft_expanded, axis=2)
-    y = jnp.fft.irfft(Y_fft, n=fft_size, axis=-1)
-    y = y[..., :W] + bias[None, :, None]
-    if added_batch:
-        y = y[0]  # remove dummy batch dimension
+    length = x.shape[-1]
+    # Zero-pad or truncate
+    if length < padded_len:
+        pad_len = padded_len - length
+        x_padded = jnp.pad(x, ((0,0),(0,pad_len)))
+    elif length > padded_len:
+        x_padded = x[..., :padded_len]
+    else:
+        x_padded = x
+
+    # FFT
+    X_fft = jnp.fft.fft(x_padded, axis=-1)  # shape (batch, padded_len)
+    # Multiply
+    Y_fft = X_fft * fft_kernel_1d[None, :]
+    # iFFT
+    y = jnp.fft.ifft(Y_fft, axis=-1).real
+
+    if single_example:
+        y = y[0]
     return y
-
 
 @spectral_conv1d.defjvp
 def spectral_conv1d_jvp(primals, tangents):
-    x, weight_fft, bias = primals
-    dx, dweight_fft, dbias = tangents
-    y = spectral_conv1d(x, weight_fft, bias)
-    dy = jnp.zeros_like(y)
-    if dx is not None:
-        dy += spectral_conv1d(dx, weight_fft, jnp.zeros_like(bias))
-    if dweight_fft is not None:
-        dy += spectral_conv1d(x, dweight_fft, jnp.zeros_like(bias))
-    if dbias is not None:
-        # For single sample output, y is 2D (C, W)
-        if y.ndim == 2:
-            dy += dbias[:, None]
-        else:
-            dy += dbias[None, :, None]
-    return y, dy
+    x, fft_kernel_1d = primals
+    dx, dkernel = tangents
 
+    padded_len = fft_kernel_1d.shape[0]
+    single_example = (x.ndim == 1)
+    if single_example:
+        x = x[None, :]
+        dx = None if dx is None else dx[None, :]
+
+    length = x.shape[-1]
+    if length < padded_len:
+        pad_len = padded_len - length
+        x_padded = jnp.pad(x, ((0,0),(0,pad_len)))
+        dx_padded = None if dx is None else jnp.pad(dx, ((0,0),(0,pad_len)))
+    elif length > padded_len:
+        x_padded = x[..., :padded_len]
+        dx_padded = None if dx is None else dx[..., :padded_len]
+    else:
+        x_padded = x
+        dx_padded = dx
+
+    X_fft = jnp.fft.fft(x_padded, axis=-1)
+    primal_Y_fft = X_fft * fft_kernel_1d[None, :]
+    primal_y = jnp.fft.ifft(primal_Y_fft, axis=-1).real
+
+    dX_fft = jnp.fft.fft(dx_padded, axis=-1) if dx_padded is not None else 0.0
+    dK_fft = dkernel if dkernel is not None else 0.0
+
+    dY_fft = dX_fft * fft_kernel_1d[None, :] + X_fft * dK_fft[None, :]
+    dY = jnp.fft.ifft(dY_fft, axis=-1).real
+
+    if single_example:
+        return primal_y[0], dY[0]
+    return primal_y, dY
 
 class SpectralConv1d(eqx.Module):
     """
-    1D convolution layer with direct spectral parameterization.
-    The Fourier coefficients are sampled in a vectorized way with frequency decay.
+    1D "spectral convolution" in Equinox (deterministic).
+    Single-channel for simplicity.
     """
+    in_size: int
+    padded_len: int
+    alpha: float
+    K: int
+    k_half: int = eqx.static_field()
 
-    weight_fft: jnp.ndarray  # (out_channels, in_channels, rfft_length)
-    bias: jnp.ndarray  # (out_channels,)
-    in_channels: int = eqx.static_field()
-    out_channels: int = eqx.static_field()
-    fft_size: int = eqx.static_field()
-    alpha: float = eqx.static_field()
+    w_real: jnp.ndarray  # shape (k_half,)
+    w_imag: jnp.ndarray  # shape (k_half,)
+    bias: jnp.ndarray    # shape (padded_len,)
 
     def __init__(
         self,
-        in_channels: int,
-        out_channels: int,
-        fft_size: int,
+        in_size: int,
+        padded_len: int = None,
+        alpha: float = 1.0,
+        K: int = None,
+        *,
         key,
         init_scale: float = 0.1,
-        alpha: float = 1.0,
+        bias_init_scale: float = 0.1,
     ):
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.fft_size = fft_size
+        """
+        :param in_size: nominal length of the input signal
+        :param padded_len: If provided, we pad/truncate to this dimension; else = in_size
+        :param alpha: spectral decay exponent (for reference). Not strictly used here unless you want to custom init
+        :param K: number of active frequencies. If None, use full half-spectrum
+        :param key: PRNGKey for initialization
+        """
+        self.in_size = in_size
+        self.padded_len = padded_len if padded_len is not None else in_size
         self.alpha = alpha
-        rfft_length = fft_size // 2 + 1
+        self.k_half = (self.padded_len // 2) + 1
+        if (K is None) or (K > self.k_half):
+            K = self.k_half
+        self.K = K
 
-        # Create frequency indices and corresponding decay factors.
-        freqs = jnp.arange(rfft_length, dtype=jnp.float32)
-        decay = decay_factor(freqs, alpha)  # shape: (rfft_length,)
-        # Broadcast decay to shape (1, 1, rfft_length)
-        decay = decay[None, None, :]
+        # Initialize frequency parameters
+        key_r, key_i, key_b = jr.split(key, 3)
+        w_r = jr.normal(key_r, (self.k_half,)) * init_scale
+        w_i = jr.normal(key_i, (self.k_half,)) * init_scale
 
-        # Vectorized sampling of real and imaginary parts.
-        key_re, key_im, key_bias = jr.split(key, 3)
-        re = (
-            jr.normal(key_re, (out_channels, in_channels, rfft_length))
-            * init_scale
-            * decay
-        )
-        im = (
-            jr.normal(key_im, (out_channels, in_channels, rfft_length))
-            * init_scale
-            * decay
-        )
+        # enforce purely real DC and Nyquist if even
+        w_i = w_i.at[0].set(0.0)
+        if (self.padded_len % 2 == 0) and (self.k_half > 1):
+            w_i = w_i.at[-1].set(0.0)
 
-        # Enforce DC frequency (index 0) to be real.
-        im = im.at[:, :, 0].set(0.0)
-        # If fft_size is even, enforce Nyquist frequency (last index) to be real.
-        if fft_size % 2 == 0:
-            im = im.at[:, :, -1].set(0.0)
-        self.weight_fft = re + 1j * im
-        self.bias = jr.normal(key_bias, (out_channels,)) * init_scale
+        # store
+        self.w_real = w_r
+        self.w_imag = w_i
+        self.bias = jr.normal(key_b, (self.padded_len,)) * bias_init_scale
+
+    def get_fourier_coeffs_1d(self) -> jnp.ndarray:
+        """
+        Build the full spectrum (size padded_len) from half-spectrum w_real + i*w_imag
+        with Hermitian symmetry.
+        """
+        freq_mask = jnp.arange(self.k_half) < self.K
+        half_cplx = (self.w_real * freq_mask) + 1j*(self.w_imag * freq_mask)
+        if (self.padded_len % 2 == 0) and (self.k_half > 1):
+            nyquist = half_cplx[-1].real[None]  # shape (1,)
+            fft_full = jnp.concatenate([
+                half_cplx[:-1],
+                nyquist,
+                jnp.conjugate(half_cplx[1:-1])[::-1]
+            ])
+        else:
+            fft_full = jnp.concatenate([
+                half_cplx,
+                jnp.conjugate(half_cplx[1:])[::-1]
+            ])
+        return fft_full
 
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
-        return spectral_conv1d(x, self.weight_fft, self.bias)
+        """
+        x: shape (batch, length) or (length,).
+        returns shape (batch, padded_len) or (padded_len,).
+        """
+        fft_full = self.get_fourier_coeffs_1d()
+        y = spectral_conv1d(x, fft_full)
+        # add bias
+        if y.ndim == 2:
+            return y + self.bias[None, :]
+        else:
+            return y + self.bias
 
-
-# ---------------------------------------------------------------
-# 2D SPECTRAL CONV (now works on single samples)
-# ---------------------------------------------------------------
 @jax.custom_jvp
-def spectral_conv2d(x: jnp.ndarray, weight_fft: jnp.ndarray, bias: jnp.ndarray):
-    # If x is missing a batch dimension (shape: [Cin, H, W]), add one.
-    added_batch = False
-    if x.ndim == 3:
-        x = x[None, ...]  # now (1, Cin, H, W)
-        added_batch = True
+def spectral_conv2d(x: jnp.ndarray, fft_kernel_2d: jnp.ndarray) -> jnp.ndarray:
+    """
+    x: shape (batch, H, W) or (H, W)
+    fft_kernel_2d: shape (H_pad, W_pad)
+    Return shape (batch, H_pad, W_pad) or (H_pad, W_pad).
+    """
+    H_pad, W_pad = fft_kernel_2d.shape
+    single_example = (x.ndim == 2)
+    if single_example:
+        x = x[None, ...]  # shape (1,H,W)
 
-    B, Cin, H, W = x.shape
-    Cout, _, Hf, Wf_rfft = weight_fft.shape
-    X_fft = jnp.fft.rfft2(x, axes=(2, 3))
-    X_fft_expanded = X_fft[:, None, :, :, :]  # shape (B, 1, Cin, H, Wf_rfft)
-    # Use conjugate of weight_fft to match the derivation.
-    W_fft_expanded = jnp.conjugate(weight_fft)[None, :, :, :, :]
-    Y_fft = jnp.sum(X_fft_expanded * W_fft_expanded, axis=2)
-    real_Wf = 2 * (Wf_rfft - 1) if Wf_rfft > 1 else 1
-    y = jnp.fft.irfft2(Y_fft, s=(Hf, real_Wf), axes=(2, 3))
-    y = y[..., :H, :W] + bias[None, :, None, None]
-    if added_batch:
-        y = y[0]  # remove dummy batch dimension
+    H_in, W_in = x.shape[-2], x.shape[-1]
+
+    # Pad/truncate
+    pad_h = max(0, H_pad - H_in)
+    pad_w = max(0, W_pad - W_in)
+    x_padded = jnp.pad(x, ((0,0),(0,pad_h),(0,pad_w)))
+    x_padded = x_padded[...,:H_pad,:W_pad]  # if needed for oversize
+
+    # 2D FFT
+    X_fft = jnp.fft.fftn(x_padded, axes=(-2,-1))
+    # multiply
+    Y_fft = X_fft * fft_kernel_2d[None, :, :]
+    # iFFT
+    y = jnp.fft.ifftn(Y_fft, axes=(-2,-1)).real
+
+    if single_example:
+        y = y[0]
     return y
-
 
 @spectral_conv2d.defjvp
 def spectral_conv2d_jvp(primals, tangents):
-    x, weight_fft, bias = primals
-    dx, dweight_fft, dbias = tangents
-    y = spectral_conv2d(x, weight_fft, bias)
-    dy = jnp.zeros_like(y)
-    if dx is not None:
-        dy += spectral_conv2d(dx, weight_fft, jnp.zeros_like(bias))
-    if dweight_fft is not None:
-        dy += spectral_conv2d(x, dweight_fft, jnp.zeros_like(bias))
-    if dbias is not None:
-        # For single sample output, y is (C, H, W); so reshape dbias to (C,1,1)
-        if y.ndim == 3:
-            dy += dbias[:, None, None]
-        else:
-            dy += dbias[None, :, None, None]
-    return y, dy
+    x, fft_kernel_2d = primals
+    dx, dkernel = tangents
 
+    H_pad, W_pad = fft_kernel_2d.shape
+    single_example = (x.ndim == 2)
+
+    if single_example:
+        x = x[None, ...]
+        dx = None if dx is None else dx[None, ...]
+
+    H_in, W_in = x.shape[-2], x.shape[-1]
+    pad_h = max(0, H_pad - H_in)
+    pad_w = max(0, W_pad - W_in)
+
+    x_padded = jnp.pad(x, ((0,0),(0,pad_h),(0,pad_w)))
+    x_padded = x_padded[...,:H_pad,:W_pad]
+
+    X_fft = jnp.fft.fftn(x_padded, axes=(-2,-1))
+    primal_Y_fft = X_fft * fft_kernel_2d[None, :, :]
+    primal_y = jnp.fft.ifftn(primal_Y_fft, axes=(-2,-1)).real
+
+    dX_fft = 0.0 if dx is None else jnp.fft.fftn(
+        jnp.pad(dx, ((0,0),(0,pad_h),(0,pad_w)))[...,:H_pad,:W_pad],
+        axes=(-2,-1))
+    dK_fft = 0.0 if dkernel is None else dkernel
+
+    dY_fft = dX_fft * fft_kernel_2d[None,:,:] + X_fft * dK_fft[None,:,:]
+    dY = jnp.fft.ifftn(dY_fft, axes=(-2,-1)).real
+
+    if single_example:
+        return primal_y[0], dY[0]
+    return primal_y, dY
 
 class SpectralConv2d(eqx.Module):
     """
-    2D convolution layer with direct spectral parameterization.
-    The Fourier coefficients are sampled in a vectorized fashion with frequency-dependent decay.
+    2D "spectral convolution" in Equinox (deterministic).
+    Single-channel for simplicity.
     """
+    in_height: int
+    in_width: int
+    H_pad: int
+    W_pad: int
+    alpha: float
 
-    weight_fft: jnp.ndarray  # (out_channels, in_channels, Hf, Wf_rfft)
-    bias: jnp.ndarray  # (out_channels,)
-    in_channels: int = eqx.static_field()
-    out_channels: int = eqx.static_field()
-    fft_size: tuple = eqx.static_field()  # (Hf, Wf)
-    alpha: float = eqx.static_field()
+    w_real: jnp.ndarray  # shape (H_pad, W_pad)
+    w_imag: jnp.ndarray  # shape (H_pad, W_pad)
+    bias: jnp.ndarray    # shape (H_pad, W_pad)
 
     def __init__(
         self,
-        in_channels: int,
-        out_channels: int,
-        fft_size: tuple,
-        key,
-        init_scale: float = 0.1,
+        in_height: int,
+        in_width: int,
+        H_pad: int = None,
+        W_pad: int = None,
         alpha: float = 1.0,
-    ):
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.fft_size = fft_size  # e.g., (28, 28)
-        self.alpha = alpha
-        Hf, Wf = fft_size
-        Wf_rfft = Wf // 2 + 1
-        # Create frequency indices for both dimensions.
-        freqs_h = jnp.arange(Hf, dtype=jnp.float32)
-        freqs_w = jnp.arange(Wf_rfft, dtype=jnp.float32)
-        decay_h = decay_factor(freqs_h, alpha)  # shape: (Hf,)
-        decay_w = decay_factor(freqs_w, alpha)  # shape: (Wf_rfft,)
-        decay_2d = jnp.outer(decay_h, decay_w)  # shape: (Hf, Wf_rfft)
-        # Broadcast decay to shape (1, 1, Hf, Wf_rfft)
-        decay_2d = decay_2d[None, None, :, :]
-        key_re, key_im, key_bias = jr.split(key, 3)
-        # Vectorized sampling for real and imaginary parts.
-        re = (
-            jr.normal(key_re, (out_channels, in_channels, Hf, Wf_rfft))
-            * init_scale
-            * decay_2d
-        )
-        im = (
-            jr.normal(key_im, (out_channels, in_channels, Hf, Wf_rfft))
-            * init_scale
-            * decay_2d
-        )
-        # Enforce DC frequency (index (0,0)) to be real.
-        im = im.at[:, :, 0, 0].set(0.0)
-        # If width is even, enforce Nyquist frequency (last column) to be real.
-        if Wf % 2 == 0:
-            im = im.at[:, :, :, -1].set(0.0)
-        self.weight_fft = re + 1j * im
-        self.bias = jr.normal(key_bias, (out_channels,)) * init_scale
-
-    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
-        return spectral_conv2d(x, self.weight_fft, self.bias)
-
-
-# ---------------------------------------------------------------
-# 2D SPECTRAL TRANSPOSED CONV (now works on single samples)
-# ---------------------------------------------------------------
-@jax.custom_jvp
-def spectral_transposed_conv2d(
-    x: jnp.ndarray, weight_fft: jnp.ndarray, bias: jnp.ndarray
-):
-    # If x is missing a batch dimension (shape: [Cout, H, W]), add one.
-    added_batch = False
-    if x.ndim == 3:
-        x = x[None, ...]  # now (1, Cout, H, W)
-        added_batch = True
-
-    B, Cout, H, W = x.shape
-    _, Cin, Hf, Wf_rfft = weight_fft.shape
-    X_fft = jnp.fft.rfft2(x, axes=(2, 3))
-    X_fft_expanded = X_fft[:, :, None, :, :]  # shape (B, Cout, 1, H, Wf_rfft)
-    W_fft_expanded = weight_fft[
-        None, :, :, :, :
-    ]  # shape (1, out_channels, Cin, Hf, Wf_rfft)
-    # Sum over Cout dimension.
-    Z_fft = jnp.sum(X_fft_expanded * W_fft_expanded, axis=1)
-    real_Wf = 2 * (Wf_rfft - 1) if Wf_rfft > 1 else 1
-    y = jnp.fft.irfft2(Z_fft, s=(Hf, real_Wf), axes=(2, 3))
-    y = y[..., :H, :W]
-    if bias is not None:
-        y = y + bias[None, :, None, None]
-    if added_batch:
-        y = y[0]  # remove dummy batch dimension
-    return y
-
-
-@spectral_transposed_conv2d.defjvp
-def spectral_transposed_conv2d_jvp(primals, tangents):
-    x, weight_fft, bias = primals
-    dx, dweight_fft, dbias = tangents
-    y = spectral_transposed_conv2d(x, weight_fft, bias)
-    dy = jnp.zeros_like(y)
-    if dx is not None:
-        dy += spectral_transposed_conv2d(dx, weight_fft, jnp.zeros_like(bias))
-    if dweight_fft is not None:
-        dy += spectral_transposed_conv2d(x, dweight_fft, jnp.zeros_like(bias))
-    if dbias is not None:
-        # For single sample output (3D), reshape bias derivative to (C,1,1)
-        if y.ndim == 3:
-            dy += dbias[:, None, None]
-        else:
-            dy += dbias[None, :, None, None]
-    return y, dy
-
-
-class SpectralTransposed2d(eqx.Module):
-    """
-    2D spectral transposed convolution with direct spectral parameterization.
-    """
-
-    weight_fft: jnp.ndarray  # (out_channels, in_channels, Hf, Wf_rfft)
-    bias: jnp.ndarray  # (in_channels,)
-    out_channels: int = eqx.static_field()
-    in_channels: int = eqx.static_field()
-    fft_size: tuple = eqx.static_field()
-
-    def __init__(
-        self,
-        out_channels: int,
-        in_channels: int,
-        fft_size: tuple,
+        *,
         key,
         init_scale: float = 0.1,
+        bias_init_scale: float = 0.1,
     ):
-        self.out_channels = out_channels
-        self.in_channels = in_channels
-        self.fft_size = fft_size
-        Hf, Wf = fft_size
-        Wf_rfft = Wf // 2 + 1
-        # For simplicity, here we initialize forward conv coefficients without decay.
-        self.weight_fft = (
-            jr.normal(key, (out_channels, in_channels, Hf, Wf_rfft)) * init_scale
-        )
-        self.bias = jr.normal(key, (in_channels,)) * init_scale
+        self.in_height = in_height
+        self.in_width = in_width
+        self.H_pad = H_pad if (H_pad is not None) else in_height
+        self.W_pad = W_pad if (W_pad is not None) else in_width
+        self.alpha = alpha
+
+        key_r, key_i, key_b = jr.split(key, 3)
+        wr = jr.normal(key_r, (self.H_pad, self.W_pad)) * init_scale
+        wi = jr.normal(key_i, (self.H_pad, self.W_pad)) * init_scale
+
+        # example: force DC = real
+        wr = wr.at[0,0].set(wr[0,0])
+        wi = wi.at[0,0].set(0.0)
+
+        self.w_real = wr
+        self.w_imag = wi
+        self.bias = jr.normal(key_b, (self.H_pad, self.W_pad)) * bias_init_scale
+
+    def get_fourier_coeffs_2d(self) -> jnp.ndarray:
+        """
+        Combine w_real + i*w_imag into a single complex array of shape (H_pad, W_pad).
+        You *can* manually enforce full Hermitian symmetry if you want a guaranteed real
+        convolution kernel in the spatial domain.
+        """
+        return self.w_real + 1j*self.w_imag
 
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
-        return spectral_transposed_conv2d(x, self.weight_fft, self.bias)
+        """
+        x: shape (batch, H_in, W_in) or (H_in, W_in)
+        returns shape (batch, H_pad, W_pad) or (H_pad, W_pad).
+        """
+        fft2d = self.get_fourier_coeffs_2d()
+        y = spectral_conv2d(x, fft2d)
+        if y.ndim == 3:
+            return y + self.bias[None, :, :]
+        else:
+            return y + self.bias
+

@@ -16,7 +16,7 @@ from matplotlib import cm
 # Import your custom layers and guides
 from quantbayes import bnn
 from quantbayes.fake_data import generate_regression_data
-from quantbayes.fourier_guides.guides import SpectralImagGuide, SpectralRealGuide
+from quantbayes.fourier_guides.guides import SpectralImagGuide, SpectralRealGuide, LowRankSpectralGuide
 
 ###############################
 # Configuration and Data Setup
@@ -73,8 +73,8 @@ if use_custom_guides:
     print("Using custom guides")
     # For d_in=16, the full half-spectrum is (16//2)+1 = 9.
     K_value = 9
-    spectral_real_guide = SpectralImagGuide(model, K=K_value)
-    spectral_imag_guide = SpectralRealGuide(model, K=K_value)
+    spectral_real_guide = LowRankSpectralGuide(model, K=K_value, site_name="spectral_circ_jvp_real", rank=5)
+    spectral_imag_guide = LowRankSpectralGuide(model, K=K_value, site_name="spectral_circ_jvp_imag", rank=5)
     # Hide the Fourier coefficient sites from the default guide.
     other_guide = AutoNormal(numpyro.handlers.block(model, hide=["spectral_circ_jvp_real", "spectral_circ_jvp_imag"]))
     guide = AutoGuideList(model)
