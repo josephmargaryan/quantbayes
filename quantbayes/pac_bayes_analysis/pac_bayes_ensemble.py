@@ -15,9 +15,11 @@ z = torch.randn(M, requires_grad=True)
 optimizer = optim.Adam([z], lr=0.01)
 lam = 0.1  # Trade-off parameter
 
+
 def kl_divergence(softmax_z, prior):
     # KL divergence between discrete distributions ρ and π
     return (softmax_z * (torch.log(softmax_z + 1e-12) - torch.log(prior + 1e-12))).sum()
+
 
 num_iterations = 1000
 for iteration in range(num_iterations):
@@ -34,7 +36,9 @@ for iteration in range(num_iterations):
     optimizer.step()
 
     if (iteration + 1) % 100 == 0:
-        print(f"Iteration {iteration + 1}, Ensemble Loss: {ens_loss.item():.4f}, KL: {kl.item():.4f}, Total: {loss.item():.4f}")
+        print(
+            f"Iteration {iteration + 1}, Ensemble Loss: {ens_loss.item():.4f}, KL: {kl.item():.4f}, Total: {loss.item():.4f}"
+        )
 
 # Final ensemble weights:
 rho_final = F.softmax(z, dim=0).detach()

@@ -31,6 +31,7 @@ def spectral_circulant_matmul(x: jnp.ndarray, fft_full: jnp.ndarray) -> jnp.ndar
         return y[0]
     return y
 
+
 @spectral_circulant_matmul.defjvp
 def spectral_circulant_matmul_jvp(primals, tangents):
     x, fft_full = primals
@@ -69,6 +70,7 @@ def spectral_circulant_matmul_jvp(primals, tangents):
         return primal_y[0], dY[0]
     return primal_y, dY
 
+
 class MultiAlphaSpectralCirculantLayer:
     """
     A circulant layer that uses multiple alpha values, each controlling the spectral
@@ -85,6 +87,7 @@ class MultiAlphaSpectralCirculantLayer:
         X_transformed = layer(X)
         # then pass X_transformed through further layers / linear heads, etc.
     """
+
     def __init__(
         self,
         in_features: int,
@@ -97,7 +100,7 @@ class MultiAlphaSpectralCirculantLayer:
     ):
         """
         :param in_features: Dimension of the input features.
-        :param padded_dim: If provided, the layer will pad (or truncate) inputs to this dimension 
+        :param padded_dim: If provided, the layer will pad (or truncate) inputs to this dimension
                            for the FFT. Defaults to in_features if None.
         :param num_bands: Number of frequency bands, each having its own alpha.
         :param alpha_prior: Distribution from which each alpha_b is sampled (e.g. Exponential(1.0)).
@@ -118,7 +121,11 @@ class MultiAlphaSpectralCirculantLayer:
             K = self.k_half
         self.K = K
 
-        self.prior_fn = prior_fn if prior_fn is not None else (lambda scale: dist.Normal(0.0, scale))
+        self.prior_fn = (
+            prior_fn
+            if prior_fn is not None
+            else (lambda scale: dist.Normal(0.0, scale))
+        )
         self._last_fft_full = None
 
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
@@ -136,7 +143,7 @@ class MultiAlphaSpectralCirculantLayer:
         alpha_list = jnp.stack(alpha_list)  # shape = [num_bands]
 
         # --- (2) Construct frequencies and band assignment ---
-        freq_idx = jnp.arange(self.k_half)   # 0,1,2,..., k_half-1
+        freq_idx = jnp.arange(self.k_half)  # 0,1,2,..., k_half-1
         band_size = self.k_half // self.num_bands
         band_assign = (freq_idx // band_size).clip(0, self.num_bands - 1)
 
@@ -205,10 +212,10 @@ def multi_alpha_regression_model(X, y=None):
     # Create an instance of the spectral layer.
     layer = MultiAlphaSpectralCirculantLayer(
         in_features=D,
-        padded_dim=D,       # Using input dimension as FFT dimension
+        padded_dim=D,  # Using input dimension as FFT dimension
         num_bands=3,
         alpha_prior=dist.Exponential(1.0),
-        name="multi_alpha_layer"
+        name="multi_alpha_layer",
     )
     X_transformed = layer(X)
     # Apply nonlinearity.
@@ -220,19 +227,24 @@ def multi_alpha_regression_model(X, y=None):
     sigma = numpyro.sample("sigma", dist.Exponential(1.0))
     numpyro.sample("obs", dist.Normal(preds, sigma), obs=y)
 
+
 # ---------------------------------------------------------------------
 # Test Script using generate_regression_data(n_continuous=16)
 # ---------------------------------------------------------------------
-if __name__ == '__main__':
+if __name__ == "__main__":
     # Load synthetic regression data.
     df = generate_regression_data(n_continuous=16)
     X = df.drop("target", axis=1)
     y = df["target"]
 
     # Split into train and test sets.
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42
+    )
     # Convert to JAX arrays.
-    X_train = jnp.array(X_train.values if isinstance(X_train, pd.DataFrame) else X_train)
+    X_train = jnp.array(
+        X_train.values if isinstance(X_train, pd.DataFrame) else X_train
+    )
     X_test = jnp.array(X_test.values if isinstance(X_test, pd.DataFrame) else X_test)
     y_train = jnp.array(y_train.values if isinstance(y_train, pd.Series) else y_train)
     y_test = jnp.array(y_test.values if isinstance(y_test, pd.Series) else y_test)
@@ -245,7 +257,9 @@ if __name__ == '__main__':
     mcmc.print_summary()
 
     # Posterior predictive sampling on test set.
-    predictive = Predictive(multi_alpha_regression_model, mcmc.get_samples(), num_samples=500)
+    predictive = Predictive(
+        multi_alpha_regression_model, mcmc.get_samples(), num_samples=500
+    )
     rng_key, rng_key_pp = jax.random.split(rng_key)
     preds = predictive(rng_key_pp, X_test)["obs"]
     # Compute mean predictions.

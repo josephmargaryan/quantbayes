@@ -18,9 +18,9 @@ df = generate_binary_classification_data(n_continuous=16)
 X, y = df.drop("target", axis=1), df["target"]
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
 X_train = jnp.array(X_train)
-X_test  = jnp.array(X_test)
+X_test = jnp.array(X_test)
 y_train = jnp.array(y_train)
-y_test  = jnp.array(y_test)
+y_test = jnp.array(y_test)
 
 print("X_train shape", X_train.shape)
 print("X_test shape", X_test.shape)
@@ -34,6 +34,7 @@ predictive = True
 key = jr.PRNGKey(0)
 key, init_key, pred_key, grad_key, viz_key = jr.split(key, 5)
 
+
 def model(X, y=None):
     """
     Bayesian binary classification model with a Spectral Circulant Layer and a linear output.
@@ -43,10 +44,10 @@ def model(X, y=None):
     X_out = jax.nn.tanh(X_out)
     W = numpyro.sample("W", dist.Normal(0, 1).expand([D, 1]).to_event(2))
     b = numpyro.sample("b", dist.Normal(0, 1).expand([1]).to_event(1))
-    
+
     logits = jnp.squeeze(jnp.dot(X_out, W) + b)
     numpyro.deterministic("logits", logits)
-    
+
     with numpyro.plate("data", N):
         numpyro.sample("likelihood", dist.Bernoulli(logits=logits), obs=y)
 
@@ -62,7 +63,9 @@ inference = ASVGD(
 
 print("Training with ASVGD...")
 start_time = time.time()
-svgd_result = inference.run(init_key, NUM_ITERATIONS, X_train, y_train, progress_bar=True)
+svgd_result = inference.run(
+    init_key, NUM_ITERATIONS, X_train, y_train, progress_bar=True
+)
 end_time = time.time()
 print(f"Training finished in {end_time - start_time:.3f} seconds.")
 
@@ -91,4 +94,3 @@ mean_probs = jax.nn.sigmoid(mean_preds)
 print(mean_preds.shape)
 final_loss = log_loss(np.array(y_test), np.array(mean_probs))
 print(f"Final Log Loss: {final_loss:.4f}")
-

@@ -532,7 +532,7 @@ def spectral_conv1d(x: jnp.ndarray, fft_kernel_1d: jnp.ndarray) -> jnp.ndarray:
     Returns shape (batch, padded_len) or (padded_len,) by default.
     """
     padded_len = fft_kernel_1d.shape[0]
-    single_example = (x.ndim == 1)
+    single_example = x.ndim == 1
     if single_example:
         x = x[None, :]  # add batch dim
 
@@ -540,7 +540,7 @@ def spectral_conv1d(x: jnp.ndarray, fft_kernel_1d: jnp.ndarray) -> jnp.ndarray:
     # Zero-pad or truncate
     if length < padded_len:
         pad_len = padded_len - length
-        x_padded = jnp.pad(x, ((0,0),(0,pad_len)))
+        x_padded = jnp.pad(x, ((0, 0), (0, pad_len)))
     elif length > padded_len:
         x_padded = x[..., :padded_len]
     else:
@@ -557,13 +557,14 @@ def spectral_conv1d(x: jnp.ndarray, fft_kernel_1d: jnp.ndarray) -> jnp.ndarray:
         y = y[0]
     return y
 
+
 @spectral_conv1d.defjvp
 def spectral_conv1d_jvp(primals, tangents):
     x, fft_kernel_1d = primals
     dx, dkernel = tangents
 
     padded_len = fft_kernel_1d.shape[0]
-    single_example = (x.ndim == 1)
+    single_example = x.ndim == 1
     if single_example:
         x = x[None, :]
         dx = None if dx is None else dx[None, :]
@@ -571,8 +572,8 @@ def spectral_conv1d_jvp(primals, tangents):
     length = x.shape[-1]
     if length < padded_len:
         pad_len = padded_len - length
-        x_padded = jnp.pad(x, ((0,0),(0,pad_len)))
-        dx_padded = None if dx is None else jnp.pad(dx, ((0,0),(0,pad_len)))
+        x_padded = jnp.pad(x, ((0, 0), (0, pad_len)))
+        dx_padded = None if dx is None else jnp.pad(dx, ((0, 0), (0, pad_len)))
     elif length > padded_len:
         x_padded = x[..., :padded_len]
         dx_padded = None if dx is None else dx[..., :padded_len]
@@ -594,11 +595,13 @@ def spectral_conv1d_jvp(primals, tangents):
         return primal_y[0], dY[0]
     return primal_y, dY
 
+
 class SpectralConv1d(eqx.Module):
     """
     1D "spectral convolution" in Equinox (deterministic).
     Single-channel for simplicity.
     """
+
     in_size: int
     padded_len: int
     alpha: float
@@ -607,7 +610,7 @@ class SpectralConv1d(eqx.Module):
 
     w_real: jnp.ndarray  # shape (k_half,)
     w_imag: jnp.ndarray  # shape (k_half,)
-    bias: jnp.ndarray    # shape (padded_len,)
+    bias: jnp.ndarray  # shape (padded_len,)
 
     def __init__(
         self,
@@ -656,19 +659,14 @@ class SpectralConv1d(eqx.Module):
         with Hermitian symmetry.
         """
         freq_mask = jnp.arange(self.k_half) < self.K
-        half_cplx = (self.w_real * freq_mask) + 1j*(self.w_imag * freq_mask)
+        half_cplx = (self.w_real * freq_mask) + 1j * (self.w_imag * freq_mask)
         if (self.padded_len % 2 == 0) and (self.k_half > 1):
             nyquist = half_cplx[-1].real[None]  # shape (1,)
-            fft_full = jnp.concatenate([
-                half_cplx[:-1],
-                nyquist,
-                jnp.conjugate(half_cplx[1:-1])[::-1]
-            ])
+            fft_full = jnp.concatenate(
+                [half_cplx[:-1], nyquist, jnp.conjugate(half_cplx[1:-1])[::-1]]
+            )
         else:
-            fft_full = jnp.concatenate([
-                half_cplx,
-                jnp.conjugate(half_cplx[1:])[::-1]
-            ])
+            fft_full = jnp.concatenate([half_cplx, jnp.conjugate(half_cplx[1:])[::-1]])
         return fft_full
 
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
@@ -684,6 +682,7 @@ class SpectralConv1d(eqx.Module):
         else:
             return y + self.bias
 
+
 @jax.custom_jvp
 def spectral_conv2d(x: jnp.ndarray, fft_kernel_2d: jnp.ndarray) -> jnp.ndarray:
     """
@@ -692,7 +691,7 @@ def spectral_conv2d(x: jnp.ndarray, fft_kernel_2d: jnp.ndarray) -> jnp.ndarray:
     Return shape (batch, H_pad, W_pad) or (H_pad, W_pad).
     """
     H_pad, W_pad = fft_kernel_2d.shape
-    single_example = (x.ndim == 2)
+    single_example = x.ndim == 2
     if single_example:
         x = x[None, ...]  # shape (1,H,W)
 
@@ -701,19 +700,20 @@ def spectral_conv2d(x: jnp.ndarray, fft_kernel_2d: jnp.ndarray) -> jnp.ndarray:
     # Pad/truncate
     pad_h = max(0, H_pad - H_in)
     pad_w = max(0, W_pad - W_in)
-    x_padded = jnp.pad(x, ((0,0),(0,pad_h),(0,pad_w)))
-    x_padded = x_padded[...,:H_pad,:W_pad]  # if needed for oversize
+    x_padded = jnp.pad(x, ((0, 0), (0, pad_h), (0, pad_w)))
+    x_padded = x_padded[..., :H_pad, :W_pad]  # if needed for oversize
 
     # 2D FFT
-    X_fft = jnp.fft.fftn(x_padded, axes=(-2,-1))
+    X_fft = jnp.fft.fftn(x_padded, axes=(-2, -1))
     # multiply
     Y_fft = X_fft * fft_kernel_2d[None, :, :]
     # iFFT
-    y = jnp.fft.ifftn(Y_fft, axes=(-2,-1)).real
+    y = jnp.fft.ifftn(Y_fft, axes=(-2, -1)).real
 
     if single_example:
         y = y[0]
     return y
+
 
 @spectral_conv2d.defjvp
 def spectral_conv2d_jvp(primals, tangents):
@@ -721,7 +721,7 @@ def spectral_conv2d_jvp(primals, tangents):
     dx, dkernel = tangents
 
     H_pad, W_pad = fft_kernel_2d.shape
-    single_example = (x.ndim == 2)
+    single_example = x.ndim == 2
 
     if single_example:
         x = x[None, ...]
@@ -731,30 +731,37 @@ def spectral_conv2d_jvp(primals, tangents):
     pad_h = max(0, H_pad - H_in)
     pad_w = max(0, W_pad - W_in)
 
-    x_padded = jnp.pad(x, ((0,0),(0,pad_h),(0,pad_w)))
-    x_padded = x_padded[...,:H_pad,:W_pad]
+    x_padded = jnp.pad(x, ((0, 0), (0, pad_h), (0, pad_w)))
+    x_padded = x_padded[..., :H_pad, :W_pad]
 
-    X_fft = jnp.fft.fftn(x_padded, axes=(-2,-1))
+    X_fft = jnp.fft.fftn(x_padded, axes=(-2, -1))
     primal_Y_fft = X_fft * fft_kernel_2d[None, :, :]
-    primal_y = jnp.fft.ifftn(primal_Y_fft, axes=(-2,-1)).real
+    primal_y = jnp.fft.ifftn(primal_Y_fft, axes=(-2, -1)).real
 
-    dX_fft = 0.0 if dx is None else jnp.fft.fftn(
-        jnp.pad(dx, ((0,0),(0,pad_h),(0,pad_w)))[...,:H_pad,:W_pad],
-        axes=(-2,-1))
+    dX_fft = (
+        0.0
+        if dx is None
+        else jnp.fft.fftn(
+            jnp.pad(dx, ((0, 0), (0, pad_h), (0, pad_w)))[..., :H_pad, :W_pad],
+            axes=(-2, -1),
+        )
+    )
     dK_fft = 0.0 if dkernel is None else dkernel
 
-    dY_fft = dX_fft * fft_kernel_2d[None,:,:] + X_fft * dK_fft[None,:,:]
-    dY = jnp.fft.ifftn(dY_fft, axes=(-2,-1)).real
+    dY_fft = dX_fft * fft_kernel_2d[None, :, :] + X_fft * dK_fft[None, :, :]
+    dY = jnp.fft.ifftn(dY_fft, axes=(-2, -1)).real
 
     if single_example:
         return primal_y[0], dY[0]
     return primal_y, dY
+
 
 class SpectralConv2d(eqx.Module):
     """
     2D "spectral convolution" in Equinox (deterministic).
     Single-channel for simplicity.
     """
+
     in_height: int
     in_width: int
     H_pad: int
@@ -763,7 +770,7 @@ class SpectralConv2d(eqx.Module):
 
     w_real: jnp.ndarray  # shape (H_pad, W_pad)
     w_imag: jnp.ndarray  # shape (H_pad, W_pad)
-    bias: jnp.ndarray    # shape (H_pad, W_pad)
+    bias: jnp.ndarray  # shape (H_pad, W_pad)
 
     def __init__(
         self,
@@ -788,8 +795,8 @@ class SpectralConv2d(eqx.Module):
         wi = jr.normal(key_i, (self.H_pad, self.W_pad)) * init_scale
 
         # example: force DC = real
-        wr = wr.at[0,0].set(wr[0,0])
-        wi = wi.at[0,0].set(0.0)
+        wr = wr.at[0, 0].set(wr[0, 0])
+        wi = wi.at[0, 0].set(0.0)
 
         self.w_real = wr
         self.w_imag = wi
@@ -801,7 +808,7 @@ class SpectralConv2d(eqx.Module):
         You *can* manually enforce full Hermitian symmetry if you want a guaranteed real
         convolution kernel in the spatial domain.
         """
-        return self.w_real + 1j*self.w_imag
+        return self.w_real + 1j * self.w_imag
 
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
         """
@@ -814,4 +821,3 @@ class SpectralConv2d(eqx.Module):
             return y + self.bias[None, :, :]
         else:
             return y + self.bias
-

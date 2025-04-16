@@ -1,26 +1,25 @@
 import jax
+import jax.random as jr
 import jax.numpy as jnp
 import numpyro
+import matplotlib.pyplot as plt
 import numpyro.distributions as dist
 from numpyro.infer import Predictive, SVI, Trace_ELBO, init_to_sample
 import numpyro.optim as optim
-from numpyro.infer.autoguide import AutoNormal
+from numpyro.infer.autoguide import AutoNormal, AutoGuideList
 from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_squared_error
 import pandas as pd
 import numpy as np
 
-from quantbayes.fourier_guides.guides import MultiScaleSpectralRealGuide, MultiScaleSpectralImagGuide, LowRankMultiScaleSpectralGuide
+from quantbayes.fourier_guides.guides import (
+    FlowMultiScaleCoarseRealGuide,
+    FlowMultiScaleCoarseImagGuide,
+    LowRankMultiScaleRealGuide,
+    LowRankMultiScaleImagGuide,
+)
 from quantbayes.fake_data import generate_regression_data
 
-# Import the multi-scale layer defined previously.
-# Make sure that MultiScaleSpectralCirculantLayer is either in your PYTHONPATH or adjust the import accordingly.
-# from your_module import MultiScaleSpectralCirculantLayer
-# For this example, assume the class is defined in this script (see below for its definition).
-
-# -------------------------------
-# MultiScaleSpectralCirculantLayer (from previous implementation)
-# -------------------------------
-import jax.random
 
 @jax.custom_jvp
 def spectral_circulant_matmul(x: jnp.ndarray, fft_full: jnp.ndarray) -> jnp.ndarray:
@@ -42,6 +41,7 @@ def spectral_circulant_matmul(x: jnp.ndarray, fft_full: jnp.ndarray) -> jnp.ndar
     if single_example:
         return y[0]
     return y
+
 
 @spectral_circulant_matmul.defjvp
 def spectral_circulant_matmul_jvp(primals, tangents):
@@ -85,6 +85,7 @@ def spectral_circulant_matmul_jvp(primals, tangents):
         return primal_y[0], dY[0]
     return primal_y, dY
 
+
 class MultiScaleSpectralCirculantLayer:
     def __init__(
         self,
@@ -120,12 +121,18 @@ class MultiScaleSpectralCirculantLayer:
         self.mixture_prior = mixture_prior
         self.name = name
 
-        self.prior_fn = prior_fn if prior_fn is not None else (lambda scale: dist.Normal(0.0, scale))
+        self.prior_fn = (
+            prior_fn
+            if prior_fn is not None
+            else (lambda scale: dist.Normal(0.0, scale))
+        )
         self._last_fft_full = None
 
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
         if self.alpha_coarse is None:
-            alpha_c = numpyro.sample(f"{self.name}_alpha_coarse", self.alpha_coarse_prior)
+            alpha_c = numpyro.sample(
+                f"{self.name}_alpha_coarse", self.alpha_coarse_prior
+            )
         else:
             alpha_c = self.alpha_coarse
         if self.alpha_fine is None:
@@ -138,39 +145,51 @@ class MultiScaleSpectralCirculantLayer:
         coarse_freq_idx = jnp.arange(self.coarse_K)
         prior_std_coarse = 1.0 / jnp.sqrt(1.0 + coarse_freq_idx**alpha_c)
         coarse_real = numpyro.sample(
-            f"{self.name}_coarse_real", 
-            self.prior_fn(prior_std_coarse).expand([self.coarse_K]).to_event(1)
+            f"{self.name}_coarse_real",
+            self.prior_fn(prior_std_coarse).expand([self.coarse_K]).to_event(1),
         )
         coarse_imag = numpyro.sample(
-            f"{self.name}_coarse_imag", 
-            self.prior_fn(prior_std_coarse).expand([self.coarse_K]).to_event(1)
+            f"{self.name}_coarse_imag",
+            self.prior_fn(prior_std_coarse).expand([self.coarse_K]).to_event(1),
         )
         coarse_imag = coarse_imag.at[0].set(0.0)
         if (self.padded_dim % 2 == 0) and (self.coarse_K > 1):
             coarse_imag = coarse_imag.at[-1].set(0.0)
         coarse_half_complex = coarse_real + 1j * coarse_imag
         coarse_full_half = jnp.concatenate(
-            [coarse_half_complex, jnp.zeros((self.k_half - self.coarse_K,), dtype=coarse_half_complex.dtype)]
+            [
+                coarse_half_complex,
+                jnp.zeros(
+                    (self.k_half - self.coarse_K,), dtype=coarse_half_complex.dtype
+                ),
+            ]
         )
 
         # Fine scale: next group of frequencies.
         fine_freq_idx = jnp.arange(self.fine_K)
-        prior_std_fine = 1.0 / jnp.sqrt(1.0 + (fine_freq_idx + self.coarse_K)**alpha_f)
+        prior_std_fine = 1.0 / jnp.sqrt(
+            1.0 + (fine_freq_idx + self.coarse_K) ** alpha_f
+        )
         fine_real = numpyro.sample(
-            f"{self.name}_fine_real", 
-            self.prior_fn(prior_std_fine).expand([self.fine_K]).to_event(1)
+            f"{self.name}_fine_real",
+            self.prior_fn(prior_std_fine).expand([self.fine_K]).to_event(1),
         )
         fine_imag = numpyro.sample(
-            f"{self.name}_fine_imag", 
-            self.prior_fn(prior_std_fine).expand([self.fine_K]).to_event(1)
+            f"{self.name}_fine_imag",
+            self.prior_fn(prior_std_fine).expand([self.fine_K]).to_event(1),
         )
         fine_half_complex = fine_real + 1j * fine_imag
         fine_full_half = jnp.concatenate(
-            [fine_half_complex, jnp.zeros((self.k_half - self.fine_K,), dtype=fine_half_complex.dtype)]
+            [
+                fine_half_complex,
+                jnp.zeros((self.k_half - self.fine_K,), dtype=fine_half_complex.dtype),
+            ]
         )
 
         # Mix the two scales with a convex combination.
-        combined_half = mix_weight * coarse_full_half + (1.0 - mix_weight) * fine_full_half
+        combined_half = (
+            mix_weight * coarse_full_half + (1.0 - mix_weight) * fine_full_half
+        )
 
         # Enforce Hermitian symmetry.
         if (self.padded_dim % 2 == 0) and (self.k_half > 1):
@@ -184,8 +203,8 @@ class MultiScaleSpectralCirculantLayer:
             )
         self._last_fft_full = jax.lax.stop_gradient(fft_full)
         bias = numpyro.sample(
-            f"{self.name}_bias", 
-            dist.Normal(0.0, 1.0).expand([self.padded_dim]).to_event(1)
+            f"{self.name}_bias",
+            dist.Normal(0.0, 1.0).expand([self.padded_dim]).to_event(1),
         )
         out = spectral_circulant_matmul(x, fft_full) + bias
         return out
@@ -195,108 +214,89 @@ class MultiScaleSpectralCirculantLayer:
             raise ValueError("No Fourier coefficients available; call the layer first.")
         return self._last_fft_full
 
-# -------------------------------
-# Regression Model using the Multi-Scale Spectral Layer
-# -------------------------------
-def multi_scale_regression_model(X, y=None):
+
+def model(X, y=None):
     """
     A regression model that uses the MultiScaleSpectralCirculantLayer.
     """
     N, D = X.shape
-    # Instantiate the multi-scale spectral layer.
     spectral_layer = MultiScaleSpectralCirculantLayer(
         in_features=D,
         padded_dim=D,
-        coarse_K=D//4,     # example setting; adjust as needed
-        fine_K=D//4,       # example setting; adjust as needed
-        name="multi_scale_spectral"
+        coarse_K=D // 4,
+        fine_K=D // 4,
+        name="multi_scale_spectral",
     )
-    # Transform inputs using the spectral layer.
     transformed = spectral_layer(X)
-    # Apply a nonlinearity.
     transformed_act = jax.nn.tanh(transformed)
-    # Bayesian linear regression on transformed features.
     W = numpyro.sample("W", dist.Normal(0, 1).expand([D, 1]).to_event(2))
     b = numpyro.sample("b", dist.Normal(0, 1).expand([1]).to_event(1))
     preds = jnp.squeeze(jnp.dot(transformed_act, W) + b)
     sigma = numpyro.sample("sigma", dist.Exponential(1.0))
-    numpyro.sample("obs", dist.Normal(preds, sigma), obs=y)
+    with numpyro.plate("data", N):
+        numpyro.sample("likelihood", dist.Normal(preds, sigma), obs=y)
 
-# ================================
-# SVI Inference with Different Guide Configurations
-# ================================
-def run_svi_inference(model, X, y, num_steps=5000, step_size=0.01,
-                      use_custom_guide=True, use_custom_low_rank=False, use_only_autonormal=False,
-                      rng_key=jax.random.PRNGKey(0)):
-    optimizer = optim.Adam(step_size=step_size)
-    
-    # Build the guide.
-    if use_only_autonormal:
-        # Use a generic AutoNormal guide over all latent sites.
-        guide = AutoNormal(model, init_loc_fn=init_to_sample)
-    else:
-        # For the multi-scale spectral layer sites, we build custom guides.
-        # Adjust the dimensions; these should match your MultiScale layer settings.
-        coarse_K = X.shape[1] // 4   # same as used in the model definition
-        fine_K = X.shape[1] // 4
-        guide_list = []
-        if use_custom_low_rank:
-            # For example, use a low-rank guide for the coarse real part.
-            guide_list.append(LowRankMultiScaleSpectralGuide(model, K=coarse_K, rank=2, site_name="multi_scale_spectral_coarse_real"))
-        else:
-            guide_list.append(MultiScaleSpectralRealGuide(model, coarse_K=coarse_K, fine_K=fine_K, name="multi_scale_spectral"))
-            guide_list.append(MultiScaleSpectralImagGuide(model, coarse_K=coarse_K, fine_K=fine_K, name="multi_scale_spectral"))
-        
-        # For all other sites, delegate to AutoNormal.
-        guide_list.append(AutoNormal(numpyro.handlers.block(model, hide=[
-            "multi_scale_spectral_coarse_real", "multi_scale_spectral_fine_real",
-            "multi_scale_spectral_coarse_imag", "multi_scale_spectral_fine_imag"
-        ])))
-        
-        # Combine into an AutoGuideList.
-        from numpyro.infer.autoguide import AutoGuideList
-        guide = AutoGuideList(model)
-        for g in guide_list:
-            guide.append(g)
 
-    svi = SVI(model, guide, optimizer, loss=Trace_ELBO())
-    svi_result = svi.run(rng_key, num_steps=num_steps, X=X, y=y)
-    return svi_result, guide
+LEARNING_RATE = 1e-3
+NUM_ITERATIONS = 1000
+use_custom_guides = True
+key = jr.key(0)
+in_features = 16
+
+optimizer = optim.Adam(LEARNING_RATE)
+K = in_features // 4
+
+if use_custom_guides:
+    guide_real = LowRankMultiScaleRealGuide(model, coarse_K=K, fine_K=K)
+    guide_imag = LowRankMultiScaleImagGuide(model, coarse_K=K, fine_K=K)
+    rest_guide = AutoNormal(
+        numpyro.handlers.block(
+            model,
+            hide=[
+                "multi_scale_spectral_coarse_real",
+                "multi_scale_spectral_fine_real",
+                "multi_scale_spectral_coarse_imag",
+                "multi_scale_spectral_fine_imag",
+            ],
+        )
+    )
+    guide = AutoGuideList(model)
+    guide.append(guide_imag)
+    guide.append(guide_real)
+    guide.append(rest_guide)
+
+else:
+    guide = AutoNormal(model)
+
 
 # -------------------------------
 # Main test: data loading, model inference, and MAE reporting.
 # -------------------------------
-if __name__ == '__main__':
-    # Data Loading
-    df = generate_regression_data(n_continuous=16)
-    X = df.drop("target", axis=1)
-    y = df["target"]
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-    X_train = jnp.array(X_train.values if isinstance(X_train, pd.DataFrame) else X_train)
-    X_test = jnp.array(X_test.values if isinstance(X_test, pd.DataFrame) else X_test)
-    y_train = jnp.array(y_train.values if isinstance(y_train, pd.Series) else y_train)
-    y_test = jnp.array(y_test.values if isinstance(y_test, pd.Series) else y_test)
+if __name__ == "__main__":
+    df = generate_regression_data(n_continuous=in_features)
+    X, y = df.drop("target", axis=1), df["target"]
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
+    X_train = jnp.array(X_train)
+    X_test = jnp.array(X_test)
+    y_train = jnp.array(y_train)
+    y_test = jnp.array(y_test)
 
-    # Configure guide selection.
-    use_custom_guide = True
-    use_custom_low_rank = False
-    use_only_autonormal = False
+    svi = SVI(model, guide=guide, optim=optimizer, loss=Trace_ELBO())
+    state = svi.init(key, X=X_train, y=y_train)
+    init_params = svi.get_params(svi_state=state)
+    losses = []
+    for num in range(NUM_ITERATIONS):
+        state, loss = svi.update(state, X=X_train, y=y_train)
+        losses.append(loss)
+        if (num + 1) % 100 == 0:
+            print(f"Iteration {num+1} out of {NUM_ITERATIONS}")
+    params = svi.get_params(state)
+    predictive = Predictive(model, guide=svi.guide, params=params, num_samples=100)
+    preds = predictive(key, X_test)["likelihood"]
+    mean_preds = preds.mean(axis=0)
+    loss = np.sqrt(mean_squared_error(np.array(y_test), np.array(mean_preds)))
+    print(f"Loss: {loss:.3f}")
 
-    # Run SVI.
-    rng_key = jax.random.PRNGKey(0)
-    svi_result, guide = run_svi_inference(multi_scale_regression_model, X_train, y_train,
-                                            num_steps=5000, step_size=0.01,
-                                            use_custom_guide=use_custom_guide,
-                                            use_custom_low_rank=use_custom_low_rank,
-                                            use_only_autonormal=use_only_autonormal,
-                                            rng_key=rng_key)
-    params = svi_result.params
-
-    # Evaluate posterior predictive performance.
-    from numpyro.infer import Predictive
-    predictive = Predictive(multi_scale_regression_model, guide=guide, params=params, num_samples=500)
-    rng_key, rng_key_pp = jax.random.split(rng_key)
-    preds = predictive(rng_key_pp, X_test)["obs"]
-    pred_mean = jnp.mean(preds, axis=0)
-    mae = jnp.mean(jnp.abs(pred_mean - y_test))
-    print("Mean Absolute Error on Test Set:", np.array(mae))
+    plt.figure(figsize=(10, 6))
+    plt.plot(losses)
+    plt.show()

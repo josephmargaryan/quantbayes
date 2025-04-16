@@ -1,19 +1,18 @@
 import jax
 import jax.numpy as jnp
-from numpyro.infer.autoguide import AutoGuide
 import numpyro
 import numpyro.distributions as dist
 
+
 @jax.custom_jvp
-def spectral_circulant_conv1d(x: jnp.ndarray,
-                              fft_kernel: jnp.ndarray) -> jnp.ndarray:
+def spectral_circulant_conv1d(x: jnp.ndarray, fft_kernel: jnp.ndarray) -> jnp.ndarray:
     """
     x: shape (batch, length)  - single-channel 1D signals
     fft_kernel: shape (padded_len,) - the 1D FFT of the kernel (with Hermitian symmetry)
     Returns convolved output of shape (batch, padded_len) [or truncated as needed].
     """
     padded_len = fft_kernel.shape[0]
-    single_example = (x.ndim == 1)
+    single_example = x.ndim == 1
     if single_example:
         # Expand batch dimension
         x = x[None, :]
@@ -22,7 +21,7 @@ def spectral_circulant_conv1d(x: jnp.ndarray,
     # Pad or truncate x
     if length < padded_len:
         pad_len = padded_len - length
-        x_padded = jnp.pad(x, ((0,0),(0,pad_len)))
+        x_padded = jnp.pad(x, ((0, 0), (0, pad_len)))
     elif length > padded_len:
         x_padded = x[..., :padded_len]
     else:
@@ -31,7 +30,7 @@ def spectral_circulant_conv1d(x: jnp.ndarray,
     # Forward FFT
     X_fft = jnp.fft.fft(x_padded, axis=-1)  # shape (batch, padded_len)
     # Multiply in freq domain
-    Y_fft = X_fft * fft_kernel[None, :]     # broadcast mul
+    Y_fft = X_fft * fft_kernel[None, :]  # broadcast mul
     # iFFT
     y = jnp.fft.ifft(Y_fft, axis=-1).real
 
@@ -40,13 +39,14 @@ def spectral_circulant_conv1d(x: jnp.ndarray,
         return y[0]
     return y
 
+
 @spectral_circulant_conv1d.defjvp
 def spectral_circulant_conv1d_jvp(primals, tangents):
     x, fft_kernel = primals
     dx, dfft = tangents
     padded_len = fft_kernel.shape[0]
 
-    single_example = (x.ndim == 1)
+    single_example = x.ndim == 1
     if single_example:
         x = x[None, :]
         dx = None if dx is None else dx[None, :]
@@ -54,11 +54,11 @@ def spectral_circulant_conv1d_jvp(primals, tangents):
     length = x.shape[-1]
     if length < padded_len:
         pad_len = padded_len - length
-        x_padded = jnp.pad(x, ((0,0),(0,pad_len)))
-        dx_padded = (None if dx is None else jnp.pad(dx, ((0,0),(0,pad_len))))
+        x_padded = jnp.pad(x, ((0, 0), (0, pad_len)))
+        dx_padded = None if dx is None else jnp.pad(dx, ((0, 0), (0, pad_len)))
     elif length > padded_len:
         x_padded = x[..., :padded_len]
-        dx_padded = (None if dx is None else dx[..., :padded_len])
+        dx_padded = None if dx is None else dx[..., :padded_len]
     else:
         x_padded = x
         dx_padded = dx
@@ -87,14 +87,16 @@ def spectral_circulant_conv1d_jvp(primals, tangents):
 
 
 class SpectralCirculantConv1d:
-    def __init__(self,
-                 signal_len: int,
-                 padded_len: int = None,
-                 alpha: float = None,
-                 alpha_prior=dist.HalfNormal(1.0),
-                 K: int = None,
-                 name="spectral_conv1d",
-                 prior_fn=None):
+    def __init__(
+        self,
+        signal_len: int,
+        padded_len: int = None,
+        alpha: float = None,
+        alpha_prior=dist.HalfNormal(1.0),
+        K: int = None,
+        name="spectral_conv1d",
+        prior_fn=None,
+    ):
         """
         :param signal_len: Nominal input signal length.
         :param padded_len: If provided, pad/truncate to this dimension; else = signal_len.
@@ -138,11 +140,11 @@ class SpectralCirculantConv1d:
         active_idx = jnp.arange(self.K)
         real_part = numpyro.sample(
             f"{self.name}_real",
-            self.prior_fn(prior_std[active_idx]).expand([self.K]).to_event(1)
+            self.prior_fn(prior_std[active_idx]).expand([self.K]).to_event(1),
         )
         imag_part = numpyro.sample(
             f"{self.name}_imag",
-            self.prior_fn(prior_std[active_idx]).expand([self.K]).to_event(1)
+            self.prior_fn(prior_std[active_idx]).expand([self.K]).to_event(1),
         )
 
         # 4. Fill up the half-spectrum
@@ -175,7 +177,7 @@ class SpectralCirculantConv1d:
         # 6. Optional bias
         bias = numpyro.sample(
             f"{self.name}_bias",
-            dist.Normal(0.0, 1.0).expand([self.padded_len]).to_event(1)
+            dist.Normal(0.0, 1.0).expand([self.padded_len]).to_event(1),
         )
 
         # 7. Call the custom circulant conv
@@ -187,16 +189,18 @@ class SpectralCirculantConv1d:
             raise ValueError("No kernel has been sampled yet.")
         return self._fft_kernel
 
+
 @jax.custom_jvp
-def spectral_circulant_conv2d(x: jnp.ndarray,
-                              fft_kernel_2d: jnp.ndarray) -> jnp.ndarray:
+def spectral_circulant_conv2d(
+    x: jnp.ndarray, fft_kernel_2d: jnp.ndarray
+) -> jnp.ndarray:
     """
     x: shape (batch, H, W)  - single-channel 2D inputs
     fft_kernel_2d: shape (H_pad, W_pad) - the 2D FFT of the kernel
     Returns shape (batch, H_pad, W_pad) by default (or you can slice).
     """
     H_pad, W_pad = fft_kernel_2d.shape
-    single_example = (x.ndim == 2)
+    single_example = x.ndim == 2
     if single_example:
         x = x[None, ...]  # shape (1, H, W)
 
@@ -205,7 +209,7 @@ def spectral_circulant_conv2d(x: jnp.ndarray,
     # Pad or truncate in 2D
     pad_h = max(0, H_pad - H_in)
     pad_w = max(0, W_pad - W_in)
-    x_padded = jnp.pad(x, ((0,0),(0,pad_h),(0,pad_w)))
+    x_padded = jnp.pad(x, ((0, 0), (0, pad_h), (0, pad_w)))
 
     # If H_in>H_pad or W_in>W_pad, you might also slice, e.g.: x_padded = x[...,:H_pad,:W_pad]
     # 2D FFT
@@ -220,13 +224,14 @@ def spectral_circulant_conv2d(x: jnp.ndarray,
         y = y[0]
     return y
 
+
 @spectral_circulant_conv2d.defjvp
 def spectral_circulant_conv2d_jvp(primals, tangents):
     x, fft_kernel_2d = primals
     dx, dfft = tangents
 
     H_pad, W_pad = fft_kernel_2d.shape
-    single_example = (x.ndim == 2)
+    single_example = x.ndim == 2
 
     if single_example:
         x = x[None, ...]
@@ -237,10 +242,10 @@ def spectral_circulant_conv2d_jvp(primals, tangents):
     # Pad x
     pad_h = max(0, H_pad - H_in)
     pad_w = max(0, W_pad - W_in)
-    x_padded = jnp.pad(x, ((0,0),(0,pad_h),(0,pad_w)))
+    x_padded = jnp.pad(x, ((0, 0), (0, pad_h), (0, pad_w)))
     dx_padded = None
     if dx is not None:
-        dx_padded = jnp.pad(dx, ((0,0),(0,pad_h),(0,pad_w)))
+        dx_padded = jnp.pad(dx, ((0, 0), (0, pad_h), (0, pad_w)))
 
     X_fft = jnp.fft.fftn(x_padded, axes=(-2, -1))
     primal_Y_fft = X_fft * fft_kernel_2d[None, :, :]
@@ -260,16 +265,19 @@ def spectral_circulant_conv2d_jvp(primals, tangents):
         return primal_y[0], dY[0]
     return primal_y, dY
 
+
 class SpectralCirculantConv2d:
-    def __init__(self,
-                 H_in: int,
-                 W_in: int,
-                 H_pad: int = None,
-                 W_pad: int = None,
-                 alpha: float = None,
-                 alpha_prior=dist.HalfNormal(1.0),
-                 name="spectral_conv2d",
-                 prior_fn=None):
+    def __init__(
+        self,
+        H_in: int,
+        W_in: int,
+        H_pad: int = None,
+        W_pad: int = None,
+        alpha: float = None,
+        alpha_prior=dist.HalfNormal(1.0),
+        name="spectral_conv2d",
+        prior_fn=None,
+    ):
         """
         :param H_in, W_in: nominal input height and width
         :param H_pad, W_pad: padded dimension for circulant kernel
@@ -306,7 +314,7 @@ class SpectralCirculantConv2d:
         # For each (u,v), define some "radius" in freq domain.
         # e.g. r = sqrt(u^2 + v^2), or we keep them separate
         # Let's do a simple radial version:
-        UU, VV = jnp.meshgrid(freq_u, freq_v, indexing='ij')
+        UU, VV = jnp.meshgrid(freq_u, freq_v, indexing="ij")
         R = jnp.sqrt(UU**2 + VV**2)
         # prior_std = 1 / sqrt(1 + R^alpha)
         prior_std = 1.0 / jnp.sqrt(1.0 + (R**alpha))
@@ -316,11 +324,10 @@ class SpectralCirculantConv2d:
         # In principle, you could do "active frequencies," but let's keep it simpler:
         real_part = numpyro.sample(
             f"{self.name}_real",
-            self.prior_fn(prior_std).to_event(2)  # shape (H_pad, W_pad)
+            self.prior_fn(prior_std).to_event(2),  # shape (H_pad, W_pad)
         )
         imag_part = numpyro.sample(
-            f"{self.name}_imag",
-            self.prior_fn(prior_std).to_event(2)
+            f"{self.name}_imag", self.prior_fn(prior_std).to_event(2)
         )
 
         # 4. Enforce Hermitian symmetry
@@ -328,8 +335,8 @@ class SpectralCirculantConv2d:
         #   1) For every (u,v), set Kernel[H-u, W-v] = conj(Kernel[u,v])
         #   2) Specifically enforce real at DC, Nyquist, etc.
         # For brevity, let's do a naive approach:
-        real_part = real_part.at[0,0].set(real_part[0,0])  # DC is real
-        imag_part = imag_part.at[0,0].set(0.0)
+        real_part = real_part.at[0, 0].set(real_part[0, 0])  # DC is real
+        imag_part = imag_part.at[0, 0].set(0.0)
         # We won't do a full indexing approach, but you might do something like:
         #   for u in range(H_pad):
         #       for v in range(W_pad):
@@ -346,7 +353,7 @@ class SpectralCirculantConv2d:
         # 6. Sample bias
         bias = numpyro.sample(
             f"{self.name}_bias",
-            dist.Normal(0.0, 1.0).expand([self.H_pad, self.W_pad]).to_event(2)
+            dist.Normal(0.0, 1.0).expand([self.H_pad, self.W_pad]).to_event(2),
         )
 
         # 7. forward conv
@@ -357,32 +364,3 @@ class SpectralCirculantConv2d:
         if self._fft_kernel_2d is None:
             raise ValueError("Kernel not sampled yet.")
         return self._fft_kernel_2d
-
-class Spectral2DRealGuide(AutoGuide):
-    def __init__(self, model, shape_2d):
-        """
-        shape_2d: (H_pad, W_pad) for the real part of the 2D spectral kernel
-        """
-        super().__init__(model)
-        self.shape_2d = shape_2d
-
-    def __call__(self, *args, **kwargs):
-        # We'll assume the site name is "spectral_conv2d_real"
-        size = self.shape_2d
-        mean_real = numpyro.param("spectral_conv2d_real_mean",
-                                  jnp.zeros(size))
-        log_std_real = numpyro.param("spectral_conv2d_real_log_std",
-                                     -3.0 * jnp.ones(size))
-
-        sample_real = numpyro.sample(
-            "spectral_conv2d_real",
-            dist.Normal(mean_real, jnp.exp(log_std_real)).to_event(2)
-        )
-        return {"spectral_conv2d_real": sample_real}
-
-    def sample_posterior(self, rng_key, params, sample_shape=()):
-        mean_real = params["spectral_conv2d_real_mean"]
-        log_std_real = params["spectral_conv2d_real_log_std"]
-        dist_ = dist.Normal(mean_real, jnp.exp(log_std_real)).to_event(2)
-        sample_real = dist_.sample(rng_key, sample_shape)
-        return {"spectral_conv2d_real": sample_real}
