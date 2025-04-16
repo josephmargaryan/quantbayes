@@ -14,9 +14,7 @@ __all__ = [
     "LowRankSpectralGuide",
     "FlowSpectralGuide",
     "MixtureSpectralGuide",
-    "MultiScaleSpectralRealGuide",
-    "MultiScaleSpectralImagGuide",
-    "LowRankMultiScaleSpectralGuide",
+
     "BayesianConv2DLowRankGuide"
 
 ]
@@ -240,153 +238,463 @@ class MixtureSpectralGuide(AutoGuide):
 # Custom Guide for MultiScaleSpectralCirculantLayer:
 #############################################
 
-class MultiScaleSpectralRealGuide(AutoGuide):
-    """
-    Custom guide for the real parts of the multi-scale spectral layer.
-    This guide sets up variational parameters for both the coarse and fine real components.
-    """
-    def __init__(self, model: Callable, coarse_K: int, fine_K: int, name: str = "multi_scale_spectral"):
-        """
-        Args:
-            model: the model function.
-            coarse_K: dimensionality for the coarse real coefficients.
-            fine_K: dimensionality for the fine real coefficients.
-            name: base name used in the model for sampling sites.
-        """
+class FlowMultiScaleCoarseRealGuide(AutoGuide):
+    def __init__(self, model, coarse_K, num_flows=2, name="multi_scale_spectral_coarse_real"):
         self.coarse_K = coarse_K
-        self.fine_K = fine_K
+        self.num_flows = num_flows
         self.name = name
         super().__init__(model)
-
+        
     def __call__(self, *args, **kwargs):
-        # Coarse real part:
-        mean_coarse = numpyro.param(f"{self.name}_coarse_real_mean", jnp.zeros((self.coarse_K,)))
-        log_std_coarse = numpyro.param(f"{self.name}_coarse_real_log_std", -3.0 * jnp.ones((self.coarse_K,)))
-        coarse_sample = numpyro.sample(
-            f"{self.name}_coarse_real",
-            dist.Normal(mean_coarse, jnp.exp(log_std_coarse)).to_event(1)
-        )
-        # Fine real part:
-        mean_fine = numpyro.param(f"{self.name}_fine_real_mean", jnp.zeros((self.fine_K,)))
-        log_std_fine = numpyro.param(f"{self.name}_fine_real_log_std", -3.0 * jnp.ones((self.fine_K,)))
-        fine_sample = numpyro.sample(
-            f"{self.name}_fine_real",
-            dist.Normal(mean_fine, jnp.exp(log_std_fine)).to_event(1)
-        )
-        return {
-            f"{self.name}_coarse_real": coarse_sample,
-            f"{self.name}_fine_real": fine_sample,
-        }
-
+        # Base distribution parameters for coarse real part.
+        base_mean = numpyro.param(f"{self.name}_flow_mean", jnp.zeros((self.coarse_K,)))
+        base_log_std = numpyro.param(f"{self.name}_flow_log_std", -3.0 * jnp.ones((self.coarse_K,)))
+        base_dist = dist.Normal(base_mean, jnp.exp(base_log_std)).to_event(1)
+        
+        # Build a chain of flow transformations.
+        transforms = []
+        for i in range(self.num_flows):
+            shift = numpyro.param(f"{self.name}_flow_shift_{i}", jnp.zeros((self.coarse_K,)))
+            scale = numpyro.param(f"{self.name}_flow_scale_{i}", jnp.ones((self.coarse_K,)),
+                                  constraint=constraints.positive)
+            transforms.append(AffineTransform(loc=shift, scale=scale))
+            
+        flow_transform = ComposeTransform(transforms)
+        flow_dist = dist.TransformedDistribution(base_dist, flow_transform)
+        
+        sample = numpyro.sample(self.name, flow_dist)
+        return {self.name: sample}
+    
     def sample_posterior(self, rng_key, params, sample_shape=()):
-        mean_coarse = params[f"{self.name}_coarse_real_mean"]
-        log_std_coarse = params[f"{self.name}_coarse_real_log_std"]
-        coarse_sample = dist.Normal(mean_coarse, jnp.exp(log_std_coarse)).sample(rng_key, sample_shape)
-        mean_fine = params[f"{self.name}_fine_real_mean"]
-        log_std_fine = params[f"{self.name}_fine_real_log_std"]
-        fine_sample = dist.Normal(mean_fine, jnp.exp(log_std_fine)).sample(rng_key, sample_shape)
-        return {
-            f"{self.name}_coarse_real": coarse_sample,
-            f"{self.name}_fine_real": fine_sample,
-        }
+        base_mean = params[f"{self.name}_flow_mean"]
+        base_log_std = params[f"{self.name}_flow_log_std"]
+        base_std = jnp.exp(base_log_std)
+        base_dist = dist.Normal(base_mean, base_std).to_event(1)
+        
+        transforms = []
+        for i in range(self.num_flows):
+            shift = params[f"{self.name}_flow_shift_{i}"]
+            scale = params[f"{self.name}_flow_scale_{i}"]
+            transforms.append(AffineTransform(loc=shift, scale=scale))
+            
+        flow_transform = ComposeTransform(transforms)
+        flow_dist = dist.TransformedDistribution(base_dist, flow_transform)
+        
+        sample = flow_dist.sample(rng_key, sample_shape)
+        return {self.name: sample}
 
-#############################################
-# Custom Guide for the Imaginary Parts
-#############################################
 
-class MultiScaleSpectralImagGuide(AutoGuide):
-    """
-    Custom guide for the imaginary parts of the multi-scale spectral layer.
-    This guide sets up variational parameters for both the coarse and fine imaginary components.
-    """
-    def __init__(self, model: Callable, coarse_K: int, fine_K: int, name: str = "multi_scale_spectral"):
-        """
-        Args:
-            model: the model function.
-            coarse_K: dimensionality for the coarse imaginary coefficients.
-            fine_K: dimensionality for the fine imaginary coefficients.
-            name: base name used in the model for sampling sites.
-        """
+class FlowMultiScaleCoarseImagGuide(AutoGuide):
+    def __init__(self, model, coarse_K, num_flows=2, name="multi_scale_spectral_coarse_imag"):
         self.coarse_K = coarse_K
-        self.fine_K = fine_K
+        self.num_flows = num_flows
         self.name = name
         super().__init__(model)
-
+        
     def __call__(self, *args, **kwargs):
-        # Coarse imaginary part:
-        mean_coarse = numpyro.param(f"{self.name}_coarse_imag_mean", jnp.zeros((self.coarse_K,)))
-        log_std_coarse = numpyro.param(f"{self.name}_coarse_imag_log_std", -3.0 * jnp.ones((self.coarse_K,)))
-        coarse_sample = numpyro.sample(
-            f"{self.name}_coarse_imag",
-            dist.Normal(mean_coarse, jnp.exp(log_std_coarse)).to_event(1)
-        )
-        # Fine imaginary part:
-        mean_fine = numpyro.param(f"{self.name}_fine_imag_mean", jnp.zeros((self.fine_K,)))
-        log_std_fine = numpyro.param(f"{self.name}_fine_imag_log_std", -3.0 * jnp.ones((self.fine_K,)))
-        fine_sample = numpyro.sample(
-            f"{self.name}_fine_imag",
-            dist.Normal(mean_fine, jnp.exp(log_std_fine)).to_event(1)
-        )
-        return {
-            f"{self.name}_coarse_imag": coarse_sample,
-            f"{self.name}_fine_imag": fine_sample,
-        }
-
+        base_mean = numpyro.param(f"{self.name}_flow_mean", jnp.zeros((self.coarse_K,)))
+        base_log_std = numpyro.param(f"{self.name}_flow_log_std", -3.0 * jnp.ones((self.coarse_K,)))
+        base_dist = dist.Normal(base_mean, jnp.exp(base_log_std)).to_event(1)
+        
+        transforms = []
+        for i in range(self.num_flows):
+            shift = numpyro.param(f"{self.name}_flow_shift_{i}", jnp.zeros((self.coarse_K,)))
+            scale = numpyro.param(f"{self.name}_flow_scale_{i}", jnp.ones((self.coarse_K,)),
+                                  constraint=constraints.positive)
+            transforms.append(AffineTransform(loc=shift, scale=scale))
+            
+        flow_transform = ComposeTransform(transforms)
+        flow_dist = dist.TransformedDistribution(base_dist, flow_transform)
+        
+        sample = numpyro.sample(self.name, flow_dist)
+        return {self.name: sample}
+    
     def sample_posterior(self, rng_key, params, sample_shape=()):
-        mean_coarse = params[f"{self.name}_coarse_imag_mean"]
-        log_std_coarse = params[f"{self.name}_coarse_imag_log_std"]
-        coarse_sample = dist.Normal(mean_coarse, jnp.exp(log_std_coarse)).sample(rng_key, sample_shape)
-        mean_fine = params[f"{self.name}_fine_imag_mean"]
-        log_std_fine = params[f"{self.name}_fine_imag_log_std"]
-        fine_sample = dist.Normal(mean_fine, jnp.exp(log_std_fine)).sample(rng_key, sample_shape)
-        return {
-            f"{self.name}_coarse_imag": coarse_sample,
-            f"{self.name}_fine_imag": fine_sample,
-        }
+        base_mean = params[f"{self.name}_flow_mean"]
+        base_log_std = params[f"{self.name}_flow_log_std"]
+        base_std = jnp.exp(base_log_std)
+        base_dist = dist.Normal(base_mean, base_std).to_event(1)
+        
+        transforms = []
+        for i in range(self.num_flows):
+            shift = params[f"{self.name}_flow_shift_{i}"]
+            scale = params[f"{self.name}_flow_scale_{i}"]
+            transforms.append(AffineTransform(loc=shift, scale=scale))
+            
+        flow_transform = ComposeTransform(transforms)
+        flow_dist = dist.TransformedDistribution(base_dist, flow_transform)
+        
+        sample = flow_dist.sample(rng_key, sample_shape)
+        return {self.name: sample}
 
-#############################################
-# Low-Rank Variant of the Multi-Scale Guides
-#############################################
-
-class LowRankMultiScaleSpectralGuide(AutoGuide):
+class FlowMultiScaleFineRealGuide(AutoGuide):
     """
-    Low-rank covariance guide for a multi-scale spectral site (either real or imaginary).
-    This guide uses a low-rank factorization for the covariance of the selected site.
+    Flow guide for the fine real components of the multi-scale spectral layer.
+    Targets the site "multi_scale_spectral_fine_real".
+    """
+    def __init__(self, model, fine_K, num_flows=2, name="multi_scale_spectral_fine_real"):
+        self.fine_K = fine_K
+        self.num_flows = num_flows
+        self.name = name
+        super().__init__(model)
+        
+    def __call__(self, *args, **kwargs):
+        # Base distribution parameters.
+        base_mean = numpyro.param(f"{self.name}_flow_mean", jnp.zeros((self.fine_K,)))
+        base_log_std = numpyro.param(f"{self.name}_flow_log_std", -3.0 * jnp.ones((self.fine_K,)))
+        base_dist = dist.Normal(base_mean, jnp.exp(base_log_std)).to_event(1)
+        
+        # Build a chain of affine flows.
+        transforms = []
+        for i in range(self.num_flows):
+            shift = numpyro.param(f"{self.name}_flow_shift_{i}", jnp.zeros((self.fine_K,)))
+            scale = numpyro.param(f"{self.name}_flow_scale_{i}", jnp.ones((self.fine_K,)),
+                                  constraint=constraints.positive)
+            transforms.append(AffineTransform(loc=shift, scale=scale))
+            
+        flow_transform = ComposeTransform(transforms)
+        flow_dist = dist.TransformedDistribution(base_dist, flow_transform)
+        
+        sample = numpyro.sample(self.name, flow_dist)
+        return {self.name: sample}
+    
+    def sample_posterior(self, rng_key, params, sample_shape=()):
+        base_mean = params[f"{self.name}_flow_mean"]
+        base_log_std = params[f"{self.name}_flow_log_std"]
+        base_std = jnp.exp(base_log_std)
+        base_dist = dist.Normal(base_mean, base_std).to_event(1)
+        
+        transforms = []
+        for i in range(self.num_flows):
+            shift = params[f"{self.name}_flow_shift_{i}"]
+            scale = params[f"{self.name}_flow_scale_{i}"]
+            transforms.append(AffineTransform(loc=shift, scale=scale))
+            
+        flow_transform = ComposeTransform(transforms)
+        flow_dist = dist.TransformedDistribution(base_dist, flow_transform)
+        
+        sample = flow_dist.sample(rng_key, sample_shape)
+        return {self.name: sample}
+
+
+class FlowMultiScaleFineImagGuide(AutoGuide):
+    """
+    Flow guide for the fine imaginary components of the multi-scale spectral layer.
+    Targets the site "multi_scale_spectral_fine_imag".
+    """
+    def __init__(self, model, fine_K, num_flows=2, name="multi_scale_spectral_fine_imag"):
+        self.fine_K = fine_K
+        self.num_flows = num_flows
+        self.name = name
+        super().__init__(model)
+        
+    def __call__(self, *args, **kwargs):
+        base_mean = numpyro.param(f"{self.name}_flow_mean", jnp.zeros((self.fine_K,)))
+        base_log_std = numpyro.param(f"{self.name}_flow_log_std", -3.0 * jnp.ones((self.fine_K,)))
+        base_dist = dist.Normal(base_mean, jnp.exp(base_log_std)).to_event(1)
+        
+        transforms = []
+        for i in range(self.num_flows):
+            shift = numpyro.param(f"{self.name}_flow_shift_{i}", jnp.zeros((self.fine_K,)))
+            scale = numpyro.param(f"{self.name}_flow_scale_{i}", jnp.ones((self.fine_K,)),
+                                  constraint=constraints.positive)
+            transforms.append(AffineTransform(loc=shift, scale=scale))
+            
+        flow_transform = ComposeTransform(transforms)
+        flow_dist = dist.TransformedDistribution(base_dist, flow_transform)
+        
+        sample = numpyro.sample(self.name, flow_dist)
+        return {self.name: sample}
+    
+    def sample_posterior(self, rng_key, params, sample_shape=()):
+        base_mean = params[f"{self.name}_flow_mean"]
+        base_log_std = params[f"{self.name}_flow_log_std"]
+        base_std = jnp.exp(base_log_std)
+        base_dist = dist.Normal(base_mean, base_std).to_event(1)
+        
+        transforms = []
+        for i in range(self.num_flows):
+            shift = params[f"{self.name}_flow_shift_{i}"]
+            scale = params[f"{self.name}_flow_scale_{i}"]
+            transforms.append(AffineTransform(loc=shift, scale=scale))
+            
+        flow_transform = ComposeTransform(transforms)
+        flow_dist = dist.TransformedDistribution(base_dist, flow_transform)
+        
+        sample = flow_dist.sample(rng_key, sample_shape)
+        return {self.name: sample}
+
+
+class MixtureMultiScaleFineRealGuide(AutoGuide):
+    def __init__(self, model, fine_K, num_components=3, name="multi_scale_spectral_fine_real"):
+        self.fine_K = fine_K
+        self.num_components = num_components
+        self.name = name
+        super().__init__(model)
+    
+    def __call__(self, *args, **kwargs):
+        # Mixture logits for the components
+        logits = numpyro.param(f"{self.name}_mixture_logits", jnp.zeros((self.num_components,)))
+        weights = jax.nn.softmax(logits)
+        
+        # Each component gets its own mean and log_std
+        means = numpyro.param(f"{self.name}_mixture_means", jnp.zeros((self.num_components, self.fine_K)))
+        log_stds = numpyro.param(f"{self.name}_mixture_log_stds", -3.0 * jnp.ones((self.num_components, self.fine_K)))
+        
+        component_dist = dist.Independent(dist.Normal(means, jnp.exp(log_stds)), 1)
+        mixture_dist = dist.MixtureSameFamily(dist.Categorical(probs=weights), component_dist)
+        
+        sample = numpyro.sample(self.name, mixture_dist)
+        return {self.name: sample}
+    
+    def sample_posterior(self, rng_key, params, sample_shape=()):
+        logits = params[f"{self.name}_mixture_logits"]
+        weights = jax.nn.softmax(logits)
+        means = params[f"{self.name}_mixture_means"]
+        log_stds = params[f"{self.name}_mixture_log_stds"]
+        
+        component_dist = dist.Independent(dist.Normal(means, jnp.exp(log_stds)), 1)
+        mixture_dist = dist.MixtureSameFamily(dist.Categorical(probs=weights), component_dist)
+        sample = mixture_dist.sample(rng_key, sample_shape)
+        return {self.name: sample}
+
+
+class MixtureMultiScaleFineImagGuide(AutoGuide):
+    def __init__(self, model, fine_K, num_components=3, name="multi_scale_spectral_fine_imag"):
+        self.fine_K = fine_K
+        self.num_components = num_components
+        self.name = name
+        super().__init__(model)
+    
+    def __call__(self, *args, **kwargs):
+        logits = numpyro.param(f"{self.name}_mixture_logits", jnp.zeros((self.num_components,)))
+        weights = jax.nn.softmax(logits)
+        
+        means = numpyro.param(f"{self.name}_mixture_means", jnp.zeros((self.num_components, self.fine_K)))
+        log_stds = numpyro.param(f"{self.name}_mixture_log_stds", -3.0 * jnp.ones((self.num_components, self.fine_K)))
+        
+        component_dist = dist.Independent(dist.Normal(means, jnp.exp(log_stds)), 1)
+        mixture_dist = dist.MixtureSameFamily(dist.Categorical(probs=weights), component_dist)
+        
+        sample = numpyro.sample(self.name, mixture_dist)
+        return {self.name: sample}
+    
+    def sample_posterior(self, rng_key, params, sample_shape=()):
+        logits = params[f"{self.name}_mixture_logits"]
+        weights = jax.nn.softmax(logits)
+        means = params[f"{self.name}_mixture_means"]
+        log_stds = params[f"{self.name}_mixture_log_stds"]
+        
+        component_dist = dist.Independent(dist.Normal(means, jnp.exp(log_stds)), 1)
+        mixture_dist = dist.MixtureSameFamily(dist.Categorical(probs=weights), component_dist)
+        sample = mixture_dist.sample(rng_key, sample_shape)
+        return {self.name: sample}
+
+class MixtureMultiScaleCoarseRealGuide(AutoGuide):
+    """
+    Mixture of Gaussians guide for the coarse real components of the multi-scale spectral layer.
+    Targets the site "multi_scale_spectral_coarse_real".
+    """
+    def __init__(self, model, coarse_K, num_components=3, name="multi_scale_spectral_coarse_real"):
+        self.coarse_K = coarse_K
+        self.num_components = num_components
+        self.name = name
+        super().__init__(model)
+    
+    def __call__(self, *args, **kwargs):
+        # Mixture logits for the components.
+        logits = numpyro.param(f"{self.name}_mixture_logits", jnp.zeros((self.num_components,)))
+        weights = jax.nn.softmax(logits)
+        
+        # Mean and log_std for each Gaussian component.
+        means = numpyro.param(f"{self.name}_mixture_means", jnp.zeros((self.num_components, self.coarse_K)))
+        log_stds = numpyro.param(f"{self.name}_mixture_log_stds", -3.0 * jnp.ones((self.num_components, self.coarse_K)))
+        
+        component_dist = dist.Independent(dist.Normal(means, jnp.exp(log_stds)), 1)
+        mixture_dist = dist.MixtureSameFamily(dist.Categorical(probs=weights), component_dist)
+        
+        sample = numpyro.sample(self.name, mixture_dist)
+        return {self.name: sample}
+    
+    def sample_posterior(self, rng_key, params, sample_shape=()):
+        logits = params[f"{self.name}_mixture_logits"]
+        weights = jax.nn.softmax(logits)
+        means = params[f"{self.name}_mixture_means"]
+        log_stds = params[f"{self.name}_mixture_log_stds"]
+        
+        component_dist = dist.Independent(dist.Normal(means, jnp.exp(log_stds)), 1)
+        mixture_dist = dist.MixtureSameFamily(dist.Categorical(probs=weights), component_dist)
+        
+        sample = mixture_dist.sample(rng_key, sample_shape)
+        return {self.name: sample}
+
+
+class MixtureMultiScaleCoarseImagGuide(AutoGuide):
+    """
+    Mixture of Gaussians guide for the coarse imaginary components of the multi-scale spectral layer.
+    Targets the site "multi_scale_spectral_coarse_imag".
+    """
+    def __init__(self, model, coarse_K, num_components=3, name="multi_scale_spectral_coarse_imag"):
+        self.coarse_K = coarse_K
+        self.num_components = num_components
+        self.name = name
+        super().__init__(model)
+    
+    def __call__(self, *args, **kwargs):
+        logits = numpyro.param(f"{self.name}_mixture_logits", jnp.zeros((self.num_components,)))
+        weights = jax.nn.softmax(logits)
+        
+        means = numpyro.param(f"{self.name}_mixture_means", jnp.zeros((self.num_components, self.coarse_K)))
+        log_stds = numpyro.param(f"{self.name}_mixture_log_stds", -3.0 * jnp.ones((self.num_components, self.coarse_K)))
+        
+        component_dist = dist.Independent(dist.Normal(means, jnp.exp(log_stds)), 1)
+        mixture_dist = dist.MixtureSameFamily(dist.Categorical(probs=weights), component_dist)
+        
+        sample = numpyro.sample(self.name, mixture_dist)
+        return {self.name: sample}
+    
+    def sample_posterior(self, rng_key, params, sample_shape=()):
+        logits = params[f"{self.name}_mixture_logits"]
+        weights = jax.nn.softmax(logits)
+        means = params[f"{self.name}_mixture_means"]
+        log_stds = params[f"{self.name}_mixture_log_stds"]
+        
+        component_dist = dist.Independent(dist.Normal(means, jnp.exp(log_stds)), 1)
+        mixture_dist = dist.MixtureSameFamily(dist.Categorical(probs=weights), component_dist)
+        
+        sample = mixture_dist.sample(rng_key, sample_shape)
+        return {self.name: sample}
+
+
+
+class LowRankMultiScaleRealGuide(AutoGuide):
+    """
+    Low-rank covariance guide for the multi-scale real Fourier coefficients.
+    
+    This guide jointly approximates both the coarse and fine real parts.
+    It defines a low-rank factorization for the joint covariance over a vector of length
+    (coarse_K + fine_K) and then splits the resulting vector into coarse and fine components.
     
     Args:
-      model: the model function.
-      K: number of frequencies for this site.
-      rank: desired rank for the low-rank approximation.
-      site_name: should be one of the following:
-         - "multi_scale_spectral_coarse_real"
-         - "multi_scale_spectral_fine_real"
-         - "multi_scale_spectral_coarse_imag"
-         - "multi_scale_spectral_fine_imag"
+        model: The model function.
+        coarse_K: Number of coarse frequencies.
+        fine_K: Number of fine frequencies.
+        rank: The rank for the low-rank approximation.
+        name: Base name for the guide. The resulting sample sites are expected to be
+              "multi_scale_spectral_coarse_real" and "multi_scale_spectral_fine_real".
     """
-    def __init__(self, model: Callable, K: int, rank: int = 2, site_name: str = "multi_scale_spectral_coarse_real"):
+    def __init__(self, model: Callable, coarse_K: int, fine_K: int, rank: int = 2,
+                 name: str = "multi_scale_spectral_real"):
         super().__init__(model)
-        self.K = K
+        self.coarse_K = coarse_K
+        self.fine_K = fine_K
+        self.total_K = coarse_K + fine_K
         self.rank = rank
-        self.site_name = site_name
+        self.name = name
 
     def __call__(self, *args, **kwargs):
-        mean = numpyro.param(f"{self.site_name}_mean", jnp.zeros((self.K,)))
-        V_init = jnp.zeros((self.K, self.rank))
-        V = numpyro.param(f"{self.site_name}_V", V_init)
-        diag_init = -3.0 * jnp.ones((self.K,))
-        log_diag = numpyro.param(f"{self.site_name}_log_diag", diag_init)
-
+        # Mean vector for the joint real coefficients
+        mean = numpyro.param(f"{self.name}_mean", jnp.zeros((self.total_K,)))
+        # Low-rank factor: V with shape (total_K, rank)
+        V_init = jnp.zeros((self.total_K, self.rank))
+        V = numpyro.param(f"{self.name}_V", V_init)
+        # Log diagonal entries for the diagonal factor of the covariance.
+        diag_init = -3.0 * jnp.ones((self.total_K,))
+        log_diag = numpyro.param(f"{self.name}_log_diag", diag_init)
+        
+        # Reconstruct covariance: Cov = V @ V^T + diag(exp(log_diag))
         cov = (V @ V.T) + jnp.diag(jnp.exp(log_diag))
-        z = numpyro.sample(self.site_name, dist.MultivariateNormal(loc=mean, covariance_matrix=cov))
-        return {self.site_name: z}
+        
+        # Sample joint real vector
+        z = numpyro.sample(
+            self.name,
+            dist.MultivariateNormal(loc=mean, covariance_matrix=cov)
+        )
+        
+        # Split into coarse and fine parts.
+        coarse_sample = z[:self.coarse_K]
+        fine_sample = z[self.coarse_K:]
+        return {
+            "multi_scale_spectral_coarse_real": coarse_sample,
+            "multi_scale_spectral_fine_real": fine_sample
+        }
 
     def sample_posterior(self, rng_key, params, sample_shape=()):
-        mean = params[f"{self.site_name}_mean"]
-        V = params[f"{self.site_name}_V"]
-        log_diag = params[f"{self.site_name}_log_diag"]
+        mean = params[f"{self.name}_mean"]
+        V = params[f"{self.name}_V"]
+        log_diag = params[f"{self.name}_log_diag"]
         cov = (V @ V.T) + jnp.diag(jnp.exp(log_diag))
-        samples = dist.MultivariateNormal(mean, cov).sample(rng_key, sample_shape)
-        return {self.site_name: samples}
+        dist_mv = dist.MultivariateNormal(mean, cov)
+        z = dist_mv.sample(rng_key, sample_shape=sample_shape)
+        coarse_sample = z[..., :self.coarse_K]  # support batch sampling
+        fine_sample = z[..., self.coarse_K:]
+        return {
+            "multi_scale_spectral_coarse_real": coarse_sample,
+            "multi_scale_spectral_fine_real": fine_sample
+        }
+
+
+class LowRankMultiScaleImagGuide(AutoGuide):
+    """
+    Low-rank covariance guide for the multi-scale imaginary Fourier coefficients.
+    
+    This guide jointly approximates both the coarse and fine imaginary parts.
+    It uses the same idea as the real guide: a joint low-rank parameterization
+    and splitting the sample into coarse and fine components.
+    
+    Args:
+        model: The model function.
+        coarse_K: Number of coarse frequencies.
+        fine_K: Number of fine frequencies.
+        rank: The rank for the low-rank approximation.
+        name: Base name for the guide. The resulting sample sites are expected to be
+              "multi_scale_spectral_coarse_imag" and "multi_scale_spectral_fine_imag".
+    """
+    def __init__(self, model: Callable, coarse_K: int, fine_K: int, rank: int = 2,
+                 name: str = "multi_scale_spectral_imag"):
+        super().__init__(model)
+        self.coarse_K = coarse_K
+        self.fine_K = fine_K
+        self.total_K = coarse_K + fine_K
+        self.rank = rank
+        self.name = name
+
+    def __call__(self, *args, **kwargs):
+        mean = numpyro.param(f"{self.name}_mean", jnp.zeros((self.total_K,)))
+        V_init = jnp.zeros((self.total_K, self.rank))
+        V = numpyro.param(f"{self.name}_V", V_init)
+        diag_init = -3.0 * jnp.ones((self.total_K,))
+        log_diag = numpyro.param(f"{self.name}_log_diag", diag_init)
+        
+        cov = (V @ V.T) + jnp.diag(jnp.exp(log_diag))
+        
+        z = numpyro.sample(
+            self.name,
+            dist.MultivariateNormal(loc=mean, covariance_matrix=cov)
+        )
+        
+        # Split the joint sample into coarse and fine imaginary parts
+        coarse_sample = z[:self.coarse_K]
+        fine_sample = z[self.coarse_K:]
+        return {
+            "multi_scale_spectral_coarse_imag": coarse_sample,
+            "multi_scale_spectral_fine_imag": fine_sample
+        }
+
+    def sample_posterior(self, rng_key, params, sample_shape=()):
+        mean = params[f"{self.name}_mean"]
+        V = params[f"{self.name}_V"]
+        log_diag = params[f"{self.name}_log_diag"]
+        cov = (V @ V.T) + jnp.diag(jnp.exp(log_diag))
+        dist_mv = dist.MultivariateNormal(mean, cov)
+        z = dist_mv.sample(rng_key, sample_shape=sample_shape)
+        coarse_sample = z[..., :self.coarse_K]
+        fine_sample = z[..., self.coarse_K:]
+        return {
+            "multi_scale_spectral_coarse_imag": coarse_sample,
+            "multi_scale_spectral_fine_imag": fine_sample
+        }
+
     
 
 class BayesianConv2DLowRankGuide(AutoGuide):
