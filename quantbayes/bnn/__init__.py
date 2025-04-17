@@ -4,18 +4,13 @@ from .layers.custom_jvp import (
     BlockCirculantProcess,
     Circulant,
     SpectralCirculantLayer,
-    SpectralTransposed2d,
-    SpectralConv2d,
-    SpectralConv1d,
+    SpectralPowerLawConv2d,
 )
 from .layers import (
     LSTM,
     Conv1d,
     Conv2d,
-    FFTConv1d,
-    FFTConv2d,
     FFTParticleLinear,
-    FFTTransposedConv2d,
     FourierNeuralOperator1D,
     GaussianProcessLayer,
     LayerNorm,
@@ -31,6 +26,7 @@ from .layers import (
     TransposedConv2d,
     VariationalLayer,
 )
+from .guide.low_rank_fft_guide import LowRankFFTGuide
 
 __all__ = [
     "Module",
@@ -39,15 +35,13 @@ __all__ = [
     "BlockCirculant",
     "SpectralCirculantLayer",
     "BlockCirculantProcess",
+    "SpectralPowerLawConv2d",
     "FourierNeuralOperator1D",
     "ParticleLinear",
     "FFTParticleLinear",
     "Conv1d",
     "Conv2d",
-    "FFTConv1d",
-    "FFTConv2d",
     "TransposedConv2d",
-    "FFTTransposedConv2d",
     "MaxPool2d",
     "SelfAttention",
     "MultiHeadSelfAttention",
@@ -59,7 +53,5 @@ __all__ = [
     "VariationalLayer",
     "SpectralDenseBlock",
     "MixtureOfTwoLayers",
-    "SpectralTransposed2d",
-    "SpectralConv2d",
-    "SpectralConv1d",
+    "LowRankFFTGuide",
 ]

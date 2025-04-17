@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Callable, Optional
 
 import jax
 import jax.numpy as jnp
@@ -11,9 +11,7 @@ __all__ = [
     "BlockCirculant",
     "SpectralCirculantLayer",
     "BlockCirculantProcess",
-    "SpectralConv1d",
-    "SpectralConv2d",
-    "SpectralTransposed2d",
+    "SpectralPowerLawConv2d",
 ]
 
 
@@ -727,377 +725,161 @@ class BlockCirculantProcess:
         return self._last_block_fft
 
 
-# =============================================================================
-# Custom JVP functions for spectral convolution operations
-# =============================================================================
+def _enforce_hermitian(fft2d: jnp.ndarray) -> jnp.ndarray:
+    """Return the closest Hermitian‑symmetric tensor so that the spatial iFFT
+    is strictly real‑valued.  Also forces DC / Nyquist lines to be real.
+    """
+    H, W = fft2d.shape
+    conj_flip = jnp.flip(jnp.conj(fft2d), (0, 1))
+
+    # Average with its own conjugate flip
+    herm = 0.5 * (fft2d + conj_flip)
+
+    # Enforce real constraint on special frequencies
+    herm = herm.at[0, 0].set(jnp.real(herm[0, 0]))  # DC term
+    if H % 2 == 0:  # horizontal Nyquist
+        herm = herm.at[H // 2, :].set(jnp.real(herm[H // 2, :]))
+    if W % 2 == 0:  # vertical Nyquist
+        herm = herm.at[:, W // 2].set(jnp.real(herm[:, W // 2]))
+    return herm
 
 
-# -----------------------------
-# 1D Spectral Convolution
-# -----------------------------
+# -----------------------------------------------------------------------------
+# Core FFT‑based circulant convolution with custom JVP (for fast AD)
+# -----------------------------------------------------------------------------
+
+
 @jax.custom_jvp
-def spectral_conv1d_func(
-    x: jnp.ndarray, weight_fft: jnp.ndarray, bias: jnp.ndarray
-) -> jnp.ndarray:
+def spectral_circulant_conv2d(x: jnp.ndarray, fft_kernel: jnp.ndarray) -> jnp.ndarray:
+    """Circulant 2‑D convolution using pre‑computed Fourier kernel coefficients.
+
+    Parameters
+    ----------
+    x           : (batch?, H_in, W_in) real inputs.
+    fft_kernel  : (H_pad,  W_pad)     complex Fourier coefficients (Hermitian).
+
+    Returns
+    -------
+    y           : Same leading batch dims, spatial dims (H_pad, W_pad).
+                  If you want *valid* convolution simply slice afterwards.
     """
-    x: shape (B, Cin, W)
-    weight_fft: shape (Cout, Cin, rfft_length)
-    bias: shape (Cout,)
-    """
-    B, Cin, W = x.shape
-    rfft_length = weight_fft.shape[-1]
-    # Determine FFT size from the half-spectrum length.
-    fft_size = 2 * (rfft_length - 1) if rfft_length > 1 else 1
-    if fft_size > W:
-        pad_amount = fft_size - W
-        x = jnp.pad(x, ((0, 0), (0, 0), (0, pad_amount)))
-    X_fft = jnp.fft.rfft(x, n=fft_size, axis=-1)
-    # Expand dimensions to align for multiplication.
-    X_fft_exp = X_fft[:, None, :, :]  # (B, 1, Cin, rfft_length)
-    W_fft_exp = weight_fft[None, :, :, :]  # (1, Cout, Cin, rfft_length)
-    Y_fft = jnp.sum(X_fft_exp * W_fft_exp, axis=2)  # (B, Cout, rfft_length)
-    y = jnp.fft.irfft(Y_fft, n=fft_size, axis=-1)
-    y = y[..., :W]  # Crop back to original width.
-    return y + bias[None, :, None]
+    H_pad, W_pad = fft_kernel.shape
+    single = x.ndim == 2
+    if single:
+        x = x[None, ...]
+
+    # Zero‑pad (or truncate) so spatial dims match H_pad×W_pad
+    H_in, W_in = x.shape[-2:]
+    pad_h = max(0, H_pad - H_in)
+    pad_w = max(0, W_pad - W_in)
+    x_pad = jnp.pad(x, ((0, 0), (0, pad_h), (0, pad_w)))
+    x_pad = x_pad[..., :H_pad, :W_pad]  # truncate if input bigger than kernel
+
+    Xf = jnp.fft.fftn(x_pad, axes=(-2, -1))
+    Yf = Xf * fft_kernel[None, :, :]
+    y = jnp.fft.ifftn(Yf, axes=(-2, -1)).real
+    return y[0] if single else y
 
 
-@spectral_conv1d_func.defjvp
-def spectral_conv1d_func_jvp(primals, tangents):
-    x, weight_fft, bias = primals
-    dx, dweight_fft, dbias = tangents
-    y = spectral_conv1d_func(x, weight_fft, bias)
-    dy = jnp.zeros_like(y)
+@spectral_circulant_conv2d.defjvp
+def _spectral_circulant_conv2d_jvp(primals, tangents):
+    x, fft_kernel = primals
+    dx, dk = tangents
+
+    H_pad, W_pad = fft_kernel.shape
+    single = x.ndim == 2
+    if single:
+        x = x[None, ...]
+        dx = None if dx is None else dx[None, ...]
+
+    # Padding/truncation logic identical to primal computation
+    H_in, W_in = x.shape[-2:]
+    pad_h = max(0, H_pad - H_in)
+    pad_w = max(0, W_pad - W_in)
+    x_pad = jnp.pad(x, ((0, 0), (0, pad_h), (0, pad_w)))
+    x_pad = x_pad[..., :H_pad, :W_pad]
+    dx_pad = None
     if dx is not None:
-        dy += spectral_conv1d_func(dx, weight_fft, jnp.zeros_like(bias))
-    if dweight_fft is not None:
-        dy += spectral_conv1d_func(x, dweight_fft, jnp.zeros_like(bias))
-    if dbias is not None:
-        dy += dbias[None, :, None]
+        dx_pad = jnp.pad(dx, ((0, 0), (0, pad_h), (0, pad_w)))
+        dx_pad = dx_pad[..., :H_pad, :W_pad]
+
+    Xf = jnp.fft.fftn(x_pad, axes=(-2, -1))
+    Yf = Xf * fft_kernel[None, :, :]
+    y = jnp.fft.ifftn(Yf, axes=(-2, -1)).real
+
+    dXf = 0.0 if dx_pad is None else jnp.fft.fftn(dx_pad, axes=(-2, -1))
+    dKf = 0.0 if dk is None else dk
+    dYf = dXf * fft_kernel[None, :, :] + Xf * dKf[None, :, :]
+    dy = jnp.fft.ifftn(dYf, axes=(-2, -1)).real
+    if single:
+        y, dy = y[0], dy[0]
     return y, dy
 
 
-# -----------------------------
-# 2D Spectral Convolution
-# -----------------------------
-@jax.custom_jvp
-def spectral_conv2d_func(
-    x: jnp.ndarray, weight_fft: jnp.ndarray, bias: jnp.ndarray
-) -> jnp.ndarray:
+# -----------------------------------------------------------------------------
+#   1) Single‑α power‑law PSD   ——   baseline layer (Matérn‑½ analogue)
+# -----------------------------------------------------------------------------
+
+
+class SpectralPowerLawConv2d:
+    """Spectral convolution layer whose prior PSD is
+            S(f) ∝ (1 + ||f||^α)^‑1/2   with a learnable or random‑draw α.
+    Works well on smooth data; serves as the *baseline* in our ablations.
     """
-    x: shape (B, Cin, H, W)
-    weight_fft: shape (Cout, Cin, Hf, Wf_rfft)
-    bias: shape (Cout,)
-    """
-    B, Cin, H, W = x.shape
-    Cout, _, Hf, Wf_rfft = weight_fft.shape
-    # For 2D rfft: determine the full width from Wf_rfft.
-    W_full = 2 * (Wf_rfft - 1) if Wf_rfft > 1 else 1
-    # If needed, pad x so that its spatial dims match the desired FFT size.
-    pad_h = Hf - H if Hf > H else 0
-    pad_w = W_full - W if W_full > W else 0
-    if pad_h or pad_w:
-        x = jnp.pad(x, ((0, 0), (0, 0), (0, pad_h), (0, pad_w)))
-    X_fft = jnp.fft.rfft2(x, s=(Hf, W_full), axes=(2, 3))
-    # Expand dimensions for broadcasting.
-    X_fft_exp = X_fft[:, None, :, :, :]  # (B, 1, Cin, Hf, Wf_rfft)
-    # Use the conjugate of weight_fft (as in your derivation).
-    W_fft_exp = jnp.conjugate(weight_fft)[
-        None, :, :, :, :
-    ]  # (1, Cout, Cin, Hf, Wf_rfft)
-    Y_fft = jnp.sum(X_fft_exp * W_fft_exp, axis=2)  # (B, Cout, Hf, Wf_rfft)
-    y = jnp.fft.irfft2(Y_fft, s=(Hf, W_full), axes=(2, 3))
-    y = y[..., :H, :W]
-    return y + bias[None, :, None, None]
 
-
-@spectral_conv2d_func.defjvp
-def spectral_conv2d_func_jvp(primals, tangents):
-    x, weight_fft, bias = primals
-    dx, dweight_fft, dbias = tangents
-    y = spectral_conv2d_func(x, weight_fft, bias)
-    dy = jnp.zeros_like(y)
-    if dx is not None:
-        dy += spectral_conv2d_func(dx, weight_fft, jnp.zeros_like(bias))
-    if dweight_fft is not None:
-        dy += spectral_conv2d_func(x, dweight_fft, jnp.zeros_like(bias))
-    if dbias is not None:
-        dy += dbias[None, :, None, None]
-    return y, dy
-
-
-# -----------------------------
-# 2D Spectral Transposed Convolution
-# -----------------------------
-@jax.custom_jvp
-def spectral_transposed_conv2d_func(
-    x: jnp.ndarray, weight_fft: jnp.ndarray, bias: jnp.ndarray
-) -> jnp.ndarray:
-    """
-    x: shape (B, Cout, H, W)
-    weight_fft: shape (Cin, Cout, Hf, Wf_rfft)
-      (Note: for the transposed layer, the roles of in/out channels are swapped relative to conv2d.)
-    bias: shape (Cin,)
-    """
-    B, Cout, H, W = x.shape
-    _, Cin, Hf, Wf_rfft = weight_fft.shape
-    X_fft = jnp.fft.rfft2(x, axes=(2, 3))
-    # Expand X_fft: (B, Cout, 1, Hf, Wf_rfft)
-    X_fft_exp = X_fft[:, :, None, :, :]
-    W_fft_exp = weight_fft[None, :, :, :, :]  # (1, Cin, Cout, Hf, Wf_rfft)
-    Z_fft = jnp.sum(
-        X_fft_exp * W_fft_exp, axis=1
-    )  # Sum over the original Cout dimension → (B, Cin, Hf, Wf_rfft)
-    W_full = 2 * (Wf_rfft - 1) if Wf_rfft > 1 else 1
-    y = jnp.fft.irfft2(Z_fft, s=(Hf, W_full), axes=(2, 3))
-    y = y[..., :H, :W]
-    return y + (bias[None, :, None, None] if bias is not None else 0.0)
-
-
-@spectral_transposed_conv2d_func.defjvp
-def spectral_transposed_conv2d_func_jvp(primals, tangents):
-    x, weight_fft, bias = primals
-    dx, dweight_fft, dbias = tangents
-    y = spectral_transposed_conv2d_func(x, weight_fft, bias)
-    dy = jnp.zeros_like(y)
-    if dx is not None:
-        dy += spectral_transposed_conv2d_func(dx, weight_fft, jnp.zeros_like(bias))
-    if dweight_fft is not None:
-        dy += spectral_transposed_conv2d_func(x, dweight_fft, jnp.zeros_like(bias))
-    if dbias is not None:
-        dy += dbias[None, :, None, None]
-    return y, dy
-
-
-# =============================================================================
-# NumPyro layer classes that use the above custom functions
-# =============================================================================
-
-
-# -----------------------------
-# SpectralConv1d in NumPyro
-# -----------------------------
-class SpectralConv1d:
     def __init__(
         self,
-        in_channels: int,
-        out_channels: int,
-        fft_size: int,
-        name: str = "spectral_conv1d",
-        alpha: float = 1.0,
-        K: int = None,
-        prior_fn=None,
+        H_in: int,
+        W_in: int,
+        H_pad: Optional[int] = None,
+        W_pad: Optional[int] = None,
+        alpha: Optional[float] = None,
+        alpha_prior: dist.Distribution = dist.HalfNormal(1.0),
+        name: str = "spectral_pw",
+        prior_fn: Optional[Callable[[jnp.ndarray], dist.Distribution]] = None,
     ):
-        """
-        Parameters:
-          in_channels, out_channels: number of input/output channels.
-          fft_size: full length for the FFT (determines the half-spectrum length).
-          alpha: exponent for frequency–dependent decay.
-          K: number of active frequencies (if None, uses full half-spectrum).
-          prior_fn: callable that given a scale returns a distribution (default: Normal(0, scale)).
-        """
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.fft_size = fft_size
-        self.rfft_length = fft_size // 2 + 1 if fft_size > 1 else 1
+        self.H_in, self.W_in = H_in, W_in
+        self.H_pad = H_pad or H_in
+        self.W_pad = W_pad or W_in
         self.alpha = alpha
-        self.K = K if (K is not None and K <= self.rfft_length) else self.rfft_length
+        self.alpha_prior = alpha_prior
         self.name = name
-        self.prior_fn = (
-            prior_fn
-            if prior_fn is not None
-            else (lambda scale: dist.Normal(0.0, scale))
+        self.prior_fn = prior_fn or (lambda scale: dist.Normal(0.0, scale))
+        self._fft_kernel = None  # for inspection
+
+    # ---------------------------------------------------------------------
+    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
+        # 1) draw or use fixed α
+        alpha = (
+            self.alpha
+            if self.alpha is not None
+            else numpyro.sample(f"{self.name}_alpha", self.alpha_prior)
         )
 
-    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
-        # x: shape (B, in_channels, W)
-        freq_idx = jnp.arange(self.rfft_length, dtype=jnp.float32)
-        prior_std = 1.0 / jnp.sqrt(1.0 + (freq_idx**self.alpha))
-        active_idx = jnp.arange(self.K)
-        active_shape = (self.out_channels, self.in_channels, self.K)
-        active_real = numpyro.sample(
-            f"{self.name}_real",
-            self.prior_fn(prior_std[active_idx]).expand(active_shape).to_event(3),
-        )
-        active_imag = numpyro.sample(
-            f"{self.name}_imag",
-            self.prior_fn(prior_std[active_idx]).expand(active_shape).to_event(3),
-        )
-        full_real = jnp.zeros((self.out_channels, self.in_channels, self.rfft_length))
-        full_imag = jnp.zeros((self.out_channels, self.in_channels, self.rfft_length))
-        full_real = full_real.at[..., active_idx].set(active_real)
-        full_imag = full_imag.at[..., active_idx].set(active_imag)
-        # Enforce DC frequency to be real.
-        full_imag = full_imag.at[..., 0].set(0.0)
-        if self.fft_size % 2 == 0 and self.rfft_length > 1:
-            full_imag = full_imag.at[..., -1].set(0.0)
-        weight_fft = full_real + 1j * full_imag
+        # 2) radial frequency grid
+        u = jnp.fft.fftfreq(self.H_pad) * self.H_pad  # 0 … H_pad‑1 in natural units
+        v = jnp.fft.fftfreq(self.W_pad) * self.W_pad
+        U, V = jnp.meshgrid(u, v, indexing="ij")
+        R = jnp.sqrt(U**2 + V**2)
+
+        std = 1.0 / jnp.sqrt(1.0 + R**alpha)  # (H_pad, W_pad)
+
+        # 3) sample complex FFT with given std – imaginary part gets same scale
+        real = numpyro.sample(f"{self.name}_real", self.prior_fn(std).to_event(2))
+        imag = numpyro.sample(f"{self.name}_imag", self.prior_fn(std).to_event(2))
+
+        fft2d = _enforce_hermitian(real + 1j * imag)
+        self._fft_kernel = jax.lax.stop_gradient(fft2d)
+
+        # 4) bias term (optional)
         bias = numpyro.sample(
             f"{self.name}_bias",
-            dist.Normal(0.0, 1.0).expand([self.out_channels]).to_event(1),
-        )
-        return spectral_conv1d_func(x, weight_fft, bias)
-
-
-# -----------------------------
-# SpectralConv2d in NumPyro
-# -----------------------------
-class SpectralConv2d:
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        fft_size: tuple,
-        name: str = "spectral_conv2d",
-        alpha: float = 1.0,
-        K: tuple = None,
-        prior_fn=None,
-    ):
-        """
-        Parameters:
-          fft_size: tuple (H_fft, W_fft) specifying the desired FFT size.
-          K: tuple (K_h, K_w) for the number of active frequencies (default: full spectrum).
-        """
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.fft_size = fft_size
-        self.H_fft, self.W_fft = fft_size
-        self.Wf_rfft = self.W_fft // 2 + 1 if self.W_fft > 1 else 1
-        self.Hf = self.H_fft
-        self.alpha = alpha
-        if K is None:
-            self.K_h, self.K_w = self.Hf, self.Wf_rfft
-        else:
-            self.K_h, self.K_w = K
-        self.name = name
-        self.prior_fn = (
-            prior_fn
-            if prior_fn is not None
-            else (lambda scale: dist.Normal(0.0, scale))
+            dist.Normal(0.0, 1.0).expand([self.H_pad, self.W_pad]).to_event(2),
         )
 
-    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
-        # x: shape (B, in_channels, H, W)
-        freq_idx_h = jnp.arange(self.Hf, dtype=jnp.float32)
-        freq_idx_w = jnp.arange(self.Wf_rfft, dtype=jnp.float32)
-        decay_h = 1.0 / jnp.sqrt(1.0 + (freq_idx_h**self.alpha))
-        decay_w = 1.0 / jnp.sqrt(1.0 + (freq_idx_w**self.alpha))
-        prior_std = jnp.outer(decay_h, decay_w)  # shape (Hf, Wf_rfft)
-        active_idx_h = jnp.arange(self.K_h)
-        active_idx_w = jnp.arange(self.K_w)
-        active_shape = (self.out_channels, self.in_channels, self.K_h, self.K_w)
-        active_real = numpyro.sample(
-            f"{self.name}_real",
-            self.prior_fn(prior_std[active_idx_h[:, None], active_idx_w[None, :]])
-            .expand(active_shape)
-            .to_event(4),
-        )
-        active_imag = numpyro.sample(
-            f"{self.name}_imag",
-            self.prior_fn(prior_std[active_idx_h[:, None], active_idx_w[None, :]])
-            .expand(active_shape)
-            .to_event(4),
-        )
-        full_real = jnp.zeros(
-            (self.out_channels, self.in_channels, self.Hf, self.Wf_rfft)
-        )
-        full_imag = jnp.zeros(
-            (self.out_channels, self.in_channels, self.Hf, self.Wf_rfft)
-        )
-        # Fill the top–left active block.
-        full_real = full_real.at[:, :, active_idx_h[:, None], active_idx_w].set(
-            active_real
-        )
-        full_imag = full_imag.at[:, :, active_idx_h[:, None], active_idx_w].set(
-            active_imag
-        )
-        # Enforce the DC component (top–left element) to be real.
-        full_imag = full_imag.at[:, :, 0, 0].set(0.0)
-        if self.W_fft % 2 == 0 and self.Wf_rfft > 1:
-            full_imag = full_imag.at[:, :, :, -1].set(0.0)
-        weight_fft = full_real + 1j * full_imag
-        bias = numpyro.sample(
-            f"{self.name}_bias",
-            dist.Normal(0.0, 1.0).expand([self.out_channels]).to_event(1),
-        )
-        return spectral_conv2d_func(x, weight_fft, bias)
+        return spectral_circulant_conv2d(x, fft2d) + bias
 
-
-# -----------------------------
-# SpectralTransposed2d in NumPyro
-# -----------------------------
-class SpectralTransposed2d:
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        fft_size: tuple,
-        name: str = "spectral_transposed_conv2d",
-        alpha: float = 1.0,
-        K: tuple = None,
-        prior_fn=None,
-    ):
-        """
-        Here the layer maps an input of shape (B, out_channels, H, W) to an output of shape (B, in_channels, H, W).
-        Note: the roles of in_channels and out_channels are swapped relative to SpectralConv2d.
-        """
-        self.in_channels = in_channels  # output channels of the transposed layer
-        self.out_channels = out_channels  # input channels of the transposed layer
-        self.fft_size = fft_size
-        self.H_fft, self.W_fft = fft_size
-        self.Wf_rfft = self.W_fft // 2 + 1 if self.W_fft > 1 else 1
-        self.Hf = self.H_fft
-        self.alpha = alpha
-        if K is None:
-            self.K_h, self.K_w = self.Hf, self.Wf_rfft
-        else:
-            self.K_h, self.K_w = K
-        self.name = name
-        self.prior_fn = (
-            prior_fn
-            if prior_fn is not None
-            else (lambda scale: dist.Normal(0.0, scale))
-        )
-
-    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
-        # x: shape (B, out_channels, H, W)
-        freq_idx_h = jnp.arange(self.Hf, dtype=jnp.float32)
-        freq_idx_w = jnp.arange(self.Wf_rfft, dtype=jnp.float32)
-        decay_h = 1.0 / jnp.sqrt(1.0 + (freq_idx_h**self.alpha))
-        decay_w = 1.0 / jnp.sqrt(1.0 + (freq_idx_w**self.alpha))
-        prior_std = jnp.outer(decay_h, decay_w)
-        active_idx_h = jnp.arange(self.K_h)
-        active_idx_w = jnp.arange(self.K_w)
-        active_shape = (self.in_channels, self.out_channels, self.K_h, self.K_w)
-        active_real = numpyro.sample(
-            f"{self.name}_real",
-            self.prior_fn(prior_std[active_idx_h[:, None], active_idx_w[None, :]])
-            .expand(active_shape)
-            .to_event(4),
-        )
-        active_imag = numpyro.sample(
-            f"{self.name}_imag",
-            self.prior_fn(prior_std[active_idx_h[:, None], active_idx_w[None, :]])
-            .expand(active_shape)
-            .to_event(4),
-        )
-        full_real = jnp.zeros(
-            (self.in_channels, self.out_channels, self.Hf, self.Wf_rfft)
-        )
-        full_imag = jnp.zeros(
-            (self.in_channels, self.out_channels, self.Hf, self.Wf_rfft)
-        )
-        full_real = full_real.at[:, :, active_idx_h[:, None], active_idx_w].set(
-            active_real
-        )
-        full_imag = full_imag.at[:, :, active_idx_h[:, None], active_idx_w].set(
-            active_imag
-        )
-        full_imag = full_imag.at[:, :, 0, 0].set(0.0)
-        if self.W_fft % 2 == 0 and self.Wf_rfft > 1:
-            full_imag = full_imag.at[:, :, :, -1].set(0.0)
-        weight_fft = full_real + 1j * full_imag
-        bias = numpyro.sample(
-            f"{self.name}_bias",
-            dist.Normal(0.0, 1.0).expand([self.in_channels]).to_event(1),
-        )
-        return spectral_transposed_conv2d_func(x, weight_fft, bias)
+    def get_fft_kernel(self):
+        if self._fft_kernel is None:
+            raise RuntimeError("Layer has not been called yet.")
+        return self._fft_kernel

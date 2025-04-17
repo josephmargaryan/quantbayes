@@ -23,6 +23,7 @@ from .vis_classification import (
     visualize_uncertainty_multiclass,
 )
 from .log_density import PredictiveLogDensityCalculator
+from .spectral_kernel import SpectralDiagnostics
 
 __all__ = [
     "PredictiveLogDensityCalculator",
@@ -44,4 +45,5 @@ __all__ = [
     "predict_gp_binary",
     "visualize_predictions",
     "visualize_predictions_binary",
+    "SpectralDiagnostics",
 ]
