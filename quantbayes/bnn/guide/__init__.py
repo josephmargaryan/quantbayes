@@ -1,3 +1,3 @@
-from .low_rank_fft_guide import LowRankFFTGuide
+from .low_rank_fft_guide import LowRankFFTGuide, LowRankNonStatFFTGuide
 
-__all__ = ["LowRankFFTGuide"]
+__all__ = ["LowRankFFTGuide", "LowRankNonStatFFTGuide"]

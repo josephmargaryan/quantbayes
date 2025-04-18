@@ -26,7 +26,7 @@ from .layers import (
     TransposedConv2d,
     VariationalLayer,
 )
-from .guide.low_rank_fft_guide import LowRankFFTGuide
+from . import guide
 
 __all__ = [
     "Module",
@@ -53,5 +53,5 @@ __all__ = [
     "VariationalLayer",
     "SpectralDenseBlock",
     "MixtureOfTwoLayers",
-    "LowRankFFTGuide",
+    "guide",
 ]
