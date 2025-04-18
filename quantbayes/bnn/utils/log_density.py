@@ -12,7 +12,7 @@ log_density = density.compute_predictive_log_density(X_test, y_test)
 """
 
 
-class PredictiveLogDensityCalculator:
+class Lppd:
     def __init__(
         self, mcmc_samples, mode="binary", param_keys=None, custom_likelihood_func=None
     ):

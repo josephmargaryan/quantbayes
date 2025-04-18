@@ -12,6 +12,8 @@ __all__ = [
     "expected_calibration_error",
     "maximum_calibration_error",
     "multiclass_brier_score",
+    "binary_nll",
+    "multiclass_nll"
 ]
 
 
@@ -503,3 +505,43 @@ def expected_calibration_error(y_true, y_prob, num_bins=10):
             ece_total += ece_class
         ece = ece_total / num_classes
     return ece
+
+
+def binary_nll(y_true, y_prob, eps=1e-15, normalize=True):
+    """
+    Compute the Negative Log‑Likelihood (log‑loss) for binary classification.
+
+    Parameters:
+      y_true (array-like, shape (n_samples,)): True labels (0 or 1).
+      y_prob (array-like, shape (n_samples,)): Predicted probability of class 1.
+      eps (float): Small constant to avoid log(0).
+      normalize (bool): If True, return mean NLL; else return summed NLL.
+
+    Returns:
+      nll (float): Binary log‑loss (mean or sum).
+    """
+    p = np.clip(y_prob, eps, 1 - eps)
+    # elementwise loss
+    losses = -(y_true * np.log(p) + (1 - y_true) * np.log(1 - p))
+    return losses.mean() if normalize else losses.sum()
+
+
+def multiclass_nll(y_true, y_prob, eps=1e-15, normalize=True):
+    """
+    Compute the Negative Log‑Likelihood (log‑loss) for multiclass classification.
+
+    Parameters:
+      y_true (array-like, shape (n_samples,)): True labels as integers 0..K-1.
+      y_prob (array-like, shape (n_samples, n_classes)): Predicted class probabilities.
+      eps (float): Small constant to avoid log(0).
+      normalize (bool): If True, return mean NLL; else return summed NLL.
+
+    Returns:
+      nll (float): Multiclass log‑loss (mean or sum).
+    """
+    p = np.clip(y_prob, eps, 1 - eps)
+    # pick out the probability assigned to the true class for each sample
+    idx = np.arange(len(y_true))
+    true_class_probs = p[idx, y_true]
+    losses = -np.log(true_class_probs)
+    return losses.mean() if normalize else losses.sum()

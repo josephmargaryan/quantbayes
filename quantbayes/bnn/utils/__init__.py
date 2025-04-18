@@ -17,16 +17,18 @@ from .model_calibration import (
     plot_roc_curve,
     maximum_calibration_error,
     multiclass_brier_score,
+    multiclass_nll,
+    binary_nll
 )
 from .vis_classification import (
     visualize_uncertainty_binary,
     visualize_uncertainty_multiclass,
 )
-from .log_density import PredictiveLogDensityCalculator
+from .log_density import Lppd
 from .spectral_kernel import SpectralDiagnostics
 
 __all__ = [
-    "PredictiveLogDensityCalculator",
+    "Lppd",
     "CalibratedBNN",
     "EntropyAndMutualInformation",
     "BayesianAnalysis",
@@ -34,6 +36,8 @@ __all__ = [
     "maximum_calibration_error",
     "multiclass_brier_score",
     "plot_calibration_curve",
+    "multiclass_nll",
+    "binary_nll",
     "expected_calibration_error",
     "plot_hdi",
     "evaluate_mcmc",
