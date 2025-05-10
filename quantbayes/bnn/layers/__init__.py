@@ -4,6 +4,10 @@ from .custom_jvp import (
     BlockCirculantProcess,
     Circulant,
     SpectralCirculantLayer2d,
+    AdaptiveSpectralCirculantLayer,
+    AdaptiveSpectralCirculantLayer2d,
+    PatchWiseSpectralMixture1D,
+    PatchWiseSpectralMixture2D,
 )
 from .layers import (
     LSTM,
@@ -32,6 +36,10 @@ __all__ = [
     "Circulant",
     "BlockCirculant",
     "SpectralCirculantLayer",
+    "AdaptiveSpectralCirculantLayer",
+    "AdaptiveSpectralCirculantLayer2d",
+    "PatchWiseSpectralMixture1D",
+    "PatchWiseSpectralMixture2D",
     "BlockCirculantProcess",
     "SpectralCirculantLayer2d",
     "FourierNeuralOperator1D",

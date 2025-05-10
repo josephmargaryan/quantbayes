@@ -1,5 +1,4 @@
 from . import (
-    deepar,
     diffusion,
     dmm,
     energy_based,
@@ -21,7 +20,6 @@ from .trainer.train import (
 )
 
 __all__ = [
-    "deepar",
     "diffusion",
     "dmm",
     "energy_based",

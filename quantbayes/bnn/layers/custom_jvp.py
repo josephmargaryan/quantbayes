@@ -1,4 +1,4 @@
-from typing import Callable, Optional, Tuple
+from typing import Callable, Optional
 
 import jax
 import jax.numpy as jnp
@@ -12,10 +12,10 @@ __all__ = [
     "SpectralCirculantLayer",
     "BlockCirculantProcess",
     "SpectralCirculantLayer2d",
-    "PatchWiseSpectralMixture1DLayer",
-    "PatchWiseSpectralMixture2DLayer",
-    "NonStatSpectralCirculantLayer",
-    "NonStatSpectralConv2d",
+    "PatchWiseSpectralMixture1D",
+    "PatchWiseSpectralMixture2D",
+    "AdaptiveSpectralCirculantLayer",
+    "AdaptiveSpectralCirculantLayer2d",
 ]
 
 
@@ -27,10 +27,8 @@ def fft_matmul_custom(first_row: jnp.ndarray, X: jnp.ndarray) -> jnp.ndarray:
     computes:
         result = ifft( fft(first_row) * fft(X) ).real
     """
-    # Compute FFT of the circulant's defining vector and of the input.
     first_row_fft = jnp.fft.fft(first_row, axis=-1)
     X_fft = jnp.fft.fft(X, axis=-1)
-    # Multiply (with broadcasting) in Fourier domain.
     result_fft = first_row_fft[None, :] * X_fft
     result = jnp.fft.ifft(result_fft, axis=-1).real
     return result
@@ -41,12 +39,10 @@ def fft_matmul_custom_jvp(primals, tangents):
     first_row, X = primals
     d_first_row, dX = tangents
 
-    # Recompute FFTs from the primal inputs (to avoid extra FFT calls in reverse mode).
     first_row_fft = jnp.fft.fft(first_row, axis=-1)
     X_fft = jnp.fft.fft(X, axis=-1)
     primal_out = jnp.fft.ifft(first_row_fft[None, :] * X_fft, axis=-1).real
 
-    # Compute the directional derivatives.
     d_first_row_fft = (
         jnp.fft.fft(d_first_row, axis=-1) if d_first_row is not None else 0.0
     )
@@ -80,31 +76,21 @@ def block_circulant_matmul_custom(
             Y_fft[:, i, :] = sum_j X_fft[:, j, :] * conj(W_fft[i, j, :])
       5. Returns Y = ifft(Y_fft).real reshaped to (batch, k_out*b).
     """
-    # Ensure x is 2D.
     if x.ndim == 1:
         x = x[None, :]
     batch_size, d_in = x.shape
     k_out, k_in, b = W.shape
-    d_out = k_out * b
 
-    # Optionally apply the Bernoulli diagonal.
     if d_bernoulli is not None:
         x = x * d_bernoulli[None, :]
-
-    # Zero-pad x if needed.
     pad_len = k_in * b - d_in
     if pad_len > 0:
         x = jnp.pad(x, ((0, 0), (0, pad_len)))
-    # Reshape x into blocks.
     x_blocks = x.reshape(batch_size, k_in, b)
 
-    # Compute FFTs.
-    W_fft = jnp.fft.fft(W, axis=-1)  # shape: (k_out, k_in, b)
-    X_fft = jnp.fft.fft(x_blocks, axis=-1)  # shape: (batch, k_in, b)
+    W_fft = jnp.fft.fft(W, axis=-1)
+    X_fft = jnp.fft.fft(x_blocks, axis=-1)
 
-    # Multiply in Fourier domain and sum over the input blocks.
-    # For each output block row i:
-    #   Y_fft[:, i, :] = sum_j X_fft[:, j, :] * conj(W_fft[i, j, :])
     Y_fft = jnp.sum(X_fft[:, None, :, :] * jnp.conjugate(W_fft)[None, :, :, :], axis=2)
     Y = jnp.fft.ifft(Y_fft, axis=-1).real
     out = Y.reshape(batch_size, k_out * b)
@@ -118,14 +104,13 @@ def block_circulant_matmul_custom_jvp(primals, tangents):
         dW,
         dx,
         dd,
-    ) = tangents  # dd is the tangent for d_bernoulli (ignored here for simplicity)
+    ) = tangents
 
     if x.ndim == 1:
         x = x[None, :]
     batch_size, d_in = x.shape
     k_out, k_in, b = W.shape
 
-    # Forward pass (as above).
     if d_bernoulli is not None:
         x_eff = x * d_bernoulli[None, :]
     else:
@@ -139,7 +124,6 @@ def block_circulant_matmul_custom_jvp(primals, tangents):
     Y_fft = jnp.sum(X_fft[:, None, :, :] * jnp.conjugate(W_fft)[None, :, :, :], axis=2)
     primal_out = jnp.fft.ifft(Y_fft, axis=-1).real.reshape(batch_size, k_out * b)
 
-    # Compute tangent for x.
     if dx is None:
         dx_eff = 0.0
     else:
@@ -155,15 +139,11 @@ def block_circulant_matmul_custom_jvp(primals, tangents):
     else:
         X_tangent_fft = 0.0
 
-    # Compute tangent for W.
     if dW is not None:
         W_tangent_fft = jnp.fft.fft(dW, axis=-1)
     else:
         W_tangent_fft = 0.0
 
-    # The directional derivative in the Fourier domain is:
-    # dY_fft = sum_j [ X_tangent_fft[:, None, j, :] * conj(W_fft)[None, :, j, :] +
-    #                  X_fft[:, None, j, :] * conj(W_tangent_fft)[None, :, j, :] ]
     dY_fft = jnp.sum(
         X_tangent_fft[:, None, :, :] * jnp.conjugate(W_fft)[None, :, :, :]
         + X_fft[:, None, :, :] * jnp.conjugate(W_tangent_fft)[None, :, :, :],
@@ -195,14 +175,12 @@ class Circulant:
         bias_prior_fn=lambda shape: dist.Normal(0, 1).expand(shape).to_event(1),
     ):
         self.in_features = in_features
-        # Use padded_dim if provided; otherwise, no padding (i.e. padded_dim equals in_features).
         self.padded_dim = padded_dim if padded_dim is not None else in_features
         self.name = name
         self.first_row_prior_fn = first_row_prior_fn
         self.bias_prior_fn = bias_prior_fn
 
     def __call__(self, X: jnp.ndarray) -> jnp.ndarray:
-        # If padding is used, pad the input X along its last dimension.
         if self.padded_dim != self.in_features:
             pad_width = [(0, 0)] * (X.ndim - 1) + [
                 (0, self.padded_dim - self.in_features)
@@ -244,7 +222,6 @@ class BlockCirculant:
         self.block_size = block_size
         self.name = name
 
-        # Determine block counts along each dimension.
         self.k_in = (in_features + block_size - 1) // block_size
         self.k_out = (out_features + block_size - 1) // block_size
 
@@ -257,13 +234,11 @@ class BlockCirculant:
         )
 
     def __call__(self, X: jnp.ndarray) -> jnp.ndarray:
-        # Sample block–circulant weights.
         W = numpyro.sample(
             f"{self.name}_W",
             self.W_prior_fn([self.k_out, self.k_in, self.block_size]),
         )
 
-        # Optionally sample and apply the Bernoulli diagonal.
         if self.use_diag:
             d_bernoulli = numpyro.sample(
                 f"{self.name}_D",
@@ -272,17 +247,14 @@ class BlockCirculant:
         else:
             d_bernoulli = None
 
-        # Compute the block–circulant multiplication via the custom JVP function.
         out = block_circulant_matmul_custom(W, X, d_bernoulli)
 
-        # Sample and add bias.
         b = numpyro.sample(
             f"{self.name}_bias",
             self.bias_prior_fn([self.out_features]),
         )
         out = out + b[None, :]
 
-        # If the padded output dimension is larger than out_features, slice the result.
         if self.k_out * self.block_size > self.out_features:
             out = out[:, : self.out_features]
 
@@ -394,18 +366,14 @@ class SpectralCirculantLayer:
         self._last_fft_full = None
 
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
-        # Sample or fix alpha (decay exponent)
         if self.alpha is None:
             alpha = numpyro.sample(f"{self.name}_alpha", self.alpha_prior)
         else:
             alpha = self.alpha
 
-        # Frequency indices for half spectrum
         freq_idx = jnp.arange(self.k_half)
-        # Theoretical standard deviation per frequency: s(f)=1/sqrt(1+f^alpha)
         prior_std = 1.0 / jnp.sqrt(1.0 + freq_idx**alpha)
 
-        # Only sample active frequencies (truncation)
         active_idx = jnp.arange(self.K)
         active_real = numpyro.sample(
             f"{self.name}_real",
@@ -416,20 +384,17 @@ class SpectralCirculantLayer:
             self.prior_fn(prior_std[active_idx]).expand([self.K]).to_event(1),
         )
 
-        # Construct full half-spectrum (fill unused frequencies with zero)
         full_real = jnp.zeros((self.k_half,))
         full_imag = jnp.zeros((self.k_half,))
         full_real = full_real.at[active_idx].set(active_real)
         full_imag = full_imag.at[active_idx].set(active_imag)
 
-        # Enforce real-valued DC and (if even) Nyquist terms
         full_imag = full_imag.at[0].set(0.0)
         if (self.padded_dim % 2 == 0) and (self.k_half > 1):
             full_imag = full_imag.at[-1].set(0.0)
 
         half_complex = full_real + 1j * full_imag
 
-        # Construct full Fourier coefficients via Hermitian symmetry
         if (self.padded_dim % 2 == 0) and (self.k_half > 1):
             nyquist = half_complex[-1].real[None]
             fft_full = jnp.concatenate(
@@ -442,7 +407,6 @@ class SpectralCirculantLayer:
 
         self._last_fft_full = jax.lax.stop_gradient(fft_full)
 
-        # Sample bias and add to output (or you could remove bias and use a latent function instead)
         bias = numpyro.sample(
             f"{self.name}_bias_spectral",
             dist.Normal(0.0, 1.0).expand([self.padded_dim]).to_event(1),
@@ -455,13 +419,8 @@ class SpectralCirculantLayer:
             raise ValueError("No Fourier coefficients available; call the layer first.")
         return self._last_fft_full
 
-    # -------------------------------------------------------------------
     # compute the theoretical
-    # covariance kernel from the prior PSD. This is commented out because in
-    # practice, for sampling function values in a GP, you would use the theoretical
-    # PSD (i.e. s(f)^2) to compute the covariance via the inverse FFT, and then
-    # construct the Toeplitz covariance matrix.
-    # -------------------------------------------------------------------
+    # covariance kernel from the prior PSD.
     def compute_covariance_kernel(self):
         """
         Compute the theoretical covariance kernel using the inverse FFT of the
@@ -474,7 +433,6 @@ class SpectralCirculantLayer:
         prior_std = 1.0 / jnp.sqrt(1.0 + freq_idx**self.alpha)
         theoretical_psd = prior_std**2
 
-        # Build a full PSD vector with Hermitian symmetry.
         if (self.padded_dim % 2 == 0) and (self.k_half > 1):
             nyquist = theoretical_psd[-1][None]
             full_psd = jnp.concatenate(
@@ -489,18 +447,12 @@ class SpectralCirculantLayer:
                 [theoretical_psd, jnp.conjugate(theoretical_psd[1:])[::-1]]
             )
 
-        # Compute the autocovariance function (kernel) via the inverse FFT of the PSD.
         kernel = jnp.fft.ifft(full_psd).real
         # For a GP over inputs 0,1,...,N-1, the covariance matrix is Toeplitz:
         # K[i,j] = kernel[|i-j|]
         return kernel
 
 
-# ------------------------------------------------------------------
-
-
-# ----------------------------------------------------------------
-# Custom JVP function for block–circulant multiplication in the frequency domain.
 @jax.custom_jvp
 def block_circulant_spectral_matmul_custom(
     fft_full: jnp.ndarray, x: jnp.ndarray, d_bernoulli: Optional[jnp.ndarray] = None
@@ -514,7 +466,6 @@ def block_circulant_spectral_matmul_custom(
 
     This function works entirely in the frequency domain and is decorated with a custom JVP.
     """
-    # Ensure x is 2D.
     if x.ndim == 1:
         x = x[None, :]
     bs, d_in = x.shape
@@ -523,21 +474,15 @@ def block_circulant_spectral_matmul_custom(
     if d_bernoulli is not None:
         x = x * d_bernoulli[None, :]
 
-    # Zero-pad x to length k_in * b if needed.
     pad_len = k_in * b - d_in
     if pad_len > 0:
         x = jnp.pad(x, ((0, 0), (0, pad_len)))
-    # Reshape into blocks: (bs, k_in, b)
     x_blocks = x.reshape(bs, k_in, b)
 
-    # Compute FFT over the blocks.
     X_fft = jnp.fft.fft(x_blocks, axis=-1)
-    # Multiply: for each output block row i, sum over j:
-    # Y_fft[:, i, :] = sum_j [X_fft[:, j, :] * conj(fft_full[i, j, :])]
     Y_fft = jnp.sum(
         X_fft[:, None, :, :] * jnp.conjugate(fft_full)[None, :, :, :], axis=2
     )
-    # Inverse FFT per block and reshape.
     Y = jnp.fft.ifft(Y_fft, axis=-1).real
     out = Y.reshape(bs, k_out * b)
     return out
@@ -546,9 +491,8 @@ def block_circulant_spectral_matmul_custom(
 @block_circulant_spectral_matmul_custom.defjvp
 def block_circulant_spectral_matmul_custom_jvp(primals, tangents):
     fft_full, x, d_bernoulli = primals
-    dfft, dx, dd = tangents  # dd is for d_bernoulli (we can ignore it for now)
+    dfft, dx, dd = tangents
 
-    # Forward pass (as above).
     if x.ndim == 1:
         x = x[None, :]
     bs, d_in = x.shape
@@ -562,14 +506,12 @@ def block_circulant_spectral_matmul_custom_jvp(primals, tangents):
         x_eff = jnp.pad(x_eff, ((0, 0), (0, pad_len)))
     x_blocks = x_eff.reshape(bs, k_in, b)
     FFT_x = jnp.fft.fft(x_blocks, axis=-1)
-    FFT_full = fft_full  # Already in Fourier domain.
+    FFT_full = fft_full
     Y_fft = jnp.sum(
         FFT_x[:, None, :, :] * jnp.conjugate(FFT_full)[None, :, :, :], axis=2
     )
     primal_out = jnp.fft.ifft(Y_fft, axis=-1).real.reshape(bs, k_out * b)
 
-    # Compute directional derivatives.
-    # For dx:
     if dx is None:
         dX_fft = 0.0
     else:
@@ -579,7 +521,6 @@ def block_circulant_spectral_matmul_custom_jvp(primals, tangents):
         dx_blocks = dx_eff.reshape(bs, k_in, b)
         dX_fft = jnp.fft.fft(dx_blocks, axis=-1)
 
-    # For dfft:
     if dfft is None:
         dFFT = 0.0
     else:
@@ -596,8 +537,6 @@ def block_circulant_spectral_matmul_custom_jvp(primals, tangents):
     return primal_out, tangent_out
 
 
-# ----------------------------------------------------------------
-# Frequency–domain block circulant layer with custom JVP.
 class BlockCirculantProcess:
     """
     JVP version of BlockCirculantProcess: a frequency–domain block-circulant layer
@@ -615,17 +554,16 @@ class BlockCirculantProcess:
         in_features: int,
         out_features: int,
         block_size: int,
-        alpha: float = 1.0,  # if set to None, a prior will be placed on alpha
-        alpha_prior=None,  # custom prior for alpha (if alpha is None)
+        alpha: float = 1.0,
+        alpha_prior=None,
         K: int = None,
         name: str = "smooth_trunc_block_circ_spectral",
-        prior_fn=None,  # callable to return a distribution given a scale
+        prior_fn=None,
     ):
         self.in_features = in_features
         self.out_features = out_features
         self.block_size = block_size
         self.alpha = alpha
-        # Use the provided alpha_prior if given, else default to Gamma(2.0, 1.0)
         self.alpha_prior = (
             alpha_prior if alpha_prior is not None else dist.Gamma(2.0, 1.0)
         )
@@ -644,26 +582,21 @@ class BlockCirculantProcess:
             if prior_fn is not None
             else (lambda scale: dist.Normal(0.0, scale))
         )
-        self._last_block_fft = None  # will store the full block Fourier mask
+        self._last_block_fft = None
 
     def __call__(self, X: jnp.ndarray) -> jnp.ndarray:
         if X.ndim == 1:
             X = X[None, :]
-        bs, d_in = X.shape
-
-        # If alpha is None, sample it using the provided alpha prior.
         alpha = (
             numpyro.sample(f"{self.name}_alpha", self.alpha_prior)
             if self.alpha is None
             else self.alpha
         )
-        # Frequency-dependent scale.
         freq_idx = jnp.arange(self.k_half)
         prior_std = 1.0 / jnp.sqrt(1.0 + freq_idx**alpha)
         active_indices = jnp.arange(self.K)
         n_active = self.K
 
-        # Sample Fourier coefficients for active frequencies.
         active_scale = prior_std[active_indices]
         active_real = numpyro.sample(
             f"{self.name}_real",
@@ -678,18 +611,15 @@ class BlockCirculantProcess:
             .to_event(3),
         )
 
-        # Build full coefficient arrays for each block.
         real_coeff = jnp.zeros((self.k_out, self.k_in, self.k_half))
         imag_coeff = jnp.zeros((self.k_out, self.k_in, self.k_half))
         real_coeff = real_coeff.at[..., active_indices].set(active_real)
         imag_coeff = imag_coeff.at[..., active_indices].set(active_imag)
 
-        # Enforce DC component to be real.
         imag_coeff = imag_coeff.at[..., 0].set(0.0)
         if (self.b % 2 == 0) and (self.k_half > 1):
             imag_coeff = imag_coeff.at[..., -1].set(0.0)
 
-        # Reconstruct the full block-level FFT for each (i,j) block.
         def reconstruct_fft(r_ij, i_ij):
             half_c = r_ij + 1j * i_ij
             if (self.b % 2 == 0) and (self.k_half > 1):
@@ -707,16 +637,12 @@ class BlockCirculantProcess:
         )(real_coeff, imag_coeff)
         self._last_block_fft = jax.lax.stop_gradient(block_fft_full)
 
-        # Zero-pad and reshape X into blocks is handled inside the custom JVP multiplication.
-        # Use the custom JVP spectral multiplication.
         out = block_circulant_spectral_matmul_custom(self._last_block_fft, X)
 
-        # Sample and add bias.
         b = numpyro.sample(
             f"{self.name}_bias",
             dist.Normal(0, 1).expand([self.out_features]).to_event(1),
         )
-        # If the padded output dimension is larger than out_features, slice it.
         if self.k_out * self.b > self.out_features:
             out = out[..., : self.out_features]
         return out + b[None, :]
@@ -736,21 +662,14 @@ def _enforce_hermitian(fft2d: jnp.ndarray) -> jnp.ndarray:
     H, W = fft2d.shape
     conj_flip = jnp.flip(jnp.conj(fft2d), (0, 1))
 
-    # Average with its own conjugate flip
     herm = 0.5 * (fft2d + conj_flip)
 
-    # Enforce real constraint on special frequencies
-    herm = herm.at[0, 0].set(jnp.real(herm[0, 0]))  # DC term
-    if H % 2 == 0:  # horizontal Nyquist
+    herm = herm.at[0, 0].set(jnp.real(herm[0, 0]))
+    if H % 2 == 0:
         herm = herm.at[H // 2, :].set(jnp.real(herm[H // 2, :]))
-    if W % 2 == 0:  # vertical Nyquist
+    if W % 2 == 0:
         herm = herm.at[:, W // 2].set(jnp.real(herm[:, W // 2]))
     return herm
-
-
-# -----------------------------------------------------------------------------
-# Core FFT‑based circulant convolution with custom JVP (for fast AD)
-# -----------------------------------------------------------------------------
 
 
 @jax.custom_jvp
@@ -772,12 +691,11 @@ def spectral_circulant_conv2d(x: jnp.ndarray, fft_kernel: jnp.ndarray) -> jnp.nd
     if single:
         x = x[None, ...]
 
-    # Zero‑pad (or truncate) so spatial dims match H_pad×W_pad
     H_in, W_in = x.shape[-2:]
     pad_h = max(0, H_pad - H_in)
     pad_w = max(0, W_pad - W_in)
     x_pad = jnp.pad(x, ((0, 0), (0, pad_h), (0, pad_w)))
-    x_pad = x_pad[..., :H_pad, :W_pad]  # truncate if input bigger than kernel
+    x_pad = x_pad[..., :H_pad, :W_pad]
 
     Xf = jnp.fft.fftn(x_pad, axes=(-2, -1))
     Yf = Xf * fft_kernel[None, :, :]
@@ -796,7 +714,6 @@ def _spectral_circulant_conv2d_jvp(primals, tangents):
         x = x[None, ...]
         dx = None if dx is None else dx[None, ...]
 
-    # Padding/truncation logic identical to primal computation
     H_in, W_in = x.shape[-2:]
     pad_h = max(0, H_pad - H_in)
     pad_w = max(0, W_pad - W_in)
@@ -818,11 +735,6 @@ def _spectral_circulant_conv2d_jvp(primals, tangents):
     if single:
         y, dy = y[0], dy[0]
     return y, dy
-
-
-# -----------------------------------------------------------------------------
-#   1) Single‑α power‑law PSD   ——   baseline layer (Matérn‑½ analogue)
-# -----------------------------------------------------------------------------
 
 
 class SpectralCirculantLayer2d:
@@ -849,33 +761,29 @@ class SpectralCirculantLayer2d:
         self.alpha_prior = alpha_prior
         self.name = name
         self.prior_fn = prior_fn or (lambda scale: dist.Normal(0.0, scale))
-        self._fft_kernel = None  # for inspection
+        self._fft_kernel = None
 
     # ---------------------------------------------------------------------
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
-        # 1) draw or use fixed α
         alpha = (
             self.alpha
             if self.alpha is not None
             else numpyro.sample(f"{self.name}_alpha", self.alpha_prior)
         )
 
-        # 2) radial frequency grid
-        u = jnp.fft.fftfreq(self.H_pad) * self.H_pad  # 0 … H_pad‑1 in natural units
+        u = jnp.fft.fftfreq(self.H_pad) * self.H_pad
         v = jnp.fft.fftfreq(self.W_pad) * self.W_pad
         U, V = jnp.meshgrid(u, v, indexing="ij")
         R = jnp.sqrt(U**2 + V**2)
 
-        std = 1.0 / jnp.sqrt(1.0 + R**alpha)  # (H_pad, W_pad)
+        std = 1.0 / jnp.sqrt(1.0 + R**alpha)
 
-        # 3) sample complex FFT with given std – imaginary part gets same scale
         real = numpyro.sample(f"{self.name}_real", self.prior_fn(std).to_event(2))
         imag = numpyro.sample(f"{self.name}_imag", self.prior_fn(std).to_event(2))
 
         fft2d = _enforce_hermitian(real + 1j * imag)
         self._fft_kernel = jax.lax.stop_gradient(fft2d)
 
-        # 4) bias term (optional)
         bias = numpyro.sample(
             f"{self.name}_bias",
             dist.Normal(0.0, 1.0).expand([self.H_pad, self.W_pad]).to_event(2),
@@ -889,289 +797,12 @@ class SpectralCirculantLayer2d:
         return self._fft_kernel
 
 
-# ---------------------------------------------------------------------------
-# Custom-JVP primitives for spectral mixture convolution
-# ---------------------------------------------------------------------------
-@jax.custom_jvp
-def patchwise_specmix_1d(x: jnp.ndarray, S: jnp.ndarray) -> jnp.ndarray:
-    """
-    1D FFT-based convolution with custom JVP:
-      y = IFFT(FFT(x) * S)
-    where S is the real PSD for a single patch.
-    x: (B, P), S: (P/2+1,)
-    returns y: (B, P)
-    """
-    Xf = jnp.fft.rfft(x, axis=-1)
-    return jnp.fft.irfft(Xf * S, n=x.shape[-1], axis=-1)
-
-
-@patchwise_specmix_1d.defjvp
-def patchwise_specmix_1d_jvp(primals, tangents):
-    x, S = primals
-    dx, dS = tangents
-    Xf = jnp.fft.rfft(x, axis=-1)
-    dXf = jnp.fft.rfft(dx, axis=-1) if dx is not None else 0.0
-    Yf = Xf * S
-    dYf = dXf * S + Xf * dS
-    y = jnp.fft.irfft(Yf, n=x.shape[-1], axis=-1)
-    dy = jnp.fft.irfft(dYf, n=x.shape[-1], axis=-1)
-    return y, dy
-
-
-@jax.custom_jvp
-def patchwise_specmix_2d(x: jnp.ndarray, S: jnp.ndarray) -> jnp.ndarray:
-    """
-    2D FFT-based convolution with custom JVP:
-      y = IFFT2(FFT2(x) * S)
-    where S is the real PSD for a single patch.
-    x: (B, ph, pw), S: (ph, pw)
-    returns y: (B, ph, pw)
-    """
-    Xf = jnp.fft.fftn(x, axes=(-2, -1))
-    return jnp.fft.ifftn(Xf * S[None, :, :], axes=(-2, -1)).real
-
-
-@patchwise_specmix_2d.defjvp
-def patchwise_specmix_2d_jvp(primals, tangents):
-    x, S = primals
-    dx, dS = tangents
-    Xf = jnp.fft.fftn(x, axes=(-2, -1))
-    dXf = jnp.fft.fftn(dx, axes=(-2, -1)) if dx is not None else 0.0
-    Yf = Xf * S[None, :, :]
-    dYf = dXf * S[None, :, :] + Xf * dS[None, :, :]
-    y = jnp.fft.ifftn(Yf, axes=(-2, -1)).real
-    dy = jnp.fft.ifftn(dYf, axes=(-2, -1)).real
-    return y, dy
-
-
-# -----------------------------------------------------------------------------
-# 1‑D Patch‑Wise Spectral‑Mixture Layer with per‑patch bias
-# -----------------------------------------------------------------------------
-class PatchWiseSpectralMixture1DLayer:
-    """
-    1-D non‑overlapping patch‑wise spectral‑mixture convolution using
-    a custom JVP for efficient differentiation.
-
-    Hyper‑parameters per patch p and mixture m:
-        w[p,m]      = softmax(logits_w)[p,m]
-        mu[p,m]     = 0.5 * sigmoid(raw_mu)[p,m]
-        sigma[p,m]  = softplus(raw_sigma)[p,m] + jitter
-        bias[p]     = Normal(0,1) per-patch vector
-    """
-
-    def __init__(
-        self,
-        in_features: int,
-        patch_size: int,
-        n_mixtures: int = 3,
-        name: str = "patch1d",
-        prior_logits: Optional[Callable[[Tuple[int, int]], dist.Distribution]] = None,
-        prior_mu: Optional[Callable[[Tuple[int, int]], dist.Distribution]] = None,
-        prior_sigma: Optional[Callable[[Tuple[int, int]], dist.Distribution]] = None,
-        jitter: float = 1e-6,
-    ):
-        assert (
-            in_features % patch_size == 0
-        ), "in_features must be divisible by patch_size"
-        self.N = in_features
-        self.P = patch_size
-        self.M = n_mixtures
-        self.n_patches = self.N // self.P
-        self.name = name
-        self.jitter = jitter
-
-        # default priors: standard Normal
-        self.prior_logits = prior_logits or (
-            lambda shape: dist.Normal(0, 1).expand(shape).to_event(2)
-        )
-        self.prior_mu = prior_mu or (
-            lambda shape: dist.Normal(0, 1).expand(shape).to_event(2)
-        )
-        self.prior_sigma = prior_sigma or (
-            lambda shape: dist.Normal(0, 1).expand(shape).to_event(2)
-        )
-
-        # precompute freq bins
-        self.freqs = jnp.fft.rfftfreq(self.P)
-
-    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
-        B, N = x.shape
-        assert N == self.N, f"Expected input features {self.N}, got {N}"
-
-        # 1) sample unconstrained latent sites
-        logits_w = numpyro.sample(
-            f"{self.name}_logits_w", self.prior_logits((self.n_patches, self.M))
-        )
-        raw_mu = numpyro.sample(
-            f"{self.name}_raw_mu", self.prior_mu((self.n_patches, self.M))
-        )
-        raw_sigma = numpyro.sample(
-            f"{self.name}_raw_sigma", self.prior_sigma((self.n_patches, self.M))
-        )
-
-        # 2) transform to mixture parameters
-        w = jax.nn.softmax(logits_w, axis=-1)  # (n_patches, M)
-        mu = 0.5 * jax.nn.sigmoid(raw_mu)  # (n_patches, M)
-        sigma = jax.nn.softplus(raw_sigma) + self.jitter  # (n_patches, M)
-
-        # 3) for each patch compute its PSD S[p, :]
-        def make_S(p):
-            freq = self.freqs[None, :]  # (1, P//2+1)
-            mu_p = mu[p : p + 1, :]  # (1, M)
-            sig_p = sigma[p : p + 1, :]
-            diffs1 = ((freq - mu_p[..., None]) / sig_p[..., None]) ** 2
-            diffs2 = ((freq + mu_p[..., None]) / sig_p[..., None]) ** 2
-            gauss = jnp.exp(-0.5 * diffs1) + jnp.exp(-0.5 * diffs2)
-            mix = (w[p : p + 1, :, None] * gauss).sum(axis=1)  # (1, P//2+1)
-            return mix.squeeze(0) + self.jitter
-
-        S = jax.vmap(make_S)(jnp.arange(self.n_patches))  # (n_patches, P//2+1)
-
-        # 4) apply custom JVP conv + bias per patch
-        outputs = []
-        for p in range(self.n_patches):
-            xp = x[:, p * self.P : (p + 1) * self.P]
-            y_p = patchwise_specmix_1d(xp, S[p])
-            # sample and add per-patch bias vector
-            b_p = numpyro.sample(
-                f"{self.name}_bias_patch{p}",
-                dist.Normal(0.0, 1.0).expand((self.P,)).to_event(1),
-            )
-            outputs.append(y_p + b_p)
-
-        # 5) reassemble
-        return jnp.concatenate(outputs, axis=-1)
-
-
-# -----------------------------------------------------------------------------
-# 2‑D Patch‑Wise Spectral‑Mixture Layer with per‑patch bias
-# -----------------------------------------------------------------------------
-class PatchWiseSpectralMixture2DLayer:
-    """
-    2-D non‑overlapping patch‑wise spectral‑mixture convolution using
-    a custom JVP for efficient differentiation.
-
-    Hyper‑parameters per patch idx and mixture m:
-        w[idx,m]      = softmax(logits_w)[idx,m]
-        mu[idx,m,:]   = 0.5 * sigmoid(raw_mu)[idx,m,:]
-        sigma[idx,m,:]= softplus(raw_sigma)[idx,m,:] + jitter
-        bias[idx]     = Normal(0,1) per-patch map
-    """
-
-    def __init__(
-        self,
-        H: int,
-        W: int,
-        patch_h: int,
-        patch_w: int,
-        n_mixtures: int = 3,
-        name: str = "patch2d",
-        prior_logits: Optional[Callable[[Tuple[int, int]], dist.Distribution]] = None,
-        prior_mu: Optional[Callable[[Tuple[int, int, 2]], dist.Distribution]] = None,
-        prior_sigma: Optional[Callable[[Tuple[int, int, 2]], dist.Distribution]] = None,
-        jitter: float = 1e-6,
-    ):
-        assert (
-            H % patch_h == 0 and W % patch_w == 0
-        ), "H,W must be divisible by patch_h,patch_w"
-        self.H, self.W = H, W
-        self.ph, self.pw = patch_h, patch_w
-        self.nh, self.nw = H // patch_h, W // patch_w
-        self.npatch = self.nh * self.nw
-        self.M = n_mixtures
-        self.name = name
-        self.jitter = jitter
-
-        # default priors
-        self.prior_logits = prior_logits or (
-            lambda shape: dist.Normal(0, 1).expand(shape).to_event(2)
-        )
-        self.prior_mu = prior_mu or (
-            lambda shape: dist.Normal(0, 1).expand(shape).to_event(3)
-        )
-        self.prior_sigma = prior_sigma or (
-            lambda shape: dist.Normal(0, 1).expand(shape).to_event(3)
-        )
-
-        # precompute 2D freq grid
-        fy = jnp.fft.fftfreq(self.ph)
-        fx = jnp.fft.fftfreq(self.pw)
-        self.FY, self.FX = jnp.meshgrid(fy, fx, indexing="ij")  # (ph, pw)
-
-    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
-        B, H, W = x.shape
-        assert (H, W) == (
-            self.H,
-            self.W,
-        ), f"Expected ({self.H},{self.W}), got ({H},{W})"
-
-        # 1) sample unconstrained latent sites
-        logits_w = numpyro.sample(
-            f"{self.name}_logits_w", self.prior_logits((self.npatch, self.M))
-        )
-        raw_mu = numpyro.sample(
-            f"{self.name}_raw_mu", self.prior_mu((self.npatch, self.M, 2))
-        )
-        raw_sigma = numpyro.sample(
-            f"{self.name}_raw_sigma", self.prior_sigma((self.npatch, self.M, 2))
-        )
-
-        # 2) transform to mixture parameters
-        w = jax.nn.softmax(logits_w, axis=-1)  # (npatch, M)
-        mu = 0.5 * jax.nn.sigmoid(raw_mu)  # (npatch, M, 2)
-        sigma = jax.nn.softplus(raw_sigma) + self.jitter  # (npatch, M, 2)
-
-        # 3) build per‑patch PSD
-        def make_S(idx):
-            w_i, mu_i, sig_i = w[idx], mu[idx], sigma[idx]
-            FYi = self.FY[None, :, :]  # (1, ph, pw)
-            FXi = self.FX[None, :, :]
-            # component 1
-            dy1 = (FYi - mu_i[..., 0:1]) / sig_i[..., 0:1]
-            dx1 = (FXi - mu_i[..., 1:2]) / sig_i[..., 1:2]
-            ga1 = jnp.exp(-0.5 * (dy1**2 + dx1**2))
-            # mirror at -mu
-            dy2 = (FYi + mu_i[..., 0:1]) / sig_i[..., 0:1]
-            dx2 = (FXi + mu_i[..., 1:2]) / sig_i[..., 1:2]
-            ga2 = jnp.exp(-0.5 * (dy2**2 + dx2**2))
-            # weighted sum + jitter
-            return (w_i[..., None, None] * (ga1 + ga2)).sum(axis=0) + self.jitter
-
-        S = jax.vmap(make_S)(jnp.arange(self.npatch))  # (npatch, ph, pw)
-
-        # 4) apply custom JVP conv + bias per patch
-        rows = []
-        idx = 0
-        for i in range(self.nh):
-            row_p = []
-            for j in range(self.nw):
-                xp = x[
-                    :, i * self.ph : (i + 1) * self.ph, j * self.pw : (j + 1) * self.pw
-                ]
-                y_p = patchwise_specmix_2d(xp, S[idx])
-                # sample and add per-patch bias map
-                b_p = numpyro.sample(
-                    f"{self.name}_bias_patch{idx}",
-                    dist.Normal(0.0, 1.0).expand((self.ph, self.pw)).to_event(2),
-                )
-                row_p.append(y_p + b_p)
-                idx += 1
-            rows.append(jnp.concatenate(row_p, axis=2))
-        # 5) reassemble vertically
-        return jnp.concatenate(rows, axis=1)
-
-
-# ---------------------------------------------------------------------------
-# helpers
-# ---------------------------------------------------------------------------
 def upsample_bilinear(grid, H_pad, W_pad):
     """Bilinearly up‑sample a coarse grid (Bilinear resize, no grad issues)."""
     gh, gw = grid.shape
-    # Normalised coordinates in [0,1]
     y = jnp.linspace(0.0, 1.0, H_pad)
     x = jnp.linspace(0.0, 1.0, W_pad)
     yy, xx = jnp.meshgrid(y, x, indexing="ij")
-    # Map to coarse‑grid indices
     yy = yy * (gh - 1)
     xx = xx * (gw - 1)
     y0, x0 = jnp.floor(yy).astype(int), jnp.floor(xx).astype(int)
@@ -1182,10 +813,7 @@ def upsample_bilinear(grid, H_pad, W_pad):
     return (1 - wy) * ((1 - wx) * v00 + wx * v01) + wy * ((1 - wx) * v10 + wx * v11)
 
 
-# ---------------------------------------------------------------------------
-# 1‑D  (non‑stationary exponent α[k])
-# ---------------------------------------------------------------------------
-class NonStatSpectralCirculantLayer(SpectralCirculantLayer):
+class AdaptiveSpectralCirculantLayer(SpectralCirculantLayer):
     def __init__(
         self,
         in_features,
@@ -1208,19 +836,15 @@ class NonStatSpectralCirculantLayer(SpectralCirculantLayer):
         self.alpha_global = alpha_global
 
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
-        # 1) Sample per-frequency Δα
         delta_alpha = numpyro.sample(
             f"{self.name}_delta_alpha",
             self.alpha_prior.expand([self.k_half]).to_event(1),
         )
-        # 2) clamp α into [0.1, 5.0]
         alpha_vec = jnp.clip(self.alpha_global + delta_alpha, 0.1, 5.0)
 
-        # 3) PSD std
         freq_idx = jnp.arange(self.k_half)
         prior_std = 1.0 / jnp.sqrt(1.0 + freq_idx**alpha_vec)
 
-        # 4) rest as before
         active_idx = jnp.arange(self.K)
         real_hp = numpyro.sample(
             f"{self.name}_real",
@@ -1236,7 +860,6 @@ class NonStatSpectralCirculantLayer(SpectralCirculantLayer):
         full_imag = jnp.zeros((self.k_half,))
         full_imag = full_imag.at[active_idx].set(imag_hp)
 
-        # DC & Nyquist real
         full_imag = full_imag.at[0].set(0.0)
         if (self.padded_dim % 2 == 0) and (self.k_half > 1):
             full_imag = full_imag.at[-1].set(0.0)
@@ -1258,10 +881,7 @@ class NonStatSpectralCirculantLayer(SpectralCirculantLayer):
         return spectral_circulant_matmul(x, fft_full) + bias
 
 
-# ---------------------------------------------------------------------------
-# 2‑D  (coarse α‑map -> upsample -> per‑freq std)
-# ---------------------------------------------------------------------------
-class NonStatSpectralConv2d(SpectralCirculantLayer2d):
+class AdaptiveSpectralCirculantLayer2d(SpectralCirculantLayer2d):
     def __init__(
         self,
         H_in,
@@ -1288,24 +908,19 @@ class NonStatSpectralConv2d(SpectralCirculantLayer2d):
         self.alpha_coarse_shape = alpha_coarse_shape
 
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
-        gh, gw = self.alpha_coarse_shape
-        # 1) sample coarse Δα-map
         delta_alpha_coarse = numpyro.sample(
             f"{self.name}_delta_alpha_map",
             self.alpha_prior.expand(self.alpha_coarse_shape).to_event(2),
         )
-        # 2) upsample & clamp
         delta_alpha_full = upsample_bilinear(delta_alpha_coarse, self.H_pad, self.W_pad)
         alpha_full = jnp.clip(self.alpha_global + delta_alpha_full, 0.1, 5.0)
 
-        # 3) radial grid & PSD std
         u = jnp.fft.fftfreq(self.H_pad) * self.H_pad
         v = jnp.fft.fftfreq(self.W_pad) * self.W_pad
         U, V = jnp.meshgrid(u, v, indexing="ij")
         R = jnp.sqrt(U**2 + V**2)
         std = 1.0 / jnp.sqrt(1.0 + R**alpha_full)
 
-        # 4) sample real/imag & enforce Hermitian
         real = numpyro.sample(f"{self.name}_real", self.prior_fn(std).to_event(2))
         imag = numpyro.sample(f"{self.name}_imag", self.prior_fn(std).to_event(2))
         fft2d = _enforce_hermitian(real + 1j * imag)
@@ -1315,3 +930,179 @@ class NonStatSpectralConv2d(SpectralCirculantLayer2d):
             dist.Normal(0.0, 1.0).expand([self.H_pad, self.W_pad]).to_event(2),
         )
         return spectral_circulant_conv2d(x, fft2d) + bias
+
+
+@jax.custom_jvp
+def _specmix_patch_1d(x, S):
+    """y = IFFT( FFT(x) * S ) for one patch; x:(B,L), S:(L,) real."""
+    Xf = jnp.fft.fft(x, axis=-1)
+    return jnp.fft.ifft(Xf * S[None, :], axis=-1).real
+
+
+@_specmix_patch_1d.defjvp
+def _specmix_patch_1d_jvp(primals, tangents):
+    x, S = primals
+    dx, dS = tangents
+    Xf = jnp.fft.fft(x, axis=-1)
+    dXf = jnp.fft.fft(dx, axis=-1) if dx is not None else 0.0
+    Yf = Xf * S[None, :]
+    dYf = dXf * S[None, :] + Xf * dS[None, :]
+    return jnp.fft.ifft(Yf, axis=-1).real, jnp.fft.ifft(dYf, axis=-1).real
+
+
+class PatchWiseSpectralMixture1D:
+    """
+    Partition length L into P patches of length l.
+    Each patch uses a Q‑component spectral mixture PSD.
+    """
+
+    def __init__(self, L, patch_len, Q=3, name="psm1d", jitter=1e-6):
+        assert L % patch_len == 0, "L must be divisible by patch_len"
+        self.L, self.l = L, patch_len
+        self.P = L // patch_len
+        self.Q = Q
+        self.name = name
+        self.jitter = jitter
+        self.f = jnp.fft.fftfreq(patch_len)
+
+    # ------------------------------------------------------------------
+    def __call__(self, x):
+        """
+        x : (B, L)
+        returns same shape
+        """
+        B, L = x.shape
+        assert L == self.L
+        logits = numpyro.sample(
+            f"{self.name}_logits", dist.Normal(0, 1).expand([self.P, self.Q])
+        )
+        w = jax.nn.softmax(logits, axis=-1)  # (P,Q)
+        mu = numpyro.sample(
+            f"{self.name}_mu", dist.Normal(0, 0.3).expand([self.P, self.Q])
+        )
+        sig = numpyro.sample(
+            f"{self.name}_sigma", dist.LogNormal(0, 0.3).expand([self.P, self.Q])
+        )
+
+        def make_S(p):
+            w_p, mu_p, sig_p = w[p], mu[p], sig[p]
+            g1 = jnp.exp(
+                -0.5 * ((self.f[None, :] - mu_p[:, None]) / sig_p[:, None]) ** 2
+            )
+            g2 = jnp.exp(
+                -0.5 * ((self.f[None, :] + mu_p[:, None]) / sig_p[:, None]) ** 2
+            )
+            return (w_p[:, None] * (g1 + g2)).sum(0) + self.jitter
+
+        S = jax.vmap(make_S)(jnp.arange(self.P))
+        x_split = x.reshape(B, self.P, self.l)
+        y_split = jax.vmap(
+            lambda xp, Sp: _specmix_patch_1d(xp, Sp), in_axes=(1, 0), out_axes=1
+        )(x_split, S)
+        bias = numpyro.sample(
+            f"{self.name}_bias", dist.Normal(0, 1).expand([self.P, self.l]).to_event(2)
+        )
+        return (y_split + bias).reshape(B, L)
+
+
+@jax.custom_jvp
+def _specmix_patch_2d(x, S):
+    """x:(B,h,w), S:(h,w) real PSD."""
+    Xf = jnp.fft.fftn(x, axes=(-2, -1))
+    return jnp.fft.ifftn(Xf * S[None, :, :], axes=(-2, -1)).real
+
+
+@_specmix_patch_2d.defjvp
+def _specmix_patch_2d_jvp(primals, tangents):
+    x, S = primals
+    dx, dS = tangents
+    Xf = jnp.fft.fftn(x, axes=(-2, -1))
+    dXf = jnp.fft.fftn(dx, axes=(-2, -1)) if dx is not None else 0.0
+    Yf = Xf * S[None, :, :]
+    dYf = dXf * S[None, :, :] + Xf * dS[None, :, :]
+    return jnp.fft.ifftn(Yf, axes=(-2, -1)).real, jnp.fft.ifftn(dYf, axes=(-2, -1)).real
+
+
+class PatchWiseSpectralMixture2D:
+    """
+    Non-overlapping h×w patches; Q-component spectral mixture PSD per patch.
+    """
+
+    def __init__(
+        self,
+        H: int,
+        W: int,
+        patch_h: int,
+        patch_w: int,
+        Q: int = 3,
+        name: str = "psm2d",
+        jitter: float = 1e-6,
+    ):
+        assert H % patch_h == 0 and W % patch_w == 0
+        self.H, self.W = H, W
+        self.ph, self.pw = patch_h, patch_w
+        self.nh, self.nw = H // patch_h, W // patch_w
+        self.P = self.nh * self.nw
+        self.Q, self.name, self.jitter = Q, name, jitter
+
+        self.fy = jnp.fft.fftfreq(self.ph)[:, None]
+        self.fx = jnp.fft.fftfreq(self.pw)[None, :]
+
+    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
+        """
+        x : (B, H, W)
+        returns (B, H, W)
+        """
+        B, H, W = x.shape
+        assert (H, W) == (self.H, self.W)
+
+        logits = numpyro.sample(
+            f"{self.name}_logits", dist.Normal(0, 1).expand([self.P, self.Q])
+        )
+        w = jax.nn.softmax(logits, axis=-1)
+        mu = numpyro.sample(
+            f"{self.name}_mu", dist.Normal(0, 0.3).expand([self.P, self.Q, 2])
+        )
+        sig = numpyro.sample(
+            f"{self.name}_sigma", dist.LogNormal(0, 0.3).expand([self.P, self.Q, 2])
+        )
+
+        def make_S(params):
+            w_p, mu_p, sig_p = params
+
+            mu_y = mu_p[:, 0][..., None, None]
+            mu_x = mu_p[:, 1][..., None, None]
+            sig_y = sig_p[:, 0][..., None, None]
+            sig_x = sig_p[:, 1][..., None, None]
+
+            fy = self.fy[None, :, :]
+            fx = self.fx[None, :, :]
+
+            g1 = jnp.exp(
+                -0.5 * (((fy - mu_y) / sig_y) ** 2 + ((fx - mu_x) / sig_x) ** 2)
+            )
+            g2 = jnp.exp(
+                -0.5 * (((fy + mu_y) / sig_y) ** 2 + ((fx + mu_x) / sig_x) ** 2)
+            )
+
+            return (w_p[:, None, None] * (g1 + g2)).sum(0) + self.jitter
+
+        S = jax.vmap(make_S)((w, mu, sig))
+
+        x_patches = x.reshape(B, self.nh, self.ph, self.nw, self.pw)
+        x_patches = x_patches.transpose(1, 3, 0, 2, 4)
+
+        out_rows = []
+        p = 0
+        for i in range(self.nh):
+            row_patches = []
+            for j in range(self.nw):
+                ypj = _specmix_patch_2d(x_patches[i, j], S[p])
+                bias = numpyro.sample(
+                    f"{self.name}_bias_{p}",
+                    dist.Normal(0, 1).expand([self.ph, self.pw]).to_event(2),
+                )
+                row_patches.append(ypj + bias)
+                p += 1
+            out_rows.append(jnp.concatenate(row_patches, axis=-1))
+        return jnp.concatenate(out_rows, axis=-2)
