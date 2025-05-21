@@ -1,5 +1,11 @@
 import numpy as np
+import jax
+import jax.numpy as jnp
 from scipy.special import expit, logsumexp
+from jax.scipy.special import logsumexp
+from jax.scipy.stats import norm, bernoulli
+from numpyro.infer import Predictive
+from jaxtyping import PRNGKeyArray
 
 """
 Example Usage:
@@ -137,3 +143,74 @@ class Lppd:
         log_likelihoods = np.log(likelihood_matrix + 1e-9)  # Prevent log(0)
         lppd = np.sum(logsumexp(log_likelihoods, axis=1) - np.log(n_mcmc))
         return lppd
+
+
+def compute_nll(
+    model,
+    guide,
+    params: dict,
+    X: jnp.ndarray,
+    y: jnp.ndarray,
+    *,
+    key: PRNGKeyArray,
+    num_samples: int = 200,
+    mode: str = "multiclass",  # "multiclass", "binary" or "regression"
+) -> tuple[float, float, float]:
+    """
+    Monte Carlo estimate of log predictive density (lppd) and perplexity/RMSE.
+
+    Args:
+        model, guide, params: as in SVI.
+        X: [N, D] features; y: [N] labels or targets.
+        key: PRNGKey.
+        num_samples: posterior predictive draws.
+        mode: "multiclass", "binary", or "regression".
+    Returns:
+        key, lppd, avg_lppd, perplexity (or RMSE for regression)
+    """
+    assert mode in ("multiclass", "binary", "regression")
+    key, subkey = jax.random.split(key)
+
+    # pick sites
+    sites = ("logits",) if mode in ("multiclass", "binary") else ("mu", "sigma")
+    predictive = Predictive(
+        model, guide, params, num_samples=num_samples, return_sites=sites
+    )
+    samples = predictive(subkey, X)  # respects your model’s plates
+
+    if mode == "multiclass":
+        # [S,N,C] → log‐probs → pick y
+        logits = samples["logits"]
+        logp = logits - logsumexp(logits, axis=-1, keepdims=True)  # (S,N,C)
+        S, N, C = logp.shape
+        yb = jnp.broadcast_to(y, (S, N))
+        L = logp[jnp.arange(S)[:, None], jnp.arange(N)[None, :], yb]
+
+    elif mode == "binary":
+        # [S,N,1] or [S,N] → Bernoulli(logits)
+        logits = samples["logits"]
+        # squeeze to (S,N)
+        logits = logits.squeeze(-1)
+        # bernoulli.logpmf works with prob not logits, so convert:
+        p = jax.nn.sigmoid(logits)
+        L = bernoulli.logpmf(y, p)  # (S,N)
+
+    else:  # regression
+        mu = samples["mu"]  # (S,N)
+        sigma = samples["sigma"].reshape((num_samples, 1))
+        L = norm.logpdf(y, loc=mu, scale=sigma)  # (S,N)
+
+    # Monte Carlo lppd
+    lppd_per_example = logsumexp(L, axis=0) - jnp.log(num_samples)
+    lppd = jnp.sum(lppd_per_example)
+    avg_lppd = float(lppd) / y.shape[0]
+
+    if mode == "regression":
+        # also return RMSE for regression
+        # point‐predict via mean mu
+        mu_mean = jnp.mean(samples["mu"], axis=0)
+        rmse = float(jnp.sqrt(jnp.mean((mu_mean - y) ** 2)))
+        return key, float(lppd), avg_lppd, rmse
+
+    perplexity = float(jnp.exp(-avg_lppd))
+    return float(lppd), avg_lppd, perplexity

@@ -17,6 +17,7 @@ from .trainer.train import (
     regression_loss,
     binary_loss,
     multiclass_loss,
+    predict_batched
 )
 
 __all__ = [
@@ -35,5 +36,6 @@ __all__ = [
     "regression_loss",
     "train",
     "predict",
+    "predict_batched",
     "ensemble",
 ]

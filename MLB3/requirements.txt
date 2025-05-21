@@ -1,5 +1,0 @@
-numpy
-pandas
-matplotlib
-scikit-learn
-torch          # for easy MNIST download (CPU‑only)

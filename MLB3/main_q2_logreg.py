@@ -1,140 +1,161 @@
 """
-Runs all logistic‑regression experiments for Questions 3–6.
-
-Usage:
-    python main_q2_logreg.py
-Creates:
-    images/loss_const_gamma001.png
-    images/loss_batchsize.png
-    images/loss_diminish.png
-and prints loss values to terminal
+The following has been run in a kaggle notebook
+for easy access to the data
 """
 
-from pathlib import Path
+import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+from sklearn.linear_model import SGDClassifier
 
-from data_utils import load_mnist_digits
+# ─────────────────────────────────────────────────────────────────────────────
+# 1. SETTINGS
+# ─────────────────────────────────────────────────────────────────────────────
+TRAIN_CSV = "/kaggle/input/digit-recognizer/train.csv"
+DIGITS = (3, 8)
+MU = 1.0
+T = 200
+RECORD_EVERY = 10
+GAMMAS = [1e-4, 1e-3, 1e-2]
+BATCHES = [1, 10, 100]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 2. LOAD & PREPROCESS
+# ─────────────────────────────────────────────────────────────────────────────
+df = pd.read_csv(TRAIN_CSV)
+df = df[df.label.isin(DIGITS)]
+y = (df.label == DIGITS[1]).astype(int).values
+X = df.drop("label", axis=1).values.astype(float) / 255.0
+n = X.shape[0]
 
 
-# --------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# 3. UTILITIES: sigmoid & loss
+# ─────────────────────────────────────────────────────────────────────────────
 def sigmoid(z):
-    return 1 / (1 + np.exp(-z))
+    return 1.0 / (1.0 + np.exp(-z))
 
 
-def compute_loss(w, b, X, y, mu):
-    z = X @ w + b
-    p = sigmoid(z)
-    # avoid log(0) with clipping
-    p = np.clip(p, 1e-12, 1 - 1e-12)
-    loss = -np.mean(y * np.log(p) + (1 - y) * np.log(1 - p))
-    loss += 0.5 * mu * (np.dot(w, w) + b**2)
+def compute_loss(w, b, X_all, y_all, mu):
+    z = X_all.dot(w) + b
+    p = np.clip(sigmoid(z), 1e-12, 1 - 1e-12)
+    loss = -np.mean(y_all * np.log(p) + (1 - y_all) * np.log(1 - p))
+    loss += 0.5 * mu * np.dot(w, w)
     return loss
 
 
-def grad(w, b, X, y, mu):
-    z = X @ w + b
-    p = sigmoid(z)
-    g_w = (X.T @ (p - y)) / len(y) + mu * w
-    g_b = np.mean(p - y) + mu * b
-    return g_w, g_b
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. RUN FUNCTION (full‐batch GD, mini‐batch SGD, and invscaling)
+# ─────────────────────────────────────────────────────────────────────────────
+def run_sgd_sklearn(batch_size, eta0, inv_scaling=False, power_t=1.0):
+    params = dict(
+        loss="log_loss",
+        penalty="l2",
+        alpha=MU,
+        fit_intercept=True,
+        shuffle=True,
+        random_state=0,
+    )
+    if inv_scaling:
+        params.update(learning_rate="invscaling", eta0=eta0, power_t=power_t)
+    else:
+        params.update(learning_rate="constant", eta0=eta0)
 
-
-def gd_constant(X, y, X_test, y_test, gamma, T, mu):
-    w = np.zeros(X.shape[1])
-    b = 0.0
+    clf = SGDClassifier(**params)
     losses = []
+    classes = np.array([0, 1])
+    rng = np.random.default_rng(0)
+
     for t in range(1, T + 1):
-        g_w, g_b = grad(w, b, X, y, mu)
-        w -= gamma * g_w
-        b -= gamma * g_b
-        if t % 10 == 0:
-            losses.append(compute_loss(w, b, X, y, mu))
+        if batch_size >= n:
+            Xb, yb = X, y
+        else:
+            idx = rng.choice(n, batch_size, replace=False)
+            Xb, yb = X[idx], y[idx]
+
+        if t == 1:
+            clf.partial_fit(Xb, yb, classes=classes)
+        else:
+            clf.partial_fit(Xb, yb)
+
+        if t % RECORD_EVERY == 0:
+            w = clf.coef_.ravel()
+            b = float(clf.intercept_[0])
+            losses.append(compute_loss(w, b, X, y, MU))
+
     return np.array(losses)
 
 
-def sgd_mini_batch(X, y, batch_size, gamma_schedule, T, mu):
-    rng = np.random.default_rng()
-    w = np.zeros(X.shape[1])
-    b = 0.0
-    losses = []
-    for t in range(1, T + 1):
-        idx = rng.choice(len(X), batch_size, replace=False)
-        g_w, g_b = grad(w, b, X[idx], y[idx], mu)
-        gamma = gamma_schedule(t)
-        w -= gamma * g_w
-        b -= gamma * g_b
-        if t % 10 == 0:
-            losses.append(compute_loss(w, b, X, y, mu))
-    return np.array(losses)
+# ─────────────────────────────────────────────────────────────────────────────
+# Q3: full‐batch GD vs. mini‐batch SGD (γ = 1e-3, b = 10)
+# ─────────────────────────────────────────────────────────────────────────────
+loss_gd = run_sgd_sklearn(batch_size=n, eta0=1e-3)
+loss_sgd = run_sgd_sklearn(batch_size=10, eta0=1e-3)
 
+iters = np.arange(RECORD_EVERY, T + 1, RECORD_EVERY)
+plt.figure()
+plt.plot(iters, loss_gd, label="GD (full-batch) γ=1e-3")
+plt.plot(iters, loss_sgd, label="SGD (b=10) γ=1e-3")
+plt.xlabel("Iteration")
+plt.ylabel("Training loss")
+plt.title("Q3: GD vs. mini-batch SGD")
+plt.legend()
+plt.show()
 
-def plot_losses(loss_mat, labels, fname, ylabel="Training loss"):
-    plt.figure()
-    for losses, label in zip(loss_mat, labels):
-        plt.plot(np.arange(10, 10 * len(losses) + 1, 10), losses, label=label)
-    plt.xlabel("Iteration")
-    plt.ylabel(ylabel)
-    plt.legend()
-    Path(fname).parent.mkdir(exist_ok=True)
-    plt.savefig(fname, dpi=150)
-    plt.close()
+print(f"Q3 final loss → GD:  {loss_gd[-1]:.4f}, SGD: {loss_sgd[-1]:.4f}")
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Q4: learning‐rate sweep for both algorithms
+# ─────────────────────────────────────────────────────────────────────────────
+finals = {}
+plt.figure(figsize=(8, 6))
+for γ in GAMMAS:
+    lg = run_sgd_sklearn(batch_size=n, eta0=γ)
+    ls = run_sgd_sklearn(batch_size=10, eta0=γ)
+    finals[γ] = (lg[-1], ls[-1])
+    plt.plot(iters, lg, "--", label=f"GD γ={γ}")
+    plt.plot(iters, ls, "-", label=f"SGD γ={γ}")
+    print(f"γ={γ}: GD final={lg[-1]:.4f}, SGD final={ls[-1]:.4f}")
 
-def main():
-    (X_train, y_train), (X_test, y_test) = load_mnist_digits()
-    mu = 1.0
+plt.xlabel("Iteration")
+plt.ylabel("Training loss")
+plt.title("Q4: Effect of γ on GD & SGD")
+plt.legend()
+plt.show()
 
-    # ------------------------------------------------ Q3
-    gd_loss = gd_constant(X_train, y_train, X_test, y_test, gamma=0.001, T=100, mu=mu)
-    sgd_loss = sgd_mini_batch(
-        X_train, y_train, 10, gamma_schedule=lambda t: 0.001, T=100, mu=mu
-    )
-    plot_losses(
-        [gd_loss, sgd_loss],
-        [r"GD, $\gamma=10^{-3}$", r"SGD $b=10$, $\gamma=10^{-3}$"],
-        "images/loss_const_gamma001.png",
-    )
+best_gamma = min(GAMMAS, key=lambda g: finals[g][1])
+print(f"Best γ for SGD: {best_gamma}")
 
-    # ------------------------------------------------ Q4
-    print("\n=== Learning‑rate sweep ===")
-    lrs = [1e-4, 1e-3, 1e-2]
-    for lr in lrs:
-        gd_final = gd_constant(
-            X_train, y_train, X_test, y_test, gamma=lr, T=100, mu=mu
-        )[-1]
-        sgd_final = sgd_mini_batch(
-            X_train, y_train, 10, gamma_schedule=lambda t, lr=lr: lr, T=100, mu=mu
-        )[-1]
-        print(f"γ={lr:<7}  GD loss={gd_final:.4f}  SGD loss={sgd_final:.4f}")
+# ─────────────────────────────────────────────────────────────────────────────
+# Q5: batch‐size sweep (γ = best from Q4)
+# ─────────────────────────────────────────────────────────────────────────────
+plt.figure()
+for b in BATCHES:
+    lb = run_sgd_sklearn(batch_size=b, eta0=best_gamma)
+    plt.plot(iters, lb, label=f"b = {b}")
+    print(f"b={b} → final loss={lb[-1]:.4f}")
 
-    # ------------------------------------------------ Q5
-    print("\n=== Batch‑size sweep (constant γ) ===")
-    best_lr = 0.001  # update after inspecting the sweep if needed
-    batch_losses = []
-    labels = []
-    for bsz in (1, 10, 100):
-        losses = sgd_mini_batch(
-            X_train, y_train, bsz, gamma_schedule=lambda t: best_lr, T=100, mu=mu
-        )
-        batch_losses.append(losses)
-        labels.append(f"b={bsz}")
-        print(f"b={bsz:<3}  final loss={losses[-1]:.4f}")
-    plot_losses(batch_losses, labels, "images/loss_batchsize.png")
+plt.xlabel("Iteration")
+plt.ylabel("Training loss")
+plt.title(f"Q5: Batch‐size (γ={best_gamma})")
+plt.legend()
+plt.show()
 
-    # ------------------------------------------------ Q6
-    diminish_losses = sgd_mini_batch(
-        X_train, y_train, 10, gamma_schedule=lambda t: 1.0 / t, T=100, mu=mu
-    )
-    best_const_losses = sgd_mini_batch(
-        X_train, y_train, 10, gamma_schedule=lambda t: best_lr, T=100, mu=mu
-    )
-    plot_losses(
-        [diminish_losses, best_const_losses],
-        [r"$\gamma_t=1/t$", rf"Const $\gamma={best_lr}$"],
-        "images/loss_diminish.png",
-    )
+# ─────────────────────────────────────────────────────────────────────────────
+# Q6: diminishing rate γₜ = 1/t vs. best constant γ
+# ─────────────────────────────────────────────────────────────────────────────
+loss_dim = run_sgd_sklearn(batch_size=10, eta0=1.0, inv_scaling=True, power_t=1.0)
+loss_const = run_sgd_sklearn(batch_size=10, eta0=best_gamma, inv_scaling=False)
 
+plt.figure()
+plt.plot(iters, loss_const, "--", label=f"const γ={best_gamma}")
+plt.plot(iters, loss_dim, "-", label="diminishing γₜ = 1/t")
+plt.xlabel("Iteration")
+plt.ylabel("Training loss")
+plt.title("Q6: Constant vs. Diminishing Rate")
+plt.legend()
+plt.show()
 
-if __name__ == "__main__":
-    main()
+print(
+    f"Q6 final loss → constant γ={best_gamma}: {loss_const[-1]:.4f}, diminishing 1/t: {loss_dim[-1]:.4f}"
+)

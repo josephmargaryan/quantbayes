@@ -491,7 +491,6 @@ class LowRankNonStatGuide(AutoGuide):
         mvn = dist.MultivariateNormal(loc, covariance_matrix=cov)
         z = mvn.sample(rng_key, sample_shape)  # (..., 3*M)
 
-        # split and enforce
         real_hp, imag_hp, delta_alpha = jnp.split(z, [self.M, 2 * self.M], axis=-1)
         imag_hp = imag_hp.at[..., 0].set(0.0)
         if self.padded_dim % 2 == 0:

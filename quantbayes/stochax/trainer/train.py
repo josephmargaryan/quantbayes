@@ -1,7 +1,6 @@
 import copy
 import matplotlib.pyplot as plt
 import numpy as np
-from sklearn.metrics import log_loss
 
 import jax
 import jax.numpy as jnp
@@ -17,6 +16,7 @@ __all__ = [
     "regression_loss",
     "train",
     "predict",
+    "predict_batched"
 ]
 # -------------------------------
 # Data Loading Utilities
@@ -330,6 +330,51 @@ def predict(model, state, X, key):
     logits, _ = batched_inference(X, key, state)
     return logits
 
+def predict_batched(
+    model,
+    state,
+    X,
+    key,
+    batch_size: int = 256,
+):
+    """
+    Run inference in mini-batches to avoid OOM on large X.
+
+    Args:
+        model:     Equinox model (possibly with dropout, batchnorm, etc.).
+        state:     Model state.
+        X:         Array of shape [N, ...].
+        key:       PRNGKey (only used if model has stochastic layers).
+        batch_size:Batch size for inference.
+
+    Returns:
+        jnp.ndarray of shape [N, *logit_shape] with concatenated outputs.
+    """
+    n = X.shape[0]
+    logits_list = []
+    # We'll split the key up front so each batch gets a fresh key
+    keys = jr.split(key, (n + batch_size - 1) // batch_size)
+    start = 0
+
+    # jit-ed per-batch inference; avoids recompiling inside the loop
+    @eqx.filter_jit
+    def infer_batch(model, state, xb, k):
+        # per-example keys if your model expects them
+        # Otherwise you can just pass k through
+        subkeys = jr.split(k, xb.shape[0])
+        batched = jax.vmap(model, in_axes=(0, None, None))
+        preds, _ = batched(xb, subkeys, state)
+        return preds
+
+    for i, k in enumerate(keys):
+        end = start + batch_size
+        xb = X[start:end]
+        preds = infer_batch(model, state, xb, k)
+        logits_list.append(preds)
+        start = end
+
+    # concatenate over the batch dimension
+    return jnp.concatenate(logits_list, axis=0)
 
 # -------------------------------
 # Main Routine (Demonstration)

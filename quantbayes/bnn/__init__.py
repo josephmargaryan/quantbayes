@@ -31,6 +31,7 @@ from .layers import (
     VariationalLayer,
 )
 from . import guide
+from .mini_batching import make_scheduler, SVITrainer
 
 __all__ = [
     "Module",
@@ -62,4 +63,6 @@ __all__ = [
     "SpectralDenseBlock",
     "MixtureOfTwoLayers",
     "guide",
+    "make_scheduler",
+    "SVITrainer",
 ]

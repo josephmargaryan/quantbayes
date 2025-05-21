@@ -24,11 +24,11 @@ from .vis_classification import (
     visualize_uncertainty_binary,
     visualize_uncertainty_multiclass,
 )
-from .log_density import Lppd
-from .spectral_kernel import SpectralDiagnostics
+from .log_density import Lppd, compute_nll
 
 __all__ = [
     "Lppd",
+    "compute_nll",
     "CalibratedBNN",
     "EntropyAndMutualInformation",
     "BayesianAnalysis",
@@ -49,5 +49,4 @@ __all__ = [
     "predict_gp_binary",
     "visualize_predictions",
     "visualize_predictions_binary",
-    "SpectralDiagnostics",
 ]

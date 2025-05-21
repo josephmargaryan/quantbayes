@@ -965,7 +965,6 @@ class PatchWiseSpectralMixture1D:
         self.jitter = jitter
         self.f = jnp.fft.fftfreq(patch_len)
 
-    # ------------------------------------------------------------------
     def __call__(self, x):
         """
         x : (B, L)
