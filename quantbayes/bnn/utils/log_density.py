@@ -6,33 +6,6 @@ from scipy.special import logsumexp
 
 __all__ = ["NLL"]
 
-"""
-# Regression + NUTS
-avg_nll, rmse = NLL(
-    model=BNN,
-    inference="nuts",
-    seed=1,
-    X=X_test,
-    y=y_test,
-    mcmc=mcmc,
-    mode="regression",
-)
-
-# Classification + SVI
-avg_nll, perplexity = NLL(
-    model=BNN,
-    inference="svi",
-    seed=1,
-    X=X_test,
-    y=y_test,
-    guide=guide,
-    params=svi_params,
-    num_samples=500,
-    mode="binary",
-)
-
-"""
-
 
 def get_predictive_samples(
     model,
@@ -46,6 +19,11 @@ def get_predictive_samples(
     num_samples: int = 200,
     return_sites=("mu", "sigma"),
 ):
+    """
+    Draw from the posterior predictive using either NUTS or SVI.
+
+    Returns a dict of samples at the requested return_sites.
+    """
     key = PRNGKey(seed)
 
     if inference.lower() == "nuts":
@@ -72,46 +50,58 @@ def get_predictive_samples(
 
 
 def compute_nll_and_metric(preds: dict, y: np.ndarray, mode: str):
-    # Determine if regression or classification by returned sites
+    """
+    Given predictive samples and true targets, compute:
+      - regression: avg NLL and RMSE
+      - classification: avg NLL and perplexity
+    """
+    # Regression branch
     if "mu" in preds and "sigma" in preds:
-        # Regression
-        mu = np.array(preds["mu"])  # (S, N)
-        sigma = np.array(preds["sigma"]).reshape(mu.shape)
+        mu = np.array(preds["mu"])          # (S, N)
+        sigma = np.array(preds["sigma"])    # may come (S, N, 1) or (S, N)
+        sigma = sigma.reshape(mu.shape)
         S, N = mu.shape
 
-        # Gaussian log-probs
-        logp = -0.5 * ((y - mu) ** 2 / (sigma**2) + np.log(2 * np.pi * sigma**2))
+        # Gaussian log-probs per sample, per data point
+        logp = -0.5 * ((y - mu) ** 2 / sigma**2 + np.log(2 * np.pi * sigma**2))
 
-        # NLL
+        # Log point-wise predictive density
         lppd_i = logsumexp(logp, axis=0) - np.log(S)
         avg_nll = -np.mean(lppd_i)
 
         # RMSE of posterior mean
         mu_mean = mu.mean(axis=0)
         rmse = np.sqrt(np.mean((mu_mean - y) ** 2))
+
         return avg_nll, rmse
 
+    # Classification branch (binary or multiclass)
     else:
-        # Classification
-        logits = np.array(preds["logits"])  # (S, N) or (S, N, C)
+        logits = np.array(preds["logits"])  # (S, N) for binary, (S, N, C) for multiclass
         S = logits.shape[0]
 
         if logits.ndim == 2:
-            # Binary
+            # Binary: treat logits as log-odds
+            # Expand to shape (S, N, 2) if desired, but simpler to compute log-prob directly
+            # logp[s,i] = y[i] * log σ(l) + (1-y[i]) * log (1-σ(l))
             probs = 1 / (1 + np.exp(-logits))
             logp = y * np.log(probs) + (1 - y) * np.log(1 - probs)
+            # shape (S, N)
+
         else:
             # Multiclass
+            # logits shape = (S, N, C)
+            _, N, C = logits.shape
+            # normalize to log‐probabilities
             logp_all = logits - logsumexp(logits, axis=-1, keepdims=True)
-            N = y.shape[0]
-            logp = logp_all[np.arange(N), y]
+            # pick out log-prob of true class for each sample/data
+            logp = logp_all[:, np.arange(N), y]  # shape (S, N)
 
-        # NLL
+        # now for either binary or multiclass, logp.shape == (S, N)
         lppd_i = logsumexp(logp, axis=0) - np.log(S)
         avg_nll = -np.mean(lppd_i)
-
-        # Perplexity
         perplexity = np.exp(-np.mean(lppd_i))
+
         return avg_nll, perplexity
 
 
@@ -129,28 +119,30 @@ def NLL(
     mode: str = "regression",
 ):
     """
-    Compute average NLL and RMSE or perplexity for regression or classification.
+    Compute avg negative log‐likelihood and a secondary metric.
 
     Args:
-      model:       NumPyro model function.
-      inference:   "nuts" or "svi".
-      seed:        int, random seed.
-      X:           JAX array of features, shape (N, D).
-      y:           NumPy array of targets/labels, shape (N,).
-      mcmc:        MCMC object (if inference="nuts").
-      guide:       guide function (if inference="svi").
-      params:      guide parameters (if inference="svi").
-      num_samples: number of predictive draws for SVI.
-      mode:        "regression", "binary", or "multiclass".
+      model:     NumPyro model function that emits either
+                   - sites "mu","sigma" (regression), or
+                   - site "logits"         (classification)
+      inference: "nuts" or "svi"
+      seed:      RNG seed
+      X:         array, shape (N, ...)
+      y:         array, shape (N,)
+      mcmc:      MCMC object (if inference="nuts")
+      guide:     guide function (if inference="svi")
+      params:    guide params (if inference="svi")
+      num_samples: number of SVI draws
+      mode:      one of {"regression","binary","multiclass"}
 
     Returns:
-      avg_nll: average negative log-likelihood per example
-      metric:  RMSE (if regression) or perplexity (if classification)
+      (avg_nll, rmse)       if regression
+      (avg_nll, perplexity) if classification
     """
-    # choose which sites to return
+    # choose which sites to sample
     return_sites = ("mu", "sigma") if mode == "regression" else ("logits",)
 
-    # get predictive samples dict
+    # gather predictive samples
     preds = get_predictive_samples(
         model,
         inference,
@@ -163,5 +155,5 @@ def NLL(
         return_sites=return_sites,
     )
 
-    # compute and return NLL and the relevant metric
+    # compute metrics
     return compute_nll_and_metric(preds, y, mode=mode)

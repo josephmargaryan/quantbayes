@@ -19,6 +19,8 @@ from quantbayes.stochax.trainer.train import (
 )
 from quantbayes.stochax import predict as _single_predict
 
+__all__ = ["PacBayesEnsemble"]
+
 CRITERIA = {
     "pblambda": PBLambdaCriterion,
     "pbkl": PBKLCriterion,
@@ -27,7 +29,7 @@ CRITERIA = {
 }
 
 
-class PacBayesEquinoxEnsemble:
+class PacBayesEnsemble:
     def __init__(
         self,
         model_constructors,  # list of callables key->model
@@ -298,7 +300,7 @@ if __name__ == "__main__":
     def ctor2(key):
         return EQXBinary(X.shape[1], jr.split(key)[1])
 
-    ensemble = PacBayesEquinoxEnsemble(
+    ensemble = PacBayesEnsemble(
         [ctor1, ctor2],
         task="binary",
         loss_fn=binary_loss,
