@@ -3,7 +3,7 @@ from .ensemble import (
     EnsembleMulticlass,
     EnsembleRegression,
 )
-from .adaboost import AdaBoost 
+from .adaboost import AdaBoost
 from .WMJ import PacBayesEnsemble
 
 __all__ = [
@@ -11,5 +11,5 @@ __all__ = [
     "EnsembleMulticlass",
     "EnsembleRegression",
     "AdaBoost",
-    "PacBayesEnsemble"
+    "PacBayesEnsemble",
 ]

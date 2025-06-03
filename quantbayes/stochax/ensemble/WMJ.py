@@ -17,7 +17,7 @@ from quantbayes.stochax.trainer.train import (
     multiclass_loss,
     regression_loss,
 )
-from quantbayes.stochax import predict as _single_predict
+from quantbayes.stochax.trainer.train import predict as _single_predict
 
 __all__ = ["PacBayesEnsemble"]
 

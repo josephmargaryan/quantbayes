@@ -57,8 +57,8 @@ def compute_nll_and_metric(preds: dict, y: np.ndarray, mode: str):
     """
     # Regression branch
     if "mu" in preds and "sigma" in preds:
-        mu = np.array(preds["mu"])          # (S, N)
-        sigma = np.array(preds["sigma"])    # may come (S, N, 1) or (S, N)
+        mu = np.array(preds["mu"])  # (S, N)
+        sigma = np.array(preds["sigma"])  # may come (S, N, 1) or (S, N)
         sigma = sigma.reshape(mu.shape)
         S, N = mu.shape
 
@@ -77,7 +77,9 @@ def compute_nll_and_metric(preds: dict, y: np.ndarray, mode: str):
 
     # Classification branch (binary or multiclass)
     else:
-        logits = np.array(preds["logits"])  # (S, N) for binary, (S, N, C) for multiclass
+        logits = np.array(
+            preds["logits"]
+        )  # (S, N) for binary, (S, N, C) for multiclass
         S = logits.shape[0]
 
         if logits.ndim == 2:

@@ -7,5 +7,5 @@ __all__ = [
     "EnsembleBinary",
     "EnsembleMulticlass",
     "EnsembleRegression",
-    "EnsembleForecast"
+    "EnsembleForecast",
 ]
