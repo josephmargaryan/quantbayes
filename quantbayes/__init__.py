@@ -2,7 +2,7 @@ from . import (
     bnn,
     ensemble,
     fake_data,
-    pac_bayes_analysis,
+    pacbayes,
     gmm,
     hilbert_space,
     hyperparameter_tune,
@@ -18,7 +18,7 @@ from . import (
 __all__ = [
     "bnn",
     "gmm",
-    "pac_bayes_analysis",
+    "pacbayes",
     "hilbert_space",
     "long_seq_classifier",
     "sde",

@@ -5,10 +5,6 @@ import numpy as np
 __all__ = ["BNNEnsembleRegression", "BNNEnsembleBinary", "BNNEnsembleMulticlass"]
 
 
-######################################################################
-# Some Utility Functions for Advanced Methods
-######################################################################
-
 
 def softmax_logits(logits, axis=-1, eps=1e-20):
     """
@@ -112,11 +108,6 @@ def normalize_weights(weights):
     return w / jnp.sum(w)
 
 
-######################################################################
-# Base Ensemble Class with Additional “Fit Weights” Logic
-######################################################################
-
-
 class _BNNEnsembleBase:
     """
     Extended base class for handling multiple BNN models and combining predictions.
@@ -136,17 +127,11 @@ class _BNNEnsembleBase:
         # Store learned weights for BMA or stacking
         self.model_weights = None
 
-    ##################################################################
-    # 1) Compile each model
-    ##################################################################
     def compile_models(self, **compile_kwargs):
         for name, model in self.models_dict.items():
             print(f"[Ensemble] Compiling model: {name}")
             model.compile(**compile_kwargs)
 
-    ##################################################################
-    # 2) Fit each model
-    ##################################################################
     def fit_models(self, X_train, y_train, rng_keys, **fit_kwargs):
         models_list = list(self.models_dict.items())
 
@@ -158,9 +143,6 @@ class _BNNEnsembleBase:
             print(f"[Ensemble] Fitting model: {name}")
             model.fit(X_train, y_train, key, **fit_kwargs)
 
-    ##################################################################
-    # 3) Predict from each model
-    ##################################################################
     def predict_models(
         self, X_test, rng_keys, posterior="likelihood", num_samples=None
     ):
@@ -198,10 +180,6 @@ class _BNNEnsembleBase:
         preds_dict = self.predict_models(X_test, rng_key, posterior, num_samples)
         return self.combine_predictions(preds_dict, ensemble_method=ensemble_method)
 
-    ##################################################################
-    # ADVANCED: Fit Weights on a Validation Set
-    # Subclasses may override or call this to help with WAIC or stacking
-    ##################################################################
     def fit_ensemble_weights(self, X_val, y_val):
         """
         Optional method to fit ensemble weights using a hold-out set (X_val, y_val).
@@ -210,11 +188,6 @@ class _BNNEnsembleBase:
           - or do stacking by optimizing negative log-likelihood wrt weights.
         """
         raise NotImplementedError
-
-
-######################################################################
-# BNNEnsembleRegression
-######################################################################
 
 
 class BNNEnsembleRegression(_BNNEnsembleBase):
@@ -358,11 +331,6 @@ class BNNEnsembleRegression(_BNNEnsembleBase):
 
         else:
             raise ValueError(f"Unknown ensemble method: {ensemble_method}")
-
-
-######################################################################
-# BNNEnsembleBinary
-######################################################################
 
 
 class BNNEnsembleBinary(_BNNEnsembleBase):
@@ -608,116 +576,3 @@ class BNNEnsembleMulticlass(_BNNEnsembleBase):
 
         else:
             raise ValueError(f"Unknown ensemble method: {ensemble_method}")
-
-
-######################################################################
-# Example Usage (Pseudo-Code)
-######################################################################
-if __name__ == "__main__":
-
-    # Suppose you have BNN models that inherit from your `Module` and define `__call__`.
-    # E.g. DenseBinary, DenseRegression, etc.
-
-    # 1) Binary Classification Example with advanced WAIC or stacking
-
-    # 2) BINARY CLASSIFICATION EXAMPLE
-    import jax.random as jr
-    import numpy as np
-    from kaggle.bnn import Dense, Spectral
-    from sklearn.metrics import log_loss
-    from sklearn.model_selection import train_test_split
-
-    from quantbayes.bnn.utils import plot_calibration_curve, plot_roc_curve
-    from quantbayes.fake_data import generate_binary_classification_data
-
-    df = generate_binary_classification_data()
-    X, y = df.drop("target", axis=1), df["target"]
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=24
-    )
-    X_train, X_test, y_train, y_test = (
-        jnp.array(X_train),
-        jnp.array(X_test),
-        jnp.array(y_train),
-        jnp.array(y_test),
-    )
-
-    rng_key_bin = jr.key(1)
-
-    bin_model1 = Dense(method="nuts")
-    bin_model2 = Spectral(method="nuts")
-
-    bin_ensemble = BNNEnsembleBinary(
-        models_dict={"m1": bin_model1, "m2": bin_model2}, ensemble_method="stacking"  #
-    )
-
-    # Compile & fit
-    bin_ensemble.compile_models(num_warmup=300, num_samples=500)
-    bin_ensemble.fit_models(X_train, y_train, rng_key_bin, num_samples=500)
-    bin_ensemble.fit_ensemble_weights(X_test, y_test, method="stacking")
-
-    # Predict (logits)
-    rng_test_bin = jr.key(99)
-    bin_logits = bin_ensemble.predict(X_test, rng_test_bin, posterior="logits")
-
-    # Convert to probabilities
-    bin_probs = jax.nn.sigmoid(bin_logits).mean(axis=0)
-    loss = log_loss(np.array(y_test), np.array(bin_probs))
-    plot_roc_curve(y_test, bin_probs)
-    plot_calibration_curve(y_test, bin_probs)
-    print(f"Log loss: {loss}")
-
-    # 2) Regression Example with WAIC or stacking
-    """
-    X_train_reg, y_train_reg = ...
-    X_val_reg, y_val_reg = ...
-    X_test_reg, y_test_reg = ...
-    rng_key_reg = random.PRNGKey(42)
-
-    reg_model1 = DenseRegression(method="nuts")
-    reg_model2 = DenseRegression(method="svi")
-
-    reg_ensemble = BNNEnsembleRegression(
-        models_dict={"r1": reg_model1, "r2": reg_model2},
-        ensemble_method="stacking"
-    )
-
-    reg_ensemble.compile_models(num_warmup=300, num_samples=800)
-    reg_ensemble.fit_models(X_train_reg, y_train_reg, rng_key_reg, num_samples=800)
-
-    # Fit ensemble weights with WAIC or stacking
-    reg_ensemble.fit_ensemble_weights(X_val_reg, y_val_reg, sigma=1.0, method="stacking")
-
-    # Predict on test set
-    rng_test_reg = random.PRNGKey(2023)
-    reg_samples = reg_ensemble.predict(X_test_reg, rng_test_reg, posterior="likelihood")
-    # shape (S, N) posterior draws
-    mean_pred = reg_samples.mean(axis=0)
-    """
-
-    # 3) Multiclass Example likewise
-    """
-    X_train_multi, y_train_multi = ...
-    X_val_multi, y_val_multi = ...
-    X_test_multi, y_test_multi = ...
-
-    multi_model1 = DenseMulticlass(method="nuts")
-    multi_model2 = DenseMulticlass(method="svi")
-
-    multi_ensemble = BNNEnsembleMulticlass(
-        models_dict={"m1": multi_model1, "m2": multi_model2},
-        ensemble_method="bma"
-    )
-
-    multi_ensemble.compile_models(num_warmup=400, num_samples=800)
-    rng_key_multi = random.PRNGKey(1234)
-    multi_ensemble.fit_models(X_train_multi, y_train_multi, rng_key_multi, num_samples=800)
-
-    # Fit weighting strategy
-    multi_ensemble.fit_ensemble_weights(X_val_multi, y_val_multi, method="stacking")
-
-    rng_test_multi = random.PRNGKey(9876)
-    combined_logits = multi_ensemble.predict(X_test_multi, rng_test_multi, posterior="logits")
-    combined_probs = jax.nn.softmax(combined_logits, axis=-1).mean(axis=0)  # (N, C)
-    print("Multiclass test probs:", combined_probs)
-    """

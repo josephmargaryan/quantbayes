@@ -9,7 +9,7 @@ __all__ = [
     "LowRankFFTGuide2d",
     "LowRankFFTGuide",
     "LowRankAdaptiveFFTGuide2d",
-    "LowRankAdaptiveGuide",
+    "LowRankAdaptiveFFTGuide",
     "LowRankPSM1DGuide",
     "LowRankPSM2DGuide",
 ]
@@ -406,7 +406,7 @@ class LowRankAdaptiveFFTGuide2d(AutoGuide):
         }
 
 
-class LowRankAdaptiveGuide(AutoGuide):
+class LowRankAdaptiveFFTGuide(AutoGuide):
     """
     Low‑rank guide over three half‑spectrum sites in the 1‑D non‑stationary model:
       - {prefix}_delta_alpha   shape (k_half,)

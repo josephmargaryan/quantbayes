@@ -452,9 +452,9 @@ class SpectralCirculantLayer(eqx.Module):
     Uses the same custom‑JVP FFT mat‑mul defined above.
     """
 
-    in_features: int
-    padded_dim: int
-    K: int
+    in_features: int = eqx.static_field()
+    padded_dim: int = eqx.static_field()
+    K: int = eqx.static_field()
     k_half: int = eqx.static_field()
 
     alpha: jnp.ndarray
@@ -525,9 +525,9 @@ class SpectralCirculantLayer(eqx.Module):
 
 
 class AdaptiveSpectralCirculantLayer(eqx.Module):
-    in_features: int
-    padded_dim: int
-    K: int
+    in_features: int = eqx.static_field()
+    padded_dim: int = eqx.static_field()
+    K: int = eqx.static_field()
     k_half: int = eqx.static_field()
 
     alpha_global: float
@@ -733,8 +733,8 @@ def _spectral_circulant_conv2d_jvp(primals, tangents):
 
 
 class SpectralCirculantLayer2d(eqx.Module):
-    H_pad: int
-    W_pad: int
+    H_pad: int = eqx.static_field()
+    W_pad: int = eqx.static_field()
     alpha: jnp.ndarray  # scalar decay exponent
     w_real: jnp.ndarray  # shape (H_pad, W_pad)
     w_imag: jnp.ndarray  # shape (H_pad, W_pad)
@@ -784,10 +784,10 @@ class SpectralCirculantLayer2d(eqx.Module):
 
 
 class AdaptiveSpectralCirculantLayer2d(eqx.Module):
-    H_pad: int
-    W_pad: int
+    H_pad: int = eqx.static_field()
+    W_pad: int = eqx.static_field()
     alpha_global: float
-    alpha_coarse_shape: tuple[int, int]
+    alpha_coarse_shape: tuple[int, int] = eqx.static_field()
     delta_alpha_coarse: jnp.ndarray
     w_real: jnp.ndarray
     w_imag: jnp.ndarray
@@ -845,7 +845,7 @@ class AdaptiveSpectralCirculantLayer2d(eqx.Module):
 
 
 class GibbsKernel(eqx.Module):
-    N: int
+    N: int = eqx.static_field()
     lengthscale_net: callable
 
     def __init__(self, in_features: int, lengthscale_net, *, key=None):
@@ -873,7 +873,7 @@ class GibbsKernel(eqx.Module):
 
 
 class InputWarping(eqx.Module):
-    N: int
+    N: int = eqx.static_field()
     warp_net: callable
     base_psd: callable
 
@@ -902,8 +902,8 @@ class InputWarping(eqx.Module):
 
 
 class GibbsKernel2d(eqx.Module):
-    H: int
-    W: int
+    H: int = eqx.static_field()
+    W: int = eqx.static_field()
     net_x: callable
     net_y: callable
 
@@ -939,8 +939,8 @@ class GibbsKernel2d(eqx.Module):
 
 
 class InputWarping2d(eqx.Module):
-    H: int
-    W: int
+    H: int = eqx.static_field()
+    W: int = eqx.static_field()
     warp_x: callable
     warp_y: callable
     base_psd: callable
@@ -1006,11 +1006,11 @@ class PatchWiseSpectralMixture(eqx.Module):
     Each patch uses a Q‑component spectral mixture PSD.
     """
 
-    L: int
-    l: int
-    P: int
-    Q: int
-    jitter: float
+    L: int = eqx.static_field()
+    l: int = eqx.static_field()
+    P: int = eqx.static_field()
+    Q: int = eqx.static_field()
+    jitter: float = eqx.static_field()
 
     f: jnp.ndarray  # (l,)
     logits: jnp.ndarray  # (P, Q)
@@ -1082,15 +1082,15 @@ class PatchWiseSpectralMixture2d(eqx.Module):
     Non-overlapping h×w patches; Q-component spectral mixture PSD per patch.
     """
 
-    H: int
-    W: int
-    ph: int
-    pw: int
-    nh: int
-    nw: int
-    P: int
-    Q: int
-    jitter: float
+    H: int = eqx.static_field()
+    W: int = eqx.static_field()
+    ph: int = eqx.static_field()
+    pw: int = eqx.static_field()
+    nh: int = eqx.static_field()
+    nw: int = eqx.static_field()
+    P: int = eqx.static_field()
+    Q: int = eqx.static_field()
+    jitter: float = eqx.static_field()
 
     fy: jnp.ndarray
     fx: jnp.ndarray

@@ -3,8 +3,10 @@ import jax.numpy as jnp
 import jax.random as jr
 import equinox as eqx
 import optax
+from jax.tree_util import tree_flatten, tree_unflatten
 import numpy as np
-from typing import Callable, List, Tuple
+from typing import Callable, List, Tuple, Optional
+import matplotlib.pyplot as plt
 
 from quantbayes.stochax.trainer.train import *
 
@@ -12,318 +14,364 @@ __all__ = ["AdaBoost"]
 
 
 # -------------------------------------------------------------------
-# Utility: draw indices with replacement according to a probability vector
+# 1) PER-SAMPLE WEIGHTED LOSS FUNCTIONS
 # -------------------------------------------------------------------
-def weighted_sample_indices(
-    key: jax.random.PRNGKey, weights: jnp.ndarray, num_samples: int
+def weighted_binary_loss_per_sample(
+    logits: jnp.ndarray, y: jnp.ndarray
 ) -> jnp.ndarray:
     """
-    Draw `num_samples` indices from {0, ..., num_samples-1} with replacement,
-    according to the probability distribution `weights`.
+    Compute elementwise binary‐cross‐entropy (logistic) loss, given:
+      - logits: shape [batch_size], raw scores (float)
+      - y:      shape [batch_size], targets ∈ {0., 1.}
+    Returns a vector of length batch_size with per-example losses.
     """
-    # jax.random.choice can sample with replacement when shape=(num_samples,)
-    return jr.choice(key, a=num_samples, shape=(num_samples,), p=weights)
+    # optax.sigmoid_binary_cross_entropy returns a vector of per-sample losses
+    return optax.sigmoid_binary_cross_entropy(logits, y)
 
 
-def weighted_sample_indices(
-    key: jax.random.PRNGKey, weights: jnp.ndarray, num_samples: int
+def weighted_multiclass_loss_per_sample(
+    logits: jnp.ndarray, y: jnp.ndarray
 ) -> jnp.ndarray:
     """
-    Draw `num_samples` indices from {0, ..., num_samples-1} with replacement,
-    according to the probability distribution `weights`.
+    Compute elementwise softmax‐cross‐entropy loss, given:
+      - logits: shape [batch_size, K], raw scores
+      - y:      shape [batch_size], integer labels ∈ {0,…,K−1}
+    Returns a vector of length batch_size with per-example losses.
     """
-    return jr.choice(key, a=num_samples, shape=(num_samples,), p=weights)
+    return optax.softmax_cross_entropy_with_integer_labels(logits, y)
 
 
+# -------------------------------------------------------------------
+# 2) AdaBoost CLASS (EXACT SAMPLE-WEIGHT, STAGED-ERROR TRACKING)
+# -------------------------------------------------------------------
 class AdaBoost:
     """
-    AdaBoost that can handle:
-      • Binary classification (num_classes = 2, labels ∈ {−1, +1})
-      • Multiclass classification (num_classes = K > 2, labels ∈ {0,…,K−1})
-      • (If you wanted, you could also plug in a regression loss, but standard
-        AdaBoost is usually for classification.)
-
-    Internally, we branch on self.num_classes == 2 vs. > 2 to pick the right α‐formula,
-    weight update, and voting logic.
+    AdaBoost ensemble that trains each weak learner on the full dataset
+    using exact sample weights (no bootstrap).  This matches scikit-learn’s
+    AdaBoostClassifier behavior.  It also records staged 0–1 train/val errors
+    so you can plot convergence curves “à la” scikit-learn’s `staged_score`.
     """
 
     def __init__(
         self,
         model_constructor: Callable[[jax.random.PRNGKey], eqx.Module],
-        loss_fn: Callable,
-        optimizer: optax.GradientTransformation,
         num_estimators: int = 10,
+        learning_rate: float = 1.0,
         batch_size: int = 64,
-        num_epochs: int = 50,
-        patience: int = 5,
+        num_epochs: int = 10,
+        patience: int = 3,
+        optimizer: optax.GradientTransformation = optax.adam(1e-2),
         *,
         num_classes: int = 2,
+        rng_key: Optional[jax.random.PRNGKey] = None,
     ):
         """
         Parameters
         ----------
         model_constructor : function
-            Takes a JAX PRNGKey and returns a freshly initialized Equinox Module.
-            If num_classes == 2, this module must output a single scalar logit per example.
-            If num_classes > 2, it must output a length‐K logit vector per example.
-        loss_fn : function
-            Either binary_loss (for num_classes == 2) or multiclass_loss (for num_classes > 2).
-        optimizer : optax.GradientTransformation
-            e.g. optax.adam(...)
+            Given a JAX PRNGKey, returns a fresh Equinox Module.
+            - If num_classes == 2: module outputs raw logits of shape (batch_size,) for binary classification.
+            - If num_classes > 2: module outputs raw logits of shape (batch_size, K).
         num_estimators : int
-            Number of weak learners B.
-        batch_size, num_epochs, patience : same as your existing train() parameters.
+            Number of boosting rounds (B).
+        learning_rate : float
+            Shrinkage factor on α_b (≤ 1.0). scikit-learn uses 1.0 by default.
+        batch_size : int
+            Mini-batch size when fitting each weak learner.
+        num_epochs : int
+            Maximum epochs per weak learner.
+        patience : int
+            Early stopping patience (in epochs) based on weighted loss not improving.
+        optimizer : optax.GradientTransformation
+            Optimizer for training each weak learner.
         num_classes : int
-            If 2 → classic binary AdaBoost (labels ∈ {−1, +1}).
-            If K > 2 → discrete multiclass AdaBoost (SAMME).
+            If 2 → binary AdaBoost, targets y ∈ {0.,1.}. If >2 → SAMME multiclass, y ∈ {0,…,K−1}.
+        rng_key : PRNGKey (optional)
+            If provided, used for reproducibility; otherwise defaults to jr.PRNGKey(0).
         """
         self.model_constructor = model_constructor
-        self.loss_fn = loss_fn
-        self.optimizer = optimizer
-        self.B = num_estimators
+        self.num_estimators = num_estimators
+        self.learning_rate = learning_rate
         self.batch_size = batch_size
         self.num_epochs = num_epochs
         self.patience = patience
+        self.optimizer = optimizer
         self.num_classes = num_classes
 
-        # After fitting, we'll store a list of (model, state, alpha) tuples.
-        self.weak_learners: List[Tuple[eqx.Module, any, float]] = []
+        # List to store (trained_module, α_b) for each weak learner
+        self.weak_learners: List[Tuple[eqx.Module, float]] = []
+
+        # To track staged 0–1 errors
+        self.train_errors: List[float] = []
+        self.val_errors:   List[float] = []
+
+        # RNG key
+        self.rng_key = jr.PRNGKey(0) if rng_key is None else rng_key
 
     def fit(
         self,
         X: jnp.ndarray,
         y: jnp.ndarray,
-        key: jax.random.PRNGKey,
+        *,
+        X_val: Optional[jnp.ndarray] = None,
+        y_val: Optional[jnp.ndarray] = None,
     ):
         """
-        Train the AdaBoost ensemble on (X, y).
+        Fit the AdaBoost ensemble on (X, y) using exact sample weights.
 
-        For binary (num_classes=2), y must be in {−1, +1}.
-        For multiclass (num_classes=K>2), y must be in {0,1,…,K−1}.
+        - If num_classes == 2: y must be float32 ∈ {0., 1.}.
+        - If num_classes  > 2: y must be int32 ∈ {0,…,K−1}, where K=num_classes.
+        Optionally pass (X_val, y_val) to record validation errors per stage.
         """
         N = X.shape[0]
         # 1) Initialize sample weights uniformly
         w = jnp.ones(N) / N
 
-        # 2) Split the top-level key into B subkeys
-        keys = jr.split(key, self.B)
+        for b in range(self.num_estimators):
+            # ─── 2) Instantiate a fresh weak learner ───
+            self.rng_key, subkey = jr.split(self.rng_key)
+            model = self.model_constructor(subkey)
 
-        for b in range(self.B):
-            kb = keys[b]
-            kb, ksamp = jr.split(kb)
+            # Flatten the model into (leaves, treedef) so that we can gradient-update the leaves
+            leaves, treedef = tree_flatten(model)                     # :contentReference[oaicite:3]{index=3}
+            params = leaves                                           # flat list of all leaves
+            opt_state = self.optimizer.init(params)
 
-            # 3) Weighted bootstrap sampling
-            indices = weighted_sample_indices(ksamp, w, N)  # shape (N,)
-            X_sample = X[indices]
-            y_sample = y[indices]
+            best_model = model
+            best_loss = jnp.inf
+            epochs_without_improve = 0
 
-            # 4) Build & train a fresh weak learner on (X_sample, y_sample)
-            kb, kmodel = jr.split(kb)
-            model = self.model_constructor(kmodel)
-            state = None  # if your model is stateless
-            opt_state = self.optimizer.init(eqx.filter(model, eqx.is_inexact_array))
+            # ─── 3) Train this weak learner with weighted loss ───
+            for epoch in range(self.num_epochs):
+                # 3a) Shuffle data each epoch
+                self.rng_key, perm_key = jr.split(self.rng_key)
+                perm = jr.permutation(perm_key, N)
+                X_perm, y_perm, w_perm = X[perm], y[perm], w[perm]
 
-            best_model, best_state, _, _ = train(
-                model=model,
-                state=state,
-                opt_state=opt_state,
-                optimizer=self.optimizer,
-                loss_fn=self.loss_fn,
-                X_train=X_sample,
-                y_train=y_sample,
-                X_val=X_sample,
-                y_val=y_sample,
-                batch_size=self.batch_size,
-                num_epochs=self.num_epochs,
-                patience=self.patience,
-                key=kmodel,
-            )
+                num_batches = int(jnp.ceil(N / self.batch_size))
+                for i in range(num_batches):
+                    start = i * self.batch_size
+                    end = min((i + 1) * self.batch_size, N)
+                    x_batch = X_perm[start:end]
+                    y_batch = y_perm[start:end]
+                    w_batch = w_perm[start:end]
 
-            # 5) Compute full‐set logits from this weak learner
-            kb, kpred = jr.split(kb)
-            logits_full = predict(best_model, best_state, X, kpred)
-            # • If binary: shape (N, 1) or (N,), a single scalar per example.
-            # • If multiclass: shape (N, K), a vector per example.
+                    # Provide a separate RNG for each example in the batch, if model is stochastic
+                    self.rng_key, batch_key = jr.split(self.rng_key)
+                    keys_batch = jr.split(batch_key, x_batch.shape[0])
 
-            # 6) Branch: binary vs. multiclass
+                    # Define weighted loss on the batch
+                    def loss_fn(params_, _state_, xb, yb, wb, keysb):
+                        # Reconstruct module from flat leaves `params_`
+                        model_ = tree_unflatten(treedef, params_)          # :contentReference[oaicite:4]{index=4}
+                        logits, _ = jax.vmap(lambda xi, ki: model_(xi, ki, None))(xb, keysb)
+
+                        if self.num_classes == 2:
+                            logits1d = logits.squeeze()
+                            per_example = weighted_binary_loss_per_sample(logits1d, yb)
+                        else:
+                            per_example = weighted_multiclass_loss_per_sample(logits, yb)
+
+                        # Weighted average over the batch
+                        weighted_loss = jnp.sum(per_example * wb) / jnp.sum(wb)
+                        return weighted_loss, None
+
+                    # Compute gradients w.r.t. `params`
+                    (batch_loss, _), grads = jax.value_and_grad(loss_fn, has_aux=True)(
+                        params, None, x_batch, y_batch, w_batch, keys_batch
+                    )
+                    updates, opt_state = self.optimizer.update(grads, opt_state, params)
+                    params = optax.apply_updates(params, updates)
+
+                # ─── After each epoch, compute weighted loss on the entire training set ───
+                self.rng_key, eval_key = jr.split(self.rng_key)
+                keys_full = jr.split(eval_key, N)
+                logits_full, _ = jax.vmap(
+                    lambda xi, ki: tree_unflatten(treedef, params)(xi, ki, None)  # rebuilt module
+                )(X, keys_full)
+
+                if self.num_classes == 2:
+                    logits1d_full = logits_full.squeeze()
+                    per_full = weighted_binary_loss_per_sample(logits1d_full, y)
+                else:
+                    per_full = weighted_multiclass_loss_per_sample(logits_full, y)
+
+                full_loss = jnp.sum(per_full * w) / jnp.sum(w)
+
+                # Early stopping
+                if full_loss < best_loss - 1e-8:
+                    best_loss = full_loss
+                    best_model = tree_unflatten(treedef, params)
+                    epochs_without_improve = 0
+                else:
+                    epochs_without_improve += 1
+                    if epochs_without_improve >= self.patience:
+                        break
+
+            # ─── 4) Evaluate ε_b on the full training set with best_model ───
+            self.rng_key, pred_key = jr.split(self.rng_key)
+            keys_pred = jr.split(pred_key, N)
+            logits_best, _ = jax.vmap(lambda xi, ki: best_model(xi, ki, None))(X, keys_pred)
+
             if self.num_classes == 2:
-                # -------------------
-                # BINARY AdaBoost
-                # -------------------
-                # Expect logits_full.ravel() is shape (N,)
-                z = logits_full.ravel()
-                # Convert logit → ±1
-                h = jnp.sign(z)
-                h = jnp.where(h == 0, 1, h)  # ties go to +1
-
-                # Weighted error ε_b = ∑_i w_i · 1{h_i ≠ y_i}
-                incorrect = (h != y).astype(jnp.float32)
+                # Binary mode: convert logits → {−1, +1}
+                logits1d_best = logits_best.squeeze()
+                h_signed = jnp.sign(logits1d_best)
+                h_signed = jnp.where(h_signed == 0, 1, h_signed)
+                # Convert y ∈ {0,1} → y_signed ∈ {−1,+1}
+                y_signed = 2 * y - 1
+                incorrect = (h_signed != y_signed).astype(jnp.float32)
                 epsilon = jnp.sum(w * incorrect)
-
-                # If ε_b > 0.5, “flip” h so that error becomes 1 − ε
+                # If ε_b > 0.5, flip hypothesis so error becomes 1−ε_b
                 if epsilon > 0.5:
-                    h = -h
+                    h_signed = -h_signed
                     epsilon = 1.0 - epsilon
-
-                # α_b = ½·ln((1−ε)/ε)
                 alpha = 0.5 * jnp.log((1.0 - epsilon) / (epsilon + 1e-15))
-
                 # Update sample weights: w_i ← w_i · exp(−α·y_i·h_i)
-                w = w * jnp.exp(-alpha * y * h)
+                w = w * jnp.exp(-alpha * y_signed * h_signed)
                 w = w / jnp.sum(w)
 
             else:
-                # -------------------
-                # MULTICLASS AdaBoost (SAMME)
-                # -------------------
-                # Expect logits_full has shape (N, K)
+                # SAMME multiclass
                 K = self.num_classes
-                # Discrete prediction: h_i = argmax_k logits_full[i, k]
-                h = jnp.argmax(logits_full, axis=1)  # shape (N,), in {0,…,K−1}
-
-                # Weighted error: ε_b = ∑_i w_i · 1{h_i ≠ y_i}
-                incorrect = (h != y).astype(jnp.float32)
+                preds = jnp.argmax(logits_best, axis=1)
+                incorrect = (preds != y).astype(jnp.float32)
                 epsilon = jnp.sum(w * incorrect)
-
-                # If ε_b ≥ (K−1)/K, this weak learner is no better than random → skip it
+                # Skip if no better than random
                 if epsilon >= (K - 1) / K:
-                    print(
-                        f"Weak learner {b+1}/{self.B} skipped: error ε = {epsilon:.4f} ≥ (K−1)/K"
-                    )
+                    print(f"Weak learner {b+1} skipped (ε={epsilon:.4f} ≥ {(K-1)/K:.4f})")
                     continue
-
-                # α_b = ln((1−ε)/ε) + ln(K−1)
                 alpha = jnp.log((1.0 - epsilon) / (epsilon + 1e-15)) + jnp.log(K - 1.0)
-
-                # Update sample weights:
-                #   if h_i == y_i → multiply w_i by exp(−α),
-                #   else           → multiply w_i by exp(+α).
-                correct_mask = h == y
+                correct_mask = (preds == y)
                 w = w * jnp.where(correct_mask, jnp.exp(-alpha), jnp.exp(alpha))
                 w = w / jnp.sum(w)
 
-            # 7) Store (weak learner, its state, α_b)
-            self.weak_learners.append((best_model, best_state, float(alpha)))
-            print(f"Weak learner {b+1}/{self.B} – ε = {epsilon:.4f}, α = {alpha:.4f}")
+            # ─── 5) Store (best_model, α_b) ───
+            self.weak_learners.append((best_model, float(alpha)))
+            print(f"Weak learner {b+1}/{self.num_estimators}  –  ε = {epsilon:.4f},  α = {alpha:.4f}")
 
-        # end for b
+            # ─── 6) Record staged training error (0–1) after b+1 rounds ───
+            train_pred = self._staged_predict(X, upto=b + 1)
+            train_err = float(jnp.mean((train_pred != y).astype(jnp.float32)))
+            self.train_errors.append(train_err)
 
-    def predict(self, X: jnp.ndarray, key: jax.random.PRNGKey) -> jnp.ndarray:
+            # If validation set supplied, record validation error
+            if X_val is not None and y_val is not None:
+                val_pred = self._staged_predict(X_val, upto=b + 1)
+                val_err = float(jnp.mean((val_pred != y_val).astype(jnp.float32)))
+                self.val_errors.append(val_err)
+
+    def _staged_predict(self, X: jnp.ndarray, upto: int) -> jnp.ndarray:
         """
-        Make final predictions on new data.
-
-        Returns:
-          • If num_classes == 2: array of shape (N,) in {−1,+1}.
-          • If num_classes > 2: array of shape (N,) in {0,…,K−1}.
+        Return 0–1 predictions using only the first `upto` weak learners.
+        - If num_classes == 2: returns array of shape (N,) in {0,1}.
+        - If num_classes  > 2: returns array of shape (N,) in {0,…,K−1}.
         """
-        M = X.shape[0]
-        keys = jr.split(key, len(self.weak_learners))
-
+        N = X.shape[0]
         if self.num_classes == 2:
-            # -------------------
-            # BINARY vote: sign(∑ α_b·h_b(x))
-            # -------------------
-            agg = jnp.zeros(M)
-            for (model, state, alpha), kb in zip(self.weak_learners, keys):
-                z = predict(model, state, X, kb).ravel()  # shape (M,)
-                h = jnp.sign(z)
-                h = jnp.where(h == 0, 1, h)
-                agg = agg + alpha * h
+            agg = jnp.zeros(N)
+            for (model, alpha) in self.weak_learners[:upto]:
+                self.rng_key, pred_key = jr.split(self.rng_key)
+                keys_full = jr.split(pred_key, N)
+                logits, _ = jax.vmap(lambda xi, ki: model(xi, ki, None))(X, keys_full)
+                logits1d = logits.squeeze()
+                h_signed = jnp.sign(logits1d)
+                h_signed = jnp.where(h_signed == 0, 1, h_signed)
+                agg = agg + alpha * h_signed
 
-            final_pred = jnp.sign(agg)
-            final_pred = jnp.where(final_pred == 0, 1, final_pred)  # ties to +1
-            return np.array(final_pred)  # in {−1,+1}
+            final_signed = jnp.sign(agg)
+            final_signed = jnp.where(final_signed == 0, 1, final_signed)
+            # Convert back to {0,1}
+            return ((final_signed + 1) // 2).astype(jnp.int32)
 
         else:
-            # -------------------
-            # MULTICLASS vote: accumulate α_b for whichever class is predicted by learner b
-            # -------------------
             K = self.num_classes
-            scores = jnp.zeros(
-                (M, K)
-            )  # score[i,k] = sum of α_b for all b that predicted class k
+            scores = jnp.zeros((N, K))
+            for (model, alpha) in self.weak_learners[:upto]:
+                self.rng_key, pred_key = jr.split(self.rng_key)
+                keys_full = jr.split(pred_key, N)
+                logits, _ = jax.vmap(lambda xi, ki: model(xi, ki, None))(X, keys_full)
+                preds = jnp.argmax(logits, axis=1)
+                onehot_preds = jax.nn.one_hot(preds, K)
+                scores = scores + alpha * onehot_preds
+            return jnp.argmax(scores, axis=1)
 
-            for (model, state, alpha), kb in zip(self.weak_learners, keys):
-                logits = predict(model, state, X, kb)  # shape (M, K)
-                h = jnp.argmax(logits, axis=1)  # shape (M,), in {0,…,K−1}
-                one_hot_h = jax.nn.one_hot(h, K)  # shape (M, K)
-                scores = scores + alpha * one_hot_h  # add α to the predicted class slot
-
-            final_pred = jnp.argmax(
-                scores, axis=1
-            )  # choose the class with highest total α
-            return np.array(final_pred)  # shape (M,), in {0,…,K−1}
+    def predict(self, X: jnp.ndarray) -> jnp.ndarray:
+        """
+        Final ensemble prediction using all trained weak learners.
+        Returns same shape/type as `_staged_predict`.
+        """
+        return self._staged_predict(X, upto=len(self.weak_learners))
 
 
 # -------------------------------------------------------------------
-# Example Usage (binary classification with synthetic data)
+# 3) EXAMPLE USAGE + CONVERGENCE PLOT
 # -------------------------------------------------------------------
 if __name__ == "__main__":
-    import numpy as np
     from sklearn.datasets import make_classification
     from sklearn.model_selection import train_test_split
     from sklearn.metrics import accuracy_score
 
-    # 1) Create synthetic data (labels in {0,1}), then map to {−1,+1}
+    # 3.1) Create synthetic binary data (labels ∈ {0,1})
     X_np, y_np = make_classification(
         n_samples=1000, n_features=10, n_informative=5, random_state=0
     )
-    y_np = 2 * y_np - 1  # convert 0→−1, 1→+1
 
-    # 2) Train/test split
+    # 3.2) Train/test split
     X_train_np, X_test_np, y_train_np, y_test_np = train_test_split(
         X_np, y_np, test_size=0.2, random_state=0
     )
 
-    # 3) Convert to JAX arrays
+    # 3.3) Convert to JAX arrays
     X_train = jnp.array(X_train_np, dtype=jnp.float32)
-    y_train = jnp.array(y_train_np, dtype=jnp.float32)
+    y_train = jnp.array(y_train_np, dtype=jnp.int32)
     X_test = jnp.array(X_test_np, dtype=jnp.float32)
-    y_test = jnp.array(y_test_np, dtype=jnp.float32)
+    y_test = jnp.array(y_test_np, dtype=jnp.int32)
 
-    # 4) Define a very simple weak learner: a one‐layer Equinox module that outputs a single logit
+    # 3.4) Define a simple weak learner: a one-layer linear module
     class SimpleWeakLearner(eqx.Module):
         linear: eqx.nn.Linear
 
         def __init__(self, in_features: int, key: jax.random.PRNGKey):
             self.linear = eqx.nn.Linear(in_features, 1, key=key)
 
-        def __call__(
-            self, x: jnp.ndarray, key: jax.random.PRNGKey, state
-        ) -> Tuple[jnp.ndarray, any]:
-            """
-            Forward pass: return a scalar logit per example.
-            `state` is unused since this is stateless.
-            """
-            logits = jnp.squeeze(self.linear(x), axis=-1)
-            return logits, state
+        def __call__(self, x: jnp.ndarray, key: jax.random.PRNGKey, state):
+            # Return a single logit per example
+            return jnp.squeeze(self.linear(x)), state
 
     def weak_model_constructor(key: jax.random.PRNGKey) -> eqx.Module:
         in_f = X_train.shape[-1]
         return SimpleWeakLearner(in_f, key)
 
-    # 5) Plug in your existing `binary_loss` and choose an optimizer
-    # (Assumes `binary_loss` returns (loss, new_state) and works on a single‐logit model.)
-    loss_fn = binary_loss
-    optimizer = optax.adam(learning_rate=1e-2)
-
-    # 6) Instantiate AdaBoost and fit
+    # 3.5) Instantiate AdaBoost, using binary mode
     ada = AdaBoost(
         model_constructor=weak_model_constructor,
-        loss_fn=loss_fn,
-        optimizer=optimizer,
         num_estimators=10,
+        learning_rate=1.0,
         batch_size=128,
-        num_epochs=100,
-        patience=10,
+        num_epochs=50,
+        patience=5,
+        optimizer=optax.adam(1e-2),
+        num_classes=2,
+        rng_key=jr.PRNGKey(42),
     )
-    main_key = jr.PRNGKey(42)
-    ada.fit(X_train, y_train, main_key)
 
-    # 7) Predict on the test set
-    test_key = jr.PRNGKey(2025)
-    y_pred = ada.predict(X_test, test_key)
+    # 3.6) Fit on training data (no validation split here)
+    ada.fit(X_train, y_train)
 
-    # 8) Evaluate
-    acc = accuracy_score(y_test_np, y_pred)
-    print(f"AdaBoost Test Accuracy: {acc:.4f}")
+    # 3.7) Predict on test set & report accuracy
+    y_pred = ada.predict(X_test)
+    acc = accuracy_score(y_test_np, np.array(y_pred))
+    print(f"\nAdaBoost Test Accuracy: {acc:.4f}")
+
+    # 3.8) Plot convergence (training error vs. number of weak learners)
+    stages = np.arange(1, len(ada.train_errors) + 1)
+    plt.figure(figsize=(6, 4))
+    plt.plot(stages, ada.train_errors, label="Training Error", marker="o")
+    plt.xlabel("Number of Weak Learners")
+    plt.ylabel("0–1 Error Rate")
+    plt.title("AdaBoost Convergence (Training Error)")
+    plt.grid(alpha=0.3)
+    plt.legend()
+    plt.tight_layout()
+    plt.show()

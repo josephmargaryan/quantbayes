@@ -1,7 +1,7 @@
 from .low_rank_fft_guide import (
     LowRankFFTGuide2d,
     LowRankAdaptiveFFTGuide2d,
-    LowRankAdaptiveGuide,
+    LowRankAdaptiveFFTGuide,
     LowRankPSM1DGuide,
     LowRankPSM2DGuide,
     LowRankFFTGuide,
@@ -11,7 +11,7 @@ __all__ = [
     "LowRankFFTGuide2d",
     "LowRankFFTGuide",
     "LowRankAdaptiveFFTGuide2d",
-    "LowRankAdaptiveGuide",
+    "LowRankAdaptiveFFTGuide",
     "LowRankPSM1DGuide",
     "LowRankPSM2DGuide",
 ]

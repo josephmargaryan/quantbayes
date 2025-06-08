@@ -1,390 +1,300 @@
-# ada_boost_numpyro_refactored.py
-
 import jax
 import jax.numpy as jnp
+import jax.random as jr
 import numpy as np
 import numpyro
+from numpyro import sample, plate
 import numpyro.distributions as dist
-from numpyro.infer import SVI, Trace_ELBO, Predictive
-from numpyro.infer.autoguide import AutoNormal
-from numpyro.optim import Adam
-from typing import Tuple, Optional
+from sklearn.datasets import make_classification
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score
+import matplotlib.pyplot as plt
+from typing import Callable, List, Tuple, Optional
+
+from quantbayes.bnn.layers import Module
 
 
 # -------------------------------------------------------------------
-# 1) Encapsulate a small Bayesian neural net (two layers) in a class
+# 2) Define a simple Bayesian weak learner: a 2-layer Bayesian MLP
 # -------------------------------------------------------------------
-class BayesianBNN:
+class BayesianMLP(Module):
     """
-    A simple Bayesian neural net (one hidden layer) for binary classification,
-    with methods:
-      - compile(lr): sets up AutoNormal guide and SVI
-      - fit(X, y, rng_key, num_steps): runs SVI on (X, y)
-      - predict_probs(X_new, rng_key, num_samples): draws posterior‐predictive samples
-        and returns mean probability P(y=1 | x).
+    A very simple Bayesian neural network for binary classification.
+    - Prior: standard Normal on every weight & bias.
+    - Likelihood: Bernoulli(logits = final MLP output).
     """
 
-    def __init__(self, in_features: int, hidden_size: int = 32, num_classes: int = 2):
-        """
-        :param in_features: number of input features D
-        :param hidden_size: number of hidden units H (default 32)
-        """
+    def __init__(self, in_features: int, hidden: int = 16, method: str = "svi"):
+        super().__init__(method=method)
         self.in_features = in_features
-        self.hidden_size = hidden_size
-        self.num_classes = num_classes
+        self.hidden = hidden
+        # NumPyro inference objects will be set in compile()
+        self.compile()  # set up SVI (default) or you can override with method="nuts"
 
-        # Placeholders; will be set in compile()
-        self.guide = None  # AutoNormal guide
-        self.svi = None  # SVI object
-        self.svi_state = None  # final SVI state
-        self.params = None  # variational parameters dict
-
-    def bnn_model(self, x: jnp.ndarray, y: Optional[jnp.ndarray] = None):
+    def __call__(self, x, y=None):
         """
-        NumPyro model: two‐layer BNN with Normal priors, ReLU hidden, Bernoulli likelihood.
-
-        :param x: shape (batch_size, D)
-        :param y: shape (batch_size,) with values in {0,1}; may be None at predict time.
+        Defines the Bayesian model in NumPyro syntax.
+        Input:
+          - x: shape [batch_size, in_features]
+          - y: shape [batch_size], integer {0,1}
         """
-        D = self.in_features
-        H = self.hidden_size
+        # Layer 1 weights & bias
+        w1 = sample("w1", dist.Normal(jnp.zeros((self.in_features, self.hidden)), 1.0))
+        b1 = sample("b1", dist.Normal(jnp.zeros((self.hidden,)), 1.0))
+        # Layer 2 weights & bias
+        w2 = sample("w2", dist.Normal(jnp.zeros((self.hidden, 1)), 1.0))
+        b2 = sample("b2", dist.Normal(jnp.zeros((1,)), 1.0))
 
-        # 1) hidden‐layer weights + bias
-        w1 = numpyro.sample("w1", dist.Normal(jnp.zeros((D, H)), 1.0).to_event(2))
-        b1 = numpyro.sample("b1", dist.Normal(jnp.zeros((H,)), 1.0).to_event(1))
+        # Forward pass
+        hidden = jnp.tanh(jnp.matmul(x, w1) + b1)   # shape [batch_size, hidden]
+        logits = jnp.squeeze(jnp.matmul(hidden, w2) + b2, axis=-1)  # shape [batch_size]
+        logits = numpyro.deterministic("logits", logits)
+        # Likelihood
+        with plate("data", x.shape[0]):
+            sample("obs", dist.Bernoulli(logits=logits), obs=y)
 
-        # 2) output‐layer weights + bias (H → 1)
-        w2 = numpyro.sample("w2", dist.Normal(jnp.zeros((H, 1)), 1.0).to_event(2))
-        b2 = numpyro.sample("b2", dist.Normal(jnp.zeros((1,)), 1.0).to_event(1))
+        # We return logits so that Predictive can sample "logits"
+        return logits
 
-        # 3) forward pass
-        hidden = jax.nn.relu(jnp.matmul(x, w1) + b1)  # (batch_size, H)
-        logits = jnp.squeeze(jnp.matmul(hidden, w2) + b2, -1)  # (batch_size,)
 
-        # 4) Bernoulli likelihood
-        numpyro.sample("obs", dist.Bernoulli(logits=logits), obs=y)
+# -------------------------------------------------------------------
+# 3) AdaBoostBNN: wrap Bayesian weak learners into an AdaBoost loop
+# -------------------------------------------------------------------
+class AdaBoostBNN:
+    """
+    AdaBoost ensemble whose weak learners are Bayesian neural nets (NumPyro Modules).
+    Follows the exact sample-weight update rules from scikit-learn, but uses
+    posterior-mean logits to form h_b(x) = sign(mean_logits).
+    """
 
-    def compile(self, lr: float = 1e-3):
+    def __init__(
+        self,
+        model_constructor: Callable[[jax.random.PRNGKey], Module],
+        num_estimators: int = 10,
+        learning_rate: float = 1.0,
+        num_posterior_samples: int = 100,
+        *,
+        method: str = "svi",  # can be "nuts", "svi", or "steinvi"
+        svi_steps: int = 1000,
+        rng_key: Optional[jax.random.PRNGKey] = None,
+    ):
         """
-        Instantiate the AutoNormal guide and SVI instance.
-
-        :param lr: learning rate for Adam‐SVI
+        Parameters
+        ----------
+        model_constructor : function
+            Given a PRNGKey, returns a fresh subclass of Module (e.g. BayesianMLP).
+            That Module must implement compile()/fit()/predict().
+        num_estimators : int
+            Number of boost rounds (B).
+        learning_rate : float
+            Shrinkage factor on α_b (≤1.0).
+        num_posterior_samples : int
+            How many posterior samples to draw when calling predict(X).
+        method : str
+            Inference method to pass to each weak learner ("nuts", "svi", or "steinvi").
+        svi_steps : int
+            If method=="svi", how many SVI steps to run on each weak learner.
+        rng_key : PRNGKey (optional)
+            For reproducibility.  Defaults to jr.PRNGKey(0) if None.
         """
-        self.guide = AutoNormal(self.bnn_model)
-        optimizer = Adam(lr)
-        self.svi = SVI(self.bnn_model, self.guide, optimizer, loss=Trace_ELBO())
+        self.model_constructor = model_constructor
+        self.num_estimators = num_estimators
+        self.learning_rate = learning_rate
+        self.num_posterior_samples = num_posterior_samples
+        self.method = method
+        self.svi_steps = svi_steps
+
+        # After fitting, we’ll store a list of (weak_module, α_b) tuples:
+        self.weak_learners: List[Tuple[Module, float]] = []
+
+        # For convergence plotting:
+        self.train_errors: List[float] = []
+        self.val_errors:   List[float] = []
+
+        # RNG
+        self.rng_key = jr.PRNGKey(0) if rng_key is None else rng_key
 
     def fit(
         self,
         X: jnp.ndarray,
         y: jnp.ndarray,
-        rng_key: jax.random.PRNGKey,
-        num_steps: int = 1000,
+        *,
+        X_val: Optional[jnp.ndarray] = None,
+        y_val: Optional[jnp.ndarray] = None,
     ):
         """
-        Run SVI on (X, y) to learn variational parameters.
+        Train the BNN‐based AdaBoost ensemble on (X, y).  For binary classification,
+        y ∈ {0,1}.  All indexing is JAX‐friendly.  We keep X, y on JAX arrays.
 
-        :param X: shape (N, D), jnp.ndarray of float32
-        :param y: shape (N,), jnp.ndarray of int32 in {0,1}
-        :param rng_key: JAX PRNGKey
-        :param num_steps: number of SVI updates
+        Optionally pass (X_val, y_val) to track validation error at each stage.
         """
-        # Initialize SVI state
-        self.svi_state = self.svi.init(rng_key, x=X, y=y)
+        N = X.shape[0]
+        # 1) Initialize sample weights uniformly
+        w = jnp.ones(N) / N
 
-        # One training step function
-        def _train_step(state, _):
-            state, _ = self.svi.update(state, x=X, y=y)
-            return state, None
+        for b in range(self.num_estimators):
+            # ─── 2) Instantiate a fresh weak BNN ───
+            self.rng_key, subkey = jr.split(self.rng_key)
+            weak: Module = self.model_constructor(subkey)
+            weak.method = self.method
+            weak.compile()  # use default SVI or override via weak.method="nuts" etc.
 
-        # Run num_steps iterations of SVI
-        self.svi_state, _ = jax.lax.scan(
-            _train_step, self.svi_state, None, length=num_steps
-        )
-
-        # Extract variational parameters
-        self.params = self.svi.get_params(self.svi_state)
-
-    def predict_probs(
-        self,
-        X_new: jnp.ndarray,
-        rng_key: jax.random.PRNGKey,
-        num_samples: int = 50,
-    ) -> jnp.ndarray:
-        """
-        Draw posterior‐predictive samples at X_new and return P(y=1 | x) estimate.
-
-        :param X_new: shape (M, D)
-        :param rng_key: JAX PRNGKey for Predictive
-        :param num_samples: how many posterior draws
-        :return: jnp.ndarray of shape (M,) giving mean probability for y=1
-        """
-        predictive = Predictive(
-            self.bnn_model,
-            guide=self.guide,
-            params=self.params,
-            num_samples=num_samples,
-        )
-        samples = predictive(rng_key, x=X_new)[
-            "obs"
-        ]  # shape (num_samples, M), values {0,1}
-        return jnp.mean(samples, axis=0)  # (M,) mean probability
-
-
-class AdaBoost:
-    """
-    AdaBoost where each weak learner is a BayesianBNN (trained via SVI).
-    Supports both:
-      • Binary classification (num_classes=2, y ∈ {0,1})
-      • Multiclass classification (num_classes=K, y ∈ {0,…,K−1})
-    """
-
-    def __init__(
-        self,
-        in_features: int,
-        hidden_size: int = 32,
-        num_boost_rounds: int = 6,
-        nvi_steps: int = 1000,
-        posterior_samples: int = 50,
-        lr: float = 1e-3,
-        num_classes: int = 2,
-    ):
-        """
-        :param in_features: input dimension D
-        :param hidden_size: hidden‐layer size for each BNN
-        :param num_boost_rounds: number of AdaBoost rounds (B)
-        :param nvi_steps: SVI steps per weak learner
-        :param posterior_samples: posterior‐predictive samples per model (for ε)
-        :param lr: learning rate for each SVI
-        :param num_classes: 2 for binary, K for K-way multiclass
-        """
-        self.in_features = in_features
-        self.hidden_size = hidden_size
-        self.B = num_boost_rounds
-        self.nvi_steps = nvi_steps
-        self.posterior_samples = posterior_samples
-        self.lr = lr
-        self.num_classes = num_classes  # if 2→binary, if >2→multiclass
-
-        self.models: list[BayesianBNN] = []
-        self.alphas: list[float] = []
-
-    @staticmethod
-    def _weighted_sample_indices(
-        key: jax.random.PRNGKey, w: jnp.ndarray, N: int
-    ) -> jnp.ndarray:
-        return jax.random.choice(key, a=N, shape=(N,), p=w)
-
-    def fit(self, X: np.ndarray, y: np.ndarray, rng_key: jax.random.PRNGKey):
-        """
-        Train AdaBoost on (X, y).  For binary: y ∈ {0,1}.  For multiclass: y ∈ {0..K−1}.
-        """
-        # Convert to JAX
-        X_j = jnp.array(X, dtype=jnp.float32)  # (N, D)
-        y_j = jnp.array(y, dtype=jnp.int32)  # (N,)
-        N = X_j.shape[0]
-        K = self.num_classes
-
-        # 1) Initialize sample weights
-        w = jnp.ones((N,)) / N
-
-        # 2) Draw B subkeys
-        keys = jax.random.split(rng_key, self.B)
-
-        for b in range(self.B):
-            key_b = keys[b]
-
-            # 3) Weighted bootstrap sampling
-            key_b, key_samp = jax.random.split(key_b)
-            idx = self._weighted_sample_indices(key_samp, w, N)  # (N,)
-            X_sample = X_j[idx, :]  # shape (N, D)
-            y_sample = y_j[idx]  # shape (N,)
-
-            # 4) Build & train a fresh BayesianBNN on (X_sample, y_sample)
-            model = BayesianBNN(
-                self.in_features,
-                hidden_size=self.hidden_size,
-                num_classes=self.num_classes,
-            )
-            model.compile(lr=self.lr)
-            key_b, key_fit = jax.random.split(key_b)
-            model.fit(X_sample, y_sample, rng_key=key_fit, num_steps=self.nvi_steps)
-
-            # 5) Compute posterior‐predictive “probabilities” on the entire training set
-            key_b, key_pred = jax.random.split(key_b)
-            # samples shape: (posterior_samples, N), each entry ∈ {0..K−1}
-            samples = model.predict_probs(
-                X_j, rng_key=key_pred, num_samples=self.posterior_samples
-            )
-            # But for SAMME we only need a hard label h_b(x):
-            # (If predict_probs returns mean prob, you must instead do Predictive(...)[“obs”], one‐hot, etc.)
+            # 3) Fit the BNN on the weighted data. Unfortunately, NumPyro’s SVI/MCMC
+            #    don’t accept sample‐weights directly, so we re‐sample (X_i,y_i) ∼ w
+            #    _with_ replacement N times to approximate the weighted dataset.
+            #    This is the same “bootstrap approximation” idea for BNNs.
+            #    (Exact weighting would require re‐writing the ELBO’s log‐likelihood.)
             #
-            # Let’s assume predict_probs(...) returns the *mean* probability for class=1 in binary,
-            # or for multiclass we might need a separate method that returns E[one_hot(obs)].
+            #    In practice, if the dataset is not too large, this gives a good approximation.
             #
-            # Easiest: slightly modify predict_probs() so that it returns a length-N, length-K array of mean probs.
-            # Then we do:
-            #     class_probs = model.predict_probs_multiclass( … )  # shape (N, K)
-            #     h = jnp.argmax(class_probs, axis=1)                 # shape (N,)
-            #
-            # For binary (K=2), we can threshold at 0.5:
-            #     prob_pos = model.predict_probs(…)  # shape (N,), P(y=1|x)
-            #     h = (prob_pos >= 0.5).astype(jnp.int32)
+            self.rng_key, samp_key = jr.split(self.rng_key)
+            idx = jr.choice(samp_key, a=N, shape=(N,), p=w)   # shape (N,)
+            X_boot = X[idx]
+            y_boot = y[idx]
 
-            if K == 2:
-                # 5a) BINARY case: get P(y=1|x) as a length-N vector, then threshold
-                prob_pos = (
-                    samples  # shape (posterior_samples, N) → we need mean over axis=0
-                )
-                # Suppose predict_probs returned shape (N,) = mean P(y=1|x).
-                # If it returned (posterior_samples, N), do: prob_pos = jnp.mean(samples, axis=0)
-                # Here we assume predict_probs already returns (N,) directly.
-                h_binary = (prob_pos >= 0.5).astype(jnp.int32)  # shape (N,)
-                # Convert to ±1
-                y_pm1 = 2 * y_j - 1  # {0→−1, 1→+1}
-                h_pm1 = 2 * h_binary - 1  # {0→−1, 1→+1}
-
-                # 6a) Compute weighted error ε_b
-                incorrect = (h_binary != y_j).astype(jnp.float32)
-                epsilon = jnp.sum(w * incorrect)
-
-                # If ε_b > 0.5, flip h_pm1 so error → 1−ε
-                if epsilon > 0.5:
-                    h_pm1 = -h_pm1
-                    epsilon = 1.0 - epsilon
-
-                # α_b = ½ · ln((1−ε)/ε)
-                alpha = 0.5 * jnp.log((1.0 - epsilon) / (epsilon + 1e-15))
-
-                # 7a) Update weights: w_i ← w_i·exp(−α·y_i·h_i)
-                w = w * jnp.exp(-alpha * y_pm1 * h_pm1)
-                w = w / jnp.sum(w)
-
+            # Fit with the chosen inference.  If SVI, run SVI for svi_steps.  If NUTS, just run MCMC.
+            if self.method == "svi":
+                weak.fit(X_boot, y_boot, subkey, num_steps=self.svi_steps)
             else:
-                # 5b) MULTICLASS case: get shape (posterior_samples, N) integer draws (each in 0..K−1)
-                # We need a “mean one-hot” to get P(y=k|x), shape (N, K).
-                # E.g.:
-                #    samples_pp = Predictive(...)[“obs”]  # (posterior_samples, N)
-                #    one_hot = jax.nn.one_hot(samples_pp, K)  # (posterior_samples, N, K)
-                #    class_probs = jnp.mean(one_hot, axis=0)   # (N, K)
-                #
-                # For simplicity, let’s assume `model.predict_probs_multiclass(...)` returns (N, K):
-                class_probs = samples  # pretend samples is (N, K)
-                h = jnp.argmax(
-                    class_probs, axis=1
-                )  # shape (N,), predicted class ∈ {0..K−1}
+                weak.fit(X_boot, y_boot, subkey)
 
-                # 6b) Weighted error ε_b = Σ w_i · 1{h_i ≠ y_i}
-                incorrect = (h != y_j).astype(jnp.float32)
-                epsilon = jnp.sum(w * incorrect)
+            # ─── 4) Get posterior‐sampled logits on the _full_ training set ───
+            self.rng_key, pred_key = jr.split(self.rng_key)
+            logits_samples = weak.predict(X, pred_key, posterior="logits", num_samples=self.num_posterior_samples)
+            # logits_samples has shape [num_posterior_samples, N]
 
-                # If ε_b ≥ (K−1)/K, skip this weak learner
-                if epsilon >= (K - 1) / K:
-                    print(
-                        f"[Round {b+1}/{self.B}] ε={epsilon:.4f} ≥ (K−1)/K → skipping learner"
-                    )
-                    continue
+            # 5) Collapse to a point‐estimate: mean over posterior samples
+            mean_logits = jnp.mean(logits_samples, axis=0)   # shape (N,)
 
-                # α_b = ln((1−ε)/ε) + ln(K−1)
-                alpha = jnp.log((1.0 - epsilon) / (epsilon + 1e-15)) + jnp.log(K - 1.0)
+            # Convert mean_logits → h_signed ∈ {−1, +1}
+            h_signed = jnp.sign(mean_logits)
+            h_signed = jnp.where(h_signed == 0, 1, h_signed)
 
-                # 7b) Update weights:
-                # If correct: w_i ← w_i · exp(−α), else w_i ← w_i · exp(+α)
-                correct_mask = h == y_j
-                w = w * jnp.where(correct_mask, jnp.exp(-alpha), jnp.exp(alpha))
-                w = w / jnp.sum(w)
+            # Convert y ∈ {0,1} → y_signed ∈ {−1,+1}
+            y_signed = 2 * y - 1
 
-            # 8) Store this round’s model and α
-            self.models.append(model)
-            self.alphas.append(float(alpha))
+            # 6) Compute weighted error ε_b = sum_i w_i · 1{h_i ≠ y_i}
+            incorrect = (h_signed != y_signed).astype(jnp.float32)
+            epsilon = jnp.sum(w * incorrect)
 
-            print(f"[Round {b+1}/{self.B}] ε={epsilon:.4f}, α={alpha:.4f}")
+            # If ε_b > 0.5, flip hypothesis:
+            if epsilon > 0.5:
+                h_signed = -h_signed
+                epsilon = 1.0 - epsilon
 
-    def predict(self, X: np.ndarray, rng_key: jax.random.PRNGKey) -> np.ndarray:
+            # 7) Compute α_b = ½ ln((1−ε)/ε)
+            alpha = 0.5 * jnp.log((1.0 - epsilon) / (epsilon + 1e-15))
+
+            # 8) Update sample weights: w_i ← w_i · exp(−α · y_i · h_i), then renormalize
+            w = w * jnp.exp(-alpha * y_signed * h_signed)
+            w = w / jnp.sum(w)
+
+            # 9) Store this weak learner and α_b
+            self.weak_learners.append((weak, float(alpha)))
+            print(f"Weak learner {b+1}/{self.num_estimators}  –  ε = {epsilon:.4f},  α = {float(alpha):.4f}")
+
+            # ─── 10) Record staged 0–1 training error ───
+            train_pred = self._staged_predict(X)  # uses first (b+1) learners
+            train_err  = float(jnp.mean((train_pred != y).astype(jnp.float32)))
+            self.train_errors.append(train_err)
+
+            if X_val is not None and y_val is not None:
+                val_pred = self._staged_predict(X_val)
+                val_err  = float(jnp.mean((val_pred != y_val).astype(jnp.float32)))
+                self.val_errors.append(val_err)
+
+    def _staged_predict(self, X: jnp.ndarray) -> jnp.ndarray:
         """
-        Predict {0,1} (binary) or {0..K−1} (multiclass) labels for new data X.
+        Run “ensemble prediction” using all stored weak learners.
+        For each learner b:
+          1) Draw num_posterior_samples of logits on X: shape [S, N].
+          2) Average → mean_logits_b (shape [N])
+          3) h_b(x) = sign(mean_logits_b) ∈ {−1,+1}
+          4) Weighted vote: α_b · h_b(x)
+        Finally take sign of sum over b.  Convert back to {0,1}.
         """
-        X_j = jnp.array(X, dtype=jnp.float32)  # (M, D)
-        M = X_j.shape[0]
-        K = self.num_classes
+        N = X.shape[0]
+        agg = jnp.zeros(N)
 
-        if K == 2:
-            # -------------------
-            # Binary final vote: Σ α_b · h_b(x), threshold at 0
-            # -------------------
-            agg = jnp.zeros((M,))
-            keys = jax.random.split(rng_key, len(self.models))
-            for b, (model, alpha) in enumerate(zip(self.models, self.alphas)):
-                key_b = keys[b]
-                prob_pos = model.predict_probs(
-                    X_j, rng_key=key_b, num_samples=self.posterior_samples
-                )
-                h_binary = (prob_pos >= 0.5).astype(jnp.int32)  # {0,1}
-                h_pm1 = 2 * h_binary - 1  # {−1,+1}
-                agg = agg + alpha * h_pm1
+        for (weak, alpha) in self.weak_learners:
+            self.rng_key, pred_key = jr.split(self.rng_key)
+            logits_samples = weak.predict(X, pred_key, posterior="logits", num_samples=self.num_posterior_samples)
+            # logits_samples: [S, N]
+            mean_logits = jnp.mean(logits_samples, axis=0)  # shape (N,)
+            h_signed = jnp.sign(mean_logits)
+            h_signed = jnp.where(h_signed == 0, 1, h_signed)
+            agg = agg + alpha * h_signed
 
-            final_pm1 = jnp.sign(agg)
-            final_pm1 = jnp.where(final_pm1 == 0, 1, final_pm1)
-            y_pred = (final_pm1 + 1) // 2  # {−1→0, +1→1}
-            return np.array(y_pred)
+        final_signed = jnp.sign(agg)
+        final_signed = jnp.where(final_signed == 0, 1, final_signed)
+        return ((final_signed + 1) // 2).astype(jnp.int32)  # {0,1}
 
-        else:
-            # -------------------
-            # Multiclass final vote: accumulate α_b in a (M, K) score matrix, then argmax
-            # -------------------
-            scores = jnp.zeros((M, K))
-            keys = jax.random.split(rng_key, len(self.models))
-            for b, (model, alpha) in enumerate(zip(self.models, self.alphas)):
-                key_b = keys[b]
-                # Again, assume model.predict_probs_multiclass(...) returns (M, K):
-                class_probs = model.predict_probs(
-                    X_j, rng_key=key_b, num_samples=self.posterior_samples
-                )
-                # Hard‐label vote: h = argmax_k class_probs[i, k]
-                h = jnp.argmax(class_probs, axis=1)  # shape (M,)
-                one_hot_h = jax.nn.one_hot(h, K)  # (M, K)
-                scores = scores + alpha * one_hot_h
-
-            y_pred = jnp.argmax(scores, axis=1)  # (M,)
-            return np.array(y_pred)
+    def predict(self, X: jnp.ndarray) -> jnp.ndarray:
+        """
+        Same as _staged_predict, since we always want all weak learners.
+        """
+        return self._staged_predict(X)
 
 
 # -------------------------------------------------------------------
-# 3) Example usage on synthetic data
+# 4) Example usage: train & evaluate AdaBoostBNN on a toy dataset
 # -------------------------------------------------------------------
 if __name__ == "__main__":
-    from sklearn.datasets import make_classification
-    from sklearn.model_selection import train_test_split
-    from sklearn.metrics import accuracy_score
-
-    # Create toy binary data: 1000 samples, 20 features
+    # 4.1) Synthetic binary dataset
     X_np, y_np = make_classification(
-        n_samples=1000, n_features=20, n_informative=10, random_state=0
+        n_samples=500, n_features=10, n_informative=5, random_state=0
     )
-    y_np = y_np.astype(np.int32)  # ensure {0,1}
+    # y_np ∈ {0,1}
 
-    # Train/test split
-    X_train, X_test, y_train, y_test = train_test_split(
-        X_np, y_np, test_size=0.2, random_state=0
+    # 4.2) Train/val/test splits
+    X_tmp, X_test, y_tmp, y_test = train_test_split(X_np, y_np, test_size=0.2, random_state=0)
+    X_train, X_val, y_train, y_val = train_test_split(X_tmp, y_tmp, test_size=0.25, random_state=0)
+    # Now: 60% train, 20% val, 20% test.
+
+    # 4.3) Convert to JAX arrays
+    X_train_j = jnp.array(X_train, dtype=jnp.float32)
+    y_train_j = jnp.array(y_train, dtype=jnp.int32)
+    X_val_j   = jnp.array(X_val,   dtype=jnp.float32)
+    y_val_j   = jnp.array(y_val,   dtype=jnp.int32)
+    X_test_j  = jnp.array(X_test,  dtype=jnp.float32)
+    y_test_j  = jnp.array(y_test,  dtype=jnp.int32)
+
+    # 4.4) Define a function that constructs a fresh BayesianMLP
+    def make_bnn(key: jax.random.PRNGKey) -> Module:
+        in_dim = X_train_j.shape[-1]
+        # Here we choose SVI; if you want NUTS, you can pass method="nuts" to BayesianMLP
+        return BayesianMLP(in_features=in_dim, hidden=16, method="svi")
+
+    # 4.5) Instantiate AdaBoostBNN
+    ada_bnn = AdaBoostBNN(
+        model_constructor=make_bnn,
+        num_estimators=10,
+        learning_rate=1.0,
+        num_posterior_samples=100,
+        method="svi",
+        svi_steps=500,
+        rng_key=jr.PRNGKey(42),
     )
 
-    # Build and fit AdaBoost with BNN weak learners
-    in_features = X_train.shape[1]
-    ada = AdaBoost(
-        in_features=in_features,
-        hidden_size=32,  # hidden layer size for each BNN
-        num_boost_rounds=6,  # train 6 weak learners
-        nvi_steps=1000,  # SVI steps per weak learner
-        posterior_samples=50,  # PP draws per model when computing error
-        lr=1e-3,  # learning rate for SVI
-    )
+    # 4.6) Fit on training data, tracking validation error as well
+    ada_bnn.fit(X_train_j, y_train_j, X_val=X_val_j, y_val=y_val_j)
 
-    key = jax.random.PRNGKey(42)
-    ada.fit(X_train, y_train, key)
+    # 4.7) Evaluate on test set
+    y_pred_j = ada_bnn.predict(X_test_j)
+    y_pred_np = np.array(y_pred_j)
+    test_acc = accuracy_score(y_test, y_pred_np)
+    print(f"\nAdaBoostBNN Test Accuracy: {test_acc:.4f}")
 
-    # Predict on test set
-    test_key = jax.random.PRNGKey(2025)
-    y_pred = ada.predict(X_test, test_key)
-
-    acc = accuracy_score(y_test, y_pred)
-    print(f"\nAdaBoost‐BNN Test Accuracy: {acc:.4f}")
+    # 4.8) Plot staged training & validation error
+    stages = np.arange(1, len(ada_bnn.train_errors) + 1)
+    plt.figure(figsize=(6, 4))
+    plt.plot(stages, ada_bnn.train_errors, label="Train Error", marker="o")
+    if ada_bnn.val_errors:
+        plt.plot(stages, ada_bnn.val_errors, label="Val Error", marker="s")
+    plt.xlabel("Number of Weak Learners")
+    plt.ylabel("0–1 Error Rate")
+    plt.title("AdaBoostBNN Convergence")
+    plt.grid(alpha=0.3)
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
