@@ -46,7 +46,7 @@ class BayesianMLP(Module):
         b2 = sample("b2", dist.Normal(jnp.zeros((1,)), 1.0))
 
         # Forward pass
-        hidden = jnp.tanh(jnp.matmul(x, w1) + b1)   # shape [batch_size, hidden]
+        hidden = jnp.tanh(jnp.matmul(x, w1) + b1)  # shape [batch_size, hidden]
         logits = jnp.squeeze(jnp.matmul(hidden, w2) + b2, axis=-1)  # shape [batch_size]
         logits = numpyro.deterministic("logits", logits)
         # Likelihood
@@ -109,7 +109,7 @@ class AdaBoostBNN:
 
         # For convergence plotting:
         self.train_errors: List[float] = []
-        self.val_errors:   List[float] = []
+        self.val_errors: List[float] = []
 
         # RNG
         self.rng_key = jr.PRNGKey(0) if rng_key is None else rng_key
@@ -148,7 +148,7 @@ class AdaBoostBNN:
             #    In practice, if the dataset is not too large, this gives a good approximation.
             #
             self.rng_key, samp_key = jr.split(self.rng_key)
-            idx = jr.choice(samp_key, a=N, shape=(N,), p=w)   # shape (N,)
+            idx = jr.choice(samp_key, a=N, shape=(N,), p=w)  # shape (N,)
             X_boot = X[idx]
             y_boot = y[idx]
 
@@ -160,11 +160,13 @@ class AdaBoostBNN:
 
             # ─── 4) Get posterior‐sampled logits on the _full_ training set ───
             self.rng_key, pred_key = jr.split(self.rng_key)
-            logits_samples = weak.predict(X, pred_key, posterior="logits", num_samples=self.num_posterior_samples)
+            logits_samples = weak.predict(
+                X, pred_key, posterior="logits", num_samples=self.num_posterior_samples
+            )
             # logits_samples has shape [num_posterior_samples, N]
 
             # 5) Collapse to a point‐estimate: mean over posterior samples
-            mean_logits = jnp.mean(logits_samples, axis=0)   # shape (N,)
+            mean_logits = jnp.mean(logits_samples, axis=0)  # shape (N,)
 
             # Convert mean_logits → h_signed ∈ {−1, +1}
             h_signed = jnp.sign(mean_logits)
@@ -191,16 +193,18 @@ class AdaBoostBNN:
 
             # 9) Store this weak learner and α_b
             self.weak_learners.append((weak, float(alpha)))
-            print(f"Weak learner {b+1}/{self.num_estimators}  –  ε = {epsilon:.4f},  α = {float(alpha):.4f}")
+            print(
+                f"Weak learner {b+1}/{self.num_estimators}  –  ε = {epsilon:.4f},  α = {float(alpha):.4f}"
+            )
 
             # ─── 10) Record staged 0–1 training error ───
             train_pred = self._staged_predict(X)  # uses first (b+1) learners
-            train_err  = float(jnp.mean((train_pred != y).astype(jnp.float32)))
+            train_err = float(jnp.mean((train_pred != y).astype(jnp.float32)))
             self.train_errors.append(train_err)
 
             if X_val is not None and y_val is not None:
                 val_pred = self._staged_predict(X_val)
-                val_err  = float(jnp.mean((val_pred != y_val).astype(jnp.float32)))
+                val_err = float(jnp.mean((val_pred != y_val).astype(jnp.float32)))
                 self.val_errors.append(val_err)
 
     def _staged_predict(self, X: jnp.ndarray) -> jnp.ndarray:
@@ -216,9 +220,11 @@ class AdaBoostBNN:
         N = X.shape[0]
         agg = jnp.zeros(N)
 
-        for (weak, alpha) in self.weak_learners:
+        for weak, alpha in self.weak_learners:
             self.rng_key, pred_key = jr.split(self.rng_key)
-            logits_samples = weak.predict(X, pred_key, posterior="logits", num_samples=self.num_posterior_samples)
+            logits_samples = weak.predict(
+                X, pred_key, posterior="logits", num_samples=self.num_posterior_samples
+            )
             # logits_samples: [S, N]
             mean_logits = jnp.mean(logits_samples, axis=0)  # shape (N,)
             h_signed = jnp.sign(mean_logits)
@@ -247,17 +253,21 @@ if __name__ == "__main__":
     # y_np ∈ {0,1}
 
     # 4.2) Train/val/test splits
-    X_tmp, X_test, y_tmp, y_test = train_test_split(X_np, y_np, test_size=0.2, random_state=0)
-    X_train, X_val, y_train, y_val = train_test_split(X_tmp, y_tmp, test_size=0.25, random_state=0)
+    X_tmp, X_test, y_tmp, y_test = train_test_split(
+        X_np, y_np, test_size=0.2, random_state=0
+    )
+    X_train, X_val, y_train, y_val = train_test_split(
+        X_tmp, y_tmp, test_size=0.25, random_state=0
+    )
     # Now: 60% train, 20% val, 20% test.
 
     # 4.3) Convert to JAX arrays
     X_train_j = jnp.array(X_train, dtype=jnp.float32)
     y_train_j = jnp.array(y_train, dtype=jnp.int32)
-    X_val_j   = jnp.array(X_val,   dtype=jnp.float32)
-    y_val_j   = jnp.array(y_val,   dtype=jnp.int32)
-    X_test_j  = jnp.array(X_test,  dtype=jnp.float32)
-    y_test_j  = jnp.array(y_test,  dtype=jnp.int32)
+    X_val_j = jnp.array(X_val, dtype=jnp.float32)
+    y_val_j = jnp.array(y_val, dtype=jnp.int32)
+    X_test_j = jnp.array(X_test, dtype=jnp.float32)
+    y_test_j = jnp.array(y_test, dtype=jnp.int32)
 
     # 4.4) Define a function that constructs a fresh BayesianMLP
     def make_bnn(key: jax.random.PRNGKey) -> Module:

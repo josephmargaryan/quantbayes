@@ -23,11 +23,11 @@ from xgboost import XGBRegressor
 # 1. Load data and initial train/test split
 # -----------------------------------------
 # Adjust the path to 'quasars.csv' as needed; here we assume it's inside the 'MLB7' folder.
-df = pd.read_csv('MLB7/quasars.csv')
+df = pd.read_csv("MLB7/quasars.csv")
 
 # The first 10 columns are features (X), the last column is the target (y).
-X = df.iloc[:, :-1].values    # shape (n_samples, 10)
-y = df.iloc[:, -1].values     # shape (n_samples,)
+X = df.iloc[:, :-1].values  # shape (n_samples, 10)
+y = df.iloc[:, -1].values  # shape (n_samples,)
 
 # Split into training (80%) and test (20%)
 X_train_full, X_test, y_train_full, y_test = train_test_split(
@@ -47,14 +47,14 @@ X_train_sub, X_val, y_train_sub, y_val = train_test_split(
 # 3. Train XGBoost with specified parameters and monitor RMSE
 # ------------------------------------------------------------
 xgb_params = {
-    'colsample_bytree': 0.5,
-    'learning_rate': 0.1,
-    'max_depth': 4,
-    'reg_lambda': 1,
-    'n_estimators': 500,
-    'objective': 'reg:squarederror',
-    'eval_metric': 'rmse',        # move eval_metric into the constructor
-    'random_state': 42,
+    "colsample_bytree": 0.5,
+    "learning_rate": 0.1,
+    "max_depth": 4,
+    "reg_lambda": 1,
+    "n_estimators": 500,
+    "objective": "reg:squarederror",
+    "eval_metric": "rmse",  # move eval_metric into the constructor
+    "random_state": 42,
 }
 
 xgb_model = XGBRegressor(**xgb_params)
@@ -64,21 +64,21 @@ xgb_model.fit(
     X_train_sub,
     y_train_sub,
     eval_set=[(X_train_sub, y_train_sub), (X_val, y_val)],
-    verbose=False
+    verbose=False,
 )
 
 # Extract the recorded RMSE for each boosting iteration
 evals_result = xgb_model.evals_result()
-train_rmse = evals_result['validation_0']['rmse']
-val_rmse   = evals_result['validation_1']['rmse']
+train_rmse = evals_result["validation_0"]["rmse"]
+val_rmse = evals_result["validation_1"]["rmse"]
 
 # Plot training and validation RMSE vs. boosting iterations
 plt.figure(figsize=(8, 5))
-plt.plot(range(1, len(train_rmse) + 1), train_rmse, label='Train RMSE')
-plt.plot(range(1, len(val_rmse)   + 1), val_rmse,   label='Validation RMSE')
-plt.xlabel('Boosting Iteration')
-plt.ylabel('RMSE')
-plt.title('XGBoost Training vs. Validation RMSE')
+plt.plot(range(1, len(train_rmse) + 1), train_rmse, label="Train RMSE")
+plt.plot(range(1, len(val_rmse) + 1), val_rmse, label="Validation RMSE")
+plt.xlabel("Boosting Iteration")
+plt.ylabel("RMSE")
+plt.title("XGBoost Training vs. Validation RMSE")
 plt.legend()
 plt.grid(True)
 plt.tight_layout()
@@ -87,8 +87,8 @@ plt.show()
 # 4. Evaluate the fitted model on the test set
 # ---------------------------------------------
 y_pred_test = xgb_model.predict(X_test)
-test_rmse   = np.sqrt(mean_squared_error(y_test, y_pred_test))
-test_r2     = r2_score(y_test, y_pred_test)
+test_rmse = np.sqrt(mean_squared_error(y_test, y_pred_test))
+test_r2 = r2_score(y_test, y_pred_test)
 
 print(f"XGBoost (fixed params) Test RMSE: {test_rmse:.4f}")
 print(f"XGBoost (fixed params) Test R²:   {test_r2:.4f}")
@@ -97,26 +97,26 @@ print(f"XGBoost (fixed params) Test R²:   {test_r2:.4f}")
 # ---------------------------------------------------------------------
 # We'll search over a moderately sized grid that extends the original parameters.
 param_grid = {
-    'colsample_bytree': [0.5, 0.7],
-    'learning_rate': [0.05, 0.1],
-    'max_depth': [3, 4, 5],
-    'reg_lambda': [1, 5],
-    'n_estimators': [200, 500]
+    "colsample_bytree": [0.5, 0.7],
+    "learning_rate": [0.05, 0.1],
+    "max_depth": [3, 4, 5],
+    "reg_lambda": [1, 5],
+    "n_estimators": [200, 500],
 }
 
 xgb_for_grid = XGBRegressor(
-    objective='reg:squarederror',
-    random_state=42
+    objective="reg:squarederror",
+    random_state=42,
     # GridSearchCV will set colsample_bytree, learning_rate, max_depth, reg_lambda, n_estimators
 )
 
 grid_search = GridSearchCV(
     estimator=xgb_for_grid,
     param_grid=param_grid,
-    scoring='neg_mean_squared_error',  # minimize MSE
+    scoring="neg_mean_squared_error",  # minimize MSE
     cv=3,
     verbose=1,
-    n_jobs=-1
+    n_jobs=-1,
 )
 
 # Run grid search on the full training set (X_train_full / y_train_full)
@@ -134,18 +134,14 @@ print(f"Best CV RMSE (3-fold) from grid search: {best_rmse_cv:.4f}")
 # --------------------------------------------------------------
 best_params = grid_search.best_params_
 
-xgb_best = XGBRegressor(
-    **best_params,
-    objective='reg:squarederror',
-    random_state=42
-)
+xgb_best = XGBRegressor(**best_params, objective="reg:squarederror", random_state=42)
 
 xgb_best.fit(X_train_full, y_train_full)
 
 # Evaluate on the test set
 y_pred_test_best = xgb_best.predict(X_test)
-test_rmse_best   = np.sqrt(mean_squared_error(y_test, y_pred_test_best))
-test_r2_best     = r2_score(y_test, y_pred_test_best)
+test_rmse_best = np.sqrt(mean_squared_error(y_test, y_pred_test_best))
+test_r2_best = r2_score(y_test, y_pred_test_best)
 
 print(f"XGBoost (best params) Test RMSE: {test_rmse_best:.4f}")
 print(f"XGBoost (best params) Test R²:   {test_r2_best:.4f}")
@@ -156,8 +152,8 @@ knn = KNeighborsRegressor(n_neighbors=5)
 knn.fit(X_train_full, y_train_full)
 
 y_pred_knn = knn.predict(X_test)
-knn_rmse   = np.sqrt(mean_squared_error(y_test, y_pred_knn))
-knn_r2     = r2_score(y_test, y_pred_knn)
+knn_rmse = np.sqrt(mean_squared_error(y_test, y_pred_knn))
+knn_r2 = r2_score(y_test, y_pred_knn)
 
 print(f"KNN (k=5) Test RMSE: {knn_rmse:.4f}")
 print(f"KNN (k=5) Test R²:   {knn_r2:.4f}")

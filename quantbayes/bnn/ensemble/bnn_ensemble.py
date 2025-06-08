@@ -5,7 +5,6 @@ import numpy as np
 __all__ = ["BNNEnsembleRegression", "BNNEnsembleBinary", "BNNEnsembleMulticlass"]
 
 
-
 def softmax_logits(logits, axis=-1, eps=1e-20):
     """
     Numerically stable softmax for logits with small epsilon clipping.

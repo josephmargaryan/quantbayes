@@ -22,6 +22,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.datasets import load_breast_cancer
 import matplotlib.pyplot as plt
 
+
 def kl_binary(p: float, q: float) -> float:
     """
     Compute binary KL divergence with clipping to avoid numerical issues.
@@ -49,7 +50,9 @@ def kl_inverse(p: float, c: float, tol: float = 1e-8) -> float:
     return low
 
 
-def compute_plain_kl_bound(p_mean: float, KL_div: float, delta_t: float, n: int) -> float:
+def compute_plain_kl_bound(
+    p_mean: float, KL_div: float, delta_t: float, n: int
+) -> float:
     """
     Plain PAC-Bayes--KL bound inversion:
       B = kl^{-1^+}\Bigl(p_mean,\; (KL_div + ln(2*sqrt(n)/delta_t))/n \Bigr).
@@ -175,7 +178,9 @@ def compute_unexpected_bernstein_bound(
     best_term = np.inf
     for lam in lambda_grid:
         psi = -lam * b - np.log(1.0 - b * lam)
-        term = (psi / (lam * b * b)) * s_post + (np.log(len(lambda_grid) / delta_t) / (lam * m))
+        term = (psi / (lam * b * b)) * s_post + (
+            np.log(len(lambda_grid) / delta_t) / (lam * m)
+        )
         if term < best_term:
             best_term = term
 
@@ -236,7 +241,9 @@ class RecursivePACBayesEnsemble(BaseEstimator, ClassifierMixin):
         self.base_learners = base_learners
         self.T = T
         self.delta = delta
-        self.gamma_grid = gamma_grid if gamma_grid is not None else np.linspace(0.1, 0.9, 9)
+        self.gamma_grid = (
+            gamma_grid if gamma_grid is not None else np.linspace(0.1, 0.9, 9)
+        )
         self.bound_type = bound_type
         self.lambda_grid = (
             lambda_grid
@@ -249,10 +256,12 @@ class RecursivePACBayesEnsemble(BaseEstimator, ClassifierMixin):
 
         # Will be filled during fit()
         self.trained_classifiers_: List[Tuple[str, BaseEstimator]] = []
-        self.pi_list_: List[np.ndarray] = []   # list of posterior weight vectors
-        self.bounds_: List[float] = []         # list of B_t bounds
+        self.pi_list_: List[np.ndarray] = []  # list of posterior weight vectors
+        self.bounds_: List[float] = []  # list of B_t bounds
         self.chunk_indices_: List[np.ndarray] = []  # which indices went to which chunk
-        self.classes_: np.ndarray = np.array([0, 1])  # placeholder; overwritten in fit()
+        self.classes_: np.ndarray = np.array(
+            [0, 1]
+        )  # placeholder; overwritten in fit()
 
     def _log(self, msg: str):
         if self.verbose:
@@ -275,7 +284,7 @@ class RecursivePACBayesEnsemble(BaseEstimator, ClassifierMixin):
                 remaining -= size_t
         total_assigned = sum(sizes)
         if total_assigned != n:
-            sizes[-1] += (n - total_assigned)
+            sizes[-1] += n - total_assigned
 
         all_idx = np.arange(n)
         self.random_state.shuffle(all_idx)
@@ -322,7 +331,9 @@ class RecursivePACBayesEnsemble(BaseEstimator, ClassifierMixin):
             return B1
 
         v0 = np.zeros(K)
-        res = minimize(objective, v0, method="Nelder-Mead", options={"maxiter": 500, "disp": False})
+        res = minimize(
+            objective, v0, method="Nelder-Mead", options={"maxiter": 500, "disp": False}
+        )
         v_opt = res.x
         exp_vo = np.exp(v_opt - np.max(v_opt))
         w_opt = exp_vo / exp_vo.sum()
@@ -390,13 +401,15 @@ class RecursivePACBayesEnsemble(BaseEstimator, ClassifierMixin):
             elif self.bound_type == "emp-bernstein":
                 # Compute per-hypothesis empirical mean μ_i and empirical var v_i of f_gamma
                 f_gamma_means = f_gamma_U.mean(axis=1)  # (K,)
-                var_i = f_gamma_U.var(axis=1, ddof=1)   # sample variance with denominator (m_t-1)
+                var_i = f_gamma_U.var(
+                    axis=1, ddof=1
+                )  # sample variance with denominator (m_t-1)
                 mu_i = f_gamma_means.copy()
                 v_i = var_i.copy()  # shape (K,)
 
             elif self.bound_type == "unexp-bernstein":
                 # Compute per-hypothesis empirical mean μ_i and empirical second moment s_i of f_gamma
-                f_gamma_means = f_gamma_U.mean(axis=1)      # (K,)
+                f_gamma_means = f_gamma_U.mean(axis=1)  # (K,)
                 s_i = (f_gamma_U * f_gamma_U).mean(axis=1)  # (K,)
                 mu_i = f_gamma_means.copy()
 
@@ -463,7 +476,12 @@ class RecursivePACBayesEnsemble(BaseEstimator, ClassifierMixin):
 
             # Initialize v0 near log(pi_prev)
             v0_t = np.log(pi_prev + 1e-12)
-            res_t = minimize(objective_stage, v0_t, method="Nelder-Mead", options={"maxiter": 500, "disp": False})
+            res_t = minimize(
+                objective_stage,
+                v0_t,
+                method="Nelder-Mead",
+                options={"maxiter": 500, "disp": False},
+            )
             v_opt_t = res_t.x
             exp_vt = np.exp(v_opt_t - np.max(v_opt_t))
             w_opt_t = exp_vt / exp_vt.sum()
@@ -564,7 +582,12 @@ class RecursivePACBayesEnsemble(BaseEstimator, ClassifierMixin):
 
                 return eps + gamma_fallback * B_prev
 
-            res_fb = minimize(objective_fallback, v0_t, method="Nelder-Mead", options={"maxiter": 500, "disp": False})
+            res_fb = minimize(
+                objective_fallback,
+                v0_t,
+                method="Nelder-Mead",
+                options={"maxiter": 500, "disp": False},
+            )
             v_opt_fb = res_fb.x
             exp_vfb = np.exp(v_opt_fb - np.max(v_opt_fb))
             w_opt_fb = exp_vfb / exp_vfb.sum()
@@ -574,7 +597,6 @@ class RecursivePACBayesEnsemble(BaseEstimator, ClassifierMixin):
             best_Bt = float(objective_fallback(v_opt_fb))
 
         return best_pi_t, best_Bt, best_gamma
-
 
     def fit(self, X: np.ndarray, y: np.ndarray) -> "RecursivePACBayesEnsemble":
         """
@@ -613,7 +635,9 @@ class RecursivePACBayesEnsemble(BaseEstimator, ClassifierMixin):
 
         # ============ Stage 1 ============
         S1_idx = chunks[0]
-        loss_S1 = loss_matrix_all[:, S1_idx].mean(axis=1)  # average 0-1 loss per classifier on S1
+        loss_S1 = loss_matrix_all[:, S1_idx].mean(
+            axis=1
+        )  # average 0-1 loss per classifier on S1
         pi1, B1 = self._optimize_stage1(loss_S1, len(S1_idx))
         self.pi_list_.append(pi1)
         self.bounds_.append(B1)
@@ -637,7 +661,9 @@ class RecursivePACBayesEnsemble(BaseEstimator, ClassifierMixin):
             )
             self.pi_list_.append(pi_t)
             self.bounds_.append(B_t)
-            self._log(f"Stage {t} → γₜ = {gamma_t:.3f}, πₜ = {np.round(pi_t,4)}, Bₜ = {B_t:.4f}")
+            self._log(
+                f"Stage {t} → γₜ = {gamma_t:.3f}, πₜ = {np.round(pi_t,4)}, Bₜ = {B_t:.4f}"
+            )
             pi_prev, B_prev = pi_t.copy(), B_t
 
         return self
@@ -751,8 +777,8 @@ if __name__ == "__main__":
 
     base_learners = [
         ("LogisticRegression", LogisticRegression(max_iter=10000, random_state=42)),
-        ("RandomForest",       RandomForestClassifier(n_estimators=100, random_state=42)),
-        ("SVM",                SVC(kernel="rbf", gamma="scale", probability=True, random_state=42)),
+        ("RandomForest", RandomForestClassifier(n_estimators=100, random_state=42)),
+        ("SVM", SVC(kernel="rbf", gamma="scale", probability=True, random_state=42)),
     ]
 
     # 4. Instantiate the RecursivePACBayesEnsemble for binary
@@ -761,7 +787,7 @@ if __name__ == "__main__":
         T=2,
         delta=0.05,
         gamma_grid=np.linspace(0.1, 0.9, 9),
-        bound_type="split-kl",   # try "plain-kl", "emp-bernstein", "unexp-bernstein"
+        bound_type="split-kl",  # try "plain-kl", "emp-bernstein", "unexp-bernstein"
         random_state=42,
         verbose=True,
         task="binary",
@@ -774,7 +800,9 @@ if __name__ == "__main__":
     posteriors = rpb_binary.get_posteriors()
     bounds = rpb_binary.get_bounds()
     for t in range(len(posteriors)):
-        logger.info(f"π_{t+1} = {np.round(posteriors[t], 4)}, B_{t+1} = {bounds[t]:.4f}")
+        logger.info(
+            f"π_{t+1} = {np.round(posteriors[t], 4)}, B_{t+1} = {bounds[t]:.4f}"
+        )
 
     # 7. Evaluate on test set
     y_pred = rpb_binary.predict(X_test)
@@ -819,7 +847,9 @@ if __name__ == "__main__":
     posteriors_m = rpb_multi.get_posteriors()
     bounds_m = rpb_multi.get_bounds()
     for t in range(len(posteriors_m)):
-        logger.info(f"[Multiclass] π_{t+1} = {np.round(posteriors_m[t], 4)}, B_{t+1} = {bounds_m[t]:.4f}")
+        logger.info(
+            f"[Multiclass] π_{t+1} = {np.round(posteriors_m[t], 4)}, B_{t+1} = {bounds_m[t]:.4f}"
+        )
 
     # Evaluate on test set
     y2_pred = rpb_multi.predict(X2_test)

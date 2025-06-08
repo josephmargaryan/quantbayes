@@ -16,9 +16,7 @@ __all__ = ["AdaBoost"]
 # -------------------------------------------------------------------
 # 1) PER-SAMPLE WEIGHTED LOSS FUNCTIONS
 # -------------------------------------------------------------------
-def weighted_binary_loss_per_sample(
-    logits: jnp.ndarray, y: jnp.ndarray
-) -> jnp.ndarray:
+def weighted_binary_loss_per_sample(logits: jnp.ndarray, y: jnp.ndarray) -> jnp.ndarray:
     """
     Compute elementwise binary‐cross‐entropy (logistic) loss, given:
       - logits: shape [batch_size], raw scores (float)
@@ -103,7 +101,7 @@ class AdaBoost:
 
         # To track staged 0–1 errors
         self.train_errors: List[float] = []
-        self.val_errors:   List[float] = []
+        self.val_errors: List[float] = []
 
         # RNG key
         self.rng_key = jr.PRNGKey(0) if rng_key is None else rng_key
@@ -133,8 +131,10 @@ class AdaBoost:
             model = self.model_constructor(subkey)
 
             # Flatten the model into (leaves, treedef) so that we can gradient-update the leaves
-            leaves, treedef = tree_flatten(model)                     # :contentReference[oaicite:3]{index=3}
-            params = leaves                                           # flat list of all leaves
+            leaves, treedef = tree_flatten(
+                model
+            )  # :contentReference[oaicite:3]{index=3}
+            params = leaves  # flat list of all leaves
             opt_state = self.optimizer.init(params)
 
             best_model = model
@@ -163,14 +163,20 @@ class AdaBoost:
                     # Define weighted loss on the batch
                     def loss_fn(params_, _state_, xb, yb, wb, keysb):
                         # Reconstruct module from flat leaves `params_`
-                        model_ = tree_unflatten(treedef, params_)          # :contentReference[oaicite:4]{index=4}
-                        logits, _ = jax.vmap(lambda xi, ki: model_(xi, ki, None))(xb, keysb)
+                        model_ = tree_unflatten(
+                            treedef, params_
+                        )  # :contentReference[oaicite:4]{index=4}
+                        logits, _ = jax.vmap(lambda xi, ki: model_(xi, ki, None))(
+                            xb, keysb
+                        )
 
                         if self.num_classes == 2:
                             logits1d = logits.squeeze()
                             per_example = weighted_binary_loss_per_sample(logits1d, yb)
                         else:
-                            per_example = weighted_multiclass_loss_per_sample(logits, yb)
+                            per_example = weighted_multiclass_loss_per_sample(
+                                logits, yb
+                            )
 
                         # Weighted average over the batch
                         weighted_loss = jnp.sum(per_example * wb) / jnp.sum(wb)
@@ -187,7 +193,9 @@ class AdaBoost:
                 self.rng_key, eval_key = jr.split(self.rng_key)
                 keys_full = jr.split(eval_key, N)
                 logits_full, _ = jax.vmap(
-                    lambda xi, ki: tree_unflatten(treedef, params)(xi, ki, None)  # rebuilt module
+                    lambda xi, ki: tree_unflatten(treedef, params)(
+                        xi, ki, None
+                    )  # rebuilt module
                 )(X, keys_full)
 
                 if self.num_classes == 2:
@@ -211,7 +219,9 @@ class AdaBoost:
             # ─── 4) Evaluate ε_b on the full training set with best_model ───
             self.rng_key, pred_key = jr.split(self.rng_key)
             keys_pred = jr.split(pred_key, N)
-            logits_best, _ = jax.vmap(lambda xi, ki: best_model(xi, ki, None))(X, keys_pred)
+            logits_best, _ = jax.vmap(lambda xi, ki: best_model(xi, ki, None))(
+                X, keys_pred
+            )
 
             if self.num_classes == 2:
                 # Binary mode: convert logits → {−1, +1}
@@ -239,16 +249,20 @@ class AdaBoost:
                 epsilon = jnp.sum(w * incorrect)
                 # Skip if no better than random
                 if epsilon >= (K - 1) / K:
-                    print(f"Weak learner {b+1} skipped (ε={epsilon:.4f} ≥ {(K-1)/K:.4f})")
+                    print(
+                        f"Weak learner {b+1} skipped (ε={epsilon:.4f} ≥ {(K-1)/K:.4f})"
+                    )
                     continue
                 alpha = jnp.log((1.0 - epsilon) / (epsilon + 1e-15)) + jnp.log(K - 1.0)
-                correct_mask = (preds == y)
+                correct_mask = preds == y
                 w = w * jnp.where(correct_mask, jnp.exp(-alpha), jnp.exp(alpha))
                 w = w / jnp.sum(w)
 
             # ─── 5) Store (best_model, α_b) ───
             self.weak_learners.append((best_model, float(alpha)))
-            print(f"Weak learner {b+1}/{self.num_estimators}  –  ε = {epsilon:.4f},  α = {alpha:.4f}")
+            print(
+                f"Weak learner {b+1}/{self.num_estimators}  –  ε = {epsilon:.4f},  α = {alpha:.4f}"
+            )
 
             # ─── 6) Record staged training error (0–1) after b+1 rounds ───
             train_pred = self._staged_predict(X, upto=b + 1)
@@ -270,7 +284,7 @@ class AdaBoost:
         N = X.shape[0]
         if self.num_classes == 2:
             agg = jnp.zeros(N)
-            for (model, alpha) in self.weak_learners[:upto]:
+            for model, alpha in self.weak_learners[:upto]:
                 self.rng_key, pred_key = jr.split(self.rng_key)
                 keys_full = jr.split(pred_key, N)
                 logits, _ = jax.vmap(lambda xi, ki: model(xi, ki, None))(X, keys_full)
@@ -287,7 +301,7 @@ class AdaBoost:
         else:
             K = self.num_classes
             scores = jnp.zeros((N, K))
-            for (model, alpha) in self.weak_learners[:upto]:
+            for model, alpha in self.weak_learners[:upto]:
                 self.rng_key, pred_key = jr.split(self.rng_key)
                 keys_full = jr.split(pred_key, N)
                 logits, _ = jax.vmap(lambda xi, ki: model(xi, ki, None))(X, keys_full)

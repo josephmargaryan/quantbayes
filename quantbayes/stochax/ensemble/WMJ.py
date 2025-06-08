@@ -13,8 +13,8 @@ from quantbayes.pacbayes.WMV import (
     PBKLCriterion,
     TandemCriterion,
     PBBernsteinCriterion,
-    SplitKLCriterion, 
-    UnexpectedBernsteinCriterion
+    SplitKLCriterion,
+    UnexpectedBernsteinCriterion,
 )
 from quantbayes.stochax.trainer.train import (
     train,
@@ -32,7 +32,7 @@ CRITERIA = {
     "tandem": TandemCriterion,
     "pbbernstein": PBBernsteinCriterion,
     "split-kl": SplitKLCriterion,
-    "unexpected-bernstein": UnexpectedBernsteinCriterion
+    "unexpected-bernstein": UnexpectedBernsteinCriterion,
 }
 
 
@@ -94,7 +94,9 @@ class PacBayesEnsemble:
         seed=0,
     ):
         if bound_type not in CRITERIA:
-            raise ValueError(f"Unknown bound_type '{bound_type}'. Must be one of {list(CRITERIA)}.")
+            raise ValueError(
+                f"Unknown bound_type '{bound_type}'. Must be one of {list(CRITERIA)}."
+            )
         if task not in ("binary", "multiclass", "regression"):
             raise ValueError("`task` must be 'binary', 'multiclass', or 'regression'.")
 
@@ -161,7 +163,9 @@ class PacBayesEnsemble:
             # Each net outputs logits over C classes; aggregate probabilities
             # Determine C from first net’s output shape on a dummy batch
             rng, dummy_key = jr.split(rng)
-            dummy_logits = _single_predict(models_states[0][0], models_states[0][1], X[:1], dummy_key)
+            dummy_logits = _single_predict(
+                models_states[0][0], models_states[0][1], X[:1], dummy_key
+            )
             C = dummy_logits.shape[-1]
             votes = np.zeros((n_samples, C))
             rng, *keys = jr.split(rng, num=m + 1)
@@ -315,7 +319,9 @@ class PacBayesEnsemble:
                 rng, *hold_keys = jr.split(rng, num=m + 1)
                 hold_keys = hold_keys[:m]
                 for i, (model, state) in enumerate(models_states):
-                    losses[i] = self._compute_hold_loss(model, state, X_hold, y_hold_np, hold_keys[i])
+                    losses[i] = self._compute_hold_loss(
+                        model, state, X_hold, y_hold_np, hold_keys[i]
+                    )
 
                 # pair_losses is not used for these bound types; but define a placeholder
                 pair_losses = None
@@ -333,11 +339,15 @@ class PacBayesEnsemble:
 
                 if self.bound_type == "tandem":
                     # Crit.compute expects: (pair_losses (m×m), rho (m), kl, n_r, delta, lam, full_n)
-                    stat, bound = Crit.compute(pair_losses, rho, kl, n_r, self.delta, lam, n_r)
+                    stat, bound = Crit.compute(
+                        pair_losses, rho, kl, n_r, self.delta, lam, n_r
+                    )
                 else:
                     # For pbkl / pblambda / pbbernstein, Crit.compute expects:
                     #    (vector_of_losses (m,), rho (m,), kl, n_r, delta, lam, full_n)
-                    stat, bound = Crit.compute(losses, rho, kl, n_r, self.delta, lam, n_r)
+                    stat, bound = Crit.compute(
+                        losses, rho, kl, n_r, self.delta, lam, n_r
+                    )
 
                 if abs(prev_bound - bound) < 1e-6:
                     break
@@ -347,7 +357,9 @@ class PacBayesEnsemble:
                 lam = 2.0 / (
                     math.sqrt(
                         1
-                        + 2 * n_r * stat
+                        + 2
+                        * n_r
+                        * stat
                         / (kl + math.log(2 * math.sqrt(n_r) / self.delta))
                     )
                     + 1
@@ -372,12 +384,14 @@ class PacBayesEnsemble:
             # Weighted hold-out loss = sum_i rho_i * ℓ_i
             hold_loss = float((rho * losses).sum())
 
-            self.results_.append({
-                "m": m,
-                "hold_loss": hold_loss,
-                "bound": float(bound),
-                "test_loss": test_loss,
-            })
+            self.results_.append(
+                {
+                    "m": m,
+                    "hold_loss": hold_loss,
+                    "bound": float(bound),
+                    "test_loss": test_loss,
+                }
+            )
 
             # Keep track of the best‐bound ensemble
             if bound < self.best_bound_:
@@ -385,15 +399,15 @@ class PacBayesEnsemble:
                 self.best_m_ = m
                 self.best_rho_ = rho.copy()
                 # Deepcopy models and states so they are not overwritten later
-                self.best_models_states_ = [(copy.deepcopy(mdl), copy.deepcopy(st))
-                                            for mdl, st in models_states]
+                self.best_models_states_ = [
+                    (copy.deepcopy(mdl), copy.deepcopy(st)) for mdl, st in models_states
+                ]
 
         # After trying all m_values, store best ensemble for predict()
         self._last_models_states = self.best_models_states_
         self._last_rho = self.best_rho_
         self.is_fitted = True
         return self
-
 
     def predict(self, X, key=None):
         """
@@ -418,7 +432,9 @@ class PacBayesEnsemble:
             raise RuntimeError("Call fit() before predict().")
         if key is None:
             key = jr.PRNGKey(self.seed)
-        preds_np = self._predict_with_weights(X, self._last_models_states, self._last_rho, key)
+        preds_np = self._predict_with_weights(
+            X, self._last_models_states, self._last_rho, key
+        )
         return preds_np
 
     def score(self, X, y, key=None):
@@ -458,7 +474,9 @@ class PacBayesEnsemble:
         print("-" * len(header))
         for r in self.results_:
             test_str = f"{r['test_loss']:.4f}" if r["test_loss"] is not None else "None"
-            print(f"{r['m']:4d} | {r['hold_loss']:.4f}   | {r['bound']:.4f}   | {test_str}")
+            print(
+                f"{r['m']:4d} | {r['hold_loss']:.4f}   | {r['bound']:.4f}   | {test_str}"
+            )
 
     # Properties to access results directly
     @property
@@ -551,7 +569,18 @@ if __name__ == "__main__":
         delta=0.05,
         seed=42,
     )
-    ensemble.fit(Xe, ye, Xh, yh, Xh, yh, m_values=[1, 2, 4, 8], batch_size=64, num_epochs=50, patience=10)
+    ensemble.fit(
+        Xe,
+        ye,
+        Xh,
+        yh,
+        Xh,
+        yh,
+        m_values=[1, 2, 4, 8],
+        batch_size=64,
+        num_epochs=50,
+        patience=10,
+    )
     ensemble.summary()
 
     # Access raw results

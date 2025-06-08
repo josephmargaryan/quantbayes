@@ -7,14 +7,15 @@ from sklearn.base import clone, BaseEstimator, ClassifierMixin
 from sklearn.metrics import zero_one_loss
 
 __all__ = [
-    "PBLambdaCriterion", 
-    "PBKLCriterion", 
-    "TandemCriterion", 
-    "PBBernsteinCriterion", 
-    "SplitKLCriterion", 
+    "PBLambdaCriterion",
+    "PBKLCriterion",
+    "TandemCriterion",
+    "PBBernsteinCriterion",
+    "SplitKLCriterion",
     "UnexpectedBernsteinCriterion",
-    "BoundEnsemble"
-    ]
+    "BoundEnsemble",
+]
+
 
 def _kl_div(p: float, q: float, eps: float = 1e-15) -> float:
     """
@@ -22,7 +23,10 @@ def _kl_div(p: float, q: float, eps: float = 1e-15) -> float:
     """
     p_clamped = min(max(p, eps), 1 - eps)
     q_clamped = min(max(q, eps), 1 - eps)
-    return p_clamped * math.log(p_clamped / q_clamped) + (1 - p_clamped) * math.log((1 - p_clamped) / (1 - q_clamped))
+    return p_clamped * math.log(p_clamped / q_clamped) + (1 - p_clamped) * math.log(
+        (1 - p_clamped) / (1 - q_clamped)
+    )
+
 
 def _kl_inverse(p_hat: float, kl_term: float, n_r: int, tol: float = 1e-12) -> float:
     """
@@ -40,9 +44,11 @@ def _kl_inverse(p_hat: float, kl_term: float, n_r: int, tol: float = 1e-12) -> f
             lo = mid
     return lo
 
+
 class BoundCriterion:
     def compute(self, losses, rho, kl_rho, n_r, delta, lam, full_n):
         raise NotImplementedError
+
 
 class PBLambdaCriterion(BoundCriterion):
     def compute(self, losses, rho, kl_rho, n_r, delta, lam, full_n):
@@ -60,6 +66,7 @@ class PBLambdaCriterion(BoundCriterion):
         mv_bound = min(1.0, 2 * gibbs)
         return E_val, mv_bound
 
+
 class PBKLCriterion(BoundCriterion):
     def compute(self, losses, rho, kl_rho, n_r, delta, lam, full_n):
         """
@@ -75,6 +82,7 @@ class PBKLCriterion(BoundCriterion):
         mv_bound = min(1.0, 2 * q)
         return E_val, mv_bound
 
+
 class TandemCriterion(BoundCriterion):
     def compute(self, pair_losses, rho, kl_rho, n_r, delta, lam, full_n):
         """
@@ -87,6 +95,7 @@ class TandemCriterion(BoundCriterion):
         term2 = (2 * kl_rho + log_term) / (lam * (1 - lam / 2) * full_n)
         mv_bound = min(1.0, 4 * (exp_t / (1 - lam / 2) + term2))
         return exp_t, mv_bound
+
 
 class PBBernsteinCriterion(BoundCriterion):
     def compute(self, losses, rho, kl_rho, n_r, delta, lam, full_n):
@@ -104,6 +113,7 @@ class PBBernsteinCriterion(BoundCriterion):
         gibbs = E_val + term1 + term2
         mv_bound = min(1.0, 2 * gibbs)
         return E_val, mv_bound
+
 
 # ───────────────────────────────────────────────────────────────────────────────
 # 1) Split-KL Criterion
@@ -137,6 +147,7 @@ class SplitKLCriterion(BoundCriterion):
           E_val    = ρ · losses,
           mv_bound = min(1.0, 2·(b_0 + Σ_j α_j · q_j)).
     """
+
     def compute(self, losses, rho, kl_rho, n_r, delta, lam, full_n):
         # losses: 1D np.array of length m, each entry ∈ some finite set {b_0,...,b_K}
         # rho:     1D np.array of length m (weights summing to 1)
@@ -162,7 +173,7 @@ class SplitKLCriterion(BoundCriterion):
         # 3) Start building the split-kl sum:
         bound_sum = b_vals[0]  # this is the base term
         for j in range(1, len(b_vals)):
-            alpha_j = b_vals[j] - b_vals[j-1]
+            alpha_j = b_vals[j] - b_vals[j - 1]
 
             # empirical p̂_j = ρ·[1{losses ≥ b_j}]
             mask = (losses >= b_vals[j]).astype(float)
@@ -271,6 +282,7 @@ class UnexpectedBernsteinCriterion(BoundCriterion):
 
         return E_val, mv_bound
 
+
 # ───────────────────────────────────────────────────────────────────────────────
 # 3) Unified BoundEnsemble class (binary or multiclass)
 # ───────────────────────────────────────────────────────────────────────────────
@@ -342,7 +354,9 @@ class BoundEnsemble(BaseEstimator, ClassifierMixin):
         if task not in ("binary", "multiclass"):
             raise ValueError("`task` must be either 'binary' or 'multiclass'.")
         if (base_estimators is None) == (base_estimator_cls is None):
-            raise ValueError("Specify exactly one of `base_estimators` or `base_estimator_cls`.")
+            raise ValueError(
+                "Specify exactly one of `base_estimators` or `base_estimator_cls`."
+            )
         if bound_type not in self._criteria_map:
             raise ValueError(f"Unknown bound_type '{bound_type}'.")
 
@@ -405,7 +419,9 @@ class BoundEnsemble(BaseEstimator, ClassifierMixin):
 
         # 2) Loop over independent random‐state seeds
         for seed in range(n_runs):
-            rng_seed = (self.random_state + seed) if (self.random_state is not None) else seed
+            rng_seed = (
+                (self.random_state + seed) if (self.random_state is not None) else seed
+            )
             rng = np.random.default_rng(rng_seed)
 
             run_results: List[Dict] = []
@@ -428,7 +444,10 @@ class BoundEnsemble(BaseEstimator, ClassifierMixin):
 
                     clf = clone(template)
                     # If classifier supports random_state, set it to a new random int
-                    if hasattr(clf, "get_params") and "random_state" in clf.get_params():
+                    if (
+                        hasattr(clf, "get_params")
+                        and "random_state" in clf.get_params()
+                    ):
                         clf.set_params(random_state=int(rng.integers(0, 2**31 - 1)))
 
                     # If binary and only one class appears in Si, use a constant predictor
@@ -443,7 +462,11 @@ class BoundEnsemble(BaseEstimator, ClassifierMixin):
                                 return self
 
                             def predict(self, X_c):
-                                return np.full(shape=(len(X_c),), fill_value=self.constant_label, dtype=int)
+                                return np.full(
+                                    shape=(len(X_c),),
+                                    fill_value=self.constant_label,
+                                    dtype=int,
+                                )
 
                         clf = ConstantClassifier(constant_label=const_label)
                         _ = clf.fit(None, None)
@@ -473,9 +496,13 @@ class BoundEnsemble(BaseEstimator, ClassifierMixin):
                 for _ in range(max_iters):
                     kl_rho = float((rho * np.log(rho / pi)).sum())
                     if self.bound_type == "tandem":
-                        stat, bound = crit.compute(pair_losses, rho, kl_rho, n_r, self.delta, lam, n)
+                        stat, bound = crit.compute(
+                            pair_losses, rho, kl_rho, n_r, self.delta, lam, n
+                        )
                     else:
-                        stat, bound = crit.compute(losses, rho, kl_rho, n_r, self.delta, lam, n)
+                        stat, bound = crit.compute(
+                            losses, rho, kl_rho, n_r, self.delta, lam, n
+                        )
 
                     if abs(prev_bound - bound) < tol:
                         break
@@ -506,7 +533,9 @@ class BoundEnsemble(BaseEstimator, ClassifierMixin):
                     mv_loss = float(zero_one_loss(y, pred))
 
                 elapsed = time.time() - t0
-                run_results.append({"m": m, "err": mv_loss, "bound": bound, "time": elapsed})
+                run_results.append(
+                    {"m": m, "err": mv_loss, "bound": bound, "time": elapsed}
+                )
 
                 if bound < best_bound:
                     best_bound = bound
@@ -538,7 +567,9 @@ class BoundEnsemble(BaseEstimator, ClassifierMixin):
         if not self.is_fitted:
             raise RuntimeError("Call fit() before predict().")
         X = np.asarray(X)
-        Pfull = np.vstack([m_.predict(X) for m_ in self.best_models_]).T  # shape (n_samples, m)
+        Pfull = np.vstack(
+            [m_.predict(X) for m_ in self.best_models_]
+        ).T  # shape (n_samples, m)
         rho = self.best_rho_
         n = X.shape[0]
 
@@ -566,10 +597,14 @@ class BoundEnsemble(BaseEstimator, ClassifierMixin):
         # Check that every best_model has predict_proba
         for clf in self.best_models_:
             if not hasattr(clf, "predict_proba"):
-                raise AttributeError("One or more base estimators lack predict_proba().")
+                raise AttributeError(
+                    "One or more base estimators lack predict_proba()."
+                )
 
         # Gather probability of class +1 from each model
-        probs_pos = np.vstack([clf.predict_proba(X)[:, 1] for clf in self.best_models_]).T  # (n, m)
+        probs_pos = np.vstack(
+            [clf.predict_proba(X)[:, 1] for clf in self.best_models_]
+        ).T  # (n, m)
         weighted_pos = probs_pos.dot(self.best_rho_)  # shape (n,)
         weighted_neg = 1.0 - weighted_pos
         return np.vstack([weighted_neg, weighted_pos]).T
@@ -585,8 +620,8 @@ class BoundEnsemble(BaseEstimator, ClassifierMixin):
         print("-" * len(header))
         for i, m in enumerate(self.m_values):
             arr_err = np.array([run[i]["err"] for run in self.all_runs])
-            arr_bd  = np.array([run[i]["bound"] for run in self.all_runs])
-            arr_tm  = np.array([run[i]["time"] for run in self.all_runs])
+            arr_bd = np.array([run[i]["bound"] for run in self.all_runs])
+            arr_tm = np.array([run[i]["time"] for run in self.all_runs])
             print(
                 f"{m:4d} | "
                 f"{arr_err.mean():.4f}±{arr_err.std():.4f} | "
@@ -658,7 +693,9 @@ if __name__ == "__main__":
     ens_bin.fit(Xb, yb, m_values=m_vals, n_runs=3, max_iters=100, tol=1e-6)
     print("\nBinary summary:")
     ens_bin.summary()
-    print(f"\nBest ensemble size: {ens_bin.best_m_}, best seed: {ens_bin.best_seed_}, best bound: {ens_bin.best_bound_:.4f}")
+    print(
+        f"\nBest ensemble size: {ens_bin.best_m_}, best seed: {ens_bin.best_seed_}, best bound: {ens_bin.best_bound_:.4f}"
+    )
 
     y_pred_b_signed = ens_bin.predict(Xb)  # returns {-1, +1}
     # Convert back to {0,1} for accuracy
@@ -697,7 +734,9 @@ if __name__ == "__main__":
     ens_mc.fit(Xmc, ymc, m_values=m_vals_mc, n_runs=3, max_iters=100, tol=1e-6)
     print("\nMulticlass summary:")
     ens_mc.summary()
-    print(f"\nBest ensemble size: {ens_mc.best_m_}, best seed: {ens_mc.best_seed_}, best bound: {ens_mc.best_bound_:.4f}")
+    print(
+        f"\nBest ensemble size: {ens_mc.best_m_}, best seed: {ens_mc.best_seed_}, best bound: {ens_mc.best_bound_:.4f}"
+    )
 
     y_pred_mc = ens_mc.predict(Xmc)
     acc_mc = 1.0 - zero_one_loss(ymc, y_pred_mc)
@@ -707,5 +746,7 @@ if __name__ == "__main__":
     unique_preds = np.unique(y_pred_mc)
     print(f"Unique predicted classes: {unique_preds}")
     print(f"Original classes: {ens_mc.classes_}")
-    assert set(unique_preds).issubset(set(ens_mc.classes_)), "Predicted labels outside original class set!"
+    assert set(unique_preds).issubset(
+        set(ens_mc.classes_)
+    ), "Predicted labels outside original class set!"
     print("All predicted labels are within the original classes.")

@@ -128,7 +128,9 @@ class Module:
 
         elif isinstance(self.inference, SVI):
             if self.params is None:
-                raise ValueError("SVI parameters are not available. Ensure `fit` was called.")
+                raise ValueError(
+                    "SVI parameters are not available. Ensure `fit` was called."
+                )
             predictive = Predictive(
                 self.__call__,
                 guide=self.inference.guide,
@@ -138,7 +140,9 @@ class Module:
 
         elif isinstance(self.inference, SteinVI):
             if self.stein_result is None:
-                raise ValueError("SteinVI results are not available. Ensure `fit` was called.")
+                raise ValueError(
+                    "SteinVI results are not available. Ensure `fit` was called."
+                )
             params = self.inference.get_params(self.stein_result.state)
             predictive = MixtureGuidePredictive(
                 model=self.__call__,
@@ -160,7 +164,9 @@ class Module:
     def get_samples(self):
         if isinstance(self.inference, MCMC):
             if self.samples is None:
-                raise ValueError("MCMC samples are not available. Ensure `fit` was called.")
+                raise ValueError(
+                    "MCMC samples are not available. Ensure `fit` was called."
+                )
             return self.samples
         raise ValueError("MCMC is not the selected inference method.")
 
@@ -168,7 +174,9 @@ class Module:
     def get_params(self):
         if isinstance(self.inference, SVI):
             if self.params is None:
-                raise ValueError("SVI parameters are not available. Ensure `fit` was called.")
+                raise ValueError(
+                    "SVI parameters are not available. Ensure `fit` was called."
+                )
             return self.params
         raise ValueError("SVI is not the selected inference method.")
 
@@ -176,7 +184,9 @@ class Module:
     def get_losses(self):
         if isinstance(self.inference, SVI):
             if self.losses is None:
-                raise ValueError("SVI losses are not available. Ensure `fit` was called.")
+                raise ValueError(
+                    "SVI losses are not available. Ensure `fit` was called."
+                )
             return self.losses
         raise ValueError("SVI is not the selected inference method.")
 
@@ -184,7 +194,9 @@ class Module:
     def get_stein_result(self):
         if isinstance(self.inference, SteinVI):
             if self.stein_result is None:
-                raise ValueError("SteinVI results are not available. Ensure `fit` was called.")
+                raise ValueError(
+                    "SteinVI results are not available. Ensure `fit` was called."
+                )
             return self.stein_result
         raise ValueError("SteinVI is not the selected inference method.")
 
@@ -197,17 +209,23 @@ class Module:
         """
         if isinstance(self.inference, SVI):
             if self.params is None:
-                raise ValueError("SVI parameters are not available. Ensure `fit` was called.")
+                raise ValueError(
+                    "SVI parameters are not available. Ensure `fit` was called."
+                )
             params_to_save = self.params
 
         elif isinstance(self.inference, MCMC):
             if self.samples is None:
-                raise ValueError("MCMC samples are not available. Ensure `fit` was called.")
+                raise ValueError(
+                    "MCMC samples are not available. Ensure `fit` was called."
+                )
             params_to_save = self.samples
 
         elif isinstance(self.inference, SteinVI):
             if self.stein_result is None:
-                raise ValueError("SteinVI results are not available. Ensure `fit` was called.")
+                raise ValueError(
+                    "SteinVI results are not available. Ensure `fit` was called."
+                )
             params_to_save = self.stein_result.state
 
         else:

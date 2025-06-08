@@ -94,7 +94,9 @@ class RecursivePACBayesEnsemble:
         if task not in ("binary", "multiclass", "regression"):
             raise ValueError("`task` must be 'binary', 'multiclass', or 'regression'.")
         if task == "regression" and bound_type == "split-kl":
-            raise ValueError("`split-kl` is only valid for finite‐valued losses; use a Bernstein or plain‐kl bound for regression.")
+            raise ValueError(
+                "`split-kl` is only valid for finite‐valued losses; use a Bernstein or plain‐kl bound for regression."
+            )
 
         self.model_constructors = model_constructors
         self.K = len(model_constructors)
@@ -104,8 +106,12 @@ class RecursivePACBayesEnsemble:
         self.bound_type = bound_type
         self.delta = delta
         self.T = T
-        self.gamma_grid = gamma_grid if gamma_grid is not None else np.linspace(0.1, 0.9, 9)
-        self.lambda_grid = lambda_grid if lambda_grid is not None else np.linspace(1e-4, 0.9999, 200)
+        self.gamma_grid = (
+            gamma_grid if gamma_grid is not None else np.linspace(0.1, 0.9, 9)
+        )
+        self.lambda_grid = (
+            lambda_grid if lambda_grid is not None else np.linspace(1e-4, 0.9999, 200)
+        )
         self.seed = seed
         self.L_max = L_max
 
@@ -135,7 +141,7 @@ class RecursivePACBayesEnsemble:
                 rem -= size_t
         total = sum(sizes)
         if total != n:
-            sizes[-1] += (n - total)
+            sizes[-1] += n - total
 
         idx = np.arange(n)
         rs = check_random_state(self.seed)
@@ -199,7 +205,9 @@ class RecursivePACBayesEnsemble:
           5) Stages 2..T: chosen bound on Uₜ = Sₜ ∪ ... ∪ S_T.
         """
         X_np = np.asarray(X, dtype=np.float32)
-        y_np = np.asarray(y).astype(int if self.task in ("binary", "multiclass") else float)
+        y_np = np.asarray(y).astype(
+            int if self.task in ("binary", "multiclass") else float
+        )
         n = X_np.shape[0]
 
         # 1) Geometric split
@@ -254,7 +262,12 @@ class RecursivePACBayesEnsemble:
             return compute_plain_kl_bound(p_mean, KL_w, delta_t, n1)
 
         v0 = np.zeros(self.K)
-        res1 = minimize(objective_stage1, v0, method="Nelder-Mead", options={"maxiter": 500, "disp": False})
+        res1 = minimize(
+            objective_stage1,
+            v0,
+            method="Nelder-Mead",
+            options={"maxiter": 500, "disp": False},
+        )
         v_opt1 = res1.x
         exp_v1 = np.exp(v_opt1 - np.max(v_opt1))
         pi1 = exp_v1 / exp_v1.sum()
@@ -354,7 +367,9 @@ class RecursivePACBayesEnsemble:
                         if max_lam <= 0:
                             lambda_grid_t = np.array([eps_small])
                         else:
-                            lambda_grid_t = np.linspace(eps_small, max_lam, len(self.lambda_grid))
+                            lambda_grid_t = np.linspace(
+                                eps_small, max_lam, len(self.lambda_grid)
+                            )
                         eps = compute_unexpected_bernstein_bound(
                             w=w,
                             mu_i=mu_i,
@@ -371,7 +386,12 @@ class RecursivePACBayesEnsemble:
                     return eps + gamma * B_prev
 
                 v0_t = np.log(pi_prev + 1e-12)
-                res_t = minimize(objective_t, v0_t, method="Nelder-Mead", options={"maxiter": 500, "disp": False})
+                res_t = minimize(
+                    objective_t,
+                    v0_t,
+                    method="Nelder-Mead",
+                    options={"maxiter": 500, "disp": False},
+                )
                 v_opt_t = res_t.x
                 exp_vt = np.exp(v_opt_t - np.max(v_opt_t))
                 w_opt_t = exp_vt / exp_vt.sum()
@@ -541,7 +561,9 @@ if __name__ == "__main__":
 
     # 6) Print posteriors and bounds
     print("Recursive PAC-Bayes Posteriors and Bounds:")
-    for t, (π, b) in enumerate(zip(ensemble.get_posteriors, ensemble.get_bounds), start=1):
+    for t, (π, b) in enumerate(
+        zip(ensemble.get_posteriors, ensemble.get_bounds), start=1
+    ):
         print(f" Stage {t}: π_{t} = {np.round(π, 4)}, B_{t} = {b:.4f}")
 
     # 7) Predict on hold and test sets
@@ -554,7 +576,9 @@ if __name__ == "__main__":
     print(f"Test zero‐one error = {test_err:.4f}")
 
     # 8) Ensure outputs have the right type/shape
-    assert isinstance(y_test_pred, np.ndarray) and y_test_pred.shape == (X_test.shape[0],)
+    assert isinstance(y_test_pred, np.ndarray) and y_test_pred.shape == (
+        X_test.shape[0],
+    )
     assert 0.0 <= hold_err <= 1.0 and 0.0 <= test_err <= 1.0
 
     print("Recursive PAC-Bayes (Equinox) test completed successfully.")

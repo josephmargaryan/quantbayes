@@ -21,8 +21,8 @@ from quantbayes.pacbayes.WMV import (
     PBKLCriterion,
     TandemCriterion,
     PBBernsteinCriterion,
-    SplitKLCriterion, 
-    UnexpectedBernsteinCriterion
+    SplitKLCriterion,
+    UnexpectedBernsteinCriterion,
 )
 
 CRITERIA = {
@@ -31,7 +31,7 @@ CRITERIA = {
     "tandem": TandemCriterion,
     "pbbernstein": PBBernsteinCriterion,
     "split-kl": SplitKLCriterion,
-    "unexpected-bernstein": UnexpectedBernsteinCriterion
+    "unexpected-bernstein": UnexpectedBernsteinCriterion,
 }
 
 
@@ -50,7 +50,9 @@ class PacBayesEnsembleNumPyro:
         seed=0,
     ):
         if bound_type not in CRITERIA:
-            raise ValueError(f"Unknown bound_type '{bound_type}'. Must be one of {list(CRITERIA)}.")
+            raise ValueError(
+                f"Unknown bound_type '{bound_type}'. Must be one of {list(CRITERIA)}."
+            )
         if task not in ("binary", "multiclass", "regression"):
             raise ValueError("`task` must be 'binary', 'multiclass', or 'regression'.")
 
@@ -73,7 +75,9 @@ class PacBayesEnsembleNumPyro:
         """
         For a trained Module `module`, compute hold-out loss on (X_hold, y_hold_np).
         """
-        preds = module.predict(X_hold, rng_key, posterior="logits", num_samples=num_samples)
+        preds = module.predict(
+            X_hold, rng_key, posterior="logits", num_samples=num_samples
+        )
         if self.task == "binary":
             probs = jax.nn.sigmoid(preds.reshape((num_samples, -1))).mean(axis=0)
             preds_label = (np.array(probs) >= 0.5).astype(int)
@@ -89,7 +93,9 @@ class PacBayesEnsembleNumPyro:
             mse = mean_squared_error(y_hold_np, np.array(preds_flat))
             return float(min(mse, self.L_max) / self.L_max)
 
-    def _majority_vote_test_loss(self, models_states, rho, X_test, y_test_np, rng_key, num_samples=100):
+    def _majority_vote_test_loss(
+        self, models_states, rho, X_test, y_test_np, rng_key, num_samples=100
+    ):
         """
         Compute weighted majority-vote (classification) or weighted average (regression)
         on (X_test, y_test_np) using list of (module, _) in models_states.
@@ -101,7 +107,9 @@ class PacBayesEnsembleNumPyro:
         if self.task == "binary":
             P_votes = np.zeros((m, n_test))
             for i, (module, _) in enumerate(models_states):
-                preds = module.predict(X_test, rng_keys[i], posterior="logits", num_samples=num_samples)
+                preds = module.predict(
+                    X_test, rng_keys[i], posterior="logits", num_samples=num_samples
+                )
                 probs = jax.nn.sigmoid(preds.reshape((num_samples, -1))).mean(axis=0)
                 P_votes[i, :] = np.where(np.array(probs) >= 0.5, +1, -1)
             agg = (rho[:, None] * P_votes).sum(axis=0)
@@ -112,7 +120,9 @@ class PacBayesEnsembleNumPyro:
             C = int(y_test_np.max()) + 1
             votes = np.zeros((n_test, C))
             for i, (module, _) in enumerate(models_states):
-                preds = module.predict(X_test, rng_keys[i], posterior="logits", num_samples=num_samples)
+                preds = module.predict(
+                    X_test, rng_keys[i], posterior="logits", num_samples=num_samples
+                )
                 probs = jax.nn.softmax(preds, axis=-1).mean(axis=0)
                 votes += rho[i] * np.array(probs)
             preds_label = votes.argmax(axis=1)
@@ -121,7 +131,9 @@ class PacBayesEnsembleNumPyro:
         else:  # regression
             preds_array = np.zeros((m, n_test))
             for i, (module, _) in enumerate(models_states):
-                preds = module.predict(X_test, rng_keys[i], posterior="logits", num_samples=num_samples)
+                preds = module.predict(
+                    X_test, rng_keys[i], posterior="logits", num_samples=num_samples
+                )
                 preds_array[i, :] = preds.reshape((num_samples, -1)).mean(axis=0)
             agg = (rho[:, None] * preds_array).sum(axis=0)
             return float(mean_squared_error(y_test_np, agg))
@@ -179,9 +191,11 @@ class PacBayesEnsembleNumPyro:
             # ---- Step 1: Train m Bayesian Modules ----
             for i in range(m):
                 rng, sk = jr.split(rng)
-                constructor = self.module_constructors[i % len(self.module_constructors)]
+                constructor = self.module_constructors[
+                    i % len(self.module_constructors)
+                ]
                 module = constructor(sk)
-                module.compile()   # sets up SVI/NUTS/SteinVI
+                module.compile()  # sets up SVI/NUTS/SteinVI
                 module.fit(X_train, y_train, sk, num_steps=svi_steps)
 
                 # We don’t need a “state” object in this wrapper—just store the trained module
@@ -217,14 +231,20 @@ class PacBayesEnsembleNumPyro:
                         # preds: (num_samples, n_hold) of logits → average over posterior,
                         # then threshold at 0.5 to get a {0,1} label per sample
                         # (We do sigmoid + mean → float vector of length n_hold → threshold)
-                        avg_probs = jax.nn.sigmoid(preds.reshape((num_samples, -1))).mean(axis=0)
+                        avg_probs = jax.nn.sigmoid(
+                            preds.reshape((num_samples, -1))
+                        ).mean(axis=0)
                         pred_labels = (np.array(avg_probs) >= 0.5).astype(int)
                         H[i, :] = (pred_labels != y_hold_np).astype(np.float32)
 
                     elif self.task == "multiclass":
                         # preds: (num_samples, n_hold, C) of logits per class → average over posterior
-                        avg_probs = jax.nn.softmax(preds, axis=-1).mean(axis=0)  # shape (n_hold, C)
-                        pred_labels = np.array(jnp.argmax(avg_probs, axis=-1))   # shape (n_hold,)
+                        avg_probs = jax.nn.softmax(preds, axis=-1).mean(
+                            axis=0
+                        )  # shape (n_hold, C)
+                        pred_labels = np.array(
+                            jnp.argmax(avg_probs, axis=-1)
+                        )  # shape (n_hold,)
                         H[i, :] = (pred_labels != y_hold_np).astype(np.float32)
 
                     else:  # regression
@@ -232,11 +252,15 @@ class PacBayesEnsembleNumPyro:
                         avg_preds = preds.reshape((num_samples, -1)).mean(axis=0)
                         mse_vector = (avg_preds - y_hold_np) ** 2
                         clipped = np.minimum(mse_vector, self.L_max) / self.L_max
-                        H[i, :] = clipped.astype(np.float32)  # treat that as the “loss per sample”
+                        H[i, :] = clipped.astype(
+                            np.float32
+                        )  # treat that as the “loss per sample”
 
                 # 2b) Build the m×m pairwise‐loss matrix and extract the diagonal
-                pair_losses = (H @ H.T) / float(n_hold)   # shape (m, m)
-                losses = np.diag(pair_losses).copy()      # length-m vector of marginal losses
+                pair_losses = (H @ H.T) / float(n_hold)  # shape (m, m)
+                losses = np.diag(
+                    pair_losses
+                ).copy()  # length-m vector of marginal losses
             else:
                 # For pbkl, pblambda, pbbernstein: only a 1D vector of hold-out losses is needed
                 losses = np.zeros(m, dtype=np.float32)
@@ -246,7 +270,7 @@ class PacBayesEnsembleNumPyro:
                     losses[i] = self._compute_hold_loss(
                         module, X_hold, y_hold_np, hold_keys[i], num_samples
                     )
-                pair_losses = None   # not used in these branches
+                pair_losses = None  # not used in these branches
 
             # ---- Step 3: PAC-Bayes optimize λ and ρ ----
             pi = np.full(m, 1.0 / m, dtype=np.float64)
@@ -280,7 +304,11 @@ class PacBayesEnsembleNumPyro:
                 # 3d) Update λ (Thiemann’s closed-form) and re-compute ρ
                 lam = 2.0 / (
                     math.sqrt(
-                        1 + 2 * n_r * stat / (kl_val + math.log(2 * math.sqrt(n_r) / self.delta))
+                        1
+                        + 2
+                        * n_r
+                        * stat
+                        / (kl_val + math.log(2 * math.sqrt(n_r) / self.delta))
                     )
                     + 1
                 )
@@ -295,13 +323,15 @@ class PacBayesEnsembleNumPyro:
             )
 
             # ---- Record this m’s results ----
-            self.results_.append({
-                "m": m,
-                "hold_loss": float((rho * losses).sum()),
-                "bound": float(bound),
-                "test_loss": float(test_loss),
-                "elbo_losses": elbo_losses_all,
-            })
+            self.results_.append(
+                {
+                    "m": m,
+                    "hold_loss": float((rho * losses).sum()),
+                    "bound": float(bound),
+                    "test_loss": float(test_loss),
+                    "elbo_losses": elbo_losses_all,
+                }
+            )
 
             # Update “best” if this bound is smaller
             if bound < self.best_bound_:
@@ -309,7 +339,9 @@ class PacBayesEnsembleNumPyro:
                 self.best_m_ = m
                 self.best_rho_ = rho.copy()
                 # Deep-copy trained modules so we can use them later in predict_labels()
-                self.best_models_states_ = [(copy.deepcopy(mod), None) for (mod, _) in models_states]
+                self.best_models_states_ = [
+                    (copy.deepcopy(mod), None) for (mod, _) in models_states
+                ]
                 self.best_elbo_losses_ = copy.deepcopy(elbo_losses_all)
 
         # Save the best ensemble for predict_labels()
@@ -335,7 +367,9 @@ class PacBayesEnsembleNumPyro:
         if self.task == "binary":
             P_votes = np.zeros((m, n))
             for i, (module, _) in enumerate(self._last_models_states):
-                preds = module.predict(X, rng_keys[i], posterior="logits", num_samples=num_samples)
+                preds = module.predict(
+                    X, rng_keys[i], posterior="logits", num_samples=num_samples
+                )
                 probs = jax.nn.sigmoid(preds.reshape((num_samples, -1))).mean(axis=0)
                 P_votes[i, :] = np.where(np.array(probs) >= 0.5, +1, -1)
             agg = (rho[:, None] * P_votes).sum(axis=0)
@@ -351,18 +385,20 @@ class PacBayesEnsembleNumPyro:
             for i, (module, _) in enumerate(self._last_models_states):
                 preds = module.predict(
                     X, rng_keys[i], posterior="logits", num_samples=num_samples
-                )  
-                probs = jax.nn.softmax(preds, axis=-1).mean(axis=0)  
+                )
+                probs = jax.nn.softmax(preds, axis=-1).mean(axis=0)
                 votes += self._last_rho[i] * np.array(probs)
             return votes.argmax(axis=1)
 
         else:  # regression
             preds_array = np.zeros((m, n))
             for i, (module, _) in enumerate(self._last_models_states):
-                preds = module.predict(X, rng_keys[i], posterior="logits", num_samples=num_samples)
+                preds = module.predict(
+                    X, rng_keys[i], posterior="logits", num_samples=num_samples
+                )
                 preds_array[i, :] = preds.reshape((num_samples, -1)).mean(axis=0)
             return (rho[:, None] * preds_array).sum(axis=0)
-        
+
     def predict_proba(self, X, rng_key=None, num_samples=100):
         """
         Return ensemble probabilities (or regression means) for X
@@ -382,43 +418,55 @@ class PacBayesEnsembleNumPyro:
 
         if self.task == "binary":
             # collect each model's pointwise prob
-            probs = jnp.stack([
-                jax.nn.sigmoid(
-                    self._last_models_states[i][0]
-                    .predict(X, keys[i], posterior="logits", num_samples=num_samples)
-                    .reshape((num_samples, -1))
-                ).mean(axis=0)
-                for i in range(m)
-            ])  # shape (m, n)
+            probs = jnp.stack(
+                [
+                    jax.nn.sigmoid(
+                        self._last_models_states[i][0]
+                        .predict(
+                            X, keys[i], posterior="logits", num_samples=num_samples
+                        )
+                        .reshape((num_samples, -1))
+                    ).mean(axis=0)
+                    for i in range(m)
+                ]
+            )  # shape (m, n)
             # weighted mixture
             return jnp.dot(rho, probs)  # shape (n,)
 
         elif self.task == "multiclass":
             # first predict one sample to get num classes
-            sample_logits = self._last_models_states[0][0] \
-                .predict(X, keys[0], posterior="logits", num_samples=1)
+            sample_logits = self._last_models_states[0][0].predict(
+                X, keys[0], posterior="logits", num_samples=1
+            )
             C = sample_logits.shape[-1]
             # collect each model's mean class-prob vector
-            probs = jnp.stack([
-                jax.nn.softmax(
-                    self._last_models_states[i][0]
-                    .predict(X, keys[i], posterior="logits", num_samples=num_samples),
-                    axis=-1
-                ).mean(axis=0)  # shape (n, C)
-                for i in range(m)
-            ])  # shape (m, n, C)
+            probs = jnp.stack(
+                [
+                    jax.nn.softmax(
+                        self._last_models_states[i][0].predict(
+                            X, keys[i], posterior="logits", num_samples=num_samples
+                        ),
+                        axis=-1,
+                    ).mean(
+                        axis=0
+                    )  # shape (n, C)
+                    for i in range(m)
+                ]
+            )  # shape (m, n, C)
             # weigh and sum over models
             return jnp.tensordot(rho, probs, axes=([0], [0]))  # shape (n, C)
 
         else:  # regression
-            means = jnp.stack([
-                self._last_models_states[i][0]
-                .predict(X, keys[i], posterior="logits", num_samples=num_samples)
-                .reshape((num_samples, -1)).mean(axis=0)
-                for i in range(m)
-            ])  # shape (m, n)
+            means = jnp.stack(
+                [
+                    self._last_models_states[i][0]
+                    .predict(X, keys[i], posterior="logits", num_samples=num_samples)
+                    .reshape((num_samples, -1))
+                    .mean(axis=0)
+                    for i in range(m)
+                ]
+            )  # shape (m, n)
             return jnp.dot(rho, means)  # shape (n,)
-
 
     @property
     def results(self):
@@ -448,7 +496,9 @@ class PacBayesEnsembleNumPyro:
         print("-" * len(header))
         for r in self.results_:
             test_str = f"{r['test_loss']:.4f}" if r["test_loss"] is not None else "None"
-            print(f"{r['m']:4d} | {r['hold_loss']:.4f}   | {r['bound']:.4f}   | {test_str}")
+            print(
+                f"{r['m']:4d} | {r['hold_loss']:.4f}   | {r['bound']:.4f}   | {test_str}"
+            )
 
 
 # ------------------------
@@ -486,19 +536,23 @@ if __name__ == "__main__":
         """
         plt.figure()
         for i, losses in enumerate(elbo_losses):
-            plt.plot(losses, label=f'Learner {i+1}')
-        plt.xlabel('SVI Step')
-        plt.ylabel('ELBO Loss')
-        plt.title(f'Convergence of {m} Weak Learners')
+            plt.plot(losses, label=f"Learner {i+1}")
+        plt.xlabel("SVI Step")
+        plt.ylabel("ELBO Loss")
+        plt.title(f"Convergence of {m} Weak Learners")
         plt.legend()
         plt.show()
 
-
-
     # 1) Generate a small synthetic binary classification dataset
     Xc, yc = make_classification(
-        n_samples=500, n_features=10, n_informative=5, n_redundant=0,
-        n_classes=2, flip_y=0.1, class_sep=1.0, random_state=0
+        n_samples=500,
+        n_features=10,
+        n_informative=5,
+        n_redundant=0,
+        n_classes=2,
+        flip_y=0.1,
+        class_sep=1.0,
+        random_state=0,
     )
     # Split into train / hold / test (60/20/20)
     X_temp, X_test, y_temp, y_test = train_test_split(
@@ -517,9 +571,8 @@ if __name__ == "__main__":
     y_test = jnp.array(y_test, dtype=jnp.float32)
 
     y_train = jnp.asarray(y_train, dtype=jnp.int32)
-    y_hold  = jnp.asarray(y_hold,  dtype=jnp.int32)
-    y_test  = jnp.asarray(y_test,  dtype=jnp.int32)
-
+    y_hold = jnp.asarray(y_hold, dtype=jnp.int32)
+    y_test = jnp.asarray(y_test, dtype=jnp.int32)
 
     in_dim = X_train.shape[1]
 
@@ -547,9 +600,12 @@ if __name__ == "__main__":
 
     # 4) Fit the ensemble on (train, hold, test) with m_values = [1, 2, 3]
     ensemble.fit(
-        X_train, y_train,
-        X_hold, y_hold,
-        X_test, y_test,
+        X_train,
+        y_train,
+        X_hold,
+        y_hold,
+        X_test,
+        y_test,
         m_values=[1, 2, 3],
         svi_steps=10,
         num_samples=50,
@@ -568,7 +624,8 @@ if __name__ == "__main__":
     rng_test = jr.PRNGKey(999)
     y_hold_preds = ensemble.predict(X_hold, rng_test, num_samples=50)
     probs = ensemble.predict_proba(X_hold, rng_test)
-    from sklearn.metrics import log_loss 
+    from sklearn.metrics import log_loss
+
     y_hold_np = np.array(y_hold).ravel()
     hold_err = zero_one_loss(y_hold_np, y_hold_preds)
     loss = log_loss(y_hold_np, np.array(probs))
@@ -580,15 +637,13 @@ if __name__ == "__main__":
     y_test_preds = ensemble.predict(X_test, rng_test2, num_samples=50)
     y_test_np = np.array(y_test).ravel()
 
-
     test_err = zero_one_loss(y_test_np, y_test_preds)
     print(f"Test zero‐one error from predict_labels: {test_err:.4f}")
 
     # After ensemble.fit(...)
-    m = ensemble.best_m_                  # best ensemble size, e.g. 10
-    elbo_dict = ensemble.elbo_losses      # this is a dict: {m1: [...], m2: [...], …}
-    elbo_losses = elbo_dict[m]            # get the list-of-lists for ensemble size m
+    m = ensemble.best_m_  # best ensemble size, e.g. 10
+    elbo_dict = ensemble.elbo_losses  # this is a dict: {m1: [...], m2: [...], …}
+    elbo_losses = elbo_dict[m]  # get the list-of-lists for ensemble size m
 
     # Now plot:
     plot_weak_learners_convergence(elbo_losses, m)
-

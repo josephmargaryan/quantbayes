@@ -75,15 +75,17 @@ class RecursivePACBayesEnsembleNumPyro:
         self.bound_type = bound_type
         self.delta = delta
         self.T = T
-        self.gamma_grid = gamma_grid if gamma_grid is not None else np.linspace(0.1, 0.9, 9)
+        self.gamma_grid = (
+            gamma_grid if gamma_grid is not None else np.linspace(0.1, 0.9, 9)
+        )
         self.seed = seed
         self.L_max = L_max
 
         # Will be populated in .fit()
-        self.trained_modules_ = []     # List of trained Module instances
-        self.pi_list_ = []             # List of posterior weight arrays [π₁,...,π_T]
-        self.bounds_ = []              # List of bound values [B₁,...,B_T]
-        self.chunk_indices_ = []       # List of index-arrays for geometric split
+        self.trained_modules_ = []  # List of trained Module instances
+        self.pi_list_ = []  # List of posterior weight arrays [π₁,...,π_T]
+        self.bounds_ = []  # List of bound values [B₁,...,B_T]
+        self.chunk_indices_ = []  # List of index-arrays for geometric split
         self.is_fitted = False
 
     def _geometric_split_indices(self, n: int) -> List[np.ndarray]:
@@ -101,7 +103,7 @@ class RecursivePACBayesEnsembleNumPyro:
                 rem -= size_t
         total = sum(sizes)
         if total != n:
-            sizes[-1] += (n - total)
+            sizes[-1] += n - total
 
         idx = np.arange(n)
         rs = check_random_state(self.seed)
@@ -132,17 +134,23 @@ class RecursivePACBayesEnsembleNumPyro:
         rngs = jr.split(rng, num=K + 1)[1:]
 
         for i, module in enumerate(modules):
-            preds_samples = module.predict(X, rngs[i], posterior="logits", num_samples=num_samples)
+            preds_samples = module.predict(
+                X, rngs[i], posterior="logits", num_samples=num_samples
+            )
             # -- Binary case: preds_samples shape (num_samples, n)
             if self.task == "binary":
                 # sigmoid over logits, then average
-                avg_probs = jax.nn.sigmoid(preds_samples.reshape((num_samples, n))).mean(axis=0)
+                avg_probs = jax.nn.sigmoid(
+                    preds_samples.reshape((num_samples, n))
+                ).mean(axis=0)
                 pred_labels = np.array(avg_probs >= 0.5, dtype=int)
                 loss_matrix[i, :] = (pred_labels != y).astype(float)
 
             # -- Multiclass case: preds_samples shape (num_samples, n, C)
             elif self.task == "multiclass":
-                avg_probs = jax.nn.softmax(preds_samples, axis=-1).mean(axis=0)  # shape (n, C)
+                avg_probs = jax.nn.softmax(preds_samples, axis=-1).mean(
+                    axis=0
+                )  # shape (n, C)
                 pred_labels = np.array(jnp.argmax(avg_probs, axis=-1))
                 loss_matrix[i, :] = (pred_labels != y).astype(float)
 
@@ -171,7 +179,9 @@ class RecursivePACBayesEnsembleNumPyro:
           5) Stages 2..T: chosen bound on Uₜ = Sₜ ∪ ... ∪ S_T.
         """
         X = np.asarray(X)
-        y = np.asarray(y).astype(int if self.task in ("binary", "multiclass") else float)
+        y = np.asarray(y).astype(
+            int if self.task in ("binary", "multiclass") else float
+        )
         n = X.shape[0]
 
         # 1) Geometric split
@@ -183,8 +193,8 @@ class RecursivePACBayesEnsembleNumPyro:
         rng = jr.PRNGKey(self.seed)
         for ctor in self.module_constructors:
             rng, subkey = jr.split(rng)
-            module = ctor(subkey)           # user-provided constructor returns NumPyro Module
-            module.compile()                # sets up NUTS/SVI/SteinVI
+            module = ctor(subkey)  # user-provided constructor returns NumPyro Module
+            module.compile()  # sets up NUTS/SVI/SteinVI
             module.fit(X, y, subkey, num_steps=svi_steps)
             self.trained_modules_.append(module)
 
@@ -208,7 +218,12 @@ class RecursivePACBayesEnsembleNumPyro:
             return compute_plain_kl_bound(p_mean, KL_w, delta_t, n1)
 
         v0 = np.zeros(self.K)
-        res1 = minimize(objective_stage1, v0, method="Nelder-Mead", options={"maxiter": 500, "disp": False})
+        res1 = minimize(
+            objective_stage1,
+            v0,
+            method="Nelder-Mead",
+            options={"maxiter": 500, "disp": False},
+        )
         v_opt1 = res1.x
         exp_v1 = np.exp(v_opt1 - np.max(v_opt1))
         pi1 = exp_v1 / exp_v1.sum()
@@ -233,12 +248,12 @@ class RecursivePACBayesEnsembleNumPyro:
         for t in range(2, self.T + 1):
             S_t_idx = chunks[t - 1]
             U_t_idx = future_indices[t - 1]
-            loss_U_t = loss_matrix_all[:, U_t_idx]     # shape (K, |U_t|)
+            loss_U_t = loss_matrix_all[:, U_t_idx]  # shape (K, |U_t|)
             m_t = loss_U_t.shape[1]
             delta_t = self.delta / self.T
 
             # Precompute weighted loss of π_{t-1} on U_t
-            weighted_prev_U = pi_prev @ loss_U_t       # shape (|U_t|,)
+            weighted_prev_U = pi_prev @ loss_U_t  # shape (|U_t|,)
 
             def evaluate_for_gamma(gamma: float) -> Tuple[np.ndarray, float]:
                 f_gamma_U = loss_U_t - gamma * weighted_prev_U  # shape (K, m_t)
@@ -257,7 +272,7 @@ class RecursivePACBayesEnsembleNumPyro:
 
                 elif self.bound_type == "emp-bernstein":
                     f_gamma_means = f_gamma_U.mean(axis=1)  # shape (K,)
-                    var_i = f_gamma_U.var(axis=1, ddof=1)   # sample variance
+                    var_i = f_gamma_U.var(axis=1, ddof=1)  # sample variance
                     mu_i = f_gamma_means.copy()
                     v_i = var_i.copy()
 
@@ -271,7 +286,7 @@ class RecursivePACBayesEnsembleNumPyro:
 
                 def objective_t(v: np.ndarray) -> float:
                     exp_v = np.exp(v - np.max(v))
-                    w = exp_v / exp_v.sum()          # candidate π_t
+                    w = exp_v / exp_v.sum()  # candidate π_t
                     KL_div = float(np.sum(w * np.log((w + 1e-12) / (pi_prev + 1e-12))))
 
                     if self.bound_type == "split-kl":
@@ -326,7 +341,12 @@ class RecursivePACBayesEnsembleNumPyro:
                     return eps + gamma * B_prev
 
                 v0_t = np.log(pi_prev + 1e-12)
-                res_t = minimize(objective_t, v0_t, method="Nelder-Mead", options={"maxiter": 500, "disp": False})
+                res_t = minimize(
+                    objective_t,
+                    v0_t,
+                    method="Nelder-Mead",
+                    options={"maxiter": 500, "disp": False},
+                )
                 v_opt_t = res_t.x
                 exp_vt = np.exp(v_opt_t - np.max(v_opt_t))
                 w_opt_t = exp_vt / exp_vt.sum()
@@ -351,10 +371,13 @@ class RecursivePACBayesEnsembleNumPyro:
 
                 # --- But for fallback unexp-Bernstein, we must re-clip λ there, too
                 if self.bound_type == "unexp-bernstein":
+
                     def objective_fallback(v: np.ndarray) -> float:
                         exp_v = np.exp(v - np.max(v))
                         w = exp_v / exp_v.sum()
-                        KL_div = float(np.sum(w * np.log((w + 1e-12) / (pi_prev + 1e-12))))
+                        KL_div = float(
+                            np.sum(w * np.log((w + 1e-12) / (pi_prev + 1e-12)))
+                        )
 
                         # recompute f_gamma_U and moments for fallback gamma
                         f_gamma_U_fb = loss_U_t - gamma_fallback * weighted_prev_U
@@ -383,7 +406,12 @@ class RecursivePACBayesEnsembleNumPyro:
                         return eps_fb + gamma_fallback * B_prev
 
                     v0_fb = np.log(pi_prev + 1e-12)
-                    res_fb = minimize(objective_fallback, v0_fb, method="Nelder-Mead", options={"maxiter": 500, "disp": False})
+                    res_fb = minimize(
+                        objective_fallback,
+                        v0_fb,
+                        method="Nelder-Mead",
+                        options={"maxiter": 500, "disp": False},
+                    )
                     v_opt_fb = res_fb.x
                     exp_vfb = np.exp(v_opt_fb - np.max(v_opt_fb))
                     w_opt_fb = exp_vfb / exp_vfb.sum()
@@ -404,7 +432,9 @@ class RecursivePACBayesEnsembleNumPyro:
         self.is_fitted = True
         return self
 
-    def predict(self, X: np.ndarray, rng_key: jax.random.PRNGKey, num_samples: int = 100) -> np.ndarray:
+    def predict(
+        self, X: np.ndarray, rng_key: jax.random.PRNGKey, num_samples: int = 100
+    ) -> np.ndarray:
         """
         Predict labels (or regression values) on X by weighted-vote (final π_T).
         rng_key: a JAX PRNGKey
@@ -425,7 +455,9 @@ class RecursivePACBayesEnsembleNumPyro:
                 preds_samples = module.predict(
                     X, rngs[i], posterior="logits", num_samples=num_samples
                 )
-                avg_probs = jax.nn.sigmoid(preds_samples.reshape((num_samples, n))).mean(axis=0)
+                avg_probs = jax.nn.sigmoid(
+                    preds_samples.reshape((num_samples, n))
+                ).mean(axis=0)
                 vote_matrix[i, :] = np.where(np.array(avg_probs) >= 0.5, 1, 0)
             weighted_vote = (π_T[:, None] * vote_matrix).sum(axis=0)
             return np.array(weighted_vote >= 0.5, dtype=int)
@@ -441,7 +473,9 @@ class RecursivePACBayesEnsembleNumPyro:
                 preds_samples = module.predict(
                     X, rngs[i], posterior="logits", num_samples=num_samples
                 )
-                avg_probs = jax.nn.softmax(preds_samples, axis=-1).mean(axis=0)  # shape (n, C)
+                avg_probs = jax.nn.softmax(preds_samples, axis=-1).mean(
+                    axis=0
+                )  # shape (n, C)
                 agg_probs += π_T[i] * np.array(avg_probs)
             return np.array(np.argmax(agg_probs, axis=1), dtype=int)
 
@@ -510,7 +544,9 @@ if __name__ == "__main__":
             self.in_dim = in_dim
 
         def __call__(self, X, Y=None):
-            w = numpyro.sample("w", dist.Normal(jnp.zeros(self.in_dim), jnp.ones(self.in_dim)))
+            w = numpyro.sample(
+                "w", dist.Normal(jnp.zeros(self.in_dim), jnp.ones(self.in_dim))
+            )
             b = numpyro.sample("b", dist.Normal(0.0, 1.0))
             logits = jnp.dot(X, w) + b
             numpyro.deterministic("logits", logits)
@@ -533,7 +569,7 @@ if __name__ == "__main__":
     ensemble = RecursivePACBayesEnsembleNumPyro(
         module_constructors=module_constructors,
         task="binary",
-        bound_type="unexp-bernstein",   # try "plain-kl", "emp-bernstein", "unexp-bernstein"
+        bound_type="unexp-bernstein",  # try "plain-kl", "emp-bernstein", "unexp-bernstein"
         delta=0.05,
         T=2,
         seed=42,
@@ -550,7 +586,9 @@ if __name__ == "__main__":
 
     # 5) Print summary of posteriors and bounds (two stages, since T=2)
     print("\nNumPyro Ensemble Posteriors and Bounds (T=2):")
-    for t, (π, bound) in enumerate(zip(ensemble.get_posteriors, ensemble.get_bounds), start=1):
+    for t, (π, bound) in enumerate(
+        zip(ensemble.get_posteriors, ensemble.get_bounds), start=1
+    ):
         print(f"  Stage {t}:  π_{t} = {np.round(π, 4)},  B_{t} = {bound:.4f}")
 
     # 6) Now evaluate on HOLD and TEST separately
@@ -566,7 +604,11 @@ if __name__ == "__main__":
 
     # 7) Basic sanity checks
     assert 0.0 <= hold_err <= 1.0 and 0.0 <= test_err <= 1.0
-    assert isinstance(y_hold_preds, np.ndarray) and y_hold_preds.shape == (X_hold.shape[0],)
-    assert isinstance(y_test_preds, np.ndarray) and y_test_preds.shape == (X_test.shape[0],)
+    assert isinstance(y_hold_preds, np.ndarray) and y_hold_preds.shape == (
+        X_hold.shape[0],
+    )
+    assert isinstance(y_test_preds, np.ndarray) and y_test_preds.shape == (
+        X_test.shape[0],
+    )
 
     print("NumPyro recursive-PAC-Bayes test completed successfully.")
