@@ -585,29 +585,51 @@ class BoundEnsemble(BaseEstimator, ClassifierMixin):
 
     def predict_proba(self, X: np.ndarray) -> np.ndarray:
         """
-        Only valid when `task="binary"` and all base learners support `predict_proba`.
-        Returns array shape (n_samples, 2): [P(y=−1), P(y=+1)].
+        Returns ensemble probabilities.
+        - Binary:  shape (n_samples, 2) columns [P(y=-1), P(y=+1)]
+        - Multiclass: shape (n_samples, n_classes) in the order of self.classes_
         """
         if not self.is_fitted:
-            raise RuntimeError("Call fit before predict_proba().")
-        if self.task != "binary":
-            raise AttributeError("predict_proba is only valid for 'binary' task.")
+            raise RuntimeError("Call fit() before predict_proba().")
         X = np.asarray(X)
 
-        # Check that every best_model has predict_proba
+        # Make sure all models support predict_proba
         for clf in self.best_models_:
             if not hasattr(clf, "predict_proba"):
                 raise AttributeError(
                     "One or more base estimators lack predict_proba()."
                 )
 
-        # Gather probability of class +1 from each model
-        probs_pos = np.vstack(
-            [clf.predict_proba(X)[:, 1] for clf in self.best_models_]
-        ).T  # (n, m)
-        weighted_pos = probs_pos.dot(self.best_rho_)  # shape (n,)
-        weighted_neg = 1.0 - weighted_pos
-        return np.vstack([weighted_neg, weighted_pos]).T
+        n_samples = X.shape[0]
+
+        # Binary case
+        if self.task == "binary":
+            # gather P_i(+1) for each model, shape (n_samples, m)
+            probs_pos = np.vstack(
+                [clf.predict_proba(X)[:, 1] for clf in self.best_models_]
+            ).T
+            # weighted average
+            weighted_pos = probs_pos.dot(self.best_rho_)
+            weighted_neg = 1.0 - weighted_pos
+            return np.vstack([weighted_neg, weighted_pos]).T
+
+        # Multiclass case
+        else:
+            n_classes = len(self.classes_)
+            avg_probs = np.zeros((n_samples, n_classes), dtype=float)
+
+            for rho_i, clf in zip(self.best_rho_, self.best_models_):
+                # clf.classes_ may be a subset or in a different order
+                probs_i = clf.predict_proba(X)  # shape (n_samples, n_clf_classes)
+                # map clf’s columns into the full ensemble ordering:
+                for col_idx, cls in enumerate(clf.classes_):
+                    # find where cls lives in self.classes_
+                    ensemble_col = np.where(self.classes_ == cls)[0][0]
+                    avg_probs[:, ensemble_col] += rho_i * probs_i[:, col_idx]
+
+            # renormalize rows to sum to 1
+            row_sums = avg_probs.sum(axis=1, keepdims=True)
+            return avg_probs / row_sums
 
     def summary(self):
         """
@@ -739,6 +761,7 @@ if __name__ == "__main__":
     )
 
     y_pred_mc = ens_mc.predict(Xmc)
+    probs = ens_mc.predict_proba(Xmc)
     acc_mc = 1.0 - zero_one_loss(ymc, y_pred_mc)
     print(f"\nIn-sample accuracy (multiclass) = {acc_mc:.4f}")
 

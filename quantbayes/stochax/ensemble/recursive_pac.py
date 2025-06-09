@@ -480,6 +480,59 @@ class RecursivePACBayesEnsemble:
                 agg_preds += π_T[i] * preds_np
             return agg_preds
 
+    def predict_proba(self, X: np.ndarray, seed: int = None) -> np.ndarray:
+        """
+        Return the weighted‐vote probabilities for classification.
+        - Binary:   shape (n_samples, 2) columns [P(class=0), P(class=1)]
+        - Multiclass: shape (n_samples, C), summing to 1 across each row
+        """
+        if not self.is_fitted:
+            raise RuntimeError("Call fit(...) before predict_proba(...)")
+        if self.task == "regression":
+            raise AttributeError("predict_proba() not defined for regression.")
+
+        X_np = np.asarray(X, dtype=np.float32)
+        n = X_np.shape[0]
+        π_T = self.pi_list_[-1]
+        K = len(self.trained_models_states_)
+        if seed is None:
+            seed = self.seed
+        rng = jr.PRNGKey(seed)
+        rngs = jr.split(rng, num=K + 1)[1:]
+
+        # Collect each model’s “vote” (0/1 or class index) then turn into probs
+        if self.task == "binary":
+            # First build a (K, n) matrix of binary votes {0,1}
+            vote_matrix = np.zeros((K, n), dtype=int)
+            for i, (model, state) in enumerate(self.trained_models_states_):
+                logits = _single_predict(model, state, X_np, rngs[i])
+                probs = jax.nn.sigmoid(logits).ravel()
+                vote_matrix[i, :] = (np.array(probs) >= 0.5).astype(int)
+            # Now for each sample, P(class=1) = sum π_i over models that voted 1
+            proba = np.zeros((n, 2), dtype=float)
+            for j in range(n):
+                w1 = np.sum(π_T[vote_matrix[:, j] == 1])
+                proba[j, 1] = w1
+                proba[j, 0] = 1.0 - w1
+            return proba
+
+        else:  # multiclass
+            # First find number of classes C by a dummy forward
+            sample_logits = _single_predict(
+                self.trained_models_states_[0][0],
+                self.trained_models_states_[0][1],
+                X_np[:1],
+                rngs[0],
+            )
+            C = sample_logits.shape[-1]
+
+            proba = np.zeros((n, C), dtype=float)
+            for i, (model, state) in enumerate(self.trained_models_states_):
+                logits = _single_predict(model, state, X_np, rngs[i])
+                p = jax.nn.softmax(logits, axis=-1)  # (n, C)
+                proba += π_T[i] * np.array(p)
+            return proba
+
     @property
     def get_posteriors(self) -> List[np.ndarray]:
         return self.pi_list_

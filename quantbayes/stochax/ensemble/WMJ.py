@@ -437,6 +437,64 @@ class PacBayesEnsemble:
         )
         return preds_np
 
+    def predict_proba(self, X, key=None) -> np.ndarray:
+        """
+        Return ensemble probability estimates.
+
+        - Binary:   shape (n_samples, 2) columns [P(y=0), P(y=1)] (we map {0,1})
+        - Multiclass: shape (n_samples, n_classes) in the order 0..C-1
+        - Regression: not defined (raises AttributeError)
+        """
+        if not self.is_fitted:
+            raise RuntimeError("Call fit() before predict_proba().")
+        if self.task == "regression":
+            raise AttributeError("predict_proba() not defined for regression.")
+
+        # Prepare data & RNG keys
+        Xj = jnp.asarray(X, dtype=jnp.float32)
+        n_samples = Xj.shape[0]
+        m = len(self.best_models_states_)
+        if key is None:
+            key = jr.PRNGKey(self.seed)
+        key, *keys = jr.split(key, num=m + 1)
+        keys = keys[:m]
+
+        # Binary case
+        if self.task == "binary":
+            # Collect each model’s P(y=1)
+            probs_pos = []
+            for (model, state), k in zip(self.best_models_states_, keys):
+                logits = _single_predict(model, state, Xj, k)
+                p1 = jax.nn.sigmoid(logits).ravel()
+                probs_pos.append(p1)
+            probs_pos = jnp.stack(probs_pos, axis=1)  # (n_samples, m)
+            weighted_p1 = probs_pos @ jnp.array(self.best_rho_)  # (n_samples,)
+            weighted_p0 = 1.0 - weighted_p1
+            # return as NumPy for compatibility
+            return np.vstack([weighted_p0, weighted_p1]).T
+
+        # Multiclass case
+        else:
+            # First figure out number of classes from best_models_states_[0]
+            # by doing one batch‐1 predict
+            dummy_logits = _single_predict(
+                self.best_models_states_[0][0],
+                self.best_models_states_[0][1],
+                Xj[:1],
+                keys[0],
+            )
+            C = dummy_logits.shape[-1]
+            # accumulator
+            avg_probs = jnp.zeros((n_samples, C))
+            for (model, state), rho_i, k in zip(
+                self.best_models_states_, self.best_rho_, keys
+            ):
+                logits = _single_predict(model, state, Xj, k)
+                p = jax.nn.softmax(logits, axis=-1)  # (n_samples, C)
+                avg_probs = avg_probs + rho_i * p
+            # convert back to NumPy
+            return np.array(avg_probs)
+
     def score(self, X, y, key=None):
         """
         Compute a score on (X, y). For classification tasks, returns accuracy.

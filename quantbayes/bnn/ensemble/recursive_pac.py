@@ -489,6 +489,68 @@ class RecursivePACBayesEnsembleNumPyro:
                 agg_preds += π_T[i] * np.array(avg_pred)
             return agg_preds
 
+    def predict_proba(
+        self,
+        X: np.ndarray,
+        rng_key: jax.random.PRNGKey = None,
+        num_samples: int = 100,
+    ) -> np.ndarray:
+        """
+        Return weighted‐vote probabilities for classification tasks:
+          - Binary:   shape (n_samples, 2) with columns [P(class=0), P(class=1)]
+          - Multiclass: shape (n_samples, C), summing to 1
+        Regression: returns weighted mean, same as predict().
+        """
+        if not self.is_fitted:
+            raise RuntimeError("Call fit(...) before predict_proba(...)")
+        if rng_key is None:
+            rng_key = jr.PRNGKey(self.seed)
+
+        X_np = np.asarray(X)
+        n = X_np.shape[0]
+        π_T = self.pi_list_[-1]
+        K = self.K
+        rngs = jr.split(rng_key, num=K + 1)[1:]
+
+        # --- Binary ---
+        if self.task == "binary":
+            # Collect each module’s P(y=1)
+            probs_pos = np.zeros((K, n), dtype=float)
+            for i, module in enumerate(self.trained_modules_):
+                preds = module.predict(
+                    X_np, rngs[i], posterior="logits", num_samples=num_samples
+                )
+                # preds shape (num_samples, n)
+                avg_p1 = jax.nn.sigmoid(preds.reshape((num_samples, n))).mean(axis=0)
+                probs_pos[i] = np.array(avg_p1)
+            # Ensemble P1 = sum_i π_i * p1_i, P0 = 1−P1
+            P1 = π_T @ probs_pos
+            proba = np.vstack([1.0 - P1, P1]).T
+            return proba
+
+        # --- Multiclass ---
+        elif self.task == "multiclass":
+            # First figure out C
+            sample_preds = self.trained_modules_[0].predict(
+                X_np, rngs[0], posterior="logits", num_samples=1
+            )
+            C = sample_preds.shape[-1]
+            proba = np.zeros((n, C), dtype=float)
+
+            for i, module in enumerate(self.trained_modules_):
+                preds = module.predict(
+                    X_np, rngs[i], posterior="logits", num_samples=num_samples
+                )
+                # preds shape (num_samples, n, C)
+                avg_p = jax.nn.softmax(preds, axis=-1).mean(axis=0)  # (n, C)
+                proba += π_T[i] * np.array(avg_p)
+
+            return proba
+
+        # --- Regression just return the same as predict() ---
+        else:
+            return self.predict(X_np, rng_key, num_samples)
+
     @property
     def get_posteriors(self) -> List[np.ndarray]:
         return self.pi_list_
