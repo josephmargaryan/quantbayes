@@ -23,16 +23,18 @@ __all__ = [
 @jax.custom_jvp
 def circulant_matmul(x: jnp.ndarray, first_row: jnp.ndarray) -> jnp.ndarray:
     """
-    Compute y = C x, where C is a circulant matrix defined by its first row.
-    Instead of forming C explicitly, we compute via FFT:
-      - first, compute first_col = roll(flip(first_row), shift=1)
-      - then, y = IFFT( FFT(x) * FFT(first_col) )
+    Compute y = C x where C is the circulant matrix defined by first_row,
+    using real‐FFT to halve frequency‐domain memory.
+
+    x         : (..., n) real
+    first_row : (n,)     real
+    returns   : (..., n) real
     """
-    # Compute first_col from first_row
+    n = first_row.shape[-1]
     first_col = jnp.roll(jnp.flip(first_row), shift=1)
-    fft_first_col = jnp.fft.fft(first_col)
-    fft_x = jnp.fft.fft(x, axis=-1)
-    y = jnp.fft.ifft(fft_x * fft_first_col, axis=-1).real
+    fft_first_col = jnp.fft.rfft(first_col, axis=-1)
+    fft_x = jnp.fft.rfft(x, axis=-1)
+    y = jnp.fft.irfft(fft_x * fft_first_col, n=n, axis=-1)
     return y
 
 
@@ -40,28 +42,32 @@ def circulant_matmul(x: jnp.ndarray, first_row: jnp.ndarray) -> jnp.ndarray:
 def circulant_matmul_jvp(primals, tangents):
     x, first_row = primals
     dx, dfirst_row = tangents
+    n = first_row.shape[-1]
+
     first_col = jnp.roll(jnp.flip(first_row), shift=1)
-    fft_first_col = jnp.fft.fft(first_col)
-    fft_x = jnp.fft.fft(x, axis=-1)
-    y = jnp.fft.ifft(fft_x * fft_first_col, axis=-1).real
-    dfft_x = jnp.fft.fft(dx, axis=-1)
-    dy_dx = jnp.fft.ifft(dfft_x * fft_first_col, axis=-1).real
-    dfirst_col = jnp.roll(jnp.flip(dfirst_row), shift=1)
-    dfft_first_col = jnp.fft.fft(dfirst_col)
-    dy_df = jnp.fft.ifft(fft_x * dfft_first_col, axis=-1).real
+    fft_first_col = jnp.fft.rfft(first_col, axis=-1)
+    fft_x = jnp.fft.rfft(x, axis=-1)
+    y = jnp.fft.irfft(fft_x * fft_first_col, n=n, axis=-1)
+
+    dfft_x = jnp.fft.rfft(dx, axis=-1) if dx is not None else 0.0
+    dy_dx = jnp.fft.irfft(dfft_x * fft_first_col, n=n, axis=-1)
+
+    if dfirst_row is not None:
+        dfirst_col = jnp.roll(jnp.flip(dfirst_row), shift=1)
+        dfft_first = jnp.fft.rfft(dfirst_col, axis=-1)
+        dy_df = jnp.fft.irfft(fft_x * dfft_first, n=n, axis=-1)
+    else:
+        dy_df = 0.0
+
     return y, dy_dx + dy_df
 
 
 class Circulant(eqx.Module):
     """
-    A circulant layer that uses a circulant weight matrix defined by its first row.
-    The layer stores only the first row (a vector of shape (n,)) and a bias vector (shape (n,)).
-    The forward pass computes:
-        y = circulant_matmul(x_padded, first_row) + bias
-    where circulant_matmul is accelerated via a custom JVP rule.
+    A production‐quality circulant layer:
+      y = circulant_matmul(x_padded, first_row) + bias
 
-    If `padded_dim` is provided, the first row and bias are of length `padded_dim`, and
-    the input is padded with zeros on the right to match that size.
+    Stores only first_row (n,) and bias (n,); pads input if in_features != out_features.
     """
 
     first_row: jnp.ndarray
@@ -80,9 +86,9 @@ class Circulant(eqx.Module):
         self.in_features = in_features
         self.out_features = padded_dim if padded_dim is not None else in_features
 
-        key1, key2 = jr.split(key)
-        self.first_row = jr.normal(key1, (self.out_features,)) * init_scale
-        self.bias = jr.normal(key2, (self.out_features,)) * init_scale
+        k1, k2 = jr.split(key, 2)
+        self.first_row = jr.normal(k1, (self.out_features,)) * init_scale
+        self.bias = jr.normal(k2, (self.out_features,)) * init_scale
 
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
         if self.out_features != self.in_features:

@@ -18,9 +18,6 @@ __all__ = [
     "predict",
     "predict_batched",
 ]
-# -------------------------------
-# Data Loading Utilities
-# -------------------------------
 
 
 def spectral_penalty(model):
@@ -72,11 +69,6 @@ def data_loader(X, y, batch_size, shuffle=True, key=None):
         yield X[batch_idx], y[batch_idx]
 
 
-# -------------------------------
-# Generic Loss Function & Steps
-# -------------------------------
-
-
 def binary_loss(model, state, x, y, key):
     """
     Binary cross-entropy loss with logits.
@@ -102,7 +94,6 @@ def binary_loss(model, state, x, y, key):
         model, in_axes=(0, 0, None), out_axes=(0, None), axis_name="batch"
     )
     logits, state = batched_model(x, keys, state)
-    # The loss function expects logits and y to be float and of matching shape.
     loss = jnp.mean(optax.sigmoid_binary_cross_entropy(logits, y))
     return loss, state
 
@@ -137,8 +128,6 @@ def multiclass_loss(model, state, x, y, key):
         model, in_axes=(0, 0, None), out_axes=(0, None), axis_name="batch"
     )
     logits, state = batched_model(x, keys, state)
-    # Use integer labels directly; optax.softmax_cross_entropy_with_integer_labels expects:
-    # logits: [batch_size, num_classes] and labels: [batch_size] integers.
     loss = jnp.mean(optax.softmax_cross_entropy_with_integer_labels(logits, y))
     return loss, state
 
@@ -189,7 +178,6 @@ def train_step(
     One backward pass through the Pytree
     """
 
-    # wrap the base loss to include spectral regularization
     def total_loss_fn(m, s, xb, yb, k):
         loss, new_s = loss_fn(m, s, xb, yb, k)
         if lambda_spec > 0.0:
@@ -204,9 +192,6 @@ def train_step(
     return model, new_state, opt_state
 
 
-# -------------------------------
-# Evaluation Step
-# -------------------------------
 @eqx.filter_jit
 def eval_step(model, state, x, y, key, loss_fn):
     """
@@ -226,9 +211,6 @@ def eval_step(model, state, x, y, key, loss_fn):
     return loss
 
 
-# -------------------------------
-# Training Loop
-# -------------------------------
 def train(
     model,
     state,
@@ -309,9 +291,6 @@ def train(
     return best_model, best_state, train_losses, val_losses
 
 
-# -------------------------------
-# Prediction / Inference
-# -------------------------------
 def predict(model, state, X, key):
     """
     Predict function for computing model outputs (logits) for input data.
@@ -325,7 +304,6 @@ def predict(model, state, X, key):
     Returns:
         logits: The model outputs (before sigmoid), vectorized over the batch.
     """
-    # For inference, if your model uses dropout, you may wish to disable it (or use a fixed key).
     batched_inference = jax.vmap(model, in_axes=(0, None, None))
     logits, _ = batched_inference(X, key, state)
     return logits
@@ -353,15 +331,11 @@ def predict_batched(
     """
     n = X.shape[0]
     logits_list = []
-    # We'll split the key up front so each batch gets a fresh key
     keys = jr.split(key, (n + batch_size - 1) // batch_size)
     start = 0
 
-    # jit-ed per-batch inference; avoids recompiling inside the loop
     @eqx.filter_jit
     def infer_batch(model, state, xb, k):
-        # per-example keys if your model expects them
-        # Otherwise you can just pass k through
         subkeys = jr.split(k, xb.shape[0])
         batched = jax.vmap(model, in_axes=(0, None, None))
         preds, _ = batched(xb, subkeys, state)
@@ -374,13 +348,8 @@ def predict_batched(
         logits_list.append(preds)
         start = end
 
-    # concatenate over the batch dimension
     return jnp.concatenate(logits_list, axis=0)
 
-
-# -------------------------------
-# Main Routine (Demonstration)
-# -------------------------------
 
 if __name__ == "__main__":
 
@@ -399,14 +368,13 @@ if __name__ == "__main__":
         fc2: eqx.nn.Linear
 
         def __init__(self, key):
-            key1, key2, key3, key4 = jr.split(key, 4)
+            key1, key2 = jr.split(key, 2)
             self.bn = eqx.nn.BatchNorm(input_size=5, axis_name="batch")
             self.dropout = eqx.nn.Dropout(0.1)
             self.fc1 = eqx.nn.Linear(in_features=5, out_features=10, key=key1)
             self.fc2 = eqx.nn.Linear(in_features=10, out_features=1, key=key2)
 
         def __call__(self, x, key, state):
-            # If your model does not use state, you can simply pass None and ignore it.
             x, state = self.bn(x, state)
             x = self.fc1(x)
             x = self.dropout(x, key=key)
@@ -414,13 +382,10 @@ if __name__ == "__main__":
             x = self.fc2(x)
             return x, state
 
-    # For demonstration, we use synthetic binary classification data.
-    # In practice, you can replace this with any dataset.
     num_samples = 1000
     features = 5
     rng = np.random.RandomState(0)
     X_np = rng.randn(num_samples, features)
-    # Create binary targets via a random linear process.
     true_w = rng.randn(features, 1)
     logits = X_np @ true_w
     p = 1 / (1 + np.exp(-logits))
@@ -432,35 +397,29 @@ if __name__ == "__main__":
     X_train, X_val = X[:train_size], X[train_size:]
     y_train, y_val = y[:train_size], y[train_size:]
 
-    # Hyperparameters.
     learning_rate = 1e-3
     num_epochs = 1000
     patience = 100
     batch_size = 800
     key = jr.PRNGKey(42)
 
-    # Set up model, state, optimizer, and opt_state.
     model_key, _, train_key, eval_key = jr.split(key, 4)
     model, state = eqx.nn.make_with_state(EQNet)(model_key)
-    # Define a linear learning rate schedule that decays from 1e-3 to 1e-4 over 3000 steps.
     lr_schedule = optax.linear_schedule(
         init_value=1e-3,
         end_value=1e-4,
         transition_steps=1000,
     )
 
-    # Create the optimizer by chaining gradient clipping and AdamW with the learning rate schedule and weight decay.
     optimizer = optax.chain(
-        optax.clip_by_global_norm(1.0),  # Clip gradients with a global norm of 1.0
+        optax.clip_by_global_norm(1.0),
         optax.adamw(learning_rate=lr_schedule, weight_decay=1e-4),
     )
 
     opt_state = optimizer.init(eqx.filter(model, eqx.is_inexact_array))
 
-    # Use our generic loss; here we use binary cross-entropy with logits.
     loss_fn = binary_loss
 
-    # Train the model.
     best_model, best_state, train_losses, val_losses = train(
         model,
         state,
@@ -477,11 +436,8 @@ if __name__ == "__main__":
         train_key,
     )
 
-    # Switch to inference mode.
     inference_model = eqx.nn.inference_mode(best_model)
-    # Evaluate using log_loss as metric (you could also use mean_squared_error for regression, etc.)
 
-    # Plot training curves.
     plt.figure(figsize=(10, 6))
     plt.plot(
         np.arange(1, len(train_losses) + 1), np.array(train_losses), label="Train Loss"

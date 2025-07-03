@@ -23,35 +23,42 @@ __all__ = [
 @jax.custom_jvp
 def fft_matmul_custom(first_row: jnp.ndarray, X: jnp.ndarray) -> jnp.ndarray:
     """
-    Performs circulant matrix multiplication via FFT.
-    Given the first row of a circulant matrix and an input X,
-    computes:
-        result = ifft( fft(first_row) * fft(X) ).real
+    Performs circulant matrix multiplication via real‐FFT.
+    Given the first row of a circulant matrix (shape [n]) and input X
+    (shape [..., n]), computes
+        result = irfft( rfft(first_row)[None, ...] * rfft(X), n=n )
+    returning a real array of shape [..., n].
     """
-    first_row_fft = jnp.fft.fft(first_row, axis=-1)
-    X_fft = jnp.fft.fft(X, axis=-1)
-    result_fft = first_row_fft[None, :] * X_fft
-    result = jnp.fft.ifft(result_fft, axis=-1).real
-    return result
+    n = first_row.shape[-1]
+    fr = jnp.fft.rfft(first_row, axis=-1)
+    Xf = jnp.fft.rfft(X, axis=-1)
+    Y = jnp.fft.irfft(fr[None, ...] * Xf, n=n, axis=-1)
+    return Y
 
 
 @fft_matmul_custom.defjvp
 def fft_matmul_custom_jvp(primals, tangents):
     first_row, X = primals
     d_first_row, dX = tangents
+    n = first_row.shape[-1]
 
-    first_row_fft = jnp.fft.fft(first_row, axis=-1)
-    X_fft = jnp.fft.fft(X, axis=-1)
-    primal_out = jnp.fft.ifft(first_row_fft[None, :] * X_fft, axis=-1).real
+    fr = jnp.fft.rfft(first_row, axis=-1)
+    Xf = jnp.fft.rfft(X, axis=-1)
+    primal_out = jnp.fft.irfft(fr[None, ...] * Xf, n=n, axis=-1)
 
-    d_first_row_fft = (
-        jnp.fft.fft(d_first_row, axis=-1) if d_first_row is not None else 0.0
-    )
-    dX_fft = jnp.fft.fft(dX, axis=-1) if dX is not None else 0.0
-    tangent_out = jnp.fft.ifft(
-        d_first_row_fft[None, :] * X_fft + first_row_fft[None, :] * dX_fft, axis=-1
-    ).real
-    return primal_out, tangent_out
+    if d_first_row is not None:
+        dfr = jnp.fft.rfft(d_first_row, axis=-1)
+        df_part = jnp.fft.irfft(dfr[None, ...] * Xf, n=n, axis=-1)
+    else:
+        df_part = 0.0
+
+    if dX is not None:
+        dXf = jnp.fft.rfft(dX, axis=-1)
+        dx_part = jnp.fft.irfft(fr[None, ...] * dXf, n=n, axis=-1)
+    else:
+        dx_part = 0.0
+
+    return primal_out, df_part + dx_part
 
 
 @jax.custom_jvp
@@ -156,13 +163,17 @@ def block_circulant_matmul_custom_jvp(primals, tangents):
 
 class Circulant:
     """
-    FFT–based circulant layer that uses a custom JVP rule for faster gradients.
-    The forward pass computes:
-        hidden = ifft( fft(first_row) * fft(X) ).real + bias
-    and the JVP uses the saved FFT computations.
+    FFT‐based probabilistic circulant layer for NumPyro.
 
-    If `padded_dim` is provided, the first row and bias are sampled for that dimension,
-    and the input is padded with zeros on the right to match the padded dimension.
+    Samples `first_row` and `bias` from priors, pads input if needed,
+    and applies `fft_matmul_custom` + bias.
+
+    Args:
+        in_features:    original input dimension
+        padded_dim:     FFT dimension (defaults to in_features)
+        name:           name prefix for NumPyro sites
+        first_row_prior_fn: callable(shape)→dist, prior for first_row
+        bias_prior_fn:      callable(shape)→dist, prior for bias
     """
 
     def __init__(
@@ -182,6 +193,7 @@ class Circulant:
         self.bias_prior_fn = bias_prior_fn
 
     def __call__(self, X: jnp.ndarray) -> jnp.ndarray:
+
         if self.padded_dim != self.in_features:
             pad_width = [(0, 0)] * (X.ndim - 1) + [
                 (0, self.padded_dim - self.in_features)
@@ -190,10 +202,11 @@ class Circulant:
         first_row = numpyro.sample(
             f"{self.name}_first_row", self.first_row_prior_fn([self.padded_dim])
         )
-        bias_circulant = numpyro.sample(
-            f"{self.name}_bias_circulant", self.bias_prior_fn([self.padded_dim])
+        bias = numpyro.sample(
+            f"{self.name}_bias", self.bias_prior_fn([self.padded_dim])
         )
-        hidden = fft_matmul_custom(first_row, X) + bias_circulant[None, :]
+
+        hidden = fft_matmul_custom(first_row, X) + bias[None, ...]
         return hidden
 
 
