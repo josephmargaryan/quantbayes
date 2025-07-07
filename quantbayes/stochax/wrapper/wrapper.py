@@ -31,6 +31,7 @@ class EQXBase(BaseEstimator):
         lr_decay_steps: int = 500,
         weight_decay: float = 1e-4,
         loss_fn=None,
+        lambda_spec: float = 0.0,
     ):
         """
         Parameters:
@@ -54,6 +55,7 @@ class EQXBase(BaseEstimator):
         self.lr_decay_steps = lr_decay_steps
         self.weight_decay = weight_decay
         self.loss_fn = loss_fn
+        self.lambda_spec = lambda_spec 
 
     def get_params(self, deep=True):
         # return exactly the args in your __init__ signature
@@ -70,6 +72,7 @@ class EQXBase(BaseEstimator):
             "lr_decay_steps": self.lr_decay_steps,
             "weight_decay": self.weight_decay,
             "loss_fn": self.loss_fn,
+            "lambda_spec": self.lambda_spec,
         }
 
     def set_params(self, **params):
@@ -138,6 +141,7 @@ class EQXBase(BaseEstimator):
             num_epochs=self.num_epochs,
             patience=self.patience,
             key=train_key,
+            lambda_spec=self.lambda_spec,
         )
 
         # switch to inference mode
