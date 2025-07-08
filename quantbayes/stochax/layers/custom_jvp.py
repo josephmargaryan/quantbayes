@@ -82,8 +82,8 @@ class Circulant(eqx.Module):
 
     first_row: jnp.ndarray
     bias: jnp.ndarray
-    in_features: int = eqx.static_field()
-    out_features: int = eqx.static_field()
+    in_features: int = eqx.field(static=True)
+    out_features: int = eqx.field(static=True)
 
     def __init__(
         self,
@@ -247,11 +247,11 @@ class BlockCirculant(eqx.Module):
     W: jnp.ndarray
     D_bernoulli: jnp.ndarray
     bias: jnp.ndarray
-    in_features: int = eqx.static_field()
-    out_features: int = eqx.static_field()
-    block_size: int = eqx.static_field()
-    k_in: int = eqx.static_field()
-    k_out: int = eqx.static_field()
+    in_features: int = eqx.field(static=True)
+    out_features: int = eqx.field(static=True)
+    block_size: int = eqx.field(static=True)
+    k_in: int = eqx.field(static=True)
+    k_out: int = eqx.field(static=True)
 
     def __init__(
         self,
@@ -373,10 +373,10 @@ class Circulant2d(eqx.Module):
 
     kernel: jnp.ndarray
     bias: jnp.ndarray
-    C_in: int = eqx.static_field()
-    C_out: int = eqx.static_field()
-    H_pad: int = eqx.static_field()
-    W_pad: int = eqx.static_field()
+    C_in: int = eqx.field(static=True)
+    C_out: int = eqx.field(static=True)
+    H_pad: int = eqx.field(static=True)
+    W_pad: int = eqx.field(static=True)
 
     def __init__(
         self,
@@ -421,11 +421,11 @@ class BlockCirculantProcess(eqx.Module):
     W: jnp.ndarray
     D_bernoulli: Optional[jnp.ndarray]
     bias: jnp.ndarray
-    in_features: int = eqx.static_field()
-    out_features: int = eqx.static_field()
-    block_size: int = eqx.static_field()
-    k_in: int = eqx.static_field()
-    k_out: int = eqx.static_field()
+    in_features: int = eqx.field(static=True)
+    out_features: int = eqx.field(static=True)
+    block_size: int = eqx.field(static=True)
+    k_in: int = eqx.field(static=True)
+    k_out: int = eqx.field(static=True)
 
     def __init__(
         self,
@@ -552,10 +552,10 @@ class SpectralCirculantLayer(eqx.Module, _SpectralMixin):
     Uses the same custom‑JVP FFT mat‑mul defined above.
     """
 
-    in_features: int = eqx.static_field()
-    padded_dim: int = eqx.static_field()
-    K: int = eqx.static_field()
-    k_half: int = eqx.static_field()
+    in_features: int = eqx.field(static=True)
+    padded_dim: int = eqx.field(static=True)
+    K: int = eqx.field(static=True)
+    k_half: int = eqx.field(static=True)
 
     alpha: jnp.ndarray
     w_real: jnp.ndarray
@@ -639,10 +639,10 @@ class AdaptiveSpectralCirculantLayer(eqx.Module, _SpectralMixin):
     softplus(delta_z), so δ starts positive and has nonzero gradient.
     """
 
-    in_features: int = eqx.static_field()
-    padded_dim: int = eqx.static_field()
-    K: int = eqx.static_field()
-    k_half: int = eqx.static_field()
+    in_features: int = eqx.field(static=True)
+    padded_dim: int = eqx.field(static=True)
+    K: int = eqx.field(static=True)
+    k_half: int = eqx.field(static=True)
 
     alpha: jnp.ndarray
     delta_z: jnp.ndarray
@@ -813,8 +813,8 @@ class SpectralCirculantLayer2d(eqx.Module, _SpectralMixin):
     w_imag: jnp.ndarray
     bias: jnp.ndarray
 
-    H_pad: int = eqx.static_field()
-    W_pad: int = eqx.static_field()
+    H_pad: int = eqx.field(static=True)
+    W_pad: int = eqx.field(static=True)
 
     def __init__(
         self,
@@ -887,10 +887,10 @@ class SpectralCirculantLayer2d(eqx.Module, _SpectralMixin):
 
 
 class AdaptiveSpectralCirculantLayer2d(eqx.Module, _SpectralMixin):
-    C_in: int = eqx.static_field()
-    C_out: int = eqx.static_field()
-    H_pad: int = eqx.static_field()
-    W_pad: int = eqx.static_field()
+    C_in: int = eqx.field(static=True)
+    C_out: int = eqx.field(static=True)
+    H_pad: int = eqx.field(static=True)
+    W_pad: int = eqx.field(static=True)
     alpha: jnp.ndarray
     delta_z: jnp.ndarray
     w_real: jnp.ndarray
@@ -988,7 +988,7 @@ class SpectralDense(eqx.Module, _SpectralMixin):
         U0, V0 = U_full, V_full 
     """
 
-    in_features: int = eqx.static_field()
+    in_features: int = eqx.field(static=True)
     U: jnp.ndarray
     V: jnp.ndarray
     s: jnp.ndarray
@@ -1098,12 +1098,12 @@ class SpectralConv2d(eqx.Module, _SpectralMixin):
         U0, V0 = U_full[:, :d], V_full[:, :d]
     """
 
-    C_in: int = eqx.static_field()
-    C_out: int = eqx.static_field()
-    H_k: int = eqx.static_field()
-    W_k: int = eqx.static_field()
-    strides: Sequence[int] = eqx.static_field()
-    padding: Sequence[Sequence[int]] = eqx.static_field()
+    C_in: int = eqx.field(static=True)
+    C_out: int = eqx.field(static=True)
+    H_k: int = eqx.field(static=True)
+    W_k: int = eqx.field(static=True)
+    strides: Sequence[int] = eqx.field(static=True)
+    padding: Sequence[Sequence[int]] = eqx.field(static=True)
 
     U: jnp.ndarray
     V: jnp.ndarray
@@ -1256,7 +1256,7 @@ class GraphSpectralDense(eqx.Module, _SpectralMixin):
     Requires adj to be square; output = input = d.
     """
 
-    in_features: int = eqx.static_field()
+    in_features: int = eqx.field(static=True)
     Q: jnp.ndarray
     λ: jnp.ndarray
     s: jnp.ndarray
@@ -1321,7 +1321,7 @@ class AdaptiveGraphSpectralDense(GraphSpectralDense):
 
 
 class GibbsKernel(eqx.Module):
-    N: int = eqx.static_field()
+    N: int = eqx.field(static=True)
     lengthscale_net: callable
 
     def __init__(self, in_features: int, lengthscale_net, *, key=None):
@@ -1348,7 +1348,7 @@ class GibbsKernel(eqx.Module):
 
 
 class InputWarping(eqx.Module):
-    N: int = eqx.static_field()
+    N: int = eqx.field(static=True)
     warp_net: callable
     base_psd: callable
 
@@ -1377,8 +1377,8 @@ class InputWarping(eqx.Module):
 
 
 class GibbsKernel2d(eqx.Module):
-    H: int = eqx.static_field()
-    W: int = eqx.static_field()
+    H: int = eqx.field(static=True)
+    W: int = eqx.field(static=True)
     net_x: callable
     net_y: callable
 
@@ -1414,8 +1414,8 @@ class GibbsKernel2d(eqx.Module):
 
 
 class InputWarping2d(eqx.Module):
-    H: int = eqx.static_field()
-    W: int = eqx.static_field()
+    H: int = eqx.field(static=True)
+    W: int = eqx.field(static=True)
     warp_x: callable
     warp_y: callable
     base_psd: callable
@@ -1481,11 +1481,11 @@ class PatchWiseSpectralMixture(eqx.Module):
     Each patch uses a Q‑component spectral mixture PSD.
     """
 
-    L: int = eqx.static_field()
-    l: int = eqx.static_field()
-    P: int = eqx.static_field()
-    Q: int = eqx.static_field()
-    jitter: float = eqx.static_field()
+    L: int = eqx.field(static=True)
+    l: int = eqx.field(static=True)
+    P: int = eqx.field(static=True)
+    Q: int = eqx.field(static=True)
+    jitter: float = eqx.field(static=True)
 
     f: jnp.ndarray  # (l,)
     logits: jnp.ndarray  # (P, Q)
@@ -1557,15 +1557,15 @@ class PatchWiseSpectralMixture2d(eqx.Module):
     Non-overlapping h×w patches; Q-component spectral mixture PSD per patch.
     """
 
-    H: int = eqx.static_field()
-    W: int = eqx.static_field()
-    ph: int = eqx.static_field()
-    pw: int = eqx.static_field()
-    nh: int = eqx.static_field()
-    nw: int = eqx.static_field()
-    P: int = eqx.static_field()
-    Q: int = eqx.static_field()
-    jitter: float = eqx.static_field()
+    H: int = eqx.field(static=True)
+    W: int = eqx.field(static=True)
+    ph: int = eqx.field(static=True)
+    pw: int = eqx.field(static=True)
+    nh: int = eqx.field(static=True)
+    nw: int = eqx.field(static=True)
+    P: int = eqx.field(static=True)
+    Q: int = eqx.field(static=True)
+    jitter: float = eqx.field(static=True)
 
     fy: jnp.ndarray
     fx: jnp.ndarray

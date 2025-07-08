@@ -50,7 +50,7 @@ class TCNBlock(eqx.Module):
     conv2: CausalConv1d
     dropout: eqx.nn.Dropout
     activation: callable = eqx.field(static=True)
-    resample: eqx.Module = eqx.field(static=True, default=None)
+    resample: eqx.Module = eqx.field(static=True default=None)
 
     def __init__(
         self,

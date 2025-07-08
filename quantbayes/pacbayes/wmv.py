@@ -364,11 +364,69 @@ class BoundEnsemble(BaseEstimator, ClassifierMixin):
 
     Parameters
     ----------
-    task : {"binary", "multiclass"}
-    bound_type : one of {"pblambda","pbkl","pbbernstein","tandem",
-                         "splitkl","unexpectedbernstein"}
-    r : None or int
-        training subset size (default *d+1*).
+    task : {"binary", "multiclass"}, default="binary"
+        Whether to solve a binary (labels in {0,1} or {-1,1}) or
+        multiclass classification problem.
+
+    base_estimators : list of BaseEstimator instances, default=None
+        A list of *template* estimators to clone for each weak learner.
+        Each call to `fit` will clone from these via `sklearn.base.clone`.
+        You should supply exactly one of `base_estimators` or `base_estimator_cls`.
+        This is the most straightforward way if you already have one or more
+        preconfigured estimator instances:
+
+            >>> from sklearn.tree import DecisionTreeClassifier
+            >>> dt = DecisionTreeClassifier(max_depth=1, random_state=0)
+            >>> ens = BoundEnsemble(base_estimators=[dt])
+
+    base_estimator_cls : class, default=None
+        A reference to an estimator *class* (e.g. `DecisionTreeClassifier`)
+        to instantiate for each weak learner. You must also supply
+        `base_estimator_kwargs` for its constructor.
+
+    base_estimator_kwargs : dict, default=None
+        Keyword arguments to pass when calling
+        `base_estimator_cls(**base_estimator_kwargs)`. Ignored if
+        `base_estimators` is provided.
+
+    bound_type : {"pblambda", "pbkl", "pbbernstein", "tandem",
+                  "splitkl", "splitbernstein", "unexpectedbernstein"}, default="pblambda"
+        Which PAC-Bayes bound to optimize.
+
+    bound_delta : float, default=0.05
+        Confidence parameter δ for the PAC-Bayes bound.
+
+    r : int or None, default=None
+        Size of each training subset. If None, defaults to `d + 1` where
+        `d` is the feature-dimension of `X`.
+
+    random_state : int or None, default=None
+        Seed for reproducibility of the random splits and bound optimization.
+
+    Examples
+    --------
+    # — Using pre-instantiated templates (most common) —
+    >>> from sklearn.svm import SVC
+    >>> svm = SVC(kernel='rbf', C=0.1, gamma=0.2, probability=True, random_state=42)
+    >>> ens = BoundEnsemble(
+    ...     task='binary',
+    ...     base_estimators=[svm],
+    ...     bound_type='splitbernstein',
+    ...     bound_delta=0.05,
+    ...     random_state=0
+    ... )
+    >>> ens.fit(X_train, y_train, m_values=[10,20])
+    >>> y_pred = ens.predict(X_test)
+
+    # — Using a class plus kwargs —
+    >>> from sklearn.tree import DecisionTreeClassifier
+    >>> ens = BoundEnsemble(
+    ...     task='binary',
+    ...     base_estimator_cls=DecisionTreeClassifier,
+    ...     base_estimator_kwargs={'max_depth':1, 'random_state':0},
+    ...     bound_type='pbkl',
+    ...     random_state=0
+    ... )
     """
 
     _criteria_map = {
@@ -504,9 +562,71 @@ class BoundEnsemble(BaseEstimator, ClassifierMixin):
         tol: float = 1e-6,
     ):
         """
-        Train the ensemble for every m in *m_values* and every random seed
-        (0 … n_runs−1).  Keeps the configuration that yields the
-        *smallest* certified MV bound.
+        Train the PAC-Bayes ensemble by searching over ensemble sizes
+        and random seeds, and keep the models that achieve the smallest
+        certified majority-vote (MV) bound.
+
+        The procedure is:
+
+        1. For each random seed r = 0, 1, …, n_runs−1:
+           • Split the data into an r-sized training subset (for each
+             of m weak learners) and the corresponding validation set.
+           • For each ensemble size m in `m_values`:
+             – Train m weak models (each on an independent random subset
+               of size `self.r` or default d+1)  
+             – Compute the chosen PAC-Bayes bound on the validation losses  
+             – Optimize the posterior ρ (and λ if applicable) to minimize it  
+             – Evaluate the MV error on the *entire* training set  
+           • Record the bound, empirical error, and training time.
+
+        2. Across *all* (seed, m) combinations, pick the one with the
+           *smallest* certified MV bound, and store its models and weights.
+
+        Parameters
+        ----------
+        X : array-like of shape (n_samples, n_features)
+            Feature matrix.
+
+        y : array-like of shape (n_samples,)
+            Target labels.
+
+        m_values : list of int
+            List of ensemble sizes (number of weak learners) to try.
+            E.g. `[10, 20, 50]` will train ensembles of size 10, 20, and 50.
+
+        n_runs : int, default=5
+            Number of independent random‐seed repetitions.  Each “run”
+            uses a different seed to sample training subsets and can be
+            thought of as repeated experiments (not classic cross‐validation).
+            The final pick is the single (seed, m) with the best certified bound.
+
+        max_iters : int, default=200
+            Maximum number of iterations for alternating‐minimization of
+            ρ (and λ if used) when optimizing the bound.
+
+        tol : float, default=1e-6
+            Convergence tolerance on the bound: stop early if the change
+            in bound between iterations is less than `tol`.
+
+        Returns
+        -------
+        self : BoundEnsemble
+            Fitted estimator with attributes:
+            - `best_models_`: list of the m weak learners (cloned & fitted)  
+            - `best_rho_`: weight vector ρ for those models  
+            - `best_m_`: the ensemble size  
+            - `best_seed_`: which run (seed) produced them  
+            - `best_bound_`: the certified MV bound value  
+
+        Notes
+        -----
+        - This is *not* k-fold CV.  Rather, `n_runs` is the number of
+          *independent* trials (with different random subsets), each of
+          which evaluates every `m` in `m_values`.  You can interpret
+          it like repeated randomized splits to guard against bad luck 
+          in a single seed.
+        - The “winner” is the single combination (run, m) with the
+          lowest bound.  You can inspect all results in `all_runs`.
         """
         X, y = np.asarray(X), np.asarray(y)
         n, d = X.shape
@@ -561,9 +681,9 @@ class BoundEnsemble(BaseEstimator, ClassifierMixin):
 
                 prev_bound = float("inf")
                 for _ in range(max_iters):
-                    kl_rho = float(
-                        (rho * np.log(rho * m)).sum()
-                    )  # KL(ρ || π) with π=1/m
+                    # safe KL(ρ || π=1/m): skip zero weights
+                    nz = rho > 0
+                    kl_rho = float((rho[nz] * np.log(rho[nz] * m)).sum())
                     if self.bound_type == "tandem":
                         stat, bound = criterion.compute(
                             pair_losses, rho, kl_rho, min_inter, self.delta, lam
@@ -626,7 +746,9 @@ class BoundEnsemble(BaseEstimator, ClassifierMixin):
     def _mv_predict(self, X: np.ndarray) -> np.ndarray:
         preds = np.vstack([m_.predict(X) for m_ in self.best_models_]).astype(int)
         if self.task == "binary":
-            return np.sign(preds.T @ self.best_rho_)
+            raw = preds.T @ self.best_rho_
+            # break any ties in favor of +1
+            return np.where(raw >= 0, 1, -1)
         votes = np.zeros((len(X), len(self.classes_)))
         for k, cls in enumerate(self.classes_):
             votes[:, k] = (preds == cls).T @ self.best_rho_

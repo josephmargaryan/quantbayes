@@ -12,7 +12,7 @@ class SpectralMultiheadAttention(eqx.Module):
     num_heads: int
     head_dim: int
     embed_dim: int
-    seq_len: int = eqx.static_field()
+    seq_len: int = eqx.field(static=True)
     adaptive: bool
     dropout: eqx.nn.Dropout
     pre_norm: eqx.nn.LayerNorm

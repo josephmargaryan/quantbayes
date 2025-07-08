@@ -31,9 +31,9 @@ class SpectralGRUCell(eqx.Module):
     base_filter: Array  # (freq_bins,)
     base_bias: Array  # (freq_bins,)
 
-    input_size: int = eqx.static_field()
-    hidden_size: int = eqx.static_field()
-    use_bias: bool = eqx.static_field()
+    input_size: int = eqx.field(static=True)
+    hidden_size: int = eqx.field(static=True)
+    use_bias: bool = eqx.field(static=True)
 
     def __init__(
         self,
@@ -132,9 +132,9 @@ class SpectralLSTMCell(eqx.Module):
     base_filter: Array  # (freq_bins,) where freq_bins = input_size // 2 + 1
     base_bias: Array  # (freq_bins,)
 
-    input_size: int = eqx.static_field()
-    hidden_size: int = eqx.static_field()
-    use_bias: bool = eqx.static_field()
+    input_size: int = eqx.field(static=True)
+    hidden_size: int = eqx.field(static=True)
+    use_bias: bool = eqx.field(static=True)
 
     def __init__(
         self,
@@ -407,9 +407,9 @@ class SpectralMultiheadAttention(eqx.Module):
     to the input before performing standard multihead attention.
     """
 
-    in_features: int = eqx.static_field()
-    num_heads: int = eqx.static_field()
-    head_dim: int = eqx.static_field()
+    in_features: int = eqx.field(static=True)
+    num_heads: int = eqx.field(static=True)
+    head_dim: int = eqx.field(static=True)
     W_q: Array
     W_k: Array
     W_v: Array

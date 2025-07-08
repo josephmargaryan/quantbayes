@@ -29,7 +29,7 @@ setup(
         "xgboost>=3.0.0,<3.1",
         "catboost>=1.2.8,<1.3",
         "lightgbm>=4.6.0,<4.7",
-        "equinox>=0.12.1,<0.13",
+        "equinox>=0.12.0,<0.14",
         "augmax>=0.4.1,<0.5",
     ],
     python_requires=">=3.8",
