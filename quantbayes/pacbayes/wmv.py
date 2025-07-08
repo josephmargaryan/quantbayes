@@ -629,6 +629,8 @@ class BoundEnsemble(BaseEstimator, ClassifierMixin):
           lowest bound.  You can inspect all results in `all_runs`.
         """
         X, y = np.asarray(X), np.asarray(y)
+        # ── store original labels for binary tasks so we can map back later
+        self._orig_labels_ = np.unique(y).copy()
         n, d = X.shape
 
         # choose training subset size r
@@ -754,10 +756,13 @@ class BoundEnsemble(BaseEstimator, ClassifierMixin):
             votes[:, k] = (preds == cls).T @ self.best_rho_
         return self.classes_[votes.argmax(1)]
 
-    def predict(self, X: np.ndarray):
+    def predict(self, X: np.ndarray) -> np.ndarray:
         if not self.is_fitted:
             raise RuntimeError("call fit() first")
-        return self._mv_predict(np.asarray(X))
+        # get raw predictions in {-1,+1}
+        raw = self._mv_predict(np.asarray(X))
+        # map back to original labels for binary tasks
+        return np.where(raw < 0, self._orig_labels_[0], self._orig_labels_[1])
 
     # ------------------------------------------------------------------
     def predict_proba(self, X: np.ndarray):
@@ -765,11 +770,18 @@ class BoundEnsemble(BaseEstimator, ClassifierMixin):
             raise RuntimeError("call fit() first")
         X = np.asarray(X)
         if self.task == "binary":
-            probs_pos = np.vstack(
-                [clf.predict_proba(X)[:, 1] for clf in self.best_models_]
-            ).T
+            # get probability of +1 from each weak learner
+            probs_pos = np.vstack([clf.predict_proba(X)[:, 1] for clf in self.best_models_]).T
             p_pos = probs_pos @ self.best_rho_
-            return np.vstack([1.0 - p_pos, p_pos]).T
+            p_neg = 1.0 - p_pos
+            # assemble columns in the same order as the original labels
+            proba = np.zeros((len(X), 2))
+            # find where each original label sits in self._orig_labels_
+            neg_col = int(np.where(self._orig_labels_ == self._orig_labels_[0])[0][0])
+            pos_col = int(np.where(self._orig_labels_ == self._orig_labels_[1])[0][0])
+            proba[:, neg_col] = p_neg
+            proba[:, pos_col] = p_pos
+            return proba
 
         # multiclass
         n_classes = len(self.classes_)
