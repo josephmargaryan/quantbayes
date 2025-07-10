@@ -118,12 +118,15 @@ class MissingValueImputer(BaseEstimator, TransformerMixin):
 
         # Default estimators
         self.numeric_iterative_estimator = (
-            numeric_iterative_estimator
-            or RandomForestRegressor(n_estimators=100, random_state=random_state)
+            RandomForestRegressor(n_estimators=100, random_state=random_state)
+            if numeric_iterative_estimator is None
+            else numeric_iterative_estimator
         )
+
         self.categorical_iterative_estimator = (
-            categorical_iterative_estimator
-            or RandomForestClassifier(n_estimators=100, random_state=random_state)
+            RandomForestClassifier(n_estimators=100, random_state=random_state)
+            if categorical_iterative_estimator is None
+            else categorical_iterative_estimator
         )
 
         self.numeric_grid_params = numeric_grid_params
