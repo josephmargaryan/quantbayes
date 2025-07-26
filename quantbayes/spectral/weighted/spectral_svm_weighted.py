@@ -144,50 +144,52 @@ class SpectralWeightedSVM(BaseEstimator, ClassifierMixin):
             beta_sqrt = np.sqrt(_validate_beta(self.beta, self.n_spectral))
         Phi_scaled = Phi / beta_sqrt[np.newaxis, :]
 
-        # 4) Fit base LinearSVC
-        if self.loss == "hinge" and not self.dual:
+        # 4) Possibly override dual if hinge loss
+        dual_flag = self.dual
+        if self.loss == "hinge" and not dual_flag:
             self._log.warning(
                 "LinearSVC requires dual=True when loss='hinge'; overriding dual=False→True"
             )
-            dual = True
-        else:
-            dual = self.dual
+            dual_flag = True
 
+        # 5) Fit raw LinearSVC and store it
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", category=ConvergenceWarning)
             t0 = time.time()
-            base_svc = LinearSVC(
+            self.base_svc_ = LinearSVC(
                 C=self.C,
                 loss=self.loss,
-                dual=dual,
+                dual=dual_flag,
                 tol=self.tol,
                 max_iter=self.max_iter,
                 random_state=self.random_state,
                 verbose=int(self.verbose),
-            ).fit(Phi_scaled, y)
+            )
+            self.base_svc_.fit(Phi_scaled, y)
             self._log.info(f"LinearSVC converged in {time.time() - t0:.3f}s")
 
-        # 5) Optional calibration for probabilities
+        # 6) Optional calibration for probabilities
         if self.probability:
             self.calibrator_ = CalibratedClassifierCV(
-                base_estimator=base_svc,
+                base_estimator=self.base_svc_,
                 cv=self.prob_cv,
                 method="sigmoid",
             )
             self.calibrator_.fit(Phi_scaled, y)
             self.model_ = self.calibrator_
         else:
-            self.model_ = base_svc
+            self.model_ = self.base_svc_
 
-        # 6) Project back to original space
-        w_spec = base_svc.coef_ / beta_sqrt[np.newaxis, :]  # (n_classes, k)
+        # 7) Project back to original space using raw SVM weights
+        w_spec = self.base_svc_.coef_ / beta_sqrt[np.newaxis, :]
         self.coef_ = w_spec.dot(self.V_.T)  # (n_classes, D)
-        self.intercept_ = base_svc.intercept_.copy()  # (n_classes,)
-        self.classes_ = base_svc.classes_
+        self.intercept_ = self.base_svc_.intercept_.copy()
+        self.classes_ = self.base_svc_.classes_
 
         return self
 
     def _spectral_transform(self, X: np.ndarray) -> np.ndarray:
+        check_is_fitted(self, ["model_", "V_"])
         X = check_array(X, dtype=np.float64)
         Phi = X.dot(self.V_)
         if self.beta is not None:
@@ -197,11 +199,9 @@ class SpectralWeightedSVM(BaseEstimator, ClassifierMixin):
         return Phi
 
     def decision_function(self, X: np.ndarray) -> np.ndarray:
-        check_is_fitted(self, ["model_", "V_"])
         return self.model_.decision_function(self._spectral_transform(X))
 
     def predict(self, X: np.ndarray) -> np.ndarray:
-        check_is_fitted(self, ["model_", "V_"])
         return self.model_.predict(self._spectral_transform(X))
 
     def predict_proba(self, X: np.ndarray) -> np.ndarray:
@@ -209,11 +209,9 @@ class SpectralWeightedSVM(BaseEstimator, ClassifierMixin):
             raise AttributeError(
                 "predict_proba is only available when probability=True"
             )
-        check_is_fitted(self, ["calibrator_", "V_"])
-        return self.calibrator_.predict_proba(self._spectral_transform(X))
+        return self.model_.predict_proba(self._spectral_transform(X))
 
     def score(self, X: np.ndarray, y: np.ndarray) -> float:
-        check_is_fitted(self, ["model_", "V_"])
         return accuracy_score(y, self.predict(X))
 
 

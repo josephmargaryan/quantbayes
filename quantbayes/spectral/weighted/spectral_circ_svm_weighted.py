@@ -35,37 +35,49 @@ def _setup_logger(name: str, verbose: bool) -> logging.Logger:
     return log
 
 
+#!/usr/bin/env python3
+"""
+SpectralCirculantWeightedSVM
+----------------------------
+
+Circulant‑parameterised linear SVM with per‑frequency ℓ₂ penalty β_j,
+storing the raw LinearSVC separately so we can always recover its .coef_
+and .intercept_ even when we wrap it in a CalibratedClassifierCV.
+"""
+
+import time
+import logging
+import warnings
+from typing import Optional, Sequence, Literal
+
+import numpy as np
+from sklearn.base import BaseEstimator, ClassifierMixin
+from sklearn.calibration import CalibratedClassifierCV
+from sklearn.svm import LinearSVC
+from sklearn.utils.validation import (
+    check_X_y,
+    check_array,
+    check_is_fitted,
+)
+from sklearn.exceptions import ConvergenceWarning
+
+
+def _setup_logger(name: str, verbose: bool) -> logging.Logger:
+    logger = logging.getLogger(name)
+    logger.setLevel(logging.INFO if verbose else logging.WARNING)
+    if not logger.handlers:
+        h = logging.StreamHandler()
+        h.setFormatter(
+            logging.Formatter("%(asctime)s — %(name)s — %(levelname)s — %(message)s")
+        )
+        logger.addHandler(h)
+    return logger
+
+
 class SpectralCirculantWeightedSVM(BaseEstimator, ClassifierMixin):
     """
     Circulant‑parameterised linear SVM with per‑frequency ℓ₂ penalty β_j.
     Optionally provides probability estimates via Platt scaling.
-
-    Parameters
-    ----------
-    padded_dim : int or None
-        FFT length (>= original feature dim). If None, uses the original dim.
-    K : int or None
-        Number of low frequencies to keep. If None, keeps all.
-    beta : array-like of shape (K,) or (2*k_half,), or None
-        Per-frequency ℓ₂ weights. If None, all weights are 1.
-    C : float
-        Inverse regularization strength.
-    loss : {'hinge','squared_hinge'}
-        Loss function to use.
-    dual : bool
-        Dual formulation. (Will be forced to True if loss='hinge'.)
-    tol : float
-        Tolerance for stopping criterion.
-    max_iter : int
-        Max number of iterations.
-    random_state : int, RandomState or None
-        Random seed.
-    verbose : bool
-        If True, prints solver info.
-    probability : bool
-        If True, enable probability estimates (adds calibration step).
-    prob_cv : int
-        Number of folds for probability calibration (ignored if probability=False).
     """
 
     def __init__(
@@ -83,7 +95,7 @@ class SpectralCirculantWeightedSVM(BaseEstimator, ClassifierMixin):
         probability: bool = False,
         prob_cv: int = 5,
     ):
-        # Store all init arguments (no logic here)
+        # Hyperparameters
         self.padded_dim = padded_dim
         self.K = K
         self.beta = beta
@@ -147,53 +159,56 @@ class SpectralCirculantWeightedSVM(BaseEstimator, ClassifierMixin):
         return Phi / sqrt_beta[np.newaxis, :], sqrt_beta
 
     def fit(self, X, y):
-        # Validate inputs
+        # 1) Validate
         X, y = check_X_y(X, y, dtype=float)
         self.n_features_in_ = X.shape[1]
 
-        # Enforce dual=True if hinge loss
-        dual = self.dual
-        if self.loss == "hinge" and not dual:
+        # 2) Possibly override dual if hinge loss
+        dual_flag = self.dual
+        if self.loss == "hinge" and not dual_flag:
             self._log.warning(
                 "LinearSVC requires dual=True when loss='hinge'; overriding dual=False→True"
             )
-            dual = True
+            dual_flag = True
 
-        # Build & scale FFT features
+        # 3) Build & scale FFT features
         Phi_scaled, sqrt_beta = self._make_fft_features(X)
         self._sqrt_beta_ = sqrt_beta
 
-        # Fit underlying LinearSVC
+        # 4) Fit raw LinearSVC and store it
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", category=ConvergenceWarning)
             t0 = time.time()
-            base_svc = LinearSVC(
+            self.base_svc_ = LinearSVC(
                 C=self.C,
                 loss=self.loss,
-                dual=dual,
+                dual=dual_flag,
                 tol=self.tol,
                 max_iter=self.max_iter,
                 random_state=self.random_state,
                 verbose=int(self.verbose),
-            ).fit(Phi_scaled, y)
+            )
+            self.base_svc_.fit(Phi_scaled, y)
             self._log.info(f"SVM converged in {time.time() - t0:.3f}s")
 
-        # If probabilities requested, calibrate
+        # 5) Optional calibration
         if self.probability:
             self.calibrator_ = CalibratedClassifierCV(
-                base_estimator=base_svc, cv=self.prob_cv, method="sigmoid"
+                base_estimator=self.base_svc_,
+                cv=self.prob_cv,
+                method="sigmoid",
             )
             self.calibrator_.fit(Phi_scaled, y)
             self.model_ = self.calibrator_
         else:
-            self.model_ = base_svc
+            self.model_ = self.base_svc_
 
-        # Recover Fourier‑space coefficients
-        coef = base_svc.coef_.ravel() / sqrt_beta
+        # 6) Recover Fourier‑space coefficients & bias from base_svc_
+        coef = self.base_svc_.coef_.ravel() / sqrt_beta
         self.F_real_ = coef[: self.k_half_].copy()
         self.F_imag_ = coef[self.k_half_ :].copy()
-        self.intercept_ = float(base_svc.intercept_[0])
-        self.classes_ = base_svc.classes_
+        self.intercept_ = float(self.base_svc_.intercept_[0])
+        self.classes_ = self.base_svc_.classes_
 
         return self
 
@@ -219,15 +234,15 @@ class SpectralCirculantWeightedSVM(BaseEstimator, ClassifierMixin):
     def decision_function(self, X):
         return self.model_.decision_function(self._transform(X))
 
+    def predict(self, X):
+        return self.model_.predict(self._transform(X))
+
     def predict_proba(self, X):
         if not self.probability:
             raise AttributeError(
                 "predict_proba is only available when probability=True"
             )
         return self.model_.predict_proba(self._transform(X))
-
-    def predict(self, X):
-        return self.model_.predict(self._transform(X))
 
     def score(self, X, y):
         from sklearn.metrics import accuracy_score

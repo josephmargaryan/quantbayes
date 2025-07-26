@@ -143,7 +143,7 @@ class EQXRegressorLBFGS(EQXBaseLBFGS, RegressorMixin):
 class EQXBinaryClassifierLBFGS(EQXBaseLBFGS, ClassifierMixin):
     def fit(self, X, y):
         # binary: float32 single-logit as (n_samples, 1)
-        y_arr = np.asarray(y, dtype=np.float32).reshape(-1) 
+        y_arr = np.asarray(y, dtype=np.float32).reshape(-1)
         return self._fit(X, y_arr, train_fn=train_lbfgs, loss_fn=binary_loss)
 
     def predict_proba(self, X):

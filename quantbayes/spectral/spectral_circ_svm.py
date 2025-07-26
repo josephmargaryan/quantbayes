@@ -60,8 +60,12 @@ class SpectralCirculantSVM(BaseEstimator, ClassifierMixin):
     prob_cv : int, default=5
         Number of folds for probability calibration (ignored if probability=False).
 
-    Attributes
-    ----------
+    Attributes after fit
+    --------------------
+    base_svc_ : LinearSVC
+        The raw fitted LinearSVC (before calibration).
+    model_ : LinearSVC or CalibratedClassifierCV
+        Predictor: the calibrator if `probability=True`, else `base_svc_`.
     F_real_ : np.ndarray, shape (k_half_,)
         Learned real parts of low‑freq FFT bins.
     F_imag_ : np.ndarray, shape (k_half_,)
@@ -88,7 +92,7 @@ class SpectralCirculantSVM(BaseEstimator, ClassifierMixin):
         probability: bool = False,
         prob_cv: int = 5,
     ):
-        # hyperparameters only
+        # hyperparameters
         self.padded_dim = padded_dim
         self.K = K
         self.C = C
@@ -101,7 +105,7 @@ class SpectralCirculantSVM(BaseEstimator, ClassifierMixin):
         self.probability = probability
         self.prob_cv = prob_cv
 
-        # set up logger (not a hyperparam)
+        # logger setup
         self.logger = logging.getLogger(self.__class__.__name__)
         self.logger.setLevel(logging.INFO if verbose else logging.WARNING)
         if not self.logger.handlers:
@@ -114,17 +118,18 @@ class SpectralCirculantSVM(BaseEstimator, ClassifierMixin):
             self.logger.addHandler(h)
 
     def fit(self, X: np.ndarray, y: np.ndarray) -> "SpectralCirculantSVM":
+        # 1) validate
         X, y = check_X_y(X, y, dtype=np.float64)
         n_samples, D = X.shape
         self.n_features_in_ = D
 
-        # padded_dim_
+        # 2) determine padded_dim_
         pd = D if self.padded_dim is None else int(self.padded_dim)
         if pd < D:
             raise ValueError("padded_dim must be ≥ original feature dim")
         self.padded_dim_ = pd
 
-        # FFT bins
+        # 3) define mask for low frequencies
         self.k_half_ = pd // 2 + 1
         self.K_ = (
             self.k_half_ if (self.K is None or self.K > self.k_half_) else int(self.K)
@@ -132,58 +137,58 @@ class SpectralCirculantSVM(BaseEstimator, ClassifierMixin):
         idx = np.arange(self.k_half_)
         self._mask = idx < self.K_
 
-        # build Phi
+        # 4) build design matrix Phi via truncated FFT
         X_pad = np.zeros((n_samples, pd), dtype=np.float64)
         X_pad[:, :D] = X
         Xf = np.fft.rfft(X_pad, axis=1)
         Xf[:, ~self._mask] = 0.0
         Phi = np.hstack([Xf.real, Xf.imag])
 
-        # fit base LinearSVC
+        # 5) fit raw LinearSVC
+        dual_flag = True if (self.loss == "hinge" and not self.dual) else self.dual
         if self.loss == "hinge" and not self.dual:
             self.logger.warning(
-                "LinearSVC requires dual=True when loss='hinge'; "
-                "overriding dual=False→True"
+                "LinearSVC requires dual=True with loss='hinge'; overriding dual=False→True"
             )
-            dual = True
-        else:
-            dual = self.dual
 
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", category=ConvergenceWarning)
-            self.model_ = LinearSVC(
+            self.base_svc_ = LinearSVC(
                 C=self.C,
                 loss=self.loss,
-                dual=dual,
+                dual=dual_flag,
                 tol=self.tol,
                 max_iter=self.max_iter,
                 random_state=self.random_state,
                 verbose=int(self.verbose),
             )
             t0 = time.time()
-            self.model_.fit(Phi, y)
+            self.base_svc_.fit(Phi, y)
             self.logger.info(f"SVM solver converged in {time.time() - t0:.3f}s")
 
-        # calibrate if needed
+        # 6) optional calibration
         if self.probability:
             self.calibrator_ = CalibratedClassifierCV(
-                base_estimator=self.model_, cv=self.prob_cv, method="sigmoid"
+                base_estimator=self.base_svc_,
+                cv=self.prob_cv,
+                method="sigmoid",
             )
             self.calibrator_.fit(Phi, y)
-            self._use_proba = True
+            self.model_ = self.calibrator_
         else:
-            self._use_proba = False
+            self.model_ = self.base_svc_
 
-        # recover Fourier weights
-        coef = self.model_.coef_.ravel()
+        # 7) recover Fourier weights & bias from raw SVC
+        coef = self.base_svc_.coef_.ravel()
         self.F_real_ = coef[: self.k_half_].copy()
         self.F_imag_ = coef[self.k_half_ :].copy()
-        self.intercept_ = float(self.model_.intercept_[0])
+        self.intercept_ = float(self.base_svc_.intercept_[0])
         self.classes_ = self.model_.classes_
 
         return self
 
     def _make_Phi(self, X: np.ndarray) -> np.ndarray:
+        check_is_fitted(self, ["model_"])
         X = check_array(X, dtype=np.float64)
         n_samples, D = X.shape
         if D != self.n_features_in_:
@@ -195,28 +200,17 @@ class SpectralCirculantSVM(BaseEstimator, ClassifierMixin):
         return np.hstack([Xf.real, Xf.imag])
 
     def decision_function(self, X: np.ndarray) -> np.ndarray:
-        check_is_fitted(self, ["model_"])
-        return (
-            self.calibrator_.decision_function(self._make_Phi(X))
-            if self._use_proba
-            else self.model_.decision_function(self._make_Phi(X))
-        )
+        return self.model_.decision_function(self._make_Phi(X))
 
     def predict(self, X: np.ndarray) -> np.ndarray:
-        check_is_fitted(self, ["model_"])
-        return (
-            self.calibrator_.predict(self._make_Phi(X))
-            if self._use_proba
-            else self.model_.predict(self._make_Phi(X))
-        )
+        return self.model_.predict(self._make_Phi(X))
 
     def predict_proba(self, X: np.ndarray) -> np.ndarray:
-        if not self._use_proba:
+        if not self.probability:
             raise AttributeError(
                 "predict_proba is only available when probability=True"
             )
-        check_is_fitted(self, ["calibrator_"])
-        return self.calibrator_.predict_proba(self._make_Phi(X))
+        return self.model_.predict_proba(self._make_Phi(X))
 
     def score(self, X: np.ndarray, y: np.ndarray) -> float:
         return accuracy_score(y, self.predict(X))

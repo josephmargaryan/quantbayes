@@ -67,6 +67,8 @@ class SpectralSVM(BaseEstimator, ClassifierMixin):
         Actual spectral dimension used (≤ n_features_in_).
     V_ : np.ndarray, shape (D, n_spectral_)
         Fixed orthonormal basis.
+    base_svc_ : LinearSVC
+        The raw fitted LinearSVC before any calibration.
     model_ : LinearSVC or CalibratedClassifierCV
         Fitted internal SVM model (calibrated if probability=True).
     coef_ : np.ndarray, shape (1, n_spectral_)
@@ -164,7 +166,7 @@ class SpectralSVM(BaseEstimator, ClassifierMixin):
 
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", category=ConvergenceWarning)
-            base_svc = LinearSVC(
+            self.base_svc_ = LinearSVC(
                 C=self.C,
                 loss=self.loss,
                 dual=dual,
@@ -174,22 +176,23 @@ class SpectralSVM(BaseEstimator, ClassifierMixin):
                 verbose=int(self.verbose),
             )
             t1 = time.time()
-            base_svc.fit(Phi, y)
+            self.base_svc_.fit(Phi, y)
             self.logger.info(f"SVM solver converged in {time.time()-t1:.3f}s")
 
         # 5) optional calibration
         if self.probability:
             self.calibrator_ = CalibratedClassifierCV(
-                base_estimator=base_svc, cv=self.prob_cv, method="sigmoid"
+                base_estimator=self.base_svc_, cv=self.prob_cv, method="sigmoid"
             )
             self.calibrator_.fit(Phi, y)
             self.model_ = self.calibrator_
         else:
-            self.model_ = base_svc
+            self.model_ = self.base_svc_
 
         # 6) expose coef_ / intercept_
-        self.coef_ = self.model_.coef_.copy()  # shape (1, n_spectral_)
-        self.intercept_ = float(self.model_.intercept_[0])
+        # Always take raw SVC weights, even if we calibrated probabilities
+        self.coef_ = self.base_svc_.coef_.copy()  # shape (1, n_spectral_)
+        self.intercept_ = float(self.base_svc_.intercept_[0])
         self.classes_ = self.model_.classes_
         return self
 
