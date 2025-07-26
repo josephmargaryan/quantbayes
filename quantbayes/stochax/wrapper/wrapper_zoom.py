@@ -131,7 +131,7 @@ class EQXBaseZoom(BaseEstimator):
 class EQXRegressorZoom(EQXBaseZoom, RegressorMixin):
     def fit(self, X, y):
         # regression: float32, shape (n_samples, 1)
-        y_arr = np.asarray(y, dtype=np.float32).reshape(-1, 1)
+        y_arr = np.asarray(y, dtype=np.float32).reshape(-1)
         return self._fit(X, y_arr, train_fn=train_zoom, loss_fn=regression_loss)
 
     def predict(self, X):
@@ -143,7 +143,7 @@ class EQXRegressorZoom(EQXBaseZoom, RegressorMixin):
 class EQXBinaryClassifierZoom(EQXBaseZoom, ClassifierMixin):
     def fit(self, X, y):
         # binary: float32 single-logit as (n_samples, 1)
-        y_arr = np.asarray(y, dtype=np.float32).reshape(-1, 1)
+        y_arr = np.asarray(y, dtype=np.float32).reshape(-1)
         return self._fit(X, y_arr, train_fn=train_zoom, loss_fn=binary_loss)
 
     def predict_proba(self, X):

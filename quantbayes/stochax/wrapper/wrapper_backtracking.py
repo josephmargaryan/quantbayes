@@ -130,7 +130,7 @@ class EQXBaseBacktrack(BaseEstimator):
 
 class EQXRegressorBacktrack(EQXBaseBacktrack, RegressorMixin):
     def fit(self, X, y):
-        y_arr = np.asarray(y, dtype=np.float32).reshape(-1, 1)
+        y_arr = np.asarray(y, dtype=np.float32).reshape(-1)
         return self._fit(X, y_arr, train_fn=train_backtrack, loss_fn=regression_loss)
 
     def predict(self, X):
@@ -141,7 +141,7 @@ class EQXRegressorBacktrack(EQXBaseBacktrack, RegressorMixin):
 
 class EQXBinaryClassifierBacktrack(EQXBaseBacktrack, ClassifierMixin):
     def fit(self, X, y):
-        y_arr = np.asarray(y, dtype=np.float32).reshape(-1, 1)
+        y_arr = np.asarray(y, dtype=np.float32).reshape(-1)
         return self._fit(X, y_arr, train_fn=train_backtrack, loss_fn=binary_loss)
 
     def predict_proba(self, X):

@@ -97,8 +97,6 @@ class EQXBase(BaseEstimator):
         # 1) Numpy → JAX arrays
         X = np.asarray(X, dtype=np.float32)
         y = np.asarray(y)
-        if y.ndim == 1:
-            y = y.reshape(-1, 1)
         y = y.astype(np.float32)
         X_jax = jnp.array(X)
         y_jax = jnp.array(y)

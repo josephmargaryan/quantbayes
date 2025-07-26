@@ -155,6 +155,6 @@ def test_multiclass():
 
 
 if __name__ == "__main__":
-    test_regression()
+    # test_regression()
     test_binary()
-    test_multiclass()
+    # test_multiclass()
