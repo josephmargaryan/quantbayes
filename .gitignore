@@ -108,3 +108,6 @@ __pycache__/
 **/*.idx3-ubyte.gz
 **/*.idx1-ubyte
 **/*.idx1-ubyte.gz
+
+catboost_info/
+MLB*/
