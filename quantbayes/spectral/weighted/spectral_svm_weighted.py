@@ -141,7 +141,7 @@ class SpectralWeightedSVM(BaseEstimator, ClassifierMixin):
 
         # 2) Build basis & spectral features
         self.V_ = self._generate_basis(X)  # shape (D, n_spectral)
-        Phi = X.dot(self.V_)                # shape (N, n_spectral)
+        Phi = X.dot(self.V_)  # shape (N, n_spectral)
 
         # 3) Validate / scale by sqrt(beta)
         if self.beta is None:
@@ -188,7 +188,7 @@ class SpectralWeightedSVM(BaseEstimator, ClassifierMixin):
 
         # 7) Project back to original space using raw SVM weights
         w_spec = self.base_svc_.coef_ / beta_sqrt[np.newaxis, :]
-        self.coef_ = w_spec.dot(self.V_.T)    # shape (n_classes, D)
+        self.coef_ = w_spec.dot(self.V_.T)  # shape (n_classes, D)
         self.intercept_ = self.base_svc_.intercept_.copy()
         self.classes_ = self.base_svc_.classes_
 
@@ -199,7 +199,9 @@ class SpectralWeightedSVM(BaseEstimator, ClassifierMixin):
         X = check_array(X, dtype=np.float64)
         Phi = X.dot(self.V_)
         if self.beta is not None:
-            Phi = Phi / np.sqrt(_validate_beta(self.beta, self.n_spectral))[np.newaxis, :]
+            Phi = (
+                Phi / np.sqrt(_validate_beta(self.beta, self.n_spectral))[np.newaxis, :]
+            )
         return Phi
 
     def decision_function(self, X: np.ndarray) -> np.ndarray:

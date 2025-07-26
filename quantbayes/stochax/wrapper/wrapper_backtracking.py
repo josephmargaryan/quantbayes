@@ -34,8 +34,9 @@ class EQXBaseBacktrack(BaseEstimator):
         augment_fn: Optional[AugmentFn] = None,
         return_penalty_history: bool = False,
     ):
+        # store exactly what the user passed
         self.model_cls = model_cls
-        self.model_kwargs = model_kwargs or {}
+        self.model_kwargs = model_kwargs
         self.key_seed = key_seed
         self.batch_size = batch_size
         self.num_epochs = num_epochs
@@ -46,6 +47,7 @@ class EQXBaseBacktrack(BaseEstimator):
         self.return_penalty_history = return_penalty_history
 
     def get_params(self, deep=True):
+        # mirror the __init__ signature exactly
         return {
             "model_cls": self.model_cls,
             "model_kwargs": self.model_kwargs,
@@ -73,12 +75,15 @@ class EQXBaseBacktrack(BaseEstimator):
     ):
         # 1) numpy → JAX
         X = np.asarray(X, dtype=np.float32)
-        y = np.asarray(y)  # already shaped by subclass
+        y = np.asarray(y)
+
+        # record feature count for sklearn compatibility
+        self.n_features_in_ = X.shape[1]
 
         X_jax = jnp.array(X)
         y_jax = jnp.array(y)
 
-        # 2) split
+        # 2) train/val split
         X_tr, X_val, y_tr, y_val = train_test_split(
             X_jax,
             y_jax,
@@ -87,16 +92,15 @@ class EQXBaseBacktrack(BaseEstimator):
             shuffle=True,
         )
 
-        # 3) PRNG
+        # 3) PRNG setup
         master_key = jr.PRNGKey(self.key_seed)
         master_key, init_key, train_key = jr.split(master_key, 3)
 
-        # 4) init
-        self.model, self.state = eqx.nn.make_with_state(self.model_cls)(
-            init_key, **self.model_kwargs
-        )
+        # 4) init model + state (treat None → {} here)
+        mkw = self.model_kwargs or {}
+        self.model, self.state = eqx.nn.make_with_state(self.model_cls)(init_key, **mkw)
 
-        # 5) train
+        # 5) train loop
         results = train_fn(
             self.model,
             self.state,
@@ -114,17 +118,18 @@ class EQXBaseBacktrack(BaseEstimator):
             return_penalty_history=self.return_penalty_history,
         )
 
-        # 6) unpack
+        # 6) unpack results
         if self.return_penalty_history:
             final_model, final_state, tr, va, pen = results  # type: ignore
             self.penalty_history_ = pen
         else:
             final_model, final_state, tr, va = results  # type: ignore
 
-        # 7) stash & finish
+        # 7) stash final model & losses
+        self.model, self.state = final_model, final_state
         self.train_loss_ = tr
         self.val_loss_ = va
-        self.model, self.state = final_model, final_state
+
         return self
 
 

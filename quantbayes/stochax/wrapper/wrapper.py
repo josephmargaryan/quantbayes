@@ -34,26 +34,14 @@ class EQXBase(BaseEstimator):
         end_lr: float = 1e-4,
         lr_decay_steps: int = 500,
         weight_decay: float = 1e-4,
-        loss_fn=None,
+        loss_fn: Callable = None,
         lambda_spec: float = 0.0,
         optimizer: Optional[optax.GradientTransformation] = None,
         augment_fn: Optional[AugmentFn] = None,
     ):
-        """
-        Parameters:
-          model_cls: callable(key, **model_kwargs) -> eqx.Module
-          model_kwargs: dict of keyword args for model_cls (e.g. in_features, out_features)
-          key_seed: RNG seed for parameter init and prediction
-          batch_size, num_epochs, patience: training hyperparams
-          val_frac: fraction of data to hold out for validation
-          init_lr, end_lr, lr_decay_steps, weight_decay: used only if optimizer is None
-          loss_fn: quantbayes.stochax-compatible loss function
-          lambda_spec: spectral penalty multiplier
-          optimizer: an Optax GradientTransformation; if None, defaults to AdamW chain
-          augment_fn: optional on‑device augment function, passed through to nn_train
-        """
+        # store exactly what the user passed
         self.model_cls = model_cls
-        self.model_kwargs = model_kwargs or {}
+        self.model_kwargs = model_kwargs
         self.key_seed = key_seed
         self.batch_size = batch_size
         self.num_epochs = num_epochs
@@ -69,7 +57,7 @@ class EQXBase(BaseEstimator):
         self.augment_fn = augment_fn
 
     def get_params(self, deep=True):
-        # include optimizer and augment_fn so they're visible to GridSearchCV, etc.
+        # mirror the __init__ signature exactly
         return {
             "model_cls": self.model_cls,
             "model_kwargs": self.model_kwargs,
@@ -96,8 +84,11 @@ class EQXBase(BaseEstimator):
     def fit(self, X, y):
         # 1) Numpy → JAX arrays
         X = np.asarray(X, dtype=np.float32)
-        y = np.asarray(y)
-        y = y.astype(np.float32)
+        y = np.asarray(y, dtype=np.float32)
+
+        # record feature count for sklearn compatibility
+        self.n_features_in_ = X.shape[1]
+
         X_jax = jnp.array(X)
         y_jax = jnp.array(y)
 
@@ -114,10 +105,9 @@ class EQXBase(BaseEstimator):
         master_key = jr.PRNGKey(self.key_seed)
         master_key, init_key, train_key = jr.split(master_key, 3)
 
-        # 4) init model + state
-        self.model, self.state = eqx.nn.make_with_state(self.model_cls)(
-            init_key, **self.model_kwargs
-        )
+        # 4) init model + state (treat None→{} here)
+        mkw = self.model_kwargs or {}
+        self.model, self.state = eqx.nn.make_with_state(self.model_cls)(init_key, **mkw)
 
         # 5) choose optimizer
         if self.optimizer is None:
@@ -154,8 +144,11 @@ class EQXBase(BaseEstimator):
             augment_fn=self.augment_fn,
         )
 
-        # 7) inference mode
-        self.model, self.state = eqx.nn.inference_mode(best_model), best_state
+        # 7) switch to inference mode
+        self.model, self.state = (
+            eqx.nn.inference_mode(best_model),
+            best_state,
+        )
         return self
 
 
