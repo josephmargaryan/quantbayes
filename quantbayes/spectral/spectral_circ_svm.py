@@ -169,7 +169,7 @@ class SpectralCirculantSVM(BaseEstimator, ClassifierMixin):
         # 6) optional calibration
         if self.probability:
             self.calibrator_ = CalibratedClassifierCV(
-                base_estimator=self.base_svc_,
+                estimator=self.base_svc_,
                 cv=self.prob_cv,
                 method="sigmoid",
             )

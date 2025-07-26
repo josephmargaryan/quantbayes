@@ -182,7 +182,7 @@ class SpectralSVM(BaseEstimator, ClassifierMixin):
         # 5) optional calibration
         if self.probability:
             self.calibrator_ = CalibratedClassifierCV(
-                base_estimator=self.base_svc_, cv=self.prob_cv, method="sigmoid"
+                estimator=self.base_svc_, cv=self.prob_cv, method="sigmoid"
             )
             self.calibrator_.fit(Phi, y)
             self.model_ = self.calibrator_

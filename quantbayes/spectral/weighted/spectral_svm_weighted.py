@@ -53,9 +53,10 @@ class SpectralWeightedSVM(BaseEstimator, ClassifierMixin):
 
     Parameters
     ----------
-    n_spectral : int
+    n_spectral : int or None, default=None
         Number of spectral basis vectors (must be ≤ n_features).
-    basis : {'random', 'pca'}
+        If None, uses n_spectral = n_features (i.e. full feature basis).
+    basis : {'random', 'pca'}, default='random'
         How to compute the basis from the data.
     beta : array-like of shape (n_spectral,), optional
         Per-frequency ℓ₂ regularization weights. If None, all weights = 1.
@@ -80,7 +81,7 @@ class SpectralWeightedSVM(BaseEstimator, ClassifierMixin):
 
     def __init__(
         self,
-        n_spectral: int = 50,
+        n_spectral: Optional[int] = None,
         *,
         basis: Literal["random", "pca"] = "random",
         beta: Optional[Sequence[float]] = None,
@@ -124,9 +125,14 @@ class SpectralWeightedSVM(BaseEstimator, ClassifierMixin):
             return pca.components_.T
 
     def fit(self, X: np.ndarray, y: np.ndarray) -> "SpectralWeightedSVM":
-        # 1) Validate
+        # 1) Validate inputs
         X, y = check_X_y(X, y, dtype=np.float64)
         N, D = X.shape
+
+        # If n_spectral not set, use full feature count
+        if self.n_spectral is None:
+            self.n_spectral = D
+
         if self.n_spectral > D:
             raise ValueError(
                 f"n_spectral (={self.n_spectral}) cannot exceed n_features (={D})"
@@ -134,8 +140,8 @@ class SpectralWeightedSVM(BaseEstimator, ClassifierMixin):
         self.n_features_in_ = D
 
         # 2) Build basis & spectral features
-        self.V_ = self._generate_basis(X)  # (D, k)
-        Phi = X.dot(self.V_)  # (N, k)
+        self.V_ = self._generate_basis(X)  # shape (D, n_spectral)
+        Phi = X.dot(self.V_)                # shape (N, n_spectral)
 
         # 3) Validate / scale by sqrt(beta)
         if self.beta is None:
@@ -152,7 +158,7 @@ class SpectralWeightedSVM(BaseEstimator, ClassifierMixin):
             )
             dual_flag = True
 
-        # 5) Fit raw LinearSVC and store it
+        # 5) Fit raw LinearSVC
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", category=ConvergenceWarning)
             t0 = time.time()
@@ -171,7 +177,7 @@ class SpectralWeightedSVM(BaseEstimator, ClassifierMixin):
         # 6) Optional calibration for probabilities
         if self.probability:
             self.calibrator_ = CalibratedClassifierCV(
-                base_estimator=self.base_svc_,
+                estimator=self.base_svc_,
                 cv=self.prob_cv,
                 method="sigmoid",
             )
@@ -182,7 +188,7 @@ class SpectralWeightedSVM(BaseEstimator, ClassifierMixin):
 
         # 7) Project back to original space using raw SVM weights
         w_spec = self.base_svc_.coef_ / beta_sqrt[np.newaxis, :]
-        self.coef_ = w_spec.dot(self.V_.T)  # (n_classes, D)
+        self.coef_ = w_spec.dot(self.V_.T)    # shape (n_classes, D)
         self.intercept_ = self.base_svc_.intercept_.copy()
         self.classes_ = self.base_svc_.classes_
 
@@ -193,9 +199,7 @@ class SpectralWeightedSVM(BaseEstimator, ClassifierMixin):
         X = check_array(X, dtype=np.float64)
         Phi = X.dot(self.V_)
         if self.beta is not None:
-            Phi = (
-                Phi / np.sqrt(_validate_beta(self.beta, self.n_spectral))[np.newaxis, :]
-            )
+            Phi = Phi / np.sqrt(_validate_beta(self.beta, self.n_spectral))[np.newaxis, :]
         return Phi
 
     def decision_function(self, X: np.ndarray) -> np.ndarray:
@@ -237,7 +241,7 @@ if __name__ == "__main__":
 
     # 3a) SpectralWeightedSVM
     spec_clf = SpectralWeightedSVM(
-        n_spectral=20,  # ≤ n_features=20
+        n_spectral=None,  # ≤ n_features=20
         basis="random",
         C=1.0,
         loss="hinge",
