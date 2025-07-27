@@ -468,6 +468,7 @@ class BoundEnsemble(BaseEstimator, ClassifierMixin):
         self.base_estimator_kwargs = base_estimator_kwargs or {}
         self.bound_type = bound_type
         self.delta = bound_delta
+        self.bound_delta = bound_delta
         self.random_state = random_state
         self.r = r
 
