@@ -5,6 +5,7 @@ High-level interface wrapping:
   - Prediction with optional TTA + ensembling
   - Save / load state so you can resume days later
 """
+
 from __future__ import annotations
 import os
 import json
@@ -42,11 +43,13 @@ class SegmentationPipeline:
         # build one instance per architecture
         self.models: Dict[str, List[torch.nn.Module]] = {}
         for name in model_names:
-            model = get_seg_model(name)(**{
-                "in_channels": in_channels,
-                "classes": num_classes,
-                "encoder_weights": encoder_weights
-            }).to(self.device)
+            model = get_seg_model(name)(
+                **{
+                    "in_channels": in_channels,
+                    "classes": num_classes,
+                    "encoder_weights": encoder_weights,
+                }
+            ).to(self.device)
             model.eval()
             self.models[name] = [model]
 
@@ -110,11 +113,13 @@ class SegmentationPipeline:
         appending new model instances to the ensemble lists.
         """
         for name in list(self.models):
-            new_model = get_seg_model(name)(**{
-                "in_channels": self.model_cfg["in_channels"],
-                "classes": self.model_cfg["num_classes"],
-                "encoder_weights": self.model_cfg["encoder_weights"]
-            }).to(self.device)
+            new_model = get_seg_model(name)(
+                **{
+                    "in_channels": self.model_cfg["in_channels"],
+                    "classes": self.model_cfg["num_classes"],
+                    "encoder_weights": self.model_cfg["encoder_weights"],
+                }
+            ).to(self.device)
             new_model.eval()
             self.models[name].append(new_model)
         self.fit(*args, **kwargs)
@@ -182,9 +187,7 @@ class SegmentationPipeline:
 
     @classmethod
     def load(
-        cls,
-        path: str,
-        device: str | torch.device = "cuda"
+        cls, path: str, device: str | torch.device = "cuda"
     ) -> SegmentationPipeline:
         """
         Load a previously saved pipeline (including all ensemble members).
@@ -196,7 +199,7 @@ class SegmentationPipeline:
         cfg = meta["model_cfg"].copy()
         in_ch = cfg["in_channels"]
         num_cls = cfg["num_classes"]
-        enc_w  = cfg["encoder_weights"]
+        enc_w = cfg["encoder_weights"]
 
         pipe = cls(
             meta["archs"],
@@ -218,11 +221,13 @@ class SegmentationPipeline:
             pipe.models[name] = []
             for fn in versions:
                 idx = int(fn.split("_")[-1].split(".")[0])
-                model = get_seg_model(name)(**{
-                    "in_channels": in_ch,
-                    "classes": num_cls,
-                    "encoder_weights": enc_w
-                }).to(pipe.device)
+                model = get_seg_model(name)(
+                    **{
+                        "in_channels": in_ch,
+                        "classes": num_cls,
+                        "encoder_weights": enc_w,
+                    }
+                ).to(pipe.device)
                 state = torch.load(os.path.join(path, fn), map_location=pipe.device)
                 model.load_state_dict(state)
                 model.eval()
@@ -241,11 +246,13 @@ class SegmentationPipeline:
         """
         Add an externally trained model to the ensemble.
         """
-        model = get_seg_model(arch_name)(**{
-            "in_channels": self.model_cfg["in_channels"],
-            "classes": self.model_cfg["num_classes"],
-            "encoder_weights": self.model_cfg["encoder_weights"]
-        }).to(self.device)
+        model = get_seg_model(arch_name)(
+            **{
+                "in_channels": self.model_cfg["in_channels"],
+                "classes": self.model_cfg["num_classes"],
+                "encoder_weights": self.model_cfg["encoder_weights"],
+            }
+        ).to(self.device)
         state = torch.load(weights_path, map_location=self.device)
         model.load_state_dict(state)
         model.eval()

@@ -45,7 +45,9 @@ class Trainer:
         device: Union[str, torch.device] = "cpu",
         config: Optional[TrainerConfig] = None,
         callbacks: Optional[List[Callback]] = None,
-        metrics: Optional[Dict[str, Callable[[torch.Tensor, torch.Tensor], float]]] = None,
+        metrics: Optional[
+            Dict[str, Callable[[torch.Tensor, torch.Tensor], float]]
+        ] = None,
     ):
         self.cfg = config or TrainerConfig(output_dir="./outputs")
         self.device = torch.device(device)
@@ -58,7 +60,11 @@ class Trainer:
         self.optimizer = optimizer
         self.scheduler = scheduler
         self.loss_fn = loss_fn
-        self.scaler = GradScaler(device_type="cuda") if (self.cfg.amp and self.device.type == "cuda") else None
+        self.scaler = (
+            GradScaler(device_type="cuda")
+            if (self.cfg.amp and self.device.type == "cuda")
+            else None
+        )
         self.callbacks = callbacks or []
         self.metrics = metrics or {}
 
@@ -95,21 +101,28 @@ class Trainer:
             train_loss = train_logs["loss"]
             val_loss = val_logs["loss"]
 
-            print(f"[Epoch {epoch+1}/{num_epochs}] "
-                  f"Train Loss={train_loss:.4f}  Val Loss={val_loss:.4f}")
+            print(
+                f"[Epoch {epoch+1}/{num_epochs}] "
+                f"Train Loss={train_loss:.4f}  Val Loss={val_loss:.4f}"
+            )
 
             # save checkpoint & update early stopping state
             self._maybe_save_checkpoint(val_loss)
 
             # scheduler step
-            if isinstance(self.scheduler, ReduceLROnPlateau) and self.cfg.scheduler_step == "epoch":
+            if (
+                isinstance(self.scheduler, ReduceLROnPlateau)
+                and self.cfg.scheduler_step == "epoch"
+            ):
                 self.scheduler.step(val_loss)
 
             for cb in self.callbacks:
                 cb.on_epoch_end(self.state)
 
-            if (self.cfg.early_stop_patience is not None
-               and self.state["epochs_no_improve"] >= self.cfg.early_stop_patience):
+            if (
+                self.cfg.early_stop_patience is not None
+                and self.state["epochs_no_improve"] >= self.cfg.early_stop_patience
+            ):
                 print(f"Early stopping at epoch {epoch+1}")
                 break
 
@@ -141,7 +154,9 @@ class Trainer:
 
                 if training and (batch_idx + 1) % self.cfg.grad_accum_steps == 0:
                     if self.cfg.max_grad_norm:
-                        nn.utils.clip_grad_norm_(self.model.parameters(), self.cfg.max_grad_norm)
+                        nn.utils.clip_grad_norm_(
+                            self.model.parameters(), self.cfg.max_grad_norm
+                        )
                     if self.scaler:
                         self.scaler.step(self.optimizer)
                         self.scaler.update()
@@ -167,7 +182,7 @@ class Trainer:
             "model": self.model.state_dict(),
             "optimizer": self.optimizer.state_dict(),
             "scheduler": self.scheduler.state_dict() if self.scheduler else None,
-            **extra
+            **extra,
         }
         torch.save(state, tmp)
         os.replace(tmp, path)
@@ -178,7 +193,11 @@ class Trainer:
         self.optimizer.load_state_dict(ckpt["optimizer"])
         if self.scheduler and ckpt.get("scheduler"):
             self.scheduler.load_state_dict(ckpt["scheduler"])
-        return {k: v for k, v in ckpt.items() if k not in ("model", "optimizer", "scheduler")}
+        return {
+            k: v
+            for k, v in ckpt.items()
+            if k not in ("model", "optimizer", "scheduler")
+        }
 
     def _maybe_save_checkpoint(self, current_metric: float):
         improved = current_metric < (self.state["best_metric"] - self.cfg.min_delta)
@@ -191,16 +210,19 @@ class Trainer:
         if improved:
             fname = os.path.join(
                 self.cfg.output_dir,
-                f"best_epoch{self.state['epoch']+1:03d}_metric{current_metric:.4f}.pt"
+                f"best_epoch{self.state['epoch']+1:03d}_metric{current_metric:.4f}.pt",
             )
-            self.save_checkpoint(fname, epoch=self.state["epoch"], best_metric=current_metric)
+            self.save_checkpoint(
+                fname, epoch=self.state["epoch"], best_metric=current_metric
+            )
             self.best_checkpoints.insert(0, fname)
 
         # prune old checkpoints
-        for old in self.best_checkpoints[self.cfg.save_best_k:]:
+        for old in self.best_checkpoints[self.cfg.save_best_k :]:
             if os.path.exists(old):
                 os.remove(old)
         self.best_checkpoints = self.best_checkpoints[: self.cfg.save_best_k]
+
 
 if __name__ == "__main__":
     import torch
@@ -247,7 +269,7 @@ if __name__ == "__main__":
         scheduler=None,
         device="cpu",
         config=cfg,
-        val_losses=val_losses
+        val_losses=val_losses,
     )
     trained_model = trainer.train(train_loader=None, val_loader=None, num_epochs=10)
 

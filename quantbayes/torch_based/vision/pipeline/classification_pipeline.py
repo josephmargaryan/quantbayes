@@ -76,7 +76,7 @@ class ClassificationPipeline:
                 model,
                 save_dir=ckpt_dir,
                 epochs=epochs,
-                device=self.device,    # <–– ensure CPU-only won't try CUDA
+                device=self.device,  # <–– ensure CPU-only won't try CUDA
             )
             trainer.fit(train_loader, val_loader, epochs)
 

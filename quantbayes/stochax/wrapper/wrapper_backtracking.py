@@ -184,6 +184,7 @@ class EQXImageClassifierBacktrack(EQXBaseBacktrack, ClassifierMixin):
       - X: np.ndarray (N, C, H, W), float32
       - y: np.ndarray (N,), int32
     """
+
     def fit(self, X, y):
         # ensure correct dtypes
         X_arr = np.asarray(X, dtype=np.float32)
@@ -191,10 +192,10 @@ class EQXImageClassifierBacktrack(EQXBaseBacktrack, ClassifierMixin):
         self.n_features_in_ = X_arr.shape[1:]  # (C,H,W)
 
         return self._fit(
-            X        = X_arr,
-            y        = y_arr,
-            train_fn = train_backtrack,
-            loss_fn  = multiclass_loss,
+            X=X_arr,
+            y=y_arr,
+            train_fn=train_backtrack,
+            loss_fn=multiclass_loss,
         )
 
     def predict_proba(self, X):
@@ -218,6 +219,7 @@ class EQXImageSegmenterBacktrack(EQXBaseBacktrack):
       - X: np.ndarray (N, C, H, W), float32
       - y: np.ndarray (N, H, W) or (N,1,H,W), int32
     """
+
     def fit(self, X, y):
         X_arr = np.asarray(X, dtype=np.float32)
         y_arr = np.asarray(y, dtype=np.int32)
@@ -229,17 +231,15 @@ class EQXImageSegmenterBacktrack(EQXBaseBacktrack):
         self.n_features_in_ = X_arr.shape[1:]  # (C,H,W)
 
         return self._fit(
-            X        = X_arr,
-            y        = y_arr,
-            train_fn = train_backtrack,
-            loss_fn  = multiclass_loss,
+            X=X_arr,
+            y=y_arr,
+            train_fn=train_backtrack,
+            loss_fn=multiclass_loss,
         )
 
     def predict_proba(self, X):
         X_jax = jnp.array(np.asarray(X, dtype=np.float32))
-        logits = nn_predict(
-            self.model, self.state, X_jax, jr.PRNGKey(self.key_seed)
-        )
+        logits = nn_predict(self.model, self.state, X_jax, jr.PRNGKey(self.key_seed))
         arr = np.array(logits)
         # if channel-last (N,H,W,classes) → move to (N,classes,H,W)
         if arr.ndim == 4 and arr.shape[-1] != self.model_kwargs.get("classes", 1):

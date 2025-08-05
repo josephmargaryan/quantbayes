@@ -4,14 +4,19 @@ from torch.utils.data import DataLoader
 from typing import Callable, Dict, Any, List, Optional
 from ..utils import save_checkpoint
 
+
 class History(dict):
     """dict(epoch → metrics) with helper .log()."""
-    def log(self, epoch:int, **metrics): self[epoch] = metrics
+
+    def log(self, epoch: int, **metrics):
+        self[epoch] = metrics
+
 
 class BaseTrainer:
     """
     Minimal yet extensible training loop (no Lightning dependency).
     """
+
     def __init__(
         self,
         model: torch.nn.Module,
@@ -24,7 +29,7 @@ class BaseTrainer:
         patience: int = 10,
         save_dir: str = "checkpoints",
         monitor: str = "val_loss",
-        mode: str = "min"
+        mode: str = "min",
     ):
         self.model, self.loss_fn = model, loss_fn
         self.opt, self.sched = optimizer, scheduler
@@ -33,16 +38,16 @@ class BaseTrainer:
         self.save_dir = save_dir
         self.monitor, self.mode = monitor, mode
         self.history = History()
-        self.best_metric = math.inf if mode=="min" else -math.inf
+        self.best_metric = math.inf if mode == "min" else -math.inf
         self._not_improved = 0
         self.model.to(self.device)
 
     # --------------------------------------------------------------------- priv
     def _step(self, batch, train=True):
-        x,y = (t.to(self.device, non_blocking=True) for t in batch)
+        x, y = (t.to(self.device, non_blocking=True) for t in batch)
         with torch.cuda.amp.autocast(enabled=train):
             logits = self.model(x)
-            loss   = self.loss_fn(logits, y)
+            loss = self.loss_fn(logits, y)
         if train:
             self.opt.zero_grad()
             loss.backward()
@@ -52,11 +57,13 @@ class BaseTrainer:
         return logits.detach(), loss.detach()
 
     # --------------------------------------------------------------------- api
-    def fit(self,
-            train_loader: DataLoader,
-            val_loader: Optional[DataLoader] = None,
-            epochs: int = 1):
-        for ep in range(1, epochs+1):
+    def fit(
+        self,
+        train_loader: DataLoader,
+        val_loader: Optional[DataLoader] = None,
+        epochs: int = 1,
+    ):
+        for ep in range(1, epochs + 1):
             t0 = time.time()
             self.model.train()
             tr_loss = 0.0
@@ -75,18 +82,31 @@ class BaseTrainer:
             # Scheduler step *after* validation (cosine, reduce‑lr‑on‑plateau, etc.)
             if self.sched:
                 if hasattr(self.sched, "step"):
-                    self.sched.step(val_loss if "plateau" in self.sched.__class__.__name__.lower()
-                                    else None)
+                    self.sched.step(
+                        val_loss
+                        if "plateau" in self.sched.__class__.__name__.lower()
+                        else None
+                    )
 
-            self.history.log(ep, train_loss=tr_loss, val_loss=val_loss,
-                             lr=self.opt.param_groups[0]["lr"],
-                             time=time.time()-t0)
+            self.history.log(
+                ep,
+                train_loss=tr_loss,
+                val_loss=val_loss,
+                lr=self.opt.param_groups[0]["lr"],
+                time=time.time() - t0,
+            )
 
-            metric = val_loss if self.monitor=="val_loss" else tr_loss
-            improved = (metric < self.best_metric) if self.mode=="min" else (metric > self.best_metric)
+            metric = val_loss if self.monitor == "val_loss" else tr_loss
+            improved = (
+                (metric < self.best_metric)
+                if self.mode == "min"
+                else (metric > self.best_metric)
+            )
             if improved:
                 self.best_metric, self._not_improved = metric, 0
-                save_checkpoint({"model":self.model.state_dict()}, f"{self.save_dir}/best.pt")
+                save_checkpoint(
+                    {"model": self.model.state_dict()}, f"{self.save_dir}/best.pt"
+                )
             else:
                 self._not_improved += 1
                 if self._not_improved >= self.patience:
@@ -94,5 +114,5 @@ class BaseTrainer:
                     break
 
         # always save final
-        save_checkpoint({"model":self.model.state_dict()}, f"{self.save_dir}/last.pt")
+        save_checkpoint({"model": self.model.state_dict()}, f"{self.save_dir}/last.pt")
         return self.history

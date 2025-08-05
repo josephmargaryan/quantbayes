@@ -90,10 +90,10 @@ def _pac_bayes_excess(
     The PAC-Bayes excess term
       R = sqrt( [ B²·d²·∏σ_i² · ∑(‖W_i‖_F² / σ_i²) + ln(m/δ) ] / (γ² m) ).
     """
-    prod_sigma_sq = float(np.prod(sigmas ** 2))
-    sum_ratio     = float(np.sum((frobs ** 2) / (sigmas ** 2)))
-    numer = (B ** 2) * (d ** 2) * prod_sigma_sq * sum_ratio + math.log(m / delta)
-    denom = (gamma ** 2) * m
+    prod_sigma_sq = float(np.prod(sigmas**2))
+    sum_ratio = float(np.sum((frobs**2) / (sigmas**2)))
+    numer = (B**2) * (d**2) * prod_sigma_sq * sum_ratio + math.log(m / delta)
+    denom = (gamma**2) * m
     return math.sqrt(numer / denom)
 
 
@@ -120,7 +120,7 @@ def compute_pac_bound(
     # 2) spectral & Frobenius norms
     sigmas, frobs, _ = spectral_frobenius_lists(model, n_iter=50, key=key)
     sigmas = np.asarray(sigmas, dtype=float)
-    frobs  = np.asarray(frobs,  dtype=float)
+    frobs = np.asarray(frobs, dtype=float)
 
     # 3) data radius
     if B is None:
@@ -128,8 +128,7 @@ def compute_pac_bound(
 
     # 4) PAC-Bayes excess
     R = _pac_bayes_excess(
-        sigmas, frobs, B=B, d=len(sigmas),
-        gamma=gamma, m=len(X_train), delta=delta
+        sigmas, frobs, B=B, d=len(sigmas), gamma=gamma, m=len(X_train), delta=delta
     )
 
     return float(min(1.0, L_hat + R))

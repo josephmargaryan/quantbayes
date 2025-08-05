@@ -187,6 +187,7 @@ class EQXImageClassifierLBFGS(EQXBaseLBFGS, ClassifierMixin):
     L-BFGS wrapper for image classifiers.
     Expects X: (N,C,H,W), y: (N,) integer labels.
     """
+
     def fit(self, X, y):
         X = np.asarray(X, dtype=np.float32)
         y_arr = np.asarray(y, dtype=np.int32).ravel()
@@ -195,10 +196,10 @@ class EQXImageClassifierLBFGS(EQXBaseLBFGS, ClassifierMixin):
 
         # train_lbfgs expects X,N-d arrays
         return self._fit(
-            X    = X,
-            y    = y_arr,
-            train_fn = train_lbfgs,
-            loss_fn  = multiclass_loss,
+            X=X,
+            y=y_arr,
+            train_fn=train_lbfgs,
+            loss_fn=multiclass_loss,
         )
 
     def predict_proba(self, X):
@@ -219,6 +220,7 @@ class EQXImageSegmenterLBFGS(EQXBaseLBFGS):
     L-BFGS wrapper for semantic segmentation.
     Expects X: (N,C,H,W), y: (N,H,W) or (N,1,H,W) integer masks.
     """
+
     def fit(self, X, y):
         X = np.asarray(X, dtype=np.float32)
         y_np = np.asarray(y, dtype=np.int32)
@@ -228,10 +230,10 @@ class EQXImageSegmenterLBFGS(EQXBaseLBFGS):
         self.n_features_in_ = X.shape[1:]
 
         return self._fit(
-            X      = X,         # (N,C,H,W)
-            y      = y_np,      # (N,H,W)
-            train_fn = train_lbfgs,
-            loss_fn  = multiclass_loss,
+            X=X,  # (N,C,H,W)
+            y=y_np,  # (N,H,W)
+            train_fn=train_lbfgs,
+            loss_fn=multiclass_loss,
         )
 
     def predict_proba(self, X):
@@ -240,9 +242,9 @@ class EQXImageSegmenterLBFGS(EQXBaseLBFGS):
         logits = nn_predict(self.model, self.state, X_jax, jr.PRNGKey(self.key_seed))
         logits = np.array(logits)
         # if channel-last, move to channel-first
-        if logits.ndim == 4 and logits.shape[-1] != self.model_kwargs.get("classes",1):
+        if logits.ndim == 4 and logits.shape[-1] != self.model_kwargs.get("classes", 1):
             # assume last dim is classes
-            logits = logits.transpose(0,3,1,2)
+            logits = logits.transpose(0, 3, 1, 2)
         # softmax over channel dim
         exp = np.exp(logits - logits.max(axis=1, keepdims=True))
         probs = exp / exp.sum(axis=1, keepdims=True)

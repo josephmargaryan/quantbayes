@@ -5,7 +5,7 @@
 import jax, jax.numpy as jnp, jax.random as jr
 import optax, equinox as eqx
 from equinox import combine
-from typing import Any, Callable, List, Optional, Tuple
+from typing import Any, Callable, List, Optional, Tuple, Union
 
 from quantbayes.stochax.trainer.train import (
     data_loader,
@@ -25,6 +25,7 @@ def make_value_and_grad(
     """
     Returns fn(params, state, xb, yb, key) -> (value, grads, new_state).
     """
+
     def _oracle(params, state, xb, yb, key):
         mdl = combine(params, static_model_part)
         (base_loss, new_state), grads = eqx.filter_value_and_grad(
@@ -55,14 +56,15 @@ def train_lbfgs(
     patience: int = 5,
     lambda_spec: float = 0.0,
     lambda_frob: float = 0.0,
-    key: jr.key,
-    augment_fn: Optional[AugmentFn] = None,
+    key: jr.KeyArray,
+    augment_fn: Optional[Callable[[jr.KeyArray, jnp.ndarray], jnp.ndarray]] = None,
     loss_fn: Callable = multiclass_loss,
+    ckpt_path: Optional[str] = None,
     return_penalty_history: bool = False,
-) -> (
-    Tuple[eqx.Module, Any, List[float], List[float]]
-    | Tuple[eqx.Module, Any, List[float], List[float], List[float]]
-):
+) -> Union[
+    Tuple[eqx.Module, Any, List[float], List[float]],
+    Tuple[eqx.Module, Any, List[float], List[float], List[float]],
+]:
     params, static = eqx.partition(model, eqx.is_inexact_array)
     oracle = make_value_and_grad(static, loss_fn, lambda_spec, lambda_frob)
 
@@ -74,18 +76,16 @@ def train_lbfgs(
     best_params, best_state = params, state
 
     train_hist: List[float] = []
-    val_hist:   List[float] = []
-    pen_hist:   List[float] = []
+    val_hist: List[float] = []
+    pen_hist: List[float] = []
     patience_ctr = 0
 
     for epoch in range(1, num_epochs + 1):
         rng, perm = jr.split(rng)
         epoch_loss = 0.0
         n_seen = 0
-
         for xb, yb in data_loader(
-            X_train, y_train, batch_size,
-            shuffle=True, key=perm, augment_fn=augment_fn
+            X_train, y_train, batch_size, shuffle=True, key=perm, augment_fn=augment_fn
         ):
             rng, sk = jr.split(rng)
             value, grads, state = oracle(params, state, xb, yb, sk)
@@ -95,12 +95,7 @@ def train_lbfgs(
                 return v
 
             updates, opt_state = solver.update(
-                grads,
-                opt_state,
-                params,
-                value=value,
-                grad=grads,
-                value_fn=_value_fn,
+                grads, opt_state, params, value=value, grad=grads, value_fn=_value_fn
             )
             params = optax.apply_updates(params, updates)
 
@@ -109,12 +104,11 @@ def train_lbfgs(
 
         train_hist.append(epoch_loss / n_seen)
 
-        mdl = combine(params, static)
+        mdl = eqx.combine(params, static)
         v_loss = 0.0
         n_val = 0
         for xb, yb in data_loader(
-            X_val, y_val, batch_size,
-            shuffle=False, key=eval_rng
+            X_val, y_val, batch_size, shuffle=False, key=eval_rng
         ):
             eval_rng, vk = jr.split(eval_rng)
             l, _ = loss_fn(mdl, state, xb, yb, vk)
@@ -129,18 +123,21 @@ def train_lbfgs(
         if val_hist[-1] < best_val - 1e-6:
             best_val, best_params, best_state = val_hist[-1], params, state
             patience_ctr = 0
+            if ckpt_path:
+                eqx.tree_serialise_leaves(
+                    ckpt_path,
+                    {"model": eqx.combine(best_params, static), "state": best_state},
+                )
         else:
             patience_ctr += 1
             if patience_ctr > patience:
                 break
 
-    final_model = combine(best_params, static)
-
+    final_model = eqx.combine(best_params, static)
     if return_penalty_history:
         return final_model, best_state, train_hist, val_hist, pen_hist
     else:
         return final_model, best_state, train_hist, val_hist
-
 
 
 # ---------------------------------------------------------------------

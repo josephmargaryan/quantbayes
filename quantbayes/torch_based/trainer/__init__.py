@@ -6,6 +6,7 @@ from .sklearn_wrappers import (
     TorchImageSegmenter,
     SegmentationEnsemble,
 )
+
 __all__ = [
     "Trainer",
     "TrainerConfig",

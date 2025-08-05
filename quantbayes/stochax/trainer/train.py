@@ -121,12 +121,12 @@ def global_spectral_penalty(model) -> jnp.ndarray:
 
     return total
 
+
 def global_frobenius_penalty(model) -> jnp.ndarray:
     """
     Classic L2 (Frobenius) penalty over all trainable parameters.
     """
     return sum(jnp.sum(p**2) for p in eqx.filter(model, eqx.is_inexact_array))
-
 
 
 @eqx.filter_jit
@@ -140,14 +140,18 @@ def train_step(
     loss_fn: Callable,
     optimizer: optax.GradientTransformation,
     lambda_spec: float = 0.0,
-    lambda_frob: float = 0.0
+    lambda_frob: float = 0.0,
 ) -> Tuple[Any, Any, Any, jnp.ndarray]:
     def total_loss_fn(m, s, xb, yb, k):
         base, new_s = loss_fn(m, s, xb, yb, k)
         # spectral penalty
-        pen_spec = lambda_spec * global_spectral_penalty(m) if lambda_spec > 0.0 else 0.0
+        pen_spec = (
+            lambda_spec * global_spectral_penalty(m) if lambda_spec > 0.0 else 0.0
+        )
         # Frobenius (L2) penalty
-        pen_frob = lambda_frob * global_frobenius_penalty(m) if lambda_frob > 0.0 else 0.0
+        pen_frob = (
+            lambda_frob * global_frobenius_penalty(m) if lambda_frob > 0.0 else 0.0
+        )
         pen = pen_spec + pen_frob
         return base + pen, (new_s, base, pen)
 
@@ -197,7 +201,8 @@ def train(
     val_losses: List[float] = []
     penalty_history: List[float] = []
     best_val = float("inf")
-    best_params = best_static = best_state = None
+    best_model = model
+    best_state = state
     patience_counter = 0
 
     for epoch in range(1, num_epochs + 1):
@@ -225,7 +230,6 @@ def train(
                 lambda_spec,
                 lambda_frob,
             )
-
             epoch_train_loss += float(tot_loss) * xb.shape[0]
             n_train += xb.shape[0]
         epoch_train_loss /= n_train
@@ -234,7 +238,12 @@ def train(
         epoch_val_loss = 0.0
         n_val = 0
         for xb, yb in data_loader(
-            X_val, y_val, batch_size, shuffle=False, key=eval_rng, augment_fn=None
+            X_val,
+            y_val,
+            batch_size,
+            shuffle=False,
+            key=eval_rng,
+            augment_fn=None,
         ):
             eval_rng, vk = jr.split(eval_rng)
             data_loss, _ = loss_fn(model, state, xb, yb, vk)
@@ -261,27 +270,18 @@ def train(
         if epoch_val_loss < best_val:
             best_val = epoch_val_loss
             patience_counter = 0
-            best_params = eqx.filter(model, eqx.is_inexact_array)
-            best_static = eqx.filter(model, lambda x: not eqx.is_inexact_array(x))
+            best_model = model
             best_state = state
             if ckpt_path:
-                best_model = eqx.combine(best_params, best_static)
-                def _hostify(x):
-                    return _np.array(x) if isinstance(x, jnp.ndarray) else x
-
-                host_model = jax.tree_map(_hostify, best_model)
-                host_state = jax.tree_map(_hostify, best_state)
-
-                # write out as one pickle
-                with open(ckpt_path, "wb") as f:
-                    pickle.dump({"model": host_model, "state": host_state}, f)
+                eqx.tree_serialise_leaves(
+                    ckpt_path, {"model": best_model, "state": best_state}
+                )
         else:
             patience_counter += 1
             if patience_counter > patience:
                 print(f"Early stopping at epoch {epoch}")
                 break
 
-    best_model = eqx.combine(best_params, best_static)
     if return_penalty_history:
         return best_model, best_state, train_losses, val_losses, penalty_history
     else:

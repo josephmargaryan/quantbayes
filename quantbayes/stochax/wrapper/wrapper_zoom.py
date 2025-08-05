@@ -187,15 +187,16 @@ class EQXImageClassifierZoom(EQXBaseZoom, ClassifierMixin):
       - X: np.ndarray (N, C, H, W), float32
       - y: np.ndarray (N,), int32 labels
     """
+
     def fit(self, X, y):
         X_arr = np.asarray(X, dtype=np.float32)
         y_arr = np.asarray(y, dtype=np.int32).ravel()
         self.n_features_in_ = X_arr.shape[1:]  # (C,H,W)
         return self._fit(
-            X        = X_arr,
-            y        = y_arr,
-            train_fn = train_zoom,
-            loss_fn  = multiclass_loss,
+            X=X_arr,
+            y=y_arr,
+            train_fn=train_zoom,
+            loss_fn=multiclass_loss,
         )
 
     def predict_proba(self, X):
@@ -217,6 +218,7 @@ class EQXImageSegmenterZoom(EQXBaseZoom):
       - X: np.ndarray (N, C, H, W), float32
       - y: np.ndarray (N, H, W) or (N,1,H,W), int32 masks
     """
+
     def fit(self, X, y):
         X_arr = np.asarray(X, dtype=np.float32)
         y_arr = np.asarray(y, dtype=np.int32)
@@ -225,10 +227,10 @@ class EQXImageSegmenterZoom(EQXBaseZoom):
             y_arr = y_arr[:, 0]
         self.n_features_in_ = X_arr.shape[1:]
         return self._fit(
-            X        = X_arr,
-            y        = y_arr,
-            train_fn = train_zoom,
-            loss_fn  = multiclass_loss,
+            X=X_arr,
+            y=y_arr,
+            train_fn=train_zoom,
+            loss_fn=multiclass_loss,
         )
 
     def predict_proba(self, X):

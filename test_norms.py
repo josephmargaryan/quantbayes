@@ -15,6 +15,7 @@ from custom_spectral_norm import SpectralNorm
 
 from equinox.nn import SpectralNorm as EquinoxSpectralNorm
 
+
 def test_error_binary(model, state, X, y, *, key=jr.PRNGKey(1)):
     logits = predict(model, state, X, key=key)
     return float(jnp.mean((logits > 0).astype(jnp.int32) != y))
@@ -89,19 +90,31 @@ def train_and_bound(NetClass, Xtr, ytr, Xte, yte, seed=0):
 
     # train with soft spectral penalty
     best, best_s, *_ = train(
-        model, state, opt_state, optimizer, binary_loss,
-        jnp.array(Xtr_n), jnp.array(ytr),
-        jnp.array(Xtr_n), jnp.array(ytr),
-        batch_size=32, num_epochs=2000, patience=20,
+        model,
+        state,
+        opt_state,
+        optimizer,
+        binary_loss,
+        jnp.array(Xtr_n),
+        jnp.array(ytr),
+        jnp.array(Xtr_n),
+        jnp.array(ytr),
+        batch_size=32,
+        num_epochs=2000,
+        patience=20,
         key=tk,
         lambda_spec=1e-3,  # softly keep σ≈1
     )
 
     tr_err = test_error_binary(best, best_s, jnp.array(Xtr_n), jnp.array(ytr))
-    bound  = compute_pac_bound(
-        best, best_s,
-        jnp.array(Xtr_n), jnp.array(ytr),
-        gamma=5.0, delta=0.1, key=jr.PRNGKey(0),
+    bound = compute_pac_bound(
+        best,
+        best_s,
+        jnp.array(Xtr_n),
+        jnp.array(ytr),
+        gamma=5.0,
+        delta=0.1,
+        key=jr.PRNGKey(0),
     )
     te_err = test_error_binary(best, best_s, jnp.array(Xte_n), jnp.array(yte))
 
@@ -119,9 +132,9 @@ if __name__ == "__main__":
     y = (y == 1).astype(int)
     Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=0.3, random_state=42)
     nets = {
-        "SpecCirc":    SpecCirc,
-        "SpecSVD":     SpecSVD,
-        "SpecLinear":  SpecLinear,
+        "SpecCirc": SpecCirc,
+        "SpecSVD": SpecSVD,
+        "SpecLinear": SpecLinear,
     }
     for name, Net in nets.items():
         print(f"\n→ Testing {name}")

@@ -16,10 +16,8 @@ setup(
         "scikit-learn>=1.5.0,<1.7",
         "matplotlib>=3.8.0,<3.11",
         "seaborn>=0.13.0,<0.14",
-
         # PyTorch moved into main
         "torch>=2.5.0,<2.8",
-
         # probabilistic / Bayesian
         "jax>=0.4.20,<0.6",
         "jaxlib>=0.4.20,<0.6",
@@ -30,12 +28,10 @@ setup(
         "diffrax>=0.6.0,<0.8",
         "optax>=0.2.3,<0.3",
         "equinox>=0.12.0,<0.14",
-
         # boosting frameworks
         "xgboost>=2.0.0,<3.1",
         "catboost>=1.2.0,<1.3",
         "lightgbm>=4.0.0,<4.7",
-
         # utilities
         "einops>=0.6.0,<0.9",
         "augmax>=0.4.1,<0.5",
