@@ -111,3 +111,15 @@ __pycache__/
 
 catboost_info/
 MLB*/
+
+# Trainer output dirs
+outputs/
+torch_outputs/
+
+# PyTorch checkpoint files
+*.pt
+*.pth
+# (optionally: *.ckpt)
+
+# make sure you haven’t already committed them:
+#   git rm --cached -r outputs torch_outputs

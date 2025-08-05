@@ -1,3 +1,4 @@
+import jax
 import numpy as np
 import jax.random as jr
 import jax.numpy as jnp
@@ -239,3 +240,143 @@ class EQXMulticlassClassifier(EQXBase, ClassifierMixin):
 
     def predict(self, X):
         return np.argmax(self.predict_proba(X), axis=1)
+
+
+class EQXImageClassifier(EQXBase, ClassifierMixin):
+    """
+    EQX wrapper for image‐classification nets.
+    Expects:
+      - X: np.ndarray, shape (N, C, H, W), dtype float32
+      - y: np.ndarray, shape (N,), integer labels
+    """
+    def fit(self, X, y):
+        # 1) to JAX arrays
+        X = np.asarray(X, dtype=np.float32)
+        y = np.asarray(y, dtype=np.int32).ravel()
+        self.n_features_in_ = X.shape[1:]  # (C,H,W)
+
+        X_jax = jnp.array(X)
+        y_jax = jnp.array(y)
+
+        # 2) train/val split
+        X_tr, X_val, y_tr, y_val = train_test_split(
+            X_jax, y_jax, test_size=self.val_frac, shuffle=True, random_state=self.key_seed
+        )
+
+        # 3) PRNG
+        key = jr.PRNGKey(self.key_seed)
+
+        # 4) init model+state
+        init_key, train_key = jr.split(key)
+        self.model, self.state = eqx.nn.make_with_state(self.model_cls)(init_key, **(self.model_kwargs or {}))
+
+        # 5) optimizer
+        if self.optimizer is None:
+            optimizer = optax.adamw(self.init_lr, weight_decay=self.weight_decay)
+        else:
+            optimizer = self.optimizer
+        opt_state = optimizer.init(eqx.filter(self.model, eqx.is_inexact_array))
+
+        # 6) train
+        best_model, best_state, _, _ = nn_train(
+            model        = self.model,
+            state        = self.state,
+            opt_state    = opt_state,
+            optimizer    = optimizer,
+            loss_fn      = multiclass_loss,
+            X_train      = X_tr,
+            y_train      = y_tr,
+            X_val        = X_val,
+            y_val        = y_val,
+            batch_size   = self.batch_size,
+            num_epochs   = self.num_epochs,
+            patience     = self.patience,
+            key          = train_key,
+            augment_fn   = self.augment_fn,
+        )
+
+        # 7) finalize
+        self.model, self.state = eqx.nn.inference_mode(best_model), best_state
+        self.classes_ = np.unique(y)
+        return self
+
+    def predict_proba(self, X):
+        X = np.asarray(X, dtype=np.float32)
+        X_jax = jnp.array(X)
+        # batched predict over (N,C,H,W)
+        logits = nn_predict(self.model, self.state, X_jax, jr.PRNGKey(self.key_seed), batch_size=self.batch_size)
+        probs  = jax.nn.softmax(logits, axis=-1)
+        return np.array(probs)
+
+    def predict(self, X):
+        proba = self.predict_proba(X)
+        return self.classes_[ np.argmax(proba, axis=-1) ]
+
+
+class EQXImageSegmenter(EQXBase):
+    """
+    EQX wrapper for semantic‐segmentation nets.
+    Expects:
+      - X: np.ndarray, shape (N, C, H, W), dtype float32
+      - y: np.ndarray, shape (N, H, W) or (N,1,H,W), integer masks
+    """
+    def fit(self, X, y):
+        X = np.asarray(X, dtype=np.float32)
+        y = np.asarray(y, dtype=np.int32)
+        # flatten singleton channel
+        if y.ndim == 4 and y.shape[1] == 1:
+            y = y[:,0]
+        self.n_features_in_ = X.shape[1:]  # (C,H,W)
+
+        X_jax = jnp.array(X)
+        y_jax = jnp.array(y)
+
+        X_tr, X_val, y_tr, y_val = train_test_split(
+            X_jax, y_jax, test_size=self.val_frac, shuffle=True, random_state=self.key_seed
+        )
+
+        key = jr.PRNGKey(self.key_seed)
+        init_key, train_key = jr.split(key)
+        self.model, self.state = eqx.nn.make_with_state(self.model_cls)(init_key, **(self.model_kwargs or {}))
+
+        if self.optimizer is None:
+            optimizer = optax.adamw(self.init_lr, weight_decay=self.weight_decay)
+        else:
+            optimizer = self.optimizer
+        opt_state = optimizer.init(eqx.filter(self.model, eqx.is_inexact_array))
+
+        best_model, best_state, _, _ = nn_train(
+            model        = self.model,
+            state        = self.state,
+            opt_state    = opt_state,
+            optimizer    = optimizer,
+            loss_fn      = multiclass_loss,
+            X_train      = X_tr,
+            y_train      = y_tr,
+            X_val        = X_val,
+            y_val        = y_val,
+            batch_size   = self.batch_size,
+            num_epochs   = self.num_epochs,
+            patience     = self.patience,
+            key          = train_key,
+            augment_fn   = self.augment_fn,
+        )
+
+        self.model, self.state = eqx.nn.inference_mode(best_model), best_state
+        return self
+
+    def predict_proba(self, X):
+        X = np.asarray(X, dtype=np.float32)
+        X_jax = jnp.array(X)
+        logits = nn_predict(self.model, self.state, X_jax, jr.PRNGKey(self.key_seed), batch_size=self.batch_size)
+        # logits shape (N, H, W, n_classes) or (N, n_classes, H, W) depending on your model
+        # assume model outputs (N, H, W, C): transpose to (N, C, H, W)
+        if logits.ndim == 4 and logits.shape[-1] != self.model_kwargs.get("classes",1):
+            # assume channel-last
+            logits = logits.transpose(0,3,1,2)
+        probs = jax.nn.softmax(logits, axis=1)
+        return np.array(probs)
+
+    def predict(self, X):
+        proba = self.predict_proba(X)
+        return np.argmax(proba, axis=1)  # (N, H, W)

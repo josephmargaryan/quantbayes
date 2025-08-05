@@ -180,3 +180,75 @@ class EQXMulticlassClassifierLBFGS(EQXBaseLBFGS, ClassifierMixin):
 
     def predict(self, X):
         return np.argmax(self.predict_proba(X), axis=1)
+
+
+class EQXImageClassifierLBFGS(EQXBaseLBFGS, ClassifierMixin):
+    """
+    L-BFGS wrapper for image classifiers.
+    Expects X: (N,C,H,W), y: (N,) integer labels.
+    """
+    def fit(self, X, y):
+        X = np.asarray(X, dtype=np.float32)
+        y_arr = np.asarray(y, dtype=np.int32).ravel()
+        # record shape for sklearn compatibility
+        self.n_features_in_ = X.shape[1:]
+
+        # train_lbfgs expects X,N-d arrays
+        return self._fit(
+            X    = X,
+            y    = y_arr,
+            train_fn = train_lbfgs,
+            loss_fn  = multiclass_loss,
+        )
+
+    def predict_proba(self, X):
+        X_jax = jnp.array(np.asarray(X, dtype=np.float32))
+        # nn_predict will batch under the hood
+        logits = nn_predict(self.model, self.state, X_jax, jr.PRNGKey(self.key_seed))
+        logits = np.array(logits)  # (N, n_classes)
+        exp = np.exp(logits - logits.max(axis=1, keepdims=True))
+        return exp / exp.sum(axis=1, keepdims=True)
+
+    def predict(self, X):
+        proba = self.predict_proba(X)
+        return np.argmax(proba, axis=1)
+
+
+class EQXImageSegmenterLBFGS(EQXBaseLBFGS):
+    """
+    L-BFGS wrapper for semantic segmentation.
+    Expects X: (N,C,H,W), y: (N,H,W) or (N,1,H,W) integer masks.
+    """
+    def fit(self, X, y):
+        X = np.asarray(X, dtype=np.float32)
+        y_np = np.asarray(y, dtype=np.int32)
+        # strip singleton channel if present
+        if y_np.ndim == 4 and y_np.shape[1] == 1:
+            y_np = y_np[:, 0]
+        self.n_features_in_ = X.shape[1:]
+
+        return self._fit(
+            X      = X,         # (N,C,H,W)
+            y      = y_np,      # (N,H,W)
+            train_fn = train_lbfgs,
+            loss_fn  = multiclass_loss,
+        )
+
+    def predict_proba(self, X):
+        X_jax = jnp.array(np.asarray(X, dtype=np.float32))
+        # nn_predict should return logits in shape (N, H, W, classes) or (N,classes,H,W)
+        logits = nn_predict(self.model, self.state, X_jax, jr.PRNGKey(self.key_seed))
+        logits = np.array(logits)
+        # if channel-last, move to channel-first
+        if logits.ndim == 4 and logits.shape[-1] != self.model_kwargs.get("classes",1):
+            # assume last dim is classes
+            logits = logits.transpose(0,3,1,2)
+        # softmax over channel dim
+        exp = np.exp(logits - logits.max(axis=1, keepdims=True))
+        probs = exp / exp.sum(axis=1, keepdims=True)
+        return probs  # shape (N, classes, H, W)
+
+    def predict(self, X):
+        proba = self.predict_proba(X)
+        # argmax over channel dim → (N,H,W)
+        return np.argmax(proba, axis=1)

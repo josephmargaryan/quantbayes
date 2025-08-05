@@ -9,28 +9,47 @@ setup(
     url="https://github.com/josephmargaryan/quantbayes",
     packages=find_packages(),
     install_requires=[
-        "numpy>=2.2.5,<2.3",
-        "pandas>=2.2.3,<2.3",
+        # core scientific stack
+        "numpy>=1.26.0,<1.27",
+        "pandas>=2.2.0,<2.3",
         "scipy>=1.15.3,<1.16",
-        "numpyro>=0.18.0,<0.19",
-        "jax>=0.6.0,<0.7",
-        "jaxlib>=0.6.0,<0.7",
-        "torch>=2.7.0,<2.8",
-        "torchvision>=0.22.0,<0.23",
-        "scikit-learn>=1.6.1,<1.7",
-        "matplotlib>=3.10.3,<3.11",
-        "seaborn>=0.13.2,<0.14",
-        "funsor>=0.4.5,<0.5",
-        "diffrax>=0.7.0,<0.8",
-        "optax>=0.2.4,<0.3",
-        "einops>=0.8.1,<0.9",
-        "arviz>=0.21.0,<0.22",
-        "optuna>=4.3.0,<4.4",
-        "xgboost>=3.0.0,<3.1",
-        "catboost>=1.2.8,<1.3",
-        "lightgbm>=4.6.0,<4.7",
+        "scikit-learn>=1.5.0,<1.7",
+        "matplotlib>=3.8.0,<3.11",
+        "seaborn>=0.13.0,<0.14",
+
+        # PyTorch moved into main
+        "torch>=2.5.0,<2.8",
+
+        # probabilistic / Bayesian
+        "jax>=0.4.20,<0.6",
+        "jaxlib>=0.4.20,<0.6",
+        "numpyro>=0.17.2,<0.19",
+        "funsor>=0.4.0,<0.5",
+        "arviz>=0.20.0,<0.22",
+        "optuna>=4.0.0,<4.3",
+        "diffrax>=0.6.0,<0.8",
+        "optax>=0.2.3,<0.3",
         "equinox>=0.12.0,<0.14",
+
+        # boosting frameworks
+        "xgboost>=2.0.0,<3.1",
+        "catboost>=1.2.0,<1.3",
+        "lightgbm>=4.0.0,<4.7",
+
+        # utilities
+        "einops>=0.6.0,<0.9",
         "augmax>=0.4.1,<0.5",
     ],
+    extras_require={
+        # vision / deep-learning (optional)
+        "vision": [
+            # torch is in main now
+            "torchvision>=0.22.0,<0.23",
+            "albumentations>=1.3.0,<1.4",
+            "segmentation-models-pytorch>=0.3.0,<0.4",
+            "timm>=0.6.7,<0.7",
+            "opencv-python>=4.7.0,<4.8",
+        ],
+    },
     python_requires=">=3.8",
 )

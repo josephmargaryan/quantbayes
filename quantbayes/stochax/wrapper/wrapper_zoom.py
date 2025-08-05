@@ -178,3 +178,69 @@ class EQXMulticlassClassifierZoom(EQXBaseZoom, ClassifierMixin):
 
     def predict(self, X):
         return np.argmax(self.predict_proba(X), axis=1)
+
+
+class EQXImageClassifierZoom(EQXBaseZoom, ClassifierMixin):
+    """
+    Zoom‐optimizer wrapper for image classification.
+    Expects:
+      - X: np.ndarray (N, C, H, W), float32
+      - y: np.ndarray (N,), int32 labels
+    """
+    def fit(self, X, y):
+        X_arr = np.asarray(X, dtype=np.float32)
+        y_arr = np.asarray(y, dtype=np.int32).ravel()
+        self.n_features_in_ = X_arr.shape[1:]  # (C,H,W)
+        return self._fit(
+            X        = X_arr,
+            y        = y_arr,
+            train_fn = train_zoom,
+            loss_fn  = multiclass_loss,
+        )
+
+    def predict_proba(self, X):
+        X_jax = jnp.array(np.asarray(X, dtype=np.float32))
+        logits = nn_predict(self.model, self.state, X_jax, jr.PRNGKey(self.key_seed))
+        arr = np.array(logits)  # (N, n_classes)
+        exp = np.exp(arr - arr.max(axis=1, keepdims=True))
+        return exp / exp.sum(axis=1, keepdims=True)
+
+    def predict(self, X):
+        probs = self.predict_proba(X)
+        return np.argmax(probs, axis=1)
+
+
+class EQXImageSegmenterZoom(EQXBaseZoom):
+    """
+    Zoom‐optimizer wrapper for semantic segmentation.
+    Expects:
+      - X: np.ndarray (N, C, H, W), float32
+      - y: np.ndarray (N, H, W) or (N,1,H,W), int32 masks
+    """
+    def fit(self, X, y):
+        X_arr = np.asarray(X, dtype=np.float32)
+        y_arr = np.asarray(y, dtype=np.int32)
+        # drop channel dim if present
+        if y_arr.ndim == 4 and y_arr.shape[1] == 1:
+            y_arr = y_arr[:, 0]
+        self.n_features_in_ = X_arr.shape[1:]
+        return self._fit(
+            X        = X_arr,
+            y        = y_arr,
+            train_fn = train_zoom,
+            loss_fn  = multiclass_loss,
+        )
+
+    def predict_proba(self, X):
+        X_jax = jnp.array(np.asarray(X, dtype=np.float32))
+        logits = nn_predict(self.model, self.state, X_jax, jr.PRNGKey(self.key_seed))
+        arr = np.array(logits)
+        # if channel-last → to channel-first
+        if arr.ndim == 4 and arr.shape[-1] != self.model_kwargs.get("classes", 1):
+            arr = arr.transpose(0, 3, 1, 2)
+        exp = np.exp(arr - arr.max(axis=1, keepdims=True))
+        return exp / exp.sum(axis=1, keepdims=True)  # (N, classes, H, W)
+
+    def predict(self, X):
+        proba = self.predict_proba(X)
+        return np.argmax(proba, axis=1)  # (N, H, W)

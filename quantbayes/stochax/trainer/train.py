@@ -1,5 +1,7 @@
 import jax
+import pickle
 import jax.numpy as jnp
+import numpy as _np
 import jax.random as jr
 import optax
 import equinox as eqx
@@ -119,6 +121,13 @@ def global_spectral_penalty(model) -> jnp.ndarray:
 
     return total
 
+def global_frobenius_penalty(model) -> jnp.ndarray:
+    """
+    Classic L2 (Frobenius) penalty over all trainable parameters.
+    """
+    return sum(jnp.sum(p**2) for p in eqx.filter(model, eqx.is_inexact_array))
+
+
 
 @eqx.filter_jit
 def train_step(
@@ -131,12 +140,15 @@ def train_step(
     loss_fn: Callable,
     optimizer: optax.GradientTransformation,
     lambda_spec: float = 0.0,
+    lambda_frob: float = 0.0
 ) -> Tuple[Any, Any, Any, jnp.ndarray]:
     def total_loss_fn(m, s, xb, yb, k):
         base, new_s = loss_fn(m, s, xb, yb, k)
-        pen = jnp.array(0.0)
-        if lambda_spec > 0.0:
-            pen = lambda_spec * global_spectral_penalty(m)
+        # spectral penalty
+        pen_spec = lambda_spec * global_spectral_penalty(m) if lambda_spec > 0.0 else 0.0
+        # Frobenius (L2) penalty
+        pen_frob = lambda_frob * global_frobenius_penalty(m) if lambda_frob > 0.0 else 0.0
+        pen = pen_spec + pen_frob
         return base + pen, (new_s, base, pen)
 
     (tot, (new_state, _, _)), grads = eqx.filter_value_and_grad(
@@ -173,6 +185,7 @@ def train(
     *,
     augment_fn: Optional[Callable[[jr.PRNGKey, jnp.ndarray], jnp.ndarray]] = None,
     lambda_spec: float = 0.0,
+    lambda_frob: float = 0.0,
     ckpt_path: Optional[str] = None,
     return_penalty_history: bool = False,
 ) -> Union[
@@ -210,7 +223,9 @@ def train(
                 loss_fn,
                 optimizer,
                 lambda_spec,
+                lambda_frob,
             )
+
             epoch_train_loss += float(tot_loss) * xb.shape[0]
             n_train += xb.shape[0]
         epoch_train_loss /= n_train
@@ -250,9 +265,16 @@ def train(
             best_static = eqx.filter(model, lambda x: not eqx.is_inexact_array(x))
             best_state = state
             if ckpt_path:
-                eqx.tree_serialise_leaves(
-                    ckpt_path, eqx.combine(best_params, best_static)
-                )
+                best_model = eqx.combine(best_params, best_static)
+                def _hostify(x):
+                    return _np.array(x) if isinstance(x, jnp.ndarray) else x
+
+                host_model = jax.tree_map(_hostify, best_model)
+                host_state = jax.tree_map(_hostify, best_state)
+
+                # write out as one pickle
+                with open(ckpt_path, "wb") as f:
+                    pickle.dump({"model": host_model, "state": host_state}, f)
         else:
             patience_counter += 1
             if patience_counter > patience:

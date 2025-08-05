@@ -1,31 +1,32 @@
 #!/usr/bin/env python3
 # ---------------------------------------------------------------------
-#   Quasi‑Newton (Optax L‑BFGS + internal Zoom line‑search)
+#   Quasi-Newton (Optax L-BFGS + internal Zoom line-search)
 # ---------------------------------------------------------------------
 import jax, jax.numpy as jnp, jax.random as jr
 import optax, equinox as eqx
+from equinox import combine
 from typing import Any, Callable, List, Optional, Tuple
 
 from quantbayes.stochax.trainer.train import (
     data_loader,
     multiclass_loss,
     global_spectral_penalty,
+    global_frobenius_penalty,
     AugmentFn,
 )
 
 
-# ---------------------------------------------------------------------
-# ▍Per‑batch value & grad oracle (spectral penalty included)
-# ---------------------------------------------------------------------
 def make_value_and_grad(
     static_model_part,
     loss_fn: Callable,
     lambda_spec: float,
+    lambda_frob: float = 0.0,
 ) -> Callable:
-    """Returns fn(params, state, xb, yb, key) -> (value, grads, new_state)."""
-
+    """
+    Returns fn(params, state, xb, yb, key) -> (value, grads, new_state).
+    """
     def _oracle(params, state, xb, yb, key):
-        mdl = eqx.combine(params, static_model_part)
+        mdl = combine(params, static_model_part)
         (base_loss, new_state), grads = eqx.filter_value_and_grad(
             lambda m, s: loss_fn(m, s, xb, yb, key),
             has_aux=True,
@@ -34,14 +35,13 @@ def make_value_and_grad(
         value = base_loss
         if lambda_spec:
             value += lambda_spec * global_spectral_penalty(mdl)
+        if lambda_frob:
+            value += lambda_frob * global_frobenius_penalty(mdl)
         return value, grads, new_state
 
     return _oracle
 
 
-# ---------------------------------------------------------------------
-# ▍Training loop
-# ---------------------------------------------------------------------
 def train_lbfgs(
     model: eqx.Module,
     state: Any,
@@ -54,6 +54,7 @@ def train_lbfgs(
     num_epochs: int = 30,
     patience: int = 5,
     lambda_spec: float = 0.0,
+    lambda_frob: float = 0.0,
     key: jr.key,
     augment_fn: Optional[AugmentFn] = None,
     loss_fn: Callable = multiclass_loss,
@@ -62,23 +63,19 @@ def train_lbfgs(
     Tuple[eqx.Module, Any, List[float], List[float]]
     | Tuple[eqx.Module, Any, List[float], List[float], List[float]]
 ):
-    # separate trainable / static parts
     params, static = eqx.partition(model, eqx.is_inexact_array)
+    oracle = make_value_and_grad(static, loss_fn, lambda_spec, lambda_frob)
 
-    # Optax solver
     solver = optax.lbfgs(memory_size=10)
     opt_state = solver.init(params)
 
-    oracle = make_value_and_grad(static, loss_fn, lambda_spec)
-
     rng, eval_rng = jr.split(key)
     best_val = jnp.inf
-    best_params = params
-    best_state = state
+    best_params, best_state = params, state
 
     train_hist: List[float] = []
-    val_hist: List[float] = []
-    pen_hist: List[float] = []
+    val_hist:   List[float] = []
+    pen_hist:   List[float] = []
     patience_ctr = 0
 
     for epoch in range(1, num_epochs + 1):
@@ -87,15 +84,10 @@ def train_lbfgs(
         n_seen = 0
 
         for xb, yb in data_loader(
-            X_train,
-            y_train,
-            batch_size,
-            shuffle=True,
-            key=perm,
-            augment_fn=augment_fn,
+            X_train, y_train, batch_size,
+            shuffle=True, key=perm, augment_fn=augment_fn
         ):
             rng, sk = jr.split(rng)
-
             value, grads, state = oracle(params, state, xb, yb, sk)
 
             def _value_fn(p):
@@ -117,40 +109,38 @@ def train_lbfgs(
 
         train_hist.append(epoch_loss / n_seen)
 
-        # --------------- validation -----------------------------
-        mdl = eqx.combine(params, static)
+        mdl = combine(params, static)
         v_loss = 0.0
         n_val = 0
         for xb, yb in data_loader(
-            X_val, y_val, batch_size, shuffle=False, key=eval_rng
+            X_val, y_val, batch_size,
+            shuffle=False, key=eval_rng
         ):
             eval_rng, vk = jr.split(eval_rng)
             l, _ = loss_fn(mdl, state, xb, yb, vk)
             v_loss += float(l) * xb.shape[0]
             n_val += xb.shape[0]
-        v_loss /= n_val
-        val_hist.append(v_loss)
+        val_hist.append(v_loss / n_val)
 
-        # spectral penalty (epoch‑wise)
         pen_hist.append(float(global_spectral_penalty(mdl)))
 
-        print(f"[{epoch:3d}] train={train_hist[-1]:.4f} | val={v_loss:.4f}")
+        print(f"[{epoch:3d}] train={train_hist[-1]:.4f} | val={val_hist[-1]:.4f}")
 
-        if v_loss < best_val - 1e-6:
-            best_val, best_params, best_state = v_loss, params, state
+        if val_hist[-1] < best_val - 1e-6:
+            best_val, best_params, best_state = val_hist[-1], params, state
             patience_ctr = 0
         else:
             patience_ctr += 1
             if patience_ctr > patience:
-                print(f"Early stopping after epoch {epoch}")
                 break
 
-    final_model = eqx.combine(best_params, static)
+    final_model = combine(best_params, static)
 
     if return_penalty_history:
         return final_model, best_state, train_hist, val_hist, pen_hist
     else:
         return final_model, best_state, train_hist, val_hist
+
 
 
 # ---------------------------------------------------------------------
