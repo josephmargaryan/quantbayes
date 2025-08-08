@@ -15,6 +15,8 @@ from .w_init import (
     uniform_init,
     xavier_init,
 )
+from .custom_transforms import RandomChoice, TumourGuidedCrop, MaskGuidedCrop, RandomScale, AdditiveGaussianNoise, CoarseDropout
+
 
 __all__ = [
     "bayesianize",
@@ -31,4 +33,10 @@ __all__ = [
     "analyze_pre_activations",
     "visualize_deterministic_fft",
     "visualize_deterministic_block_fft",
+    "RandomChoice",
+    "TumourGuidedCrop",
+    "MaskGuidedCrop",
+    "RandomScale",
+    "AdditiveGaussianNoise",
+    "CoarseDropout",
 ]

@@ -1,29 +1,43 @@
+import pathlib
 import jax
-import pickle
 import jax.numpy as jnp
-import numpy as _np
 import jax.random as jr
 import optax
 import equinox as eqx
 import augmax
-from typing import Callable, Optional, Iterator, Tuple, Union, Any, List
+from typing import Callable, Optional, Iterator, Tuple, Union, Any, List, Sequence, Literal
+Array = jnp.ndarray
+Key = jr.key
 
 
 AugmentFn = Callable[[jr.key, jnp.ndarray], jnp.ndarray]
 
 
-def make_augmax_augment(transform: AugmentFn) -> AugmentFn:
-    """
-    Wrap an augmax.Chain (or any HWC-based transform) so it can
-    take and return channel‐first batches [N, C, H, W].
-    """
-
+def make_augmax_augment(transform):
     @jax.jit
-    def _augment(key: jr.key, batch_chw: jnp.ndarray) -> jnp.ndarray:
-        subkeys = jr.split(key, batch_chw.shape[0])
-        batch_hwc = jnp.transpose(batch_chw, (0, 2, 3, 1))
-        aug_hwc = jax.vmap(transform)(subkeys, batch_hwc)
-        return jnp.transpose(aug_hwc, (0, 3, 1, 2))
+    def _augment(key, batch_pair):
+        imgs_chw, second = batch_pair
+        subkeys = jr.split(key, imgs_chw.shape[0])
+
+        imgs_hwc = jnp.transpose(imgs_chw, (0, 2, 3, 1))
+
+        if second.ndim == 4:
+            masks_hwc = jnp.transpose(second, (0, 2, 3, 1))
+        else:
+            masks_hwc = second
+
+        (img_hwc_aug, second_hwc_aug) = jax.vmap(transform)(
+            subkeys, [imgs_hwc, masks_hwc]
+        )
+
+        img_chw_aug = jnp.transpose(img_hwc_aug, (0, 3, 1, 2))
+
+        if second.ndim == 4:
+            second_chw_aug = jnp.transpose(second_hwc_aug, (0, 3, 1, 2))
+        else:
+            second_chw_aug = second_hwc_aug
+
+        return img_chw_aug, second_chw_aug
 
     return _augment
 
@@ -56,39 +70,63 @@ def data_loader(
             if key is None:
                 raise ValueError("`augment_fn` given but no PRNG key supplied.")
             key, sk = jr.split(key)
-            xb = augment_fn(sk, xb)
+            xb, yb = augment_fn(sk, [xb, yb])
         yield xb, yb
 
 
 def make_loss_fn(
     per_example_loss: Callable[[jnp.ndarray, jnp.ndarray], jnp.ndarray],
     expect_num_classes: bool = False,
+    *,
+    head_weights: Sequence[float] | None = None,  
 ):
+    """
+    per_example_loss:  any pixel-wise loss that returns shape (B,H,W) or (B,)
+    head_weights:      None → average equally (1/k)
+                       else a list/tuple of weights, same length as 
+    """
     def loss_fn(model, state, x: jnp.ndarray, y: jnp.ndarray, key):
         keys = jax.random.split(key, x.shape[0])
-        logits, state = jax.vmap(
+
+        logits_or_list, state = jax.vmap(
             model,
             in_axes=(0, 0, None),
             out_axes=(0, None),
             axis_name="batch",
         )(x, keys, state)
 
-        if (
-            not expect_num_classes
-            and logits.ndim == y.ndim + 1
-            and logits.shape[-1] == 1
-        ):
-            logits = logits.squeeze(-1)
-        assert (
-            logits.shape[0] == y.shape[0]
-        ), f"Batch mismatch: {logits.shape} vs {y.shape}"
-        per_el = per_example_loss(logits, y)
-        b = per_el.shape[0]
-        per_el = per_el.reshape((b, -1)).mean(axis=1)
-        loss = per_el.mean()
-        return loss, state
+        if isinstance(logits_or_list, (list, tuple)):
+            preds = logits_or_list                     # deep supervision (UnetPP, etc.)
+        else:
+            preds = [logits_or_list]                   # single head
+
+        if head_weights is None:
+            w = [1.0 / len(preds)] * len(preds)
+        else:
+            assert len(head_weights) == len(preds), "head_weights length mismatch"
+            w = jnp.asarray(head_weights, dtype=jnp.float32)
+            w = w / w.sum()                           # normalise
+
+        # compute weighted loss over heads 
+        total = 0.0
+        for logit, weight in zip(preds, w):
+            if (
+                not expect_num_classes
+                and logit.ndim == y.ndim + 1
+                and logit.shape[-1] == 1
+            ):
+                logit = logit.squeeze(-1)
+
+            # per-example, then spatial mean, then batch mean
+            per_el = per_example_loss(logit, y)         
+            b = per_el.shape[0]
+            per_el = per_el.reshape((b, -1)).mean(axis=1) 
+            total = total + weight * per_el.mean()  
+
+        return total, state
 
     return eqx.filter_jit(loss_fn)
+
 
 
 binary_loss = make_loss_fn(optax.sigmoid_binary_cross_entropy, expect_num_classes=False)
@@ -98,16 +136,85 @@ multiclass_loss = make_loss_fn(
 regression_loss = make_loss_fn(lambda p, t: (p - t) ** 2, expect_num_classes=False)
 
 
+def make_dice_bce_loss(
+    pos_weight: float | None = None, 
+    dice_weight: float = 0.5,
+    bce_weight: float = 0.5,
+):
+    """
+    Returns a per-example loss fn compatible with make_loss_fn().
+    dice_weight + bce_weight should sum to 1.
+    """
+
+    def per_example(logits: jnp.ndarray, targets: jnp.ndarray) -> jnp.ndarray:
+        # Dice
+        probs = jax.nn.sigmoid(logits)
+        inter = jnp.sum(probs * targets, axis=(-2, -1))
+        union = jnp.sum(probs, axis=(-2, -1)) + jnp.sum(targets, axis=(-2, -1))
+        dice = 1.0 - (2.0 * inter + 1e-6) / (union + 1e-6)
+
+        # Weighted BCE:  w * CE(pos) + CE(neg)
+        if pos_weight is None:
+            bce = optax.sigmoid_binary_cross_entropy(logits, targets)
+        else:
+            # CE =  - [ y·log σ + (1-y)·log(1-σ) ]
+            ce = optax.sigmoid_binary_cross_entropy(logits, targets)
+            w = 1 + (pos_weight - 1) * targets  
+            bce = w * ce 
+        bce = jnp.mean(bce, axis=(-2, -1))  
+
+        return dice_weight * dice + bce_weight * bce
+
+    return make_loss_fn(per_example, expect_num_classes=False)
+
+
+def make_focal_dice_loss(
+    gamma: float = 2.0,
+    dice_weight: float = 0.5,
+    focal_weight: float = 0.5,
+):
+    """Returns a per-example loss fn for make_loss_fn()."""
+
+    def per_example(logits: jnp.ndarray, targets: jnp.ndarray) -> jnp.ndarray:
+        # Dice term 
+        probs = jax.nn.sigmoid(logits)
+        inter = jnp.sum(probs * targets, axis=(-2, -1))
+        union = jnp.sum(probs, axis=(-2, -1)) + jnp.sum(targets, axis=(-2, -1))
+        dice = 1.0 - (2 * inter + 1e-6) / (union + 1e-6)
+
+        bce = optax.sigmoid_binary_cross_entropy(logits, targets)
+        p_t = probs * targets + (1 - probs) * (1 - targets)
+        mod = (1 - p_t) ** gamma
+        focal = mod * bce
+        focal = jnp.mean(focal, axis=(-2, -1))
+
+        return dice_weight * dice + focal_weight * focal
+
+    return make_loss_fn(per_example, expect_num_classes=False)
+
+def make_tversky_loss(alpha=0.3, beta=0.7, gamma=1.0):
+    def per_example(logits, targets):
+        p = jax.nn.sigmoid(logits)
+        tp = jnp.sum(p * targets, axis=(-2, -1))
+        fp = jnp.sum(p * (1 - targets), axis=(-2, -1))
+        fn = jnp.sum((1 - p) * targets, axis=(-2, -1))
+        tversky = (tp + 1e-6) / (tp + alpha * fp + beta * fn + 1e-6)
+        return (1 - tversky) ** gamma
+    return make_loss_fn(per_example, expect_num_classes=False)
+
+
 def global_spectral_penalty(model) -> jnp.ndarray:
+    """
+    Sum β·θ² over every spectral weight θ in the network,
+    plus any delta_alpha terms, without per-module normalization.
+    Scale the *total* by your lambda_spec in train_step.
+    """
     total = jnp.array(0.0, dtype=jnp.float32)
 
     if hasattr(model, "__spectral_penalty__"):
-        raw = model.__spectral_penalty__()
-        n = model._spectral_weights().size
-        total += raw / n
-
-    if hasattr(model, "delta_alpha"):
-        total += jnp.mean(model.delta_alpha**2)
+        total += model.__spectral_penalty__()
+        if hasattr(model, "delta_alpha"):
+            total += jnp.sum(model.delta_alpha**2)
 
     if isinstance(model, eqx.Module):
         for v in vars(model).values():
@@ -124,9 +231,15 @@ def global_spectral_penalty(model) -> jnp.ndarray:
 
 def global_frobenius_penalty(model) -> jnp.ndarray:
     """
-    Classic L2 (Frobenius) penalty over all trainable parameters.
+    Sum ‖W‖^2 over every weight-matrix (ndim=2) and Conv2D kernel (ndim=4),
+    but skip all 1D biases (and any other 0D/1D arrays).
     """
-    return sum(jnp.sum(p**2) for p in eqx.filter(model, eqx.is_inexact_array))
+    params = eqx.filter(
+        model,
+        lambda x: eqx.is_inexact_array(x) and x.ndim >= 2
+    )
+    leaves = jax.tree_util.tree_leaves(params)
+    return sum(jnp.sum(p ** 2) for p in leaves)
 
 
 @eqx.filter_jit
@@ -177,7 +290,9 @@ def train(
     state: Any,
     opt_state: Any,
     optimizer: Any,
-    loss_fn: Callable,
+    loss_fn: Callable[
+        [Any, Any, jnp.ndarray, jnp.ndarray, jr.PRNGKey], Tuple[jnp.ndarray, Any]
+    ],
     X_train: jnp.ndarray,
     y_train: jnp.ndarray,
     X_val: jnp.ndarray,
@@ -191,34 +306,73 @@ def train(
     lambda_spec: float = 0.0,
     lambda_frob: float = 0.0,
     ckpt_path: Optional[str] = None,
+    checkpoint_interval: Optional[int] = None,
     return_penalty_history: bool = False,
 ) -> Union[
     Tuple[Any, Any, List[float], List[float]],
     Tuple[Any, Any, List[float], List[float], List[float]],
 ]:
+    """
+    Train a model with early stopping, spectral/Frobenius penalties, and optional periodic checkpointing.
+
+    Args:
+        model: Equinox model to train.
+        state: Model state (e.g., for batch-norm).
+        opt_state: Optimizer state.
+        optimizer: Optax or similar optimizer.
+        loss_fn: Function (model, state, xb, yb, key) -> (loss, new_state_info).
+        X_train, y_train: Training data arrays.
+        X_val, y_val: Validation data arrays.
+        batch_size: Samples per batch.
+        num_epochs: Max epochs to run.
+        patience: Epochs to wait for improvement before stopping.
+        key: JAX PRNG key.
+
+    Keyword Args:
+        augment_fn: Optional augmentation fn taking (key, xb) -> xb_aug.
+        lambda_spec: Weight for spectral norm penalty.
+        lambda_frob: Weight for Frobenius norm penalty.
+        ckpt_path: If provided, path to save checkpoints.
+        checkpoint_interval: If provided (>0), save a checkpoint every N epochs.
+            Example:
+                CKPT_PATH  = pathlib.Path("checkpoints/unet_eqx-epoch-{epoch:03d}.ckpt")
+                train(..., ckpt_path=CKPT_PATH, checkpoint_interval=5)
+                Then after train, load the weights with:
+                    ckpt = eqx.tree_deserialise_leaves(CKPT, like={"model": tmpl_model,
+                                                                "state": tmpl_state})
+                    model, state = ckpt["model"], ckpt["state"]
+        return_penalty_history: If True, also return the penalty history.
+
+    Returns:
+        (best_model, best_state, train_losses, val_losses)
+        or
+        (best_model, best_state, train_losses, val_losses, penalty_history)
+    """
+    if checkpoint_interval is not None:
+        assert checkpoint_interval > 0, "`checkpoint_interval` must be > 0"
+
     rng, eval_rng = jr.split(key)
-    train_losses: List[float] = []
-    val_losses: List[float] = []
-    penalty_history: List[float] = []
+    train_losses, val_losses, penalty_history = [], [], []
+
     best_val = float("inf")
     best_model = model
     best_state = state
     patience_counter = 0
 
     for epoch in range(1, num_epochs + 1):
-        epoch_train_loss = 0.0
-        n_train = 0
+        # Train 
+        epoch_train_loss, n_train = 0.0, 0
         rng, perm_rng = jr.split(rng)
         for xb, yb in data_loader(
             X_train,
             y_train,
-            batch_size,
+            batch_size=batch_size,
             shuffle=True,
             key=perm_rng,
             augment_fn=augment_fn,
         ):
             rng, step_rng = jr.split(rng)
-            model, state, opt_state, tot_loss = train_step(
+            model, state, opt_state, batch_loss = train_step(
                 model,
                 state,
                 opt_state,
@@ -230,51 +384,43 @@ def train(
                 lambda_spec,
                 lambda_frob,
             )
-            epoch_train_loss += float(tot_loss) * xb.shape[0]
+            epoch_train_loss += float(batch_loss) * xb.shape[0]
             n_train += xb.shape[0]
-        epoch_train_loss /= n_train
-        train_losses.append(epoch_train_loss)
+        train_losses.append(epoch_train_loss / n_train)
 
-        epoch_val_loss = 0.0
-        n_val = 0
+        # Validate 
+        epoch_val_loss, n_val = 0.0, 0
         for xb, yb in data_loader(
             X_val,
             y_val,
-            batch_size,
+            batch_size=batch_size,
             shuffle=False,
             key=eval_rng,
             augment_fn=None,
         ):
             eval_rng, vk = jr.split(eval_rng)
-            data_loss, _ = loss_fn(model, state, xb, yb, vk)
-            epoch_val_loss += float(data_loss) * xb.shape[0]
+            val_loss, _ = loss_fn(model, state, xb, yb, vk)
+            epoch_val_loss += float(val_loss) * xb.shape[0]
             n_val += xb.shape[0]
-        epoch_val_loss /= n_val
-        val_losses.append(epoch_val_loss)
+        val_losses.append(epoch_val_loss / n_val)
 
-        pen = float(global_spectral_penalty(model))
-        penalty_history.append(pen)
+        penalty_history.append(float(global_spectral_penalty(model)))
 
         if epoch % max(1, num_epochs // 10) == 0 or epoch == num_epochs:
-            lr = (
-                optimizer.state_dict()["param_states"]["learning_rate"]
-                if hasattr(optimizer, "state_dict")
-                else None
-            )
             print(
                 f"[Epoch {epoch:3d}/{num_epochs}] "
-                f"Train={epoch_train_loss:.4f} | Val={epoch_val_loss:.4f} "
-                f"| Pen={pen:.4f}" + (f" | LR={lr:.3e}" if lr is not None else "")
+                f"Train={train_losses[-1]:.4f} | Val={val_losses[-1]:.4f}"
             )
 
-        if epoch_val_loss < best_val:
-            best_val = epoch_val_loss
+        if val_losses[-1] < best_val:
+            best_val = val_losses[-1]
+            best_model, best_state = model, state
             patience_counter = 0
-            best_model = model
-            best_state = state
-            if ckpt_path:
+            if ckpt_path is not None:
+                best_file = pathlib.Path(str(ckpt_path).format(epoch=epoch))
+                best_file.parent.mkdir(parents=True, exist_ok=True)
                 eqx.tree_serialise_leaves(
-                    ckpt_path, {"model": best_model, "state": best_state}
+                    best_file, {"model": best_model, "state": best_state}
                 )
         else:
             patience_counter += 1
@@ -282,51 +428,462 @@ def train(
                 print(f"Early stopping at epoch {epoch}")
                 break
 
+        if (
+            ckpt_path is not None
+            and checkpoint_interval is not None
+            and epoch % checkpoint_interval == 0
+        ):
+            ckpt_file = pathlib.Path(str(ckpt_path).format(epoch=epoch))
+            ckpt_file.parent.mkdir(parents=True, exist_ok=True)
+            eqx.tree_serialise_leaves(ckpt_file, {"model": model, "state": state})
+
     if return_penalty_history:
         return best_model, best_state, train_losses, val_losses, penalty_history
     else:
         return best_model, best_state, train_losses, val_losses
 
 
-@eqx.filter_jit
-def predict(model, state, X, key):
-    model = eqx.nn.inference_mode(model)
-    batched_apply = jax.vmap(model, in_axes=(0, None, None))
-    logits, _ = batched_apply(X, key, state)
-    return logits
+def train_on_full_data(
+    model,
+    state,
+    opt_state,
+    optimizer,
+    loss_fn,
+    X_train,
+    y_train,
+    X_val,
+    y_val,
+    batch_size,
+    num_epochs,
+    key,
+    *,
+    augment_fn=None,
+    lambda_spec=0.0,
+    lambda_frob=0.0,
+    ckpt_path=None,
+    checkpoint_interval=None,
+    return_penalty_history=False,
+):
+    """Combine train+val, disable early-stop, but keep periodic checkpoints."""
+    X_full = jnp.concatenate([X_train, X_val], axis=0)
+    y_full = jnp.concatenate([y_train, y_val], axis=0)
+
+    X_dummy, y_dummy = X_full[:1], y_full[:1]
+
+    return train(
+        model,
+        state,
+        opt_state,
+        optimizer,
+        loss_fn,
+        X_full,
+        y_full,
+        X_dummy,
+        y_dummy,
+        batch_size,
+        num_epochs,
+        patience=num_epochs,  # effectively no early stop
+        key=key,
+        augment_fn=augment_fn,
+        lambda_spec=lambda_spec,
+        lambda_frob=lambda_frob,
+        ckpt_path=ckpt_path,
+        checkpoint_interval=checkpoint_interval,
+        return_penalty_history=return_penalty_history,
+    )
 
 
-def predict_batched(model, state, X, key, batch_size: int = 256):
-    inference_model = eqx.nn.inference_mode(model)
-    n = X.shape[0]
-    parts = []
-    keys = jr.split(key, (n + batch_size - 1) // batch_size)
-    start = 0
+def _select_head(out):
+    """Deep supervision support: if model returns a list of heads, use the last."""
+    return out[-1] if isinstance(out, list) else out
 
+def _channel_axis_to_last(x: Array, channel_axis: int) -> Array:
+    """Move 'channel_axis' to last position for stable softmax/sigmoid ops."""
+    if channel_axis == -1:
+        return x
+    return jnp.moveaxis(x, channel_axis, -1)
+
+def _channel_axis_from_last(x: Array, channel_axis: int) -> Array:
+    """Inverse of _channel_axis_to_last."""
+    if channel_axis == -1:
+        return x
+    return jnp.moveaxis(x, -1, channel_axis)
+
+def _infer_logits_slice_jitted(
+    x_slice: Array, keys: jr.key, model: eqx.Module, state: Any
+) -> Array:
+    """JITted, slice-wise forward that returns logits (or raw outputs for regression)."""
     @eqx.filter_jit
-    def infer_batch(m, s, xb, k):
-        subkeys = jr.split(k, xb.shape[0])
-        preds, _ = jax.vmap(m, in_axes=(None, 0, 0))(s, xb, subkeys)
-        return preds
+    def _infer_slice(x_slice: Array, keys: jr.key, model: eqx.Module, state: Any) -> Array:
+        inference_model = eqx.nn.inference_mode(model)
 
-    for k in keys:
-        xb = X[start : start + batch_size]
-        parts.append(infer_batch(inference_model, state, xb, k))
-        start += batch_size
+        def single(x, k):
+            out, _ = inference_model(x, k, state)
+            logits = _select_head(out)
+            return logits
 
-    return jnp.concatenate(parts, axis=0)
+        return jax.vmap(single, in_axes=(0, 0))(x_slice, keys)
+
+    return _infer_slice(x_slice, keys, model, state)
+
+def _apply_link(
+    logits: Array,
+    task: Literal["auto", "classification", "binary", "regression"],
+    channel_axis: int,
+) -> Array:
+    """
+    Convert logits to prediction space:
+    - classification/segmentation: softmax along channel_axis (C ≥ 2)
+    - binary: sigmoid (C == 1 or scalar)
+    - regression: identity
+    - auto: infer binary vs multiclass by channel size along channel_axis
+    """
+    if task == "regression":
+        return logits
+
+    # Move channels to last to apply softmax/sigmoid cleanly
+    moved = _channel_axis_to_last(logits, channel_axis)
+
+    if task == "binary":
+        probs = jax.nn.sigmoid(moved)
+        return _channel_axis_from_last(probs, channel_axis)
+
+    if task == "classification":
+        probs = jax.nn.softmax(moved, axis=-1)
+        return _channel_axis_from_last(probs, channel_axis)
+
+    # auto
+    C = moved.shape[-1] if moved.ndim >= 1 else 1
+    if C == 1:
+        probs = jax.nn.sigmoid(moved)
+    else:
+        probs = jax.nn.softmax(moved, axis=-1)
+    return _channel_axis_from_last(probs, channel_axis)
+
+def _aggregate_models_probspace(
+    probs_list: List[Array], weights: Array
+) -> Array:
+    """Weighted sum of probabilities. Shapes must match."""
+    acc = None
+    for w, p in zip(weights, probs_list):
+        acc = p * w if acc is None else acc + p * w
+    return acc
+
+def _aggregate_models_logitspace(
+    logits_list: List[Array], weights: Array
+) -> Array:
+    """Arithmetic mean of logits (not probability preserving, but often used)."""
+    acc = None
+    for w, z in zip(weights, logits_list):
+        acc = z * w if acc is None else acc + z * w
+    return acc
+
+# ============================================================
+# Single-model inference (drop-in replacements)
+# ============================================================
+
+@eqx.filter_jit
+def predict(
+    model: eqx.Module,
+    state: Any,
+    X: Array,
+    key: jr.key,
+) -> Array:
+    """Vectorized single-model forward over batch. Returns raw outputs/logits."""
+    inference_model = eqx.nn.inference_mode(model)
+
+    def single(x, k):
+        out, _ = inference_model(x, k, state)
+        return _select_head(out)
+
+    keys = jr.split(key, X.shape[0])
+    return jax.vmap(single, in_axes=(0, 0))(X, keys)
+
+@eqx.filter_jit
+def predict_batched(
+    model: eqx.Module,
+    state: Any,
+    X: Array,
+    key: jr.key,
+    batch_size: int = 256,
+) -> Array:
+    """Chunked single-model forward. Returns raw outputs/logits."""
+    inference_model = eqx.nn.inference_mode(model)
+    N = X.shape[0]
+    num_batches = (N + batch_size - 1) // batch_size
+    batch_keys = jr.split(key, num_batches)
+
+    preds = []
+    start = 0
+    for bk in batch_keys:
+        end = min(start + batch_size, N)
+        xb = X[start:end]
+        subkeys = jr.split(bk, xb.shape[0])
+
+        def infer_one(x, sk):
+            out, _ = inference_model(x, sk, state)
+            return _select_head(out)
+
+        batch_preds = jax.vmap(infer_one, in_axes=(0, 0))(xb, subkeys)
+        preds.append(batch_preds)
+        start = end
+
+    return jnp.concatenate(preds, axis=0)
+
+@eqx.filter_jit
+def infer_slice(
+    x_slice: Array,
+    keys: jr.key,
+    model: eqx.Module,
+    state: Any,
+) -> Array:
+    """Slice-wise inference (very large batches / streaming). Returns logits/raw."""
+    inference_model = eqx.nn.inference_mode(model)
+
+    def single(x, k):
+        out, _ = inference_model(x, k, state)
+        logits = _select_head(out)
+        return logits
+
+    return jax.vmap(single, in_axes=(0, 0))(x_slice, keys)
+
+def predict_batched_efficient(
+    model: eqx.Module,
+    state: Any,
+    X: Array,
+    key: jr.key,
+    batch_size: int = 24,
+) -> Array:
+    """Memory-aware variant. Returns logits/raw. Uses device_get to free memory."""
+    N = X.shape[0]
+    all_logits = []
+    for i in range(0, N, batch_size):
+        x_slice = X[i : i + batch_size]
+        key, slice_key = jr.split(key)
+        subkeys = jr.split(slice_key, x_slice.shape[0])
+        logits_slice = infer_slice(x_slice, subkeys, model, state)
+        logits_slice = jax.device_get(logits_slice)
+        jax.block_until_ready(logits_slice)
+        all_logits.append(logits_slice)
+    return jnp.concatenate(all_logits, axis=0)
+
+# ============================================================
+# Ensemble inference
+# ============================================================
+
+def predict_ensemble_batched(
+    models: Sequence[eqx.Module],
+    states: Sequence[Any],
+    X: Array,
+    key: jr.key,
+    batch_size: int = 256,
+    task: Literal["auto", "classification", "binary", "regression"] = "auto",
+    channel_axis: int = -1,
+    agg: Literal["probs", "logits"] = "probs",
+    weights: Optional[Array] = None,
+    return_variance: bool = False,  # only for regression
+) -> Union[Array, Tuple[Array, Array]]:
+    """
+    Memory-safe ensemble prediction.
+
+    - classification/segmentation:
+        * agg="probs" (default): average probabilities (recommended) -> returns probs
+        * agg="logits": average logits -> returns logits
+    - binary: like classification but uses sigmoid
+    - regression: returns mean; if return_variance=True, also epistemic variance
+
+    Shapes:
+      X: [N, ...]
+      Output:
+        classification: [N, ..., C] with channels at `channel_axis`
+        binary: [N, ..., 1] (or scalar per spatial), channels at `channel_axis`
+        regression: mean [N, ...] (+ var [N, ...] if requested)
+    """
+    assert len(models) == len(states), "models and states must be same length"
+    M = len(models)
+    if weights is None:
+        weights = jnp.ones((M,), dtype=jnp.float32) / M
+    else:
+        weights = jnp.asarray(weights, dtype=jnp.float32)
+        assert weights.shape == (M,), "weights must have shape [M]"
+        weights = weights / jnp.sum(weights)
+
+    N = X.shape[0]
+    num_batches = (N + batch_size - 1) // batch_size
+
+    # Allocate on first batch when we know output shape
+    out_buffer = None
+    var_buffer = None
+
+    start = 0
+    for _ in range(num_batches):
+        end = min(start + batch_size, N)
+        x_slice = X[start:end]
+        B = x_slice.shape[0]
+
+        # Accumulators for this batch
+        if task == "regression":
+            batch_mean = None
+            batch_second_moment = None if return_variance else None
+        else:
+            if agg == "probs":
+                batch_accum_probs: Optional[Array] = None
+            else:
+                batch_accum_logits: Optional[Array] = None
+
+        # Loop over models (each forward is jitted)
+        for m_idx, (model, state) in enumerate(zip(models, states)):
+            key, slice_key = jr.split(key)
+            subkeys = jr.split(slice_key, B)
+            logits = _infer_logits_slice_jitted(x_slice, subkeys, model, state)  # [B, ...]
+
+            if task == "regression":
+                w = weights[m_idx]
+                contrib = w * logits
+                batch_mean = contrib if batch_mean is None else (batch_mean + contrib)
+                if return_variance:
+                    contrib2 = w * (logits ** 2)
+                    batch_second_moment = (
+                        contrib2 if batch_second_moment is None else (batch_second_moment + contrib2)
+                    )
+            else:
+                if agg == "probs":
+                    probs = _apply_link(logits, task, channel_axis)
+                    weighted = weights[m_idx] * probs
+                    batch_accum_probs = (
+                        weighted if batch_accum_probs is None else (batch_accum_probs + weighted)
+                    )
+                else:
+                    weighted = weights[m_idx] * logits
+                    batch_accum_logits = (
+                        weighted if batch_accum_logits is None else (batch_accum_logits + weighted)
+                    )
+
+        # Allocate final buffers on first batch
+        if out_buffer is None:
+            if task == "regression":
+                out_shape = (N,) + batch_mean.shape[1:]
+                out_buffer = jnp.zeros(out_shape, dtype=batch_mean.dtype)
+                if return_variance:
+                    var_buffer = jnp.zeros(out_shape, dtype=batch_mean.dtype)
+            else:
+                if agg == "probs":
+                    out_shape = (N,) + batch_accum_probs.shape[1:]
+                    out_buffer = jnp.zeros(out_shape, dtype=batch_accum_probs.dtype)
+                else:
+                    out_shape = (N,) + batch_accum_logits.shape[1:]
+                    out_buffer = jnp.zeros(out_shape, dtype=batch_accum_logits.dtype)
+
+        # Write batch to buffers
+        if task == "regression":
+            out_buffer = out_buffer.at[start:end].set(batch_mean)
+            if return_variance:
+                # Var_w[y] = E_w[y^2] - (E_w[y])^2
+                batch_var = jnp.maximum(0.0, batch_second_moment - batch_mean ** 2)
+                var_buffer = var_buffer.at[start:end].set(batch_var)
+        else:
+            if agg == "probs":
+                out_buffer = out_buffer.at[start:end].set(batch_accum_probs)
+            else:
+                out_buffer = out_buffer.at[start:end].set(batch_accum_logits)
+
+        start = end
+
+    if task == "regression":
+        if return_variance:
+            return out_buffer, var_buffer
+        return out_buffer
+    else:
+        return out_buffer
+
+def predict_ensemble(
+    models: Sequence[eqx.Module],
+    states: Sequence[Any],
+    X: Array,
+    key: jr.key,
+    task: Literal["auto", "classification", "binary", "regression"] = "auto",
+    channel_axis: int = -1,
+    agg: Literal["probs", "logits"] = "probs",
+    weights: Optional[Array] = None,
+) -> Array:
+    """Convenience: run ensemble in a single batch (uses the batched impl under the hood)."""
+    return predict_ensemble_batched(
+        models=models,
+        states=states,
+        X=X,
+        key=key,
+        batch_size=X.shape[0],
+        task=task,
+        channel_axis=channel_axis,
+        agg=agg,
+        weights=weights,
+        return_variance=False,
+    )
+
+# ============================================================
+# Optional: VMAP-based fast path (uniform model shapes)
+# ============================================================
+
+def predict_ensemble_fast_vmap(
+    models: Sequence[eqx.Module],
+    states: Sequence[Any],
+    X: Array,
+    key: jr.key,
+    task: Literal["auto", "classification", "binary", "regression"] = "auto",
+    channel_axis: int = -1,
+    agg: Literal["probs", "logits"] = "probs",
+    weights: Optional[Array] = None,
+) -> Array:
+    """
+    Faster path when ALL models share identical tree structure and output shapes.
+    Vectorizes across models (M) and batch (N). May use more memory than the batched loop.
+    """
+    M = len(models)
+    assert M == len(states), "models and states must be same length"
+    if weights is None:
+        weights = jnp.ones((M,), dtype=jnp.float32) / M
+    else:
+        weights = jnp.asarray(weights, dtype=jnp.float32)
+        assert weights.shape == (M,), "weights must have shape [M]"
+        weights = weights / jnp.sum(weights)
+
+    N = X.shape[0]
+    keys = jr.split(key, N * M).reshape(N, M, 2)
+
+    def forward_one_example(x, ks, models, states):
+        def apply_model(m, s, k):
+            inference_model = eqx.nn.inference_mode(m)
+            out, _ = inference_model(x, k, s)
+            return _select_head(out)
+
+        # vmap across models axis -> [M, ...]
+        outs_m = eqx.filter_vmap(apply_model, in_axes=(0, 0, 0))(models, states, ks)
+
+        if task == "regression":
+            mean = jnp.tensordot(weights, outs_m, axes=([0], [0]))  # [ ... ]
+            return mean
+
+        if agg == "probs":
+            # Convert each model's output to probs, then weight-average
+            probs_list = []
+            for i in range(M):
+                probs_list.append(_apply_link(outs_m[i], task, channel_axis))
+            return _aggregate_models_probspace(probs_list, weights)
+        else:
+            # Weighted logits
+            return _aggregate_models_logitspace(list(outs_m), weights)
+
+    # vmap across batch
+    return jax.vmap(forward_one_example, in_axes=(0, 0, None, None))(X, keys, models, states)
 
 
 if __name__ == "__main__":
-    """
-    Synthetic vision pipeline test — runs in <10 s on CPU.
-    Replace with CIFAR-10, ImageNet, etc. in real experiments.
-    """
+
     import numpy as np
     import matplotlib.pyplot as plt
     import augmax
+    from augmax import InputType
 
-    # ----- fake “dataset” ---------------------------------------------------
     rng = np.random.RandomState(0)
     N, H, W, C, NUM_CLASSES = 2048, 1, 28, 28, 1
     X_np = rng.rand(N, H, W, C).astype("float32")  # [N, H, W, C]
@@ -337,14 +894,13 @@ if __name__ == "__main__":
     X_train, X_val = X_np[:split], X_np[split:]
     y_train, y_val = y_np[:split], y_np[split:]
 
-    # ----- augmentation pipeline -------------------------------------------
     transform = augmax.Chain(
         augmax.HorizontalFlip(),
         augmax.Rotate(angle_range=15),
+        input_types=[InputType.IMAGE, InputType.METADATA],
     )
     augment_fn = make_augmax_augment(transform)
 
-    # ----- simple CNN -------------------------------------------------------
     class SimpleCNN(eqx.Module):
         conv1: eqx.nn.Conv2d
         bn1: eqx.nn.BatchNorm
@@ -425,6 +981,9 @@ if __name__ == "__main__":
         augment_fn=augment_fn,
         lambda_spec=0.0,
     )
+    print("Training complete.")
+    logits = predict(best_model, best_state, jnp.array(X_val), train_key)
+    print("Predictions shape:", logits.shape)
 
     plt.plot(tr_loss, label="train")
     plt.plot(va_loss, label="val")

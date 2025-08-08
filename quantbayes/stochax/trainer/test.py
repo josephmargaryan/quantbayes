@@ -21,6 +21,7 @@ y_train, y_val = y_np[:split], y_np[split:]
 transform = augmax.Chain(
     augmax.HorizontalFlip(),
     augmax.Rotate(angle_range=15),
+    input_types=[augmax.InputType.IMAGE, augmax.InputType.METADATA],
 )
 augment_fn = make_augmax_augment(transform)
 

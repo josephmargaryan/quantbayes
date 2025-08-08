@@ -1,11 +1,19 @@
+"""
+High-level interface wrapping:
+  - model building (single or list → ensemble)
+  - Trainer orchestration (single split or fine-tune)
+  - Prediction with ensembling
+  - Save / load state so you can resume days later
+"""
+
+from __future__ import annotations
 import os
 import json
 import torch
 import numpy as np
-from typing import Sequence, Dict, List, Optional
+from typing import Dict, List, Callable, Optional, Union
 from torch.utils.data import DataLoader
 
-from ..registry import get_cls_model
 from ..data import GenericDataset, build_transforms
 from ..trainers.classification_trainer import ClassificationTrainer
 from ..utils import load_checkpoint
@@ -14,28 +22,29 @@ from ..utils import load_checkpoint
 class ClassificationPipeline:
     def __init__(
         self,
-        model_names: Sequence[str],
+        model_builders: Dict[str, Callable[[], torch.nn.Module]],
         *,
-        num_classes: int,
-        pretrained: bool = True,
-        device: str | torch.device = "cuda",
+        device: Union[str, torch.device] = "cuda",
     ):
+        """
+        Args:
+            model_builders: mapping from architecture name to a zero-argument callable
+                            that returns a new nn.Module (configured for correct num_classes).
+            device: "cuda", "cpu", or torch.device.
+        """
         # choose CPU if no GPU available
         self.device = torch.device(device if torch.cuda.is_available() else "cpu")
-
-        # config for model builders
-        self.model_cfg = dict(num_classes=num_classes, pretrained=pretrained)
-
-        # build one instance per architecture
+        # store builders for future fine-tune or load
+        self.model_builders = model_builders.copy()
+        # instantiate one model per architecture
         self.models: Dict[str, List[torch.nn.Module]] = {}
-        for name in model_names:
-            model = get_cls_model(name)(**self.model_cfg).to(self.device)
-            model.eval()
-            self.models[name] = [model]
-
-        # ensemble weights
-        n = len(model_names)
-        self.weights = {name: 1.0 / n for name in model_names}
+        for name, builder in self.model_builders.items():
+            m = builder().to(self.device)
+            m.eval()
+            self.models[name] = [m]
+        # uniform ensemble weights
+        n = len(self.models)
+        self.weights: Dict[str, float] = {name: 1.0 / n for name in self.models}
 
     def fit(
         self,
@@ -59,7 +68,6 @@ class ClassificationPipeline:
                 shuffle=False,
                 num_workers=num_workers,
             )
-
         train_loader = DataLoader(
             train_ds,
             batch_size=batch_size,
@@ -67,7 +75,6 @@ class ClassificationPipeline:
             num_workers=num_workers,
             pin_memory=True,
         )
-
         # train each architecture in turn
         for name, model_list in self.models.items():
             model = model_list[-1]
@@ -76,13 +83,12 @@ class ClassificationPipeline:
                 model,
                 save_dir=ckpt_dir,
                 epochs=epochs,
-                device=self.device,  # <–– ensure CPU-only won't try CUDA
+                device=self.device,
             )
             trainer.fit(train_loader, val_loader, epochs)
-
-            # reload best
-            best_state = load_checkpoint(os.path.join(ckpt_dir, "best.pt"))["model"]
-            model.load_state_dict(best_state)
+            # reload best checkpoint
+            ckpt = load_checkpoint(os.path.join(ckpt_dir, "best.pt"))
+            model.load_state_dict(ckpt["model"])
             model.eval()
 
     @torch.no_grad()
@@ -92,7 +98,7 @@ class ClassificationPipeline:
         (softmax averaged over ensemble members).
         """
         x = x.to(self.device)
-        all_probs = []
+        all_probs: List[np.ndarray] = []
         for name, models in self.models.items():
             w = self.weights[name]
             # stack predictions: [n_models, B, C]
@@ -114,13 +120,11 @@ class ClassificationPipeline:
         """
         os.makedirs(path, exist_ok=True)
         meta = {
-            "archs": list(self.models),
-            "model_cfg": self.model_cfg,
+            "archs": list(self.models.keys()),
             "weights": self.weights,
         }
         with open(os.path.join(path, "meta.json"), "w") as f:
             json.dump(meta, f, indent=2)
-
         for name, model_list in self.models.items():
             for idx, model in enumerate(model_list):
                 torch.save(
@@ -132,55 +136,53 @@ class ClassificationPipeline:
     def load(
         cls,
         path: str,
-        device: str | torch.device = "cuda",
-    ) -> "ClassificationPipeline":
+        model_builders: Dict[str, Callable[[], torch.nn.Module]],
+        *,
+        device: Union[str, torch.device] = "cuda",
+    ) -> ClassificationPipeline:
         """
-        Load a previously saved pipeline (including all ensemble members).
+        Load a previously saved pipeline.
+        Requires the same model_builders mapping that was used to construct and save it.
         """
+        # read metadata
         with open(os.path.join(path, "meta.json"), "r") as f:
             meta = json.load(f)
-
-        cfg = meta["model_cfg"]
-        pipe = cls(
-            meta["archs"],
-            num_classes=cfg["num_classes"],
-            pretrained=cfg["pretrained"],
-            device=device,
-        )
-        pipe.weights = meta["weights"]
-
-        # reload each saved model
-        pipe.models = {}
+        # create instance without __init__
+        self = object.__new__(cls)
+        self.device = torch.device(device if torch.cuda.is_available() else "cpu")
+        self.model_builders = model_builders.copy()
+        self.weights = meta["weights"]
+        self.models = {}
+        # reload each saved model version
         for name in meta["archs"]:
-            versions = sorted(
-                fn for fn in os.listdir(path) if fn.startswith(name + "_")
+            builder = self.model_builders[name]
+            files = sorted(
+                fn
+                for fn in os.listdir(path)
+                if fn.startswith(f"{name}_") and fn.endswith(".pt")
             )
-            pipe.models[name] = []
-            for fn in versions:
-                idx = int(fn.split("_")[-1].split(".")[0])
-                model = get_cls_model(name)(**pipe.model_cfg).to(pipe.device)
-                state = torch.load(os.path.join(path, fn), map_location=pipe.device)
-                model.load_state_dict(state)
-                model.eval()
-                pipe.models[name].append(model)
-
-        return pipe
+            self.models[name] = []
+            for fn in files:
+                m = builder().to(self.device)
+                state = torch.load(os.path.join(path, fn), map_location=self.device)
+                m.load_state_dict(state)
+                m.eval()
+                self.models[name].append(m)
+        return self
 
     def add_model(
         self,
         arch_name: str,
-        weights_path: str,
+        model: torch.nn.Module,
+        *,
         weight: float = 1.0,
     ):
         """
-        Add an externally trained model to the ensemble.
+        Add an externally built/trained model to the ensemble.
         """
-        model = get_cls_model(arch_name)(**self.model_cfg).to(self.device)
-        state = torch.load(weights_path, map_location=self.device)
-        model.load_state_dict(state)
-        model.eval()
-
-        self.models.setdefault(arch_name, []).append(model)
+        m = model.to(self.device)
+        m.eval()
+        self.models.setdefault(arch_name, []).append(m)
         self.weights[arch_name] = weight
 
     def remove_architecture(self, arch_name: str):
