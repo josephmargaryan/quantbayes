@@ -214,7 +214,7 @@ def train_backtrack_full_data(
     )
 
 
-if __name__ == "__main__":  
+if __name__ == "__main__":
     from quantbayes.stochax.trainer.test import (
         SimpleCNN,
         X_train,

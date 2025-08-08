@@ -5,7 +5,18 @@ import jax.random as jr
 import optax
 import equinox as eqx
 import augmax
-from typing import Callable, Optional, Iterator, Tuple, Union, Any, List, Sequence, Literal
+from typing import (
+    Callable,
+    Optional,
+    Iterator,
+    Tuple,
+    Union,
+    Any,
+    List,
+    Sequence,
+    Literal,
+)
+
 Array = jnp.ndarray
 Key = jr.key
 
@@ -78,13 +89,14 @@ def make_loss_fn(
     per_example_loss: Callable[[jnp.ndarray, jnp.ndarray], jnp.ndarray],
     expect_num_classes: bool = False,
     *,
-    head_weights: Sequence[float] | None = None,  
+    head_weights: Sequence[float] | None = None,
 ):
     """
     per_example_loss:  any pixel-wise loss that returns shape (B,H,W) or (B,)
     head_weights:      None → average equally (1/k)
-                       else a list/tuple of weights, same length as 
+                       else a list/tuple of weights, same length as
     """
+
     def loss_fn(model, state, x: jnp.ndarray, y: jnp.ndarray, key):
         keys = jax.random.split(key, x.shape[0])
 
@@ -96,18 +108,18 @@ def make_loss_fn(
         )(x, keys, state)
 
         if isinstance(logits_or_list, (list, tuple)):
-            preds = logits_or_list                     # deep supervision (UnetPP, etc.)
+            preds = logits_or_list  # deep supervision (UnetPP, etc.)
         else:
-            preds = [logits_or_list]                   # single head
+            preds = [logits_or_list]  # single head
 
         if head_weights is None:
             w = [1.0 / len(preds)] * len(preds)
         else:
             assert len(head_weights) == len(preds), "head_weights length mismatch"
             w = jnp.asarray(head_weights, dtype=jnp.float32)
-            w = w / w.sum()                           # normalise
+            w = w / w.sum()  # normalise
 
-        # compute weighted loss over heads 
+        # compute weighted loss over heads
         total = 0.0
         for logit, weight in zip(preds, w):
             if (
@@ -118,15 +130,14 @@ def make_loss_fn(
                 logit = logit.squeeze(-1)
 
             # per-example, then spatial mean, then batch mean
-            per_el = per_example_loss(logit, y)         
+            per_el = per_example_loss(logit, y)
             b = per_el.shape[0]
-            per_el = per_el.reshape((b, -1)).mean(axis=1) 
-            total = total + weight * per_el.mean()  
+            per_el = per_el.reshape((b, -1)).mean(axis=1)
+            total = total + weight * per_el.mean()
 
         return total, state
 
     return eqx.filter_jit(loss_fn)
-
 
 
 binary_loss = make_loss_fn(optax.sigmoid_binary_cross_entropy, expect_num_classes=False)
@@ -137,7 +148,7 @@ regression_loss = make_loss_fn(lambda p, t: (p - t) ** 2, expect_num_classes=Fal
 
 
 def make_dice_bce_loss(
-    pos_weight: float | None = None, 
+    pos_weight: float | None = None,
     dice_weight: float = 0.5,
     bce_weight: float = 0.5,
 ):
@@ -159,9 +170,9 @@ def make_dice_bce_loss(
         else:
             # CE =  - [ y·log σ + (1-y)·log(1-σ) ]
             ce = optax.sigmoid_binary_cross_entropy(logits, targets)
-            w = 1 + (pos_weight - 1) * targets  
-            bce = w * ce 
-        bce = jnp.mean(bce, axis=(-2, -1))  
+            w = 1 + (pos_weight - 1) * targets
+            bce = w * ce
+        bce = jnp.mean(bce, axis=(-2, -1))
 
         return dice_weight * dice + bce_weight * bce
 
@@ -176,7 +187,7 @@ def make_focal_dice_loss(
     """Returns a per-example loss fn for make_loss_fn()."""
 
     def per_example(logits: jnp.ndarray, targets: jnp.ndarray) -> jnp.ndarray:
-        # Dice term 
+        # Dice term
         probs = jax.nn.sigmoid(logits)
         inter = jnp.sum(probs * targets, axis=(-2, -1))
         union = jnp.sum(probs, axis=(-2, -1)) + jnp.sum(targets, axis=(-2, -1))
@@ -192,6 +203,7 @@ def make_focal_dice_loss(
 
     return make_loss_fn(per_example, expect_num_classes=False)
 
+
 def make_tversky_loss(alpha=0.3, beta=0.7, gamma=1.0):
     def per_example(logits, targets):
         p = jax.nn.sigmoid(logits)
@@ -200,6 +212,7 @@ def make_tversky_loss(alpha=0.3, beta=0.7, gamma=1.0):
         fn = jnp.sum((1 - p) * targets, axis=(-2, -1))
         tversky = (tp + 1e-6) / (tp + alpha * fp + beta * fn + 1e-6)
         return (1 - tversky) ** gamma
+
     return make_loss_fn(per_example, expect_num_classes=False)
 
 
@@ -234,12 +247,9 @@ def global_frobenius_penalty(model) -> jnp.ndarray:
     Sum ‖W‖^2 over every weight-matrix (ndim=2) and Conv2D kernel (ndim=4),
     but skip all 1D biases (and any other 0D/1D arrays).
     """
-    params = eqx.filter(
-        model,
-        lambda x: eqx.is_inexact_array(x) and x.ndim >= 2
-    )
+    params = eqx.filter(model, lambda x: eqx.is_inexact_array(x) and x.ndim >= 2)
     leaves = jax.tree_util.tree_leaves(params)
-    return sum(jnp.sum(p ** 2) for p in leaves)
+    return sum(jnp.sum(p**2) for p in leaves)
 
 
 @eqx.filter_jit
@@ -360,7 +370,7 @@ def train(
     patience_counter = 0
 
     for epoch in range(1, num_epochs + 1):
-        # Train 
+        # Train
         epoch_train_loss, n_train = 0.0, 0
         rng, perm_rng = jr.split(rng)
         for xb, yb in data_loader(
@@ -388,7 +398,7 @@ def train(
             n_train += xb.shape[0]
         train_losses.append(epoch_train_loss / n_train)
 
-        # Validate 
+        # Validate
         epoch_val_loss, n_val = 0.0, 0
         for xb, yb in data_loader(
             X_val,
@@ -497,11 +507,13 @@ def _select_head(out):
     """Deep supervision support: if model returns a list of heads, use the last."""
     return out[-1] if isinstance(out, list) else out
 
+
 def _channel_axis_to_last(x: Array, channel_axis: int) -> Array:
     """Move 'channel_axis' to last position for stable softmax/sigmoid ops."""
     if channel_axis == -1:
         return x
     return jnp.moveaxis(x, channel_axis, -1)
+
 
 def _channel_axis_from_last(x: Array, channel_axis: int) -> Array:
     """Inverse of _channel_axis_to_last."""
@@ -509,12 +521,16 @@ def _channel_axis_from_last(x: Array, channel_axis: int) -> Array:
         return x
     return jnp.moveaxis(x, -1, channel_axis)
 
+
 def _infer_logits_slice_jitted(
     x_slice: Array, keys: jr.key, model: eqx.Module, state: Any
 ) -> Array:
     """JITted, slice-wise forward that returns logits (or raw outputs for regression)."""
+
     @eqx.filter_jit
-    def _infer_slice(x_slice: Array, keys: jr.key, model: eqx.Module, state: Any) -> Array:
+    def _infer_slice(
+        x_slice: Array, keys: jr.key, model: eqx.Module, state: Any
+    ) -> Array:
         inference_model = eqx.nn.inference_mode(model)
 
         def single(x, k):
@@ -525,6 +541,7 @@ def _infer_logits_slice_jitted(
         return jax.vmap(single, in_axes=(0, 0))(x_slice, keys)
 
     return _infer_slice(x_slice, keys, model, state)
+
 
 def _apply_link(
     logits: Array,
@@ -560,27 +577,27 @@ def _apply_link(
         probs = jax.nn.softmax(moved, axis=-1)
     return _channel_axis_from_last(probs, channel_axis)
 
-def _aggregate_models_probspace(
-    probs_list: List[Array], weights: Array
-) -> Array:
+
+def _aggregate_models_probspace(probs_list: List[Array], weights: Array) -> Array:
     """Weighted sum of probabilities. Shapes must match."""
     acc = None
     for w, p in zip(weights, probs_list):
         acc = p * w if acc is None else acc + p * w
     return acc
 
-def _aggregate_models_logitspace(
-    logits_list: List[Array], weights: Array
-) -> Array:
+
+def _aggregate_models_logitspace(logits_list: List[Array], weights: Array) -> Array:
     """Arithmetic mean of logits (not probability preserving, but often used)."""
     acc = None
     for w, z in zip(weights, logits_list):
         acc = z * w if acc is None else acc + z * w
     return acc
 
+
 # ============================================================
 # Single-model inference (drop-in replacements)
 # ============================================================
+
 
 @eqx.filter_jit
 def predict(
@@ -598,6 +615,7 @@ def predict(
 
     keys = jr.split(key, X.shape[0])
     return jax.vmap(single, in_axes=(0, 0))(X, keys)
+
 
 @eqx.filter_jit
 def predict_batched(
@@ -630,6 +648,7 @@ def predict_batched(
 
     return jnp.concatenate(preds, axis=0)
 
+
 @eqx.filter_jit
 def infer_slice(
     x_slice: Array,
@@ -646,6 +665,7 @@ def infer_slice(
         return logits
 
     return jax.vmap(single, in_axes=(0, 0))(x_slice, keys)
+
 
 def predict_batched_efficient(
     model: eqx.Module,
@@ -667,9 +687,11 @@ def predict_batched_efficient(
         all_logits.append(logits_slice)
     return jnp.concatenate(all_logits, axis=0)
 
+
 # ============================================================
 # Ensemble inference
 # ============================================================
+
 
 def predict_ensemble_batched(
     models: Sequence[eqx.Module],
@@ -735,28 +757,36 @@ def predict_ensemble_batched(
         for m_idx, (model, state) in enumerate(zip(models, states)):
             key, slice_key = jr.split(key)
             subkeys = jr.split(slice_key, B)
-            logits = _infer_logits_slice_jitted(x_slice, subkeys, model, state)  # [B, ...]
+            logits = _infer_logits_slice_jitted(
+                x_slice, subkeys, model, state
+            )  # [B, ...]
 
             if task == "regression":
                 w = weights[m_idx]
                 contrib = w * logits
                 batch_mean = contrib if batch_mean is None else (batch_mean + contrib)
                 if return_variance:
-                    contrib2 = w * (logits ** 2)
+                    contrib2 = w * (logits**2)
                     batch_second_moment = (
-                        contrib2 if batch_second_moment is None else (batch_second_moment + contrib2)
+                        contrib2
+                        if batch_second_moment is None
+                        else (batch_second_moment + contrib2)
                     )
             else:
                 if agg == "probs":
                     probs = _apply_link(logits, task, channel_axis)
                     weighted = weights[m_idx] * probs
                     batch_accum_probs = (
-                        weighted if batch_accum_probs is None else (batch_accum_probs + weighted)
+                        weighted
+                        if batch_accum_probs is None
+                        else (batch_accum_probs + weighted)
                     )
                 else:
                     weighted = weights[m_idx] * logits
                     batch_accum_logits = (
-                        weighted if batch_accum_logits is None else (batch_accum_logits + weighted)
+                        weighted
+                        if batch_accum_logits is None
+                        else (batch_accum_logits + weighted)
                     )
 
         # Allocate final buffers on first batch
@@ -779,7 +809,7 @@ def predict_ensemble_batched(
             out_buffer = out_buffer.at[start:end].set(batch_mean)
             if return_variance:
                 # Var_w[y] = E_w[y^2] - (E_w[y])^2
-                batch_var = jnp.maximum(0.0, batch_second_moment - batch_mean ** 2)
+                batch_var = jnp.maximum(0.0, batch_second_moment - batch_mean**2)
                 var_buffer = var_buffer.at[start:end].set(batch_var)
         else:
             if agg == "probs":
@@ -795,6 +825,7 @@ def predict_ensemble_batched(
         return out_buffer
     else:
         return out_buffer
+
 
 def predict_ensemble(
     models: Sequence[eqx.Module],
@@ -820,9 +851,11 @@ def predict_ensemble(
         return_variance=False,
     )
 
+
 # ============================================================
 # Optional: VMAP-based fast path (uniform model shapes)
 # ============================================================
+
 
 def predict_ensemble_fast_vmap(
     models: Sequence[eqx.Module],
@@ -874,7 +907,9 @@ def predict_ensemble_fast_vmap(
             return _aggregate_models_logitspace(list(outs_m), weights)
 
     # vmap across batch
-    return jax.vmap(forward_one_example, in_axes=(0, 0, None, None))(X, keys, models, states)
+    return jax.vmap(forward_one_example, in_axes=(0, 0, None, None))(
+        X, keys, models, states
+    )
 
 
 if __name__ == "__main__":

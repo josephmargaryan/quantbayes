@@ -21,17 +21,23 @@ import jax.random as jr
 import jax.image
 
 from quantbayes.stochax.vision_segmentation.models.unet_backbone import (
-    ResNetEncoder, _RESNET_SPECS
+    ResNetEncoder,
+    _RESNET_SPECS,
 )
 
 # ---------- Utilities ----------
 
-def _resize_nchw(x: jnp.ndarray, out_h: int, out_w: int, *, method: str = "bilinear") -> jnp.ndarray:
+
+def _resize_nchw(
+    x: jnp.ndarray, out_h: int, out_w: int, *, method: str = "bilinear"
+) -> jnp.ndarray:
     """Resize a [C,H,W] tensor via channels-last, then move axes back."""
     c, _, _ = x.shape
-    x_hwc = jnp.moveaxis(x, 0, -1)                       # [H,W,C]
-    y_hwc = jax.image.resize(x_hwc, (out_h, out_w, c), method=method)  # channels-last API
-    return jnp.moveaxis(y_hwc, -1, 0)                    # [C,H,W]
+    x_hwc = jnp.moveaxis(x, 0, -1)  # [H,W,C]
+    y_hwc = jax.image.resize(
+        x_hwc, (out_h, out_w, c), method=method
+    )  # channels-last API
+    return jnp.moveaxis(y_hwc, -1, 0)  # [C,H,W]
 
 
 def _adaptive_avg_pool(x: jnp.ndarray, out_size: int) -> jnp.ndarray:
@@ -56,33 +62,45 @@ def _adaptive_avg_pool(x: jnp.ndarray, out_size: int) -> jnp.ndarray:
     pad_right = pad_w - pad_left
 
     pads = (
-        (0, 0),                           # C
-        (pad_top, pad_bottom),            # H
-        (pad_left, pad_right),            # W
+        (0, 0),  # C
+        (pad_top, pad_bottom),  # H
+        (pad_left, pad_right),  # W
     )
-    x_pad = jnp.pad(x, pads, mode="constant", constant_values=0.0)     # [C,H',W']
+    x_pad = jnp.pad(x, pads, mode="constant", constant_values=0.0)  # [C,H',W']
 
     # Sum over pooling windows
     win = (1, k_h, k_w)
     strides = (1, s_h, s_w)
     pooled_sum = jax.lax.reduce_window(
-        x_pad, 0.0, jax.lax.add, window_dimensions=win, window_strides=strides, padding="VALID"
+        x_pad,
+        0.0,
+        jax.lax.add,
+        window_dimensions=win,
+        window_strides=strides,
+        padding="VALID",
     )  # [C,out_size,out_size]
 
     # Count valid elements per window (avoid zero-padding bias)
     ones = jnp.ones((1, x_pad.shape[1], x_pad.shape[2]), dtype=x.dtype)  # [1,H',W']
     counts = jax.lax.reduce_window(
-        ones, 0.0, jax.lax.add, window_dimensions=win, window_strides=strides, padding="VALID"
+        ones,
+        0.0,
+        jax.lax.add,
+        window_dimensions=win,
+        window_strides=strides,
+        padding="VALID",
     )  # [1,out_size,out_size]
     pooled = pooled_sum / counts  # broadcasts over channel dim
 
     return pooled  # [C,out_size,out_size]
 
+
 # ---------- Modules ----------
+
 
 class PPM(eqx.Module):
     convs: Tuple[eqx.nn.Conv2d, ...]
-    bns:   Tuple[eqx.nn.BatchNorm, ...]
+    bns: Tuple[eqx.nn.BatchNorm, ...]
     out_ch: int = eqx.field(static=True)
     bins: Tuple[int, ...] = eqx.field(static=True)
 
@@ -98,14 +116,16 @@ class PPM(eqx.Module):
         ks = jr.split(key, len(bins))
         cout = max(1, cin // reduction)
         self.convs = tuple(eqx.nn.Conv2d(cin, cout, 1, key=k) for k in ks)
-        self.bns   = tuple(eqx.nn.BatchNorm(cout, axis_name=axis_name, mode="batch") for _ in bins)
-        self.bins  = tuple(bins)
+        self.bns = tuple(
+            eqx.nn.BatchNorm(cout, axis_name=axis_name, mode="batch") for _ in bins
+        )
+        self.bins = tuple(bins)
         self.out_ch = cin + len(bins) * cout
 
     def __call__(self, x: jnp.ndarray, *, key, state):
         outs = [x]
         for bin_size, conv, bn in zip(self.bins, self.convs, self.bns):
-            y = conv(_adaptive_avg_pool(x, bin_size))   # [C',b,b]
+            y = conv(_adaptive_avg_pool(x, bin_size))  # [C',b,b]
             y, state = bn(y, state)
             y = jax.nn.relu(y)
             y = _resize_nchw(y, x.shape[1], x.shape[2], method="bilinear")
@@ -120,12 +140,20 @@ class PSPHead(eqx.Module):
     out_conv: eqx.nn.Conv2d
     dropout_p: float = eqx.field(static=True)
 
-    def __init__(self, cin: int, cout: int, *, key, dropout_p: float = 0.1, axis_name: str | None = "batch"):
+    def __init__(
+        self,
+        cin: int,
+        cout: int,
+        *,
+        key,
+        dropout_p: float = 0.1,
+        axis_name: str | None = "batch",
+    ):
         k1, k2 = jr.split(key, 2)
         mid = max(1, cin // 4)
         self.conv3 = eqx.nn.Conv2d(cin, mid, 3, padding=1, key=k1)
-        self.bn3   = eqx.nn.BatchNorm(mid, axis_name=axis_name, mode="batch")
-        self.drop  = eqx.nn.Dropout(p=dropout_p)
+        self.bn3 = eqx.nn.BatchNorm(mid, axis_name=axis_name, mode="batch")
+        self.drop = eqx.nn.Dropout(p=dropout_p)
         self.out_conv = eqx.nn.Conv2d(mid, cout, 1, key=k2)
         self.dropout_p = dropout_p
 
@@ -146,7 +174,7 @@ class AuxHead(eqx.Module):
         k1, k2 = jr.split(key, 2)
         mid = max(1, cin // 4)
         self.conv = eqx.nn.Conv2d(cin, mid, 3, padding=1, key=k1)
-        self.bn   = eqx.nn.BatchNorm(mid, axis_name=axis_name, mode="batch")
+        self.bn = eqx.nn.BatchNorm(mid, axis_name=axis_name, mode="batch")
         self.out_conv = eqx.nn.Conv2d(mid, cout, 1, key=k2)
 
     def __call__(self, x, *, key, state):
@@ -183,13 +211,17 @@ class PSPNetResNet(eqx.Module):
         self.encoder = ResNetEncoder(backbone, key=k_enc)
 
         c_deep = _RESNET_SPECS[backbone]["channels"][-1]
-        c_aux  = _RESNET_SPECS[backbone]["channels"][-2]
+        c_aux = _RESNET_SPECS[backbone]["channels"][-2]
 
-        self.ppm  = PPM(c_deep, bins=ppm_bins, key=k_ppm, axis_name=axis_name)
-        self.head = PSPHead(self.ppm.out_ch, num_classes, key=k_head, axis_name=axis_name)
+        self.ppm = PPM(c_deep, bins=ppm_bins, key=k_ppm, axis_name=axis_name)
+        self.head = PSPHead(
+            self.ppm.out_ch, num_classes, key=k_head, axis_name=axis_name
+        )
 
-        self.aux  = aux
-        self.aux_head = AuxHead(c_aux, num_classes, key=k_aux, axis_name=axis_name) if aux else None
+        self.aux = aux
+        self.aux_head = (
+            AuxHead(c_aux, num_classes, key=k_aux, axis_name=axis_name) if aux else None
+        )
         self.num_classes = num_classes
 
     def __call__(self, x, key, state):
@@ -245,8 +277,10 @@ if __name__ == "__main__":
     rng = np.random.RandomState(0)
     N, C, H, W, OUT_CH = 10, 3, 128, 128, 1  # binary mask example
 
-    X_np = rng.rand(N, C, H, W).astype("float32")                    # images: N×C×H×W
-    y_np = rng.randint(0, 2, size=(N, OUT_CH, H, W)).astype("float32")  # masks: N×OUT_CH×H×W
+    X_np = rng.rand(N, C, H, W).astype("float32")  # images: N×C×H×W
+    y_np = rng.randint(0, 2, size=(N, OUT_CH, H, W)).astype(
+        "float32"
+    )  # masks: N×OUT_CH×H×W
 
     split = int(0.8 * N)
     X_train, X_val = X_np[:split], X_np[split:]
@@ -280,8 +314,8 @@ if __name__ == "__main__":
         opt_state=opt_state,
         optimizer=optimizer,
         loss_fn=make_dice_bce_loss(),  # BCE-with-logits over 1-channel masks
-        X_train=jnp.array(X_train),    # (N,C,H,W)
-        y_train=jnp.array(y_train),    # (N,1,H,W)
+        X_train=jnp.array(X_train),  # (N,C,H,W)
+        y_train=jnp.array(y_train),  # (N,1,H,W)
         X_val=jnp.array(X_val),
         y_val=jnp.array(y_val),
         batch_size=32,

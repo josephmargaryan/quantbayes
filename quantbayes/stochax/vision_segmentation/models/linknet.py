@@ -16,25 +16,26 @@ import jax.image
 
 
 from quantbayes.stochax.vision_segmentation.models.unet_backbone import (
-    _match,                    
+    _match,
     ResNetEncoder,
     _RESNET_SPECS,
 )
 
+
 class DecoderBlock(eqx.Module):
-    up:  eqx.nn.ConvTranspose2d
+    up: eqx.nn.ConvTranspose2d
     bn1: eqx.nn.BatchNorm
     conv1x1: eqx.nn.Conv2d
     bn2: eqx.nn.BatchNorm
 
     def __init__(self, cin: int, cout: int, *, key):
         k_up, k_conv = jr.split(key, 2)
-        self.up       = eqx.nn.ConvTranspose2d(cin, cout, 3, stride=2,
-                                               padding=1, output_padding=1,
-                                               key=k_up)
-        self.bn1      = eqx.nn.BatchNorm(cout, axis_name="batch", mode="batch")
-        self.conv1x1  = eqx.nn.Conv2d(cout, cout, 1, key=k_conv)
-        self.bn2      = eqx.nn.BatchNorm(cout, axis_name="batch", mode="batch")
+        self.up = eqx.nn.ConvTranspose2d(
+            cin, cout, 3, stride=2, padding=1, output_padding=1, key=k_up
+        )
+        self.bn1 = eqx.nn.BatchNorm(cout, axis_name="batch", mode="batch")
+        self.conv1x1 = eqx.nn.Conv2d(cout, cout, 1, key=k_conv)
+        self.bn2 = eqx.nn.BatchNorm(cout, axis_name="batch", mode="batch")
 
     def __call__(self, x, key, state):
         k1, k2 = jr.split(key, 2)
@@ -48,7 +49,6 @@ class DecoderBlock(eqx.Module):
         return x, state
 
 
-
 class LinkNetResNet(eqx.Module):
     encoder: ResNetEncoder
     d4: DecoderBlock
@@ -57,8 +57,8 @@ class LinkNetResNet(eqx.Module):
     d1: DecoderBlock
     out_conv: eqx.nn.Conv2d
 
-    backbone: str      = eqx.field(static=True)
-    out_ch:   int      = eqx.field(static=True)
+    backbone: str = eqx.field(static=True)
+    out_ch: int = eqx.field(static=True)
 
     def __init__(
         self,
@@ -70,11 +70,11 @@ class LinkNetResNet(eqx.Module):
         if backbone not in _RESNET_SPECS:
             raise ValueError(f"Unknown backbone '{backbone}'")
 
-        k_enc, *k_dec, k_out = jr.split(key, 7)  
+        k_enc, *k_dec, k_out = jr.split(key, 7)
         self.encoder = ResNetEncoder(backbone, key=k_enc)
 
-        chans: List[int] = _RESNET_SPECS[backbone]["channels"]  
-        c1, c2, c3, c4, c5 = chans                      
+        chans: List[int] = _RESNET_SPECS[backbone]["channels"]
+        c1, c2, c3, c4, c5 = chans
 
         self.d4 = DecoderBlock(c5, c4, key=k_dec[0])
         self.d3 = DecoderBlock(c4, c3, key=k_dec[1])
@@ -84,7 +84,7 @@ class LinkNetResNet(eqx.Module):
         self.out_conv = eqx.nn.Conv2d(c1, out_ch, 1, key=k_out)
 
         self.backbone = backbone
-        self.out_ch   = out_ch
+        self.out_ch = out_ch
 
     def __call__(self, x, key, state):
         """
@@ -97,7 +97,7 @@ class LinkNetResNet(eqx.Module):
 
         d4, state = self.d4(f4, key=k4, state=state)
         d4 = _match(d4, f3)
-        d4 = d4 + f3                    
+        d4 = d4 + f3
 
         d3, state = self.d3(d4, key=k3, state=state)
         d3 = _match(d3, f2)
@@ -141,7 +141,7 @@ if __name__ == "__main__":
     from quantbayes.stochax import (
         train,  # training loop
         predict,
-        make_augmax_augment,  
+        make_augmax_augment,
         make_dice_bce_loss,
     )
 
@@ -169,7 +169,7 @@ if __name__ == "__main__":
     master_key = jr.PRNGKey(42)
     model_key, train_key = jr.split(master_key)
     model, state = eqx.nn.make_with_state(LinkNetResNet)(
-        out_ch=OUT_CH,          # ← number of channels in your target mask
+        out_ch=OUT_CH,  # ← number of channels in your target mask
         backbone="resnet50",
         key=model_key,
     )

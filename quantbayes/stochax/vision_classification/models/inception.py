@@ -62,6 +62,7 @@ import jax.random as jr
 # --------------------------- small utilities --------------------------- #
 class AdaptiveAvgPool2d(eqx.Module):
     """Exact AdaptiveAvgPool2d to (out_h, out_w) for single-sample CHW tensors."""
+
     out_h: int = eqx.field(static=True)
     out_w: int = eqx.field(static=True)
 
@@ -90,15 +91,32 @@ class AdaptiveAvgPool2d(eqx.Module):
 # --------------------------- primitive layers --------------------------- #
 class BasicConv2d(eqx.Module):
     """Conv -> BN -> ReLU; mirrors torchvision BasicConv2d naming (`conv`, `bn`)."""
+
     conv: eqx.nn.Conv2d
     bn: eqx.nn.BatchNorm
     stride: Tuple[int, int] = eqx.field(static=True)
     padding: Tuple[int, int] = eqx.field(static=True)
 
-    def __init__(self, cin: int, cout: int, kernel_size: Tuple[int, int] | int,
-                 stride: int | Tuple[int, int] = 1, padding: int | Tuple[int, int] = 0, *, key):
-        k1, = jr.split(key, 1)
-        self.conv = eqx.nn.Conv2d(cin, cout, kernel_size, stride=stride, padding=padding, use_bias=False, key=k1)
+    def __init__(
+        self,
+        cin: int,
+        cout: int,
+        kernel_size: Tuple[int, int] | int,
+        stride: int | Tuple[int, int] = 1,
+        padding: int | Tuple[int, int] = 0,
+        *,
+        key,
+    ):
+        (k1,) = jr.split(key, 1)
+        self.conv = eqx.nn.Conv2d(
+            cin,
+            cout,
+            kernel_size,
+            stride=stride,
+            padding=padding,
+            use_bias=False,
+            key=k1,
+        )
         self.bn = eqx.nn.BatchNorm(cout, axis_name="batch", mode="batch")
         self.stride = (stride, stride) if isinstance(stride, int) else stride
         self.padding = (padding, padding) if isinstance(padding, int) else padding
@@ -169,7 +187,9 @@ class InceptionB(eqx.Module):
         b3d, state = self.branch3x3dbl_2(b3d, key=next(k), state=state)
         b3d, state = self.branch3x3dbl_3(b3d, key=next(k), state=state)
         bp = self.maxpool(x)
-        out = jnp.concatenate([b3, b3d, bp], axis=0)  # 384 + 96 + in_ch (pooled) = expected 768 when in_ch=288
+        out = jnp.concatenate(
+            [b3, b3d, bp], axis=0
+        )  # 384 + 96 + in_ch (pooled) = expected 768 when in_ch=288
         return out, state
 
 
@@ -259,7 +279,9 @@ class InceptionD(eqx.Module):
         b7, state = self.branch7x7x3_4(b7, key=next(k), state=state)
 
         bp = self.maxpool(x)
-        out = jnp.concatenate([b3, b7, bp], axis=0)  # 320 + 192 + 768 = 1280 when in=768
+        out = jnp.concatenate(
+            [b3, b7, bp], axis=0
+        )  # 320 + 192 + 768 = 1280 when in=768
         return out, state
 
 
@@ -289,8 +311,12 @@ class InceptionE(eqx.Module):
 
         self.branch3x3dbl_1 = BasicConv2d(in_channels, 448, 1, key=next(k))
         self.branch3x3dbl_2 = BasicConv2d(448, 384, 3, padding=1, key=next(k))
-        self.branch3x3dbl_3a = BasicConv2d(384, 384, (1, 3), padding=(0, 1), key=next(k))
-        self.branch3x3dbl_3b = BasicConv2d(384, 384, (3, 1), padding=(1, 0), key=next(k))
+        self.branch3x3dbl_3a = BasicConv2d(
+            384, 384, (1, 3), padding=(0, 1), key=next(k)
+        )
+        self.branch3x3dbl_3b = BasicConv2d(
+            384, 384, (3, 1), padding=(1, 0), key=next(k)
+        )
 
         self.branch_pool = BasicConv2d(in_channels, 192, 1, key=next(k))
         self.avgpool = eqx.nn.AvgPool2d(3, stride=1, padding=1)
@@ -325,7 +351,9 @@ class InceptionAux(eqx.Module):
     fc: eqx.nn.Linear
     dropout_p: float = eqx.field(static=True)
 
-    def __init__(self, in_channels: int, num_classes: int, dropout: float = 0.7, *, key):
+    def __init__(
+        self, in_channels: int, num_classes: int, dropout: float = 0.7, *, key
+    ):
         k0, k1, k2 = jr.split(key, 3)
         self.avgpool = AdaptiveAvgPool2d(5, 5)
         self.conv0 = BasicConv2d(in_channels, 128, 1, key=k0)
@@ -335,10 +363,10 @@ class InceptionAux(eqx.Module):
 
     def __call__(self, x, key, state):
         # Returns aux logits; caller can combine with main loss.
-        k0, = jr.split(key, 1)
+        (k0,) = jr.split(key, 1)
         x = self.avgpool(x)
         x, state = self.conv0(x, key=k0, state=state)
-        k1, = jr.split(key, 1)
+        (k1,) = jr.split(key, 1)
         x, state = self.conv1(x, key=k1, state=state)
         x = x.reshape(-1)  # [768]
         x = eqx.nn.Dropout(self.dropout_p)(x, key=k0)  # stateless dropout instance
@@ -381,40 +409,51 @@ class InceptionV3(eqx.Module):
     num_classes: int = eqx.field(static=True)
     aux_logits: bool = eqx.field(static=True)
 
-    def __init__(self, *, num_classes: int = 1000, aux_logits: bool = True, dropout: float = 0.5, key):
+    def __init__(
+        self,
+        *,
+        num_classes: int = 1000,
+        aux_logits: bool = True,
+        dropout: float = 0.5,
+        key,
+    ):
         # Keys
         k_stem, *k_rest = jr.split(key, 20)
         k_it = iter(k_rest)
 
         # Stem
         self.Conv2d_1a_3x3 = BasicConv2d(3, 32, 3, stride=2, key=k_stem)
-        self.Conv2d_2a_3x3 = BasicConv2d(32, 32, 3, key=next(k_it))              # valid
-        self.Conv2d_2b_3x3 = BasicConv2d(32, 64, 3, padding=1, key=next(k_it))   # same
+        self.Conv2d_2a_3x3 = BasicConv2d(32, 32, 3, key=next(k_it))  # valid
+        self.Conv2d_2b_3x3 = BasicConv2d(32, 64, 3, padding=1, key=next(k_it))  # same
         self.maxpool1 = eqx.nn.MaxPool2d(3, stride=2)
 
         self.Conv2d_3b_1x1 = BasicConv2d(64, 80, 1, key=next(k_it))
-        self.Conv2d_4a_3x3 = BasicConv2d(80, 192, 3, key=next(k_it))             # valid
+        self.Conv2d_4a_3x3 = BasicConv2d(80, 192, 3, key=next(k_it))  # valid
         self.maxpool2 = eqx.nn.MaxPool2d(3, stride=2)
 
         # Mixed 5x (35x35)
-        self.Mixed_5b = InceptionA(192, pool_features=32, key=next(k_it))        # -> 256
-        self.Mixed_5c = InceptionA(256, pool_features=64, key=next(k_it))        # -> 288
-        self.Mixed_5d = InceptionA(288, pool_features=64, key=next(k_it))        # -> 288
+        self.Mixed_5b = InceptionA(192, pool_features=32, key=next(k_it))  # -> 256
+        self.Mixed_5c = InceptionA(256, pool_features=64, key=next(k_it))  # -> 288
+        self.Mixed_5d = InceptionA(288, pool_features=64, key=next(k_it))  # -> 288
 
         # Mixed 6a (Reduction A) -> 17x17, then 6b-e
-        self.Mixed_6a = InceptionB(288, key=next(k_it))                          # -> 768
-        self.Mixed_6b = InceptionC(768, channels_7x7=128, key=next(k_it))        # -> 768
+        self.Mixed_6a = InceptionB(288, key=next(k_it))  # -> 768
+        self.Mixed_6b = InceptionC(768, channels_7x7=128, key=next(k_it))  # -> 768
         self.Mixed_6c = InceptionC(768, channels_7x7=128, key=next(k_it))
         self.Mixed_6d = InceptionC(768, channels_7x7=128, key=next(k_it))
         self.Mixed_6e = InceptionC(768, channels_7x7=128, key=next(k_it))
 
         # Aux logits head (off by default in __call__)
-        self.AuxLogits = InceptionAux(768, num_classes, dropout=0.7, key=next(k_it)) if aux_logits else None
+        self.AuxLogits = (
+            InceptionAux(768, num_classes, dropout=0.7, key=next(k_it))
+            if aux_logits
+            else None
+        )
 
         # Mixed 7a (Reduction B) -> 8x8, then 7b-c
-        self.Mixed_7a = InceptionD(768, key=next(k_it))                          # -> 1280
-        self.Mixed_7b = InceptionE(1280, key=next(k_it))                         # -> 2048
-        self.Mixed_7c = InceptionE(2048, key=next(k_it))                         # -> 2048
+        self.Mixed_7a = InceptionD(768, key=next(k_it))  # -> 1280
+        self.Mixed_7b = InceptionE(1280, key=next(k_it))  # -> 2048
+        self.Mixed_7c = InceptionE(2048, key=next(k_it))  # -> 2048
 
         # Head
         self.avgpool = AdaptiveAvgPool2d(1, 1)
@@ -426,7 +465,9 @@ class InceptionV3(eqx.Module):
 
     def _check_input(self, x: jnp.ndarray):
         if x.ndim != 3:
-            raise ValueError(f"InceptionV3 expects single sample [C,H,W]; got {tuple(x.shape)}.")
+            raise ValueError(
+                f"InceptionV3 expects single sample [C,H,W]; got {tuple(x.shape)}."
+            )
         if x.shape[0] != 3:
             raise ValueError(f"Expected 3 input channels; got {x.shape[0]}.")
 
@@ -503,8 +544,10 @@ class InceptionV3(eqx.Module):
 
         aux = None
         if self.AuxLogits is not None:
-            aux_key, = jr.split(next(k_it), 1)
-            aux, _ = self.AuxLogits(x_mid, key=aux_key, state=state)  # aux uses same state pipe
+            (aux_key,) = jr.split(next(k_it), 1)
+            aux, _ = self.AuxLogits(
+                x_mid, key=aux_key, state=state
+            )  # aux uses same state pipe
 
         x, state = self.Mixed_7a(x, key=next(k_it), state=state)
         x, state = self.Mixed_7b(x, key=next(k_it), state=state)
@@ -542,18 +585,26 @@ def _copy_into_tree(obj, pt: Dict[str, jnp.ndarray], prefix: str = ""):
             if isinstance(attr, eqx.nn.Conv2d):
                 new_attr = attr
                 if f"{full}.weight" in pt:
-                    new_attr = eqx.tree_at(lambda m: m.weight, new_attr, pt[f"{full}.weight"])
+                    new_attr = eqx.tree_at(
+                        lambda m: m.weight, new_attr, pt[f"{full}.weight"]
+                    )
                 if f"{full}.bias" in pt:
-                    new_attr = eqx.tree_at(lambda m: m.bias, new_attr, pt[f"{full}.bias"])
+                    new_attr = eqx.tree_at(
+                        lambda m: m.bias, new_attr, pt[f"{full}.bias"]
+                    )
                 obj = eqx.tree_at(lambda m: getattr(m, name), obj, new_attr)
                 continue
 
             if isinstance(attr, eqx.nn.Linear):
                 new_attr = attr
                 if f"{full}.weight" in pt:
-                    new_attr = eqx.tree_at(lambda m: m.weight, new_attr, pt[f"{full}.weight"])
+                    new_attr = eqx.tree_at(
+                        lambda m: m.weight, new_attr, pt[f"{full}.weight"]
+                    )
                 if f"{full}.bias" in pt:
-                    new_attr = eqx.tree_at(lambda m: m.bias, new_attr, pt[f"{full}.bias"])
+                    new_attr = eqx.tree_at(
+                        lambda m: m.bias, new_attr, pt[f"{full}.bias"]
+                    )
                 obj = eqx.tree_at(lambda m: getattr(m, name), obj, new_attr)
                 continue
 
@@ -563,7 +614,10 @@ def _copy_into_tree(obj, pt: Dict[str, jnp.ndarray], prefix: str = ""):
                     obj = eqx.tree_at(
                         lambda m: (getattr(m, name).weight, getattr(m, name).bias),
                         obj,
-                        (pt.get(w_key, getattr(attr, "weight")), pt.get(b_key, getattr(attr, "bias"))),
+                        (
+                            pt.get(w_key, getattr(attr, "weight")),
+                            pt.get(b_key, getattr(attr, "bias")),
+                        ),
                     )
                 continue
 
@@ -583,9 +637,12 @@ def _copy_into_tree(obj, pt: Dict[str, jnp.ndarray], prefix: str = ""):
     return obj
 
 
-def load_torchvision_inception_v3(model: InceptionV3, npz_path: str, *, strict_fc: bool = True) -> InceptionV3:
+def load_torchvision_inception_v3(
+    model: InceptionV3, npz_path: str, *, strict_fc: bool = True
+) -> InceptionV3:
     """Load a torchvision inception_v3 .npz (from state_dict()) into this model."""
     import numpy as np
+
     raw = dict(np.load(npz_path))
     pt: Dict[str, jnp.ndarray] = {}
     for k, v in raw.items():
@@ -628,7 +685,9 @@ def load_torchvision_inception_v3(model: InceptionV3, npz_path: str, *, strict_f
 
 
 # convenience alias
-def load_imagenet_inception_v3(model: InceptionV3, npz="inception_v3_imagenet.npz", strict_fc: bool = True) -> InceptionV3:
+def load_imagenet_inception_v3(
+    model: InceptionV3, npz="inception_v3_imagenet.npz", strict_fc: bool = True
+) -> InceptionV3:
     return load_torchvision_inception_v3(model, npz, strict_fc=strict_fc)
 
 
@@ -677,7 +736,7 @@ if __name__ == "__main__":
 
     model, state = eqx.nn.make_with_state(InceptionV3)(
         num_classes=NUM_CLASSES,
-        aux_logits=True,   # instantiate aux head so weights can load if desired
+        aux_logits=True,  # instantiate aux head so weights can load if desired
         dropout=0.5,
         key=model_key,
     )
@@ -705,7 +764,7 @@ if __name__ == "__main__":
         y_train=jnp.array(y_train),
         X_val=jnp.array(X_val),
         y_val=jnp.array(y_val),
-        batch_size=16,          # big model; keep small for smoke
+        batch_size=16,  # big model; keep small for smoke
         num_epochs=6,
         patience=2,
         key=train_key,

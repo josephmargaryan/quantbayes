@@ -14,12 +14,14 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jr
-import jax.image  
+import jax.image
 
 from quantbayes.stochax.vision_segmentation.models.unet_backbone import (
-    _match, ConvBlock, ResNetEncoder, _RESNET_SPECS
+    _match,
+    ConvBlock,
+    ResNetEncoder,
+    _RESNET_SPECS,
 )
-
 
 
 def _upsample_like(x: jnp.ndarray, ref: jnp.ndarray) -> jnp.ndarray:
@@ -33,16 +35,15 @@ def _upsample_like(x: jnp.ndarray, ref: jnp.ndarray) -> jnp.ndarray:
     )
 
 
-
 class UNetPPResNet(eqx.Module):
     encoder: ResNetEncoder
 
-    convs: Tuple[Tuple[ConvBlock, ...], ...]         
-    out_conv: eqx.nn.Conv2d                       
-    sup_convs: Tuple[eqx.nn.Conv2d, ...] | None      
+    convs: Tuple[Tuple[ConvBlock, ...], ...]
+    out_conv: eqx.nn.Conv2d
+    sup_convs: Tuple[eqx.nn.Conv2d, ...] | None
 
     deep_supervision: bool = eqx.field(static=True)
-    depth: int = eqx.field(static=True)           
+    depth: int = eqx.field(static=True)
 
     def __init__(
         self,
@@ -54,18 +55,18 @@ class UNetPPResNet(eqx.Module):
     ):
         if backbone not in _RESNET_SPECS:
             raise ValueError(f"Unknown backbone '{backbone}'.")
-        k_encoder, *k_rest = jr.split(key, 1 + 1000)  
+        k_encoder, *k_rest = jr.split(key, 1 + 1000)
         self.encoder = ResNetEncoder(backbone, key=k_encoder)
 
-        chans: List[int] = _RESNET_SPECS[backbone]["channels"]  
-        self.depth = len(chans)                              
+        chans: List[int] = _RESNET_SPECS[backbone]["channels"]
+        self.depth = len(chans)
 
         conv_rows = []
         k_iter = iter(k_rest)
-        for i in range(self.depth - 1):       
+        for i in range(self.depth - 1):
             row = []
-            for j in range(self.depth - 1 - i):   
-                cin = (j + 1) * chans[i] + chans[i + 1] 
+            for j in range(self.depth - 1 - i):
+                cin = (j + 1) * chans[i] + chans[i + 1]
                 row.append(ConvBlock(cin, chans[i], key=next(k_iter)))
             conv_rows.append(tuple(row))
         self.convs = tuple(conv_rows)
@@ -75,7 +76,7 @@ class UNetPPResNet(eqx.Module):
         self.deep_supervision = deep_supervision
         if deep_supervision:
             sup_heads = []
-            for _ in range(1, self.depth):       
+            for _ in range(1, self.depth):
                 sup_heads.append(eqx.nn.Conv2d(chans[0], out_ch, 1, key=next(k_iter)))
             self.sup_convs = tuple(sup_heads)
         else:
@@ -88,23 +89,30 @@ class UNetPPResNet(eqx.Module):
             (logits_list), state         if deep_supervision=True
         """
 
-        k_enc, *k_rest = jr.split(key, 1 + len(self.convs) * (self.depth - 1) + (self.depth if self.deep_supervision else 1))
-        enc_feats, state = self.encoder(x, key=k_enc, state=state)  
-        X = [[None] * self.depth for _ in range(self.depth)]  
+        k_enc, *k_rest = jr.split(
+            key,
+            1
+            + len(self.convs) * (self.depth - 1)
+            + (self.depth if self.deep_supervision else 1),
+        )
+        enc_feats, state = self.encoder(x, key=k_enc, state=state)
+        X = [[None] * self.depth for _ in range(self.depth)]
         for i, feat in enumerate(enc_feats):
             X[i][0] = feat
 
         k_iter = iter(k_rest)
-        for j in range(1, self.depth):              
-            for i in range(self.depth - j):        
+        for j in range(1, self.depth):
+            for i in range(self.depth - j):
                 prevs = [X[i][k] for k in range(j)]
                 up = _upsample_like(X[i + 1][j - 1], X[i][0])
                 cat = jnp.concatenate(prevs + [up], axis=0)
-                X[i][j], state = self.convs[i][j - 1](cat, key=next(k_iter), state=state)
+                X[i][j], state = self.convs[i][j - 1](
+                    cat, key=next(k_iter), state=state
+                )
 
         def _predict(feat, head, k):
             logit = head(feat, key=k)
-            return _upsample_like(logit, x)        
+            return _upsample_like(logit, x)
 
         if not self.deep_supervision:
             logits = _predict(X[0][self.depth - 1], self.out_conv, next(k_iter))

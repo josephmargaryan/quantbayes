@@ -8,46 +8,67 @@ from __future__ import annotations
 from typing import List, Any
 import einops, equinox as eqx, jax, jax.numpy as jnp, jax.random as jr
 from quantbayes.stochax.vision_segmentation.models.unet_backbone import (
-    _match, ConvBlock, ResNetEncoder, _RESNET_SPECS
+    _match,
+    ConvBlock,
+    ResNetEncoder,
+    _RESNET_SPECS,
 )
 
 
-
 def _match(x, ref):
-    h, w = x.shape[-2:]          # ints
-    H, W = ref.shape[-2:]        # ints
+    h, w = x.shape[-2:]  # ints
+    H, W = ref.shape[-2:]  # ints
     dh, dw = H - h, W - w
     if dh or dw:
-        pads = [(0, 0)] * (x.ndim - 2) + [(dh // 2, dh - dh // 2),
-                                          (dw // 2, dw - dw // 2)]
-        x = jnp.pad(x, pads) if dh > 0 or dw > 0 else \
-            x[(..., slice(-dh // 2, -dh // 2 + ref.shape[-2]),
-                slice(-dw // 2, -dw // 2 + ref.shape[-1]))]
+        pads = [(0, 0)] * (x.ndim - 2) + [
+            (dh // 2, dh - dh // 2),
+            (dw // 2, dw - dw // 2),
+        ]
+        x = (
+            jnp.pad(x, pads)
+            if dh > 0 or dw > 0
+            else x[
+                (
+                    ...,
+                    slice(-dh // 2, -dh // 2 + ref.shape[-2]),
+                    slice(-dw // 2, -dw // 2 + ref.shape[-1]),
+                )
+            ]
+        )
     return x
 
 
 class ConvBlock(eqx.Module):
-    c1: eqx.nn.Conv2d; bn1: eqx.nn.BatchNorm
-    c2: eqx.nn.Conv2d; bn2: eqx.nn.BatchNorm
+    c1: eqx.nn.Conv2d
+    bn1: eqx.nn.BatchNorm
+    c2: eqx.nn.Conv2d
+    bn2: eqx.nn.BatchNorm
+
     def __init__(self, cin, cout, *, key):
         k1, k2, k3, k4 = jr.split(key, 4)
         self.c1 = eqx.nn.Conv2d(cin, cout, 3, padding=1, key=k1)
         self.bn1 = eqx.nn.BatchNorm(cout, axis_name="batch", mode="batch")
         self.c2 = eqx.nn.Conv2d(cout, cout, 3, padding=1, key=k3)
         self.bn2 = eqx.nn.BatchNorm(cout, axis_name="batch", mode="batch")
+
     def __call__(self, x, *, key, state):
         k1, k2 = jr.split(key, 2)
-        x, state = self.bn1(self.c1(x, key=k1), state); x = jax.nn.relu(x)
-        x, state = self.bn2(self.c2(x, key=k2), state); x = jax.nn.relu(x)
+        x, state = self.bn1(self.c1(x, key=k1), state)
+        x = jax.nn.relu(x)
+        x, state = self.bn2(self.c2(x, key=k2), state)
+        x = jax.nn.relu(x)
         return x, state
 
 
 class Up(eqx.Module):
-    up: eqx.nn.ConvTranspose2d; conv: ConvBlock
+    up: eqx.nn.ConvTranspose2d
+    conv: ConvBlock
+
     def __init__(self, cin, skip, cout, *, key):
         k1, k2 = jr.split(key, 2)
         self.up = eqx.nn.ConvTranspose2d(cin, cout, 2, stride=2, key=k1)
         self.conv = ConvBlock(cout + skip, cout, key=k2)
+
     def __call__(self, x, skip, *, key, state):
         k1, k2 = jr.split(key, 2)
         x = self.up(x, key=k1)
@@ -58,34 +79,45 @@ class Up(eqx.Module):
 
 
 class PatchEmbedding(eqx.Module):
-    linear: eqx.nn.Linear; patch: int
+    linear: eqx.nn.Linear
+    patch: int
+
     def __init__(self, in_ch, embed, patch, *, key):
         self.patch = patch
         self.linear = eqx.nn.Linear(patch**2 * in_ch, embed, key=key)
+
     def __call__(self, x):  # (C,H,W) → (N,embed)
         return jax.vmap(self.linear)(
-            einops.rearrange(x,
-                             'c (h ph) (w pw) -> (h w) (c ph pw)',
-                             ph=self.patch, pw=self.patch)
+            einops.rearrange(
+                x, "c (h ph) (w pw) -> (h w) (c ph pw)", ph=self.patch, pw=self.patch
+            )
         )
 
 
 class TransformerBlock(eqx.Module):
-    ln1: eqx.nn.LayerNorm; ln2: eqx.nn.LayerNorm
+    ln1: eqx.nn.LayerNorm
+    ln2: eqx.nn.LayerNorm
     attn: eqx.nn.MultiheadAttention
-    fc1: eqx.nn.Linear; fc2: eqx.nn.Linear
-    drop1: eqx.nn.Dropout; drop2: eqx.nn.Dropout
+    fc1: eqx.nn.Linear
+    fc2: eqx.nn.Linear
+    drop1: eqx.nn.Dropout
+    drop2: eqx.nn.Dropout
+
     def __init__(self, dim, mlp, heads, drop, *, key):
         k1, k2, k3 = jr.split(key, 3)
-        self.ln1 = eqx.nn.LayerNorm(dim); self.ln2 = eqx.nn.LayerNorm(dim)
+        self.ln1 = eqx.nn.LayerNorm(dim)
+        self.ln2 = eqx.nn.LayerNorm(dim)
         self.attn = eqx.nn.MultiheadAttention(heads, dim, key=k1)
         self.fc1 = eqx.nn.Linear(dim, mlp, key=k2)
         self.fc2 = eqx.nn.Linear(mlp, dim, key=k3)
-        self.drop1 = eqx.nn.Dropout(drop); self.drop2 = eqx.nn.Dropout(drop)
+        self.drop1 = eqx.nn.Dropout(drop)
+        self.drop2 = eqx.nn.Dropout(drop)
+
     def __call__(self, x, *, key):
         x_ = jax.vmap(self.ln1)(x)
         x = x + self.attn(x_, x_, x_)
-        h = jax.vmap(self.fc1)(jax.vmap(self.ln2)(x)); h = jax.nn.gelu(h)
+        h = jax.vmap(self.fc1)(jax.vmap(self.ln2)(x))
+        h = jax.nn.gelu(h)
         k1, k2 = jr.split(key, 2)
         h = self.drop2(jax.vmap(self.fc2)(self.drop1(h, key=k1)), key=k2)
         return x + h
@@ -93,11 +125,14 @@ class TransformerBlock(eqx.Module):
 
 class TransUNetResNet(eqx.Module):
     encoder: ResNetEncoder
-    b_proj: eqx.nn.Conv2d           
+    b_proj: eqx.nn.Conv2d
     patch_embed: PatchEmbedding
     vit_blocks: List[TransformerBlock]
     proj_back: eqx.nn.Linear
-    d1: Up; d2: Up; d3: Up; d4: Up
+    d1: Up
+    d2: Up
+    d3: Up
+    d4: Up
     out_conv: eqx.nn.Conv2d
     pos_embed: jnp.ndarray
     patch: int = eqx.field(static=True)
@@ -126,7 +161,7 @@ class TransUNetResNet(eqx.Module):
         self.pos_embed = jr.normal(ks[2], (10_000, vit_dim))
 
         self.vit_blocks = [
-            TransformerBlock(vit_dim, vit_mlp, vit_heads, dropout, key=ks[3+i])
+            TransformerBlock(vit_dim, vit_mlp, vit_heads, dropout, key=ks[3 + i])
             for i in range(vit_depth)
         ]
         self.proj_back = eqx.nn.Linear(vit_dim, c5, key=ks[3 + vit_depth])
@@ -158,9 +193,10 @@ class TransUNetResNet(eqx.Module):
             tokens = blk(tokens, key=bk)
         tokens = jax.vmap(self.proj_back)(tokens)
         h_s, w_s = H // self.patch, W // self.patch
-        b_small = einops.rearrange(tokens, '(h w) c -> c h w', h=h_s, w=w_s)
-        b_vit = einops.repeat(b_small, 'c h w -> c (h ph) (w pw)',
-                            ph=self.patch, pw=self.patch)
+        b_small = einops.rearrange(tokens, "(h w) c -> c h w", h=h_s, w=w_s)
+        b_vit = einops.repeat(
+            b_small, "c h w -> c (h ph) (w pw)", ph=self.patch, pw=self.patch
+        )
         b_vit = _match(b_vit, l4)
 
         # 4) Decoder

@@ -250,9 +250,7 @@ class UNetBackbone(eqx.Module):
     out_conv: eqx.nn.Conv2d
     backbone_name: str = eqx.field(static=True)
 
-    def __init__(
-        self, *, out_ch: int = 1, backbone: str = "resnet34", key
-    ):
+    def __init__(self, *, out_ch: int = 1, backbone: str = "resnet34", key):
         k_enc, *k_rest = jr.split(key, 10)
         self.encoder = ResNetEncoder(backbone, key=k_enc)
 
@@ -281,7 +279,6 @@ class UNetBackbone(eqx.Module):
             method="bilinear",
         )
         return logits, state
-
 
 
 if __name__ == "__main__":

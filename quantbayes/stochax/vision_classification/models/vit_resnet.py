@@ -132,6 +132,7 @@ def _interpolate_pos_grid(
 # ---------------------- ResNet Feature Backbone ---------------------- #
 class ResNetBackboneFeatures(eqx.Module):
     """ResNet feature extractor (no FC), returns feature-map from a chosen stage."""
+
     conv1: eqx.nn.Conv2d
     bn1: eqx.nn.BatchNorm
     pool: eqx.nn.MaxPool2d
@@ -169,10 +170,10 @@ class ResNetBackboneFeatures(eqx.Module):
             return tuple(mods), c_in
 
         kiter = iter(ks[1:])
-        self.layers1, ch1 = _make_layer(64, 64,  layer_sizes[0], 1, kiter)
+        self.layers1, ch1 = _make_layer(64, 64, layer_sizes[0], 1, kiter)
         self.layers2, ch2 = _make_layer(ch1, 128, layer_sizes[1], 2, kiter)
         self.layers3, ch3 = _make_layer(ch2, 256, layer_sizes[2], 2, kiter)
-        self.layers4, _   = _make_layer(ch3, 512, layer_sizes[3], 2, kiter)
+        self.layers4, _ = _make_layer(ch3, 512, layer_sizes[3], 2, kiter)
 
         self.backbone = backbone
         self.out_stage = out_stage
@@ -224,7 +225,15 @@ class AttentionBlock(eqx.Module):
     dropout1: eqx.nn.Dropout
     dropout2: eqx.nn.Dropout
 
-    def __init__(self, embed_dim: int, hidden_dim: int, num_heads: int, dropout_rate: float, *, key):
+    def __init__(
+        self,
+        embed_dim: int,
+        hidden_dim: int,
+        num_heads: int,
+        dropout_rate: float,
+        *,
+        key,
+    ):
         k1, k2, k3 = jr.split(key, 3)
         self.layer_norm1 = eqx.nn.LayerNorm(embed_dim)
         self.layer_norm2 = eqx.nn.LayerNorm(embed_dim)
@@ -259,8 +268,8 @@ class ViTResNetHybrid(eqx.Module):
     proj: eqx.nn.Conv2d  # 1×1 projection to embed_dim
 
     # Transformer
-    cls_token: jnp.ndarray          # [1, D]
-    pos_grid: jnp.ndarray           # [H0, W0, D]; learnable 2D positional grid
+    cls_token: jnp.ndarray  # [1, D]
+    pos_grid: jnp.ndarray  # [H0, W0, D]; learnable 2D positional grid
     blocks: Tuple[AttentionBlock, ...]
     dropout: eqx.nn.Dropout
     head: eqx.nn.Sequential
@@ -291,7 +300,9 @@ class ViTResNetHybrid(eqx.Module):
         k_backbone, k_proj, k_cls, k_pos, k_blocks, k_head = jr.split(key, 6)
 
         # Backbone feature extractor
-        self.backbone = ResNetBackboneFeatures(backbone=backbone, out_stage=out_stage, key=k_backbone)
+        self.backbone = ResNetBackboneFeatures(
+            backbone=backbone, out_stage=out_stage, key=k_backbone
+        )
 
         # Compute base feature grid from canonical img_size
         stride = _stage_stride(out_stage)
@@ -305,7 +316,11 @@ class ViTResNetHybrid(eqx.Module):
         # For BasicBlock: stage4 channels = 512; Bottleneck: also 2048 at stage4.
         # Safer path: infer from spec:
         spec = _RESNET_SPECS[backbone]
-        final_channels = spec["channels"][out_stage] if len(spec["channels"]) > out_stage else spec["channels"][-1]
+        final_channels = (
+            spec["channels"][out_stage]
+            if len(spec["channels"]) > out_stage
+            else spec["channels"][-1]
+        )
         # Note: For basic (18/34): channels = [64,64,128,256,512]
         #       For bottleneck (50/101/152): [64,256,512,1024,2048]
         in_ch = final_channels
@@ -320,12 +335,17 @@ class ViTResNetHybrid(eqx.Module):
         blocks = []
         block_keys = jr.split(k_blocks, num_layers)
         for kb in block_keys:
-            blocks.append(AttentionBlock(embed_dim, hidden_dim, num_heads, dropout_rate, key=kb))
+            blocks.append(
+                AttentionBlock(embed_dim, hidden_dim, num_heads, dropout_rate, key=kb)
+            )
         self.blocks = tuple(blocks)
 
         self.dropout = eqx.nn.Dropout(dropout_rate)
         self.head = eqx.nn.Sequential(
-            [eqx.nn.LayerNorm(embed_dim), eqx.nn.Linear(embed_dim, num_classes, key=k_head)]
+            [
+                eqx.nn.LayerNorm(embed_dim),
+                eqx.nn.Linear(embed_dim, num_classes, key=k_head),
+            ]
         )
 
         self.embed_dim = embed_dim
@@ -341,22 +361,22 @@ class ViTResNetHybrid(eqx.Module):
         """
         # Backbone features
         kb, key = jr.split(key)
-        feat, state = self.backbone(x, key=kb, state=state)   # [C', H', W']
+        feat, state = self.backbone(x, key=kb, state=state)  # [C', H', W']
 
         # 1×1 projection to embedding dim
         kproj, key = jr.split(key)
-        feat = self.proj(feat, key=kproj)                     # [D, H', W']
+        feat = self.proj(feat, key=kproj)  # [D, H', W']
 
         # Tokens
-        tokens = _flatten_tokens(feat)                        # [H'*W', D]
+        tokens = _flatten_tokens(feat)  # [H'*W', D]
 
         # Positional embeddings (interpolate grid to H'×W')
         Hf, Wf = feat.shape[-2], feat.shape[-1]
-        pos_hw = _interpolate_pos_grid(self.pos_grid, (Hf, Wf))   # [H', W', D]
-        pos_tokens = pos_hw.reshape((-1, self.embed_dim))         # [H'*W', D]
+        pos_hw = _interpolate_pos_grid(self.pos_grid, (Hf, Wf))  # [H', W', D]
+        pos_tokens = pos_hw.reshape((-1, self.embed_dim))  # [H'*W', D]
 
         # CLS + add pos
-        x_tok = jnp.concatenate([self.cls_token, tokens], axis=0)                # [1+N, D]
+        x_tok = jnp.concatenate([self.cls_token, tokens], axis=0)  # [1+N, D]
         pos_all = jnp.concatenate([jnp.zeros_like(self.cls_token), pos_tokens], axis=0)
         x_tok = x_tok + pos_all
 
@@ -393,18 +413,26 @@ def _copy_into_tree(obj, pt: Dict[str, jnp.ndarray], prefix: str = ""):
             if isinstance(attr, eqx.nn.Conv2d):
                 new_attr = attr
                 if f"{full}.weight" in pt:
-                    new_attr = eqx.tree_at(lambda m: m.weight, new_attr, pt[f"{full}.weight"])
+                    new_attr = eqx.tree_at(
+                        lambda m: m.weight, new_attr, pt[f"{full}.weight"]
+                    )
                 if f"{full}.bias" in pt:
-                    new_attr = eqx.tree_at(lambda m: m.bias, new_attr, pt[f"{full}.bias"])
+                    new_attr = eqx.tree_at(
+                        lambda m: m.bias, new_attr, pt[f"{full}.bias"]
+                    )
                 obj = eqx.tree_at(lambda m: getattr(m, name), obj, new_attr)
                 continue
 
             if isinstance(attr, eqx.nn.Linear):
                 new_attr = attr
                 if f"{full}.weight" in pt:
-                    new_attr = eqx.tree_at(lambda m: m.weight, new_attr, pt[f"{full}.weight"])
+                    new_attr = eqx.tree_at(
+                        lambda m: m.weight, new_attr, pt[f"{full}.weight"]
+                    )
                 if f"{full}.bias" in pt:
-                    new_attr = eqx.tree_at(lambda m: m.bias, new_attr, pt[f"{full}.bias"])
+                    new_attr = eqx.tree_at(
+                        lambda m: m.bias, new_attr, pt[f"{full}.bias"]
+                    )
                 obj = eqx.tree_at(lambda m: getattr(m, name), obj, new_attr)
                 continue
 
@@ -414,7 +442,10 @@ def _copy_into_tree(obj, pt: Dict[str, jnp.ndarray], prefix: str = ""):
                     obj = eqx.tree_at(
                         lambda m: (getattr(m, name).weight, getattr(m, name).bias),
                         obj,
-                        (pt.get(w_key, getattr(attr, "weight")), pt.get(b_key, getattr(attr, "bias"))),
+                        (
+                            pt.get(w_key, getattr(attr, "weight")),
+                            pt.get(b_key, getattr(attr, "bias")),
+                        ),
                     )
                 continue
 
@@ -433,9 +464,12 @@ def _copy_into_tree(obj, pt: Dict[str, jnp.ndarray], prefix: str = ""):
     return obj
 
 
-def load_torchvision_resnet_backbone(model: ViTResNetHybrid, npz_path: str) -> ViTResNetHybrid:
+def load_torchvision_resnet_backbone(
+    model: ViTResNetHybrid, npz_path: str
+) -> ViTResNetHybrid:
     """Load torchvision ResNet weights into `model.backbone` only."""
     import numpy as np
+
     raw = dict(np.load(npz_path))
     pt = {}
     for k, v in raw.items():
@@ -448,19 +482,33 @@ def load_torchvision_resnet_backbone(model: ViTResNetHybrid, npz_path: str) -> V
     return eqx.tree_at(lambda m: m.backbone, model, new_backbone)
 
 
-def load_imagenet_resnet18_backbone(model: ViTResNetHybrid, npz="resnet18_imagenet.npz"):
+def load_imagenet_resnet18_backbone(
+    model: ViTResNetHybrid, npz="resnet18_imagenet.npz"
+):
     return load_torchvision_resnet_backbone(model, npz)
 
-def load_imagenet_resnet34_backbone(model: ViTResNetHybrid, npz="resnet34_imagenet.npz"):
+
+def load_imagenet_resnet34_backbone(
+    model: ViTResNetHybrid, npz="resnet34_imagenet.npz"
+):
     return load_torchvision_resnet_backbone(model, npz)
 
-def load_imagenet_resnet50_backbone(model: ViTResNetHybrid, npz="resnet50_imagenet.npz"):
+
+def load_imagenet_resnet50_backbone(
+    model: ViTResNetHybrid, npz="resnet50_imagenet.npz"
+):
     return load_torchvision_resnet_backbone(model, npz)
 
-def load_imagenet_resnet101_backbone(model: ViTResNetHybrid, npz="resnet101_imagenet.npz"):
+
+def load_imagenet_resnet101_backbone(
+    model: ViTResNetHybrid, npz="resnet101_imagenet.npz"
+):
     return load_torchvision_resnet_backbone(model, npz)
 
-def load_imagenet_resnet152_backbone(model: ViTResNetHybrid, npz="resnet152_imagenet.npz"):
+
+def load_imagenet_resnet152_backbone(
+    model: ViTResNetHybrid, npz="resnet152_imagenet.npz"
+):
     return load_torchvision_resnet_backbone(model, npz)
 
 
@@ -512,8 +560,8 @@ if __name__ == "__main__":
     # Instantiate hybrid
     model, state = eqx.nn.make_with_state(ViTResNetHybrid)(
         backbone="resnet34",
-        out_stage=4,          # final feature map (stride 32)
-        img_size=H,           # canonical size for pos-embed init; we set to current H
+        out_stage=4,  # final feature map (stride 32)
+        img_size=H,  # canonical size for pos-embed init; we set to current H
         embed_dim=256,
         hidden_dim=1024,
         num_heads=8,

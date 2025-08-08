@@ -68,6 +68,7 @@ import jax.random as jr
 # --------------------------- utilities --------------------------- #
 class DropPath(eqx.Module):
     """Stochastic depth: drops residual branch with prob=rate (single-sample)."""
+
     rate: float = eqx.field(static=True)
 
     def __call__(self, x: jnp.ndarray, *, key: jnp.ndarray) -> jnp.ndarray:
@@ -80,6 +81,7 @@ class DropPath(eqx.Module):
 
 class LayerNorm2d(eqx.Module):
     """LayerNorm over channel dim for CHW tensors (channels-last semantics)."""
+
     weight: jnp.ndarray
     bias: jnp.ndarray
     eps: float = eqx.field(static=True)
@@ -116,7 +118,9 @@ def _window_unpartition(windows: jnp.ndarray, ws: int, H: int, W: int) -> jnp.nd
     return x.reshape(H, W, C)
 
 
-def _pad_to_window_size(x_chw: jnp.ndarray, ws: int) -> Tuple[jnp.ndarray, Tuple[int, int]]:
+def _pad_to_window_size(
+    x_chw: jnp.ndarray, ws: int
+) -> Tuple[jnp.ndarray, Tuple[int, int]]:
     """Zero-pad CHW so H and W are multiples of ws. Returns padded tensor and (pad_h, pad_w)."""
     C, H, W = x_chw.shape
     pad_h = (ws - H % ws) % ws
@@ -144,9 +148,11 @@ def _compute_attn_mask(H: int, W: int, ws: int, shift: int) -> jnp.ndarray:
             mask = mask.at[:, h, w, :].set(pad[:, h, w, :])
             cnt += 1
     mask_windows = _window_partition(mask[0, :, :, :], ws)  # [nW, ws*ws, 1]
-    mask_windows = mask_windows.squeeze(-1)                 # [nW, ws*ws]
-    attn_mask = mask_windows[:, None, :] - mask_windows[:, :, None]  # [nW, ws*ws, ws*ws]
-    attn_mask = jnp.where(attn_mask == 0, 0.0, -1e9)        # use large negative for masking
+    mask_windows = mask_windows.squeeze(-1)  # [nW, ws*ws]
+    attn_mask = (
+        mask_windows[:, None, :] - mask_windows[:, :, None]
+    )  # [nW, ws*ws, ws*ws]
+    attn_mask = jnp.where(attn_mask == 0, 0.0, -1e9)  # use large negative for masking
     return attn_mask
 
 
@@ -178,6 +184,7 @@ class MLP(eqx.Module):
 
 class WindowAttention(eqx.Module):
     """Window based multi-head self-attention with relative position bias."""
+
     dim: int = eqx.field(static=True)
     window_size: int = eqx.field(static=True)
     num_heads: int = eqx.field(static=True)
@@ -186,9 +193,18 @@ class WindowAttention(eqx.Module):
     attn_drop: eqx.nn.Dropout
     proj_drop: eqx.nn.Dropout
     relative_position_bias_table: jnp.ndarray  # [(2*ws-1)^2, num_heads]
-    relative_position_index: jnp.ndarray       # [ws*ws, ws*ws]; not trained
+    relative_position_index: jnp.ndarray  # [ws*ws, ws*ws]; not trained
 
-    def __init__(self, dim: int, window_size: int, num_heads: int, attn_drop: float = 0.0, proj_drop: float = 0.0, *, key):
+    def __init__(
+        self,
+        dim: int,
+        window_size: int,
+        num_heads: int,
+        attn_drop: float = 0.0,
+        proj_drop: float = 0.0,
+        *,
+        key,
+    ):
         k1, k2, k3 = jr.split(key, 3)
         self.dim = dim
         self.window_size = window_size
@@ -200,21 +216,29 @@ class WindowAttention(eqx.Module):
 
         # relative position bias
         ws = window_size
-        self.relative_position_bias_table = jr.normal(k3, ((2 * ws - 1) * (2 * ws - 1), num_heads))
+        self.relative_position_bias_table = jr.normal(
+            k3, ((2 * ws - 1) * (2 * ws - 1), num_heads)
+        )
 
         # precompute pair-wise relative position index for each token inside the window
         coords_h = jnp.arange(ws)
         coords_w = jnp.arange(ws)
-        coords = jnp.stack(jnp.meshgrid(coords_h, coords_w, indexing="ij"))  # [2, ws, ws]
+        coords = jnp.stack(
+            jnp.meshgrid(coords_h, coords_w, indexing="ij")
+        )  # [2, ws, ws]
         coords_flatten = coords.reshape(2, -1)  # [2, ws*ws]
-        rel_coords = coords_flatten[:, :, None] - coords_flatten[:, None, :]  # [2, ws*ws, ws*ws]
+        rel_coords = (
+            coords_flatten[:, :, None] - coords_flatten[:, None, :]
+        )  # [2, ws*ws, ws*ws]
         rel_coords = rel_coords.transpose(1, 2, 0)  # [ws*ws, ws*ws, 2]
         rel_coords = rel_coords + jnp.array([ws - 1, ws - 1])
         rel_coords = rel_coords.at[:, :, 0].multiply(2 * ws - 1)
         rel_position_index = rel_coords.sum(-1)  # [ws*ws, ws*ws]
         self.relative_position_index = rel_position_index
 
-    def __call__(self, x_win: jnp.ndarray, attn_mask: jnp.ndarray | None, key: jnp.ndarray):
+    def __call__(
+        self, x_win: jnp.ndarray, attn_mask: jnp.ndarray | None, key: jnp.ndarray
+    ):
         """
         x_win: [nW, N, C]  (N = ws*ws)
         attn_mask: [nW, N, N] or None
@@ -225,8 +249,8 @@ class WindowAttention(eqx.Module):
         scale = 1.0 / math.sqrt(head_dim)
 
         # qkv
-        qkv = jax.vmap(jax.vmap(self.qkv))(x_win)   # [nW, N, 3C]
-        q, k, v = jnp.split(qkv, 3, axis=-1)        # each [nW, N, C]
+        qkv = jax.vmap(jax.vmap(self.qkv))(x_win)  # [nW, N, 3C]
+        q, k, v = jnp.split(qkv, 3, axis=-1)  # each [nW, N, C]
 
         # reshape to heads
         def to_heads(t):
@@ -239,19 +263,19 @@ class WindowAttention(eqx.Module):
 
         # relative position bias
         idx = self.relative_position_index.reshape(-1)  # [N*N]
-        bias = self.relative_position_bias_table[idx]   # [N*N, H]
-        bias = bias.reshape(N, N, H).transpose(2, 0, 1) # [H, N, N]
-        attn = attn + bias[None, :, :, :]               # broadcast over nW
+        bias = self.relative_position_bias_table[idx]  # [N*N, H]
+        bias = bias.reshape(N, N, H).transpose(2, 0, 1)  # [H, N, N]
+        attn = attn + bias[None, :, :, :]  # broadcast over nW
 
         if attn_mask is not None:
             # add mask (broadcast to heads)
-            attn = attn + attn_mask[:, None, :, :]      # [nW,H,N,N]
+            attn = attn + attn_mask[:, None, :, :]  # [nW,H,N,N]
 
         attn = jax.nn.softmax(attn, axis=-1)
         k1, k2 = jr.split(key, 2)
         attn = self.attn_drop(attn, key=k1)
 
-        out = jnp.einsum("whnm,whmd->whnd", attn, v)     # [nW,H,N,hd]
+        out = jnp.einsum("whnm,whmd->whnd", attn, v)  # [nW,H,N,hd]
         out = out.transpose(0, 2, 1, 3).reshape(nW, N, C)
         out = jax.vmap(self.proj)(out)
         out = self.proj_drop(out, key=k2)
@@ -272,7 +296,17 @@ class SwinTransformerBlock(eqx.Module):
     norm2: LayerNorm2d
     mlp: MLP
 
-    def __init__(self, dim: int, num_heads: int, window_size: int, shift_size: int, mlp_ratio: float, sd_prob: float, *, key):
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int,
+        window_size: int,
+        shift_size: int,
+        mlp_ratio: float,
+        sd_prob: float,
+        *,
+        key,
+    ):
         k_attn, k_mlp = jr.split(key, 2)
         self.dim = dim
         self.num_heads = num_heads
@@ -281,7 +315,9 @@ class SwinTransformerBlock(eqx.Module):
         self.mlp_ratio = mlp_ratio
 
         self.norm1 = LayerNorm2d(dim, eps=1e-5)
-        self.attn = WindowAttention(dim, window_size, num_heads, attn_drop=0.0, proj_drop=0.0, key=k_attn)
+        self.attn = WindowAttention(
+            dim, window_size, num_heads, attn_drop=0.0, proj_drop=0.0, key=k_attn
+        )
         self.drop_path = DropPath(sd_prob)
         self.norm2 = LayerNorm2d(dim, eps=1e-5)
         self.mlp = MLP(dim, mlp_ratio=mlp_ratio, drop=0.0, key=k_mlp)
@@ -308,22 +344,22 @@ class SwinTransformerBlock(eqx.Module):
         Hp, Wp = x_shift.shape[-2], x_shift.shape[-1]
 
         # Partition windows
-        x_hwc = jnp.moveaxis(x_shift, 0, -1)               # [H,W,C]
-        x_windows = _window_partition(x_hwc, ws)            # [nW, ws*ws, C]
+        x_hwc = jnp.moveaxis(x_shift, 0, -1)  # [H,W,C]
+        x_windows = _window_partition(x_hwc, ws)  # [nW, ws*ws, C]
 
         # Attention mask for SW-MSA
         attn_mask = _compute_attn_mask(Hp, Wp, ws, shift) if shift > 0 else None
 
         # Attention
-        out = self.attn(x_windows, attn_mask, key=key)     # [nW, ws*ws, C]
+        out = self.attn(x_windows, attn_mask, key=key)  # [nW, ws*ws, C]
 
         # Merge windows
-        x_hwc = _window_unpartition(out, ws, Hp, Wp)       # [H',W',C]
-        x_merge = jnp.moveaxis(x_hwc, -1, 0)               # [C,H',W']
+        x_hwc = _window_unpartition(out, ws, Hp, Wp)  # [H',W',C]
+        x_merge = jnp.moveaxis(x_hwc, -1, 0)  # [C,H',W']
 
         # Unpad
         if pad_h or pad_w:
-            x_merge = x_merge[:, : H, : W]
+            x_merge = x_merge[:, :H, :W]
 
         # Reverse cyclic shift
         if shift > 0:
@@ -346,6 +382,7 @@ class SwinTransformerBlock(eqx.Module):
 
 class PatchEmbed(eqx.Module):
     """Patchify with Conv(patch=4, stride=4) + LayerNorm over channels."""
+
     proj: eqx.nn.Conv2d
     norm: LayerNorm2d
     patch_size: int = eqx.field(static=True)
@@ -354,17 +391,25 @@ class PatchEmbed(eqx.Module):
     def __init__(self, in_chans: int, embed_dim: int, patch_size: int = 4, *, key):
         self.patch_size = patch_size
         self.embed_dim = embed_dim
-        self.proj = eqx.nn.Conv2d(in_chans, embed_dim, kernel_size=patch_size, stride=patch_size, use_bias=True, key=key)
+        self.proj = eqx.nn.Conv2d(
+            in_chans,
+            embed_dim,
+            kernel_size=patch_size,
+            stride=patch_size,
+            use_bias=True,
+            key=key,
+        )
         self.norm = LayerNorm2d(embed_dim, eps=1e-5)
 
     def __call__(self, x, key, state):
-        x = self.proj(x, key=key)          # [C', H/4, W/4]
+        x = self.proj(x, key=key)  # [C', H/4, W/4]
         x, state = self.norm(x, state=state)
         return x, state
 
 
 class PatchMerging(eqx.Module):
     """Downsample: concat 2x2 neighbors (4*C) -> LN -> Linear to 2*C."""
+
     in_dim: int = eqx.field(static=True)
     norm: eqx.nn.LayerNorm
     reduction: eqx.nn.Linear
@@ -390,20 +435,31 @@ class PatchMerging(eqx.Module):
         x2 = x[0::2, 1::2, :]
         x3 = x[1::2, 1::2, :]
         x_cat = jnp.concatenate([x0, x1, x2, x3], axis=-1)  # [H/2,W/2,4C]
-        x_tok = x_cat.reshape(-1, 4 * C)                    # [N, 4C]
-        x_tok = jax.vmap(self.norm)(x_tok)                  # LN token-wise
-        x_tok = jax.vmap(self.reduction)(x_tok)             # [N, 2C]
+        x_tok = x_cat.reshape(-1, 4 * C)  # [N, 4C]
+        x_tok = jax.vmap(self.norm)(x_tok)  # LN token-wise
+        x_tok = jax.vmap(self.reduction)(x_tok)  # [N, 2C]
         x_out = x_tok.reshape(H // 2, W // 2, 2 * C)
-        x_out = jnp.moveaxis(x_out, -1, 0)                  # [2C, H/2, W/2]
+        x_out = jnp.moveaxis(x_out, -1, 0)  # [2C, H/2, W/2]
         return x_out, state
 
 
 class BasicLayer(eqx.Module):
     """A stage: multiple Swin blocks; optional PatchMerging downsample."""
+
     blocks: Tuple[SwinTransformerBlock, ...]
     downsample: PatchMerging | None
 
-    def __init__(self, dim: int, depth: int, num_heads: int, window_size: int, mlp_ratio: float, sd_probs: List[float], *, key):
+    def __init__(
+        self,
+        dim: int,
+        depth: int,
+        num_heads: int,
+        window_size: int,
+        mlp_ratio: float,
+        sd_probs: List[float],
+        *,
+        key,
+    ):
         keys = iter(jr.split(key, depth + 1))
         blocks: List[SwinTransformerBlock] = []
         for i in range(depth):
@@ -425,6 +481,7 @@ class BasicLayer(eqx.Module):
 
     def __call__(self, x, key, state):
         k_run = key
+
         def split():
             nonlocal k_run
             k1, k_run = jr.split(k_run)
@@ -440,16 +497,36 @@ class BasicLayer(eqx.Module):
 # --------------------------- architecture configs --------------------------- #
 _VARIANTS: Dict[str, Dict[str, Any]] = {
     # embed_dim, depths, num_heads, window_size, drop_path
-    "swin_t": dict(embed_dim=96,  depths=[2, 2, 6, 2],  num_heads=[3, 6, 12, 24], window_size=7, drop_path=0.2),
-    "swin_s": dict(embed_dim=96,  depths=[2, 2, 18, 2], num_heads=[3, 6, 12, 24], window_size=7, drop_path=0.3),
-    "swin_b": dict(embed_dim=128, depths=[2, 2, 18, 2], num_heads=[4, 8, 16, 32], window_size=7, drop_path=0.5),
+    "swin_t": dict(
+        embed_dim=96,
+        depths=[2, 2, 6, 2],
+        num_heads=[3, 6, 12, 24],
+        window_size=7,
+        drop_path=0.2,
+    ),
+    "swin_s": dict(
+        embed_dim=96,
+        depths=[2, 2, 18, 2],
+        num_heads=[3, 6, 12, 24],
+        window_size=7,
+        drop_path=0.3,
+    ),
+    "swin_b": dict(
+        embed_dim=128,
+        depths=[2, 2, 18, 2],
+        num_heads=[4, 8, 16, 32],
+        window_size=7,
+        drop_path=0.5,
+    ),
 }
 _MLP_RATIO = 4.0
 
 
 # ------------------------------- Swin model ------------------------------- #
 class SwinTransformer(eqx.Module):
-    features: Tuple[Any, ...]  # (PatchEmbed, BasicLayer, BasicLayer, BasicLayer, BasicLayer)
+    features: Tuple[
+        Any, ...
+    ]  # (PatchEmbed, BasicLayer, BasicLayer, BasicLayer, BasicLayer)
     norm: eqx.nn.LayerNorm
     head: eqx.nn.Linear
 
@@ -485,13 +562,20 @@ class SwinTransformer(eqx.Module):
             dim = dims[stage_idx]
             heads = num_heads[stage_idx]
             # per-block sd probs (linear ramp across entire network)
-            sd_probs = [0.0 if total_blocks <= 1 else drop_path * (bid / (total_blocks - 1.0)) for _ in range(depth)]
+            sd_probs = [
+                0.0 if total_blocks <= 1 else drop_path * (bid / (total_blocks - 1.0))
+                for _ in range(depth)
+            ]
             bid += depth
-            layer = BasicLayer(dim, depth, heads, ws, _MLP_RATIO, sd_probs, key=next(k_it))
+            layer = BasicLayer(
+                dim, depth, heads, ws, _MLP_RATIO, sd_probs, key=next(k_it)
+            )
             stages.append(layer)
         # Attach downsamples between stages (except after the last)
         for i in range(len(stages) - 1):
-            stages[i] = eqx.tree_at(lambda l: l.downsample, stages[i], PatchMerging(dims[i], key=next(k_it)))
+            stages[i] = eqx.tree_at(
+                lambda l: l.downsample, stages[i], PatchMerging(dims[i], key=next(k_it))
+            )
         feats.extend(stages)
 
         self.features = tuple(feats)
@@ -504,7 +588,9 @@ class SwinTransformer(eqx.Module):
 
     def _check_input(self, x: jnp.ndarray):
         if x.ndim != 3:
-            raise ValueError(f"SwinTransformer expects single sample [C,H,W]; got {tuple(x.shape)}.")
+            raise ValueError(
+                f"SwinTransformer expects single sample [C,H,W]; got {tuple(x.shape)}."
+            )
         if x.shape[0] != 3:
             raise ValueError(f"Expected 3 input channels; got {x.shape[0]}.")
 
@@ -525,7 +611,7 @@ class SwinTransformer(eqx.Module):
         C, H, W = x.shape
         x_tok = einops.rearrange(x, "c h w -> (h w) c")
         x_tok = jax.vmap(self.norm)(x_tok)  # LN token-wise as in TV
-        x_vec = jnp.mean(x_tok, axis=0)     # [C]
+        x_vec = jnp.mean(x_tok, axis=0)  # [C]
         logits = self.head(x_vec)
         return logits, state
 
@@ -540,7 +626,11 @@ def _rename_pt_key(k: str) -> str | None:
       - *.mlp.3.(weight|bias) -> *.mlp.fc2.(weight|bias)
     Drop non-parameter/buffer-ish keys if any appear.
     """
-    if not (k.endswith(".weight") or k.endswith(".bias") or k.endswith("relative_position_bias_table")):
+    if not (
+        k.endswith(".weight")
+        or k.endswith(".bias")
+        or k.endswith("relative_position_bias_table")
+    ):
         return None
 
     # MLP remap if TV uses Sequential indices
@@ -562,9 +652,13 @@ def _copy_into_tree(obj, pt: Dict[str, jnp.ndarray], prefix: str = ""):
             if isinstance(attr, eqx.nn.Conv2d):
                 new_attr = attr
                 if f"{full}.weight" in pt:
-                    new_attr = eqx.tree_at(lambda m: m.weight, new_attr, pt[f"{full}.weight"])
+                    new_attr = eqx.tree_at(
+                        lambda m: m.weight, new_attr, pt[f"{full}.weight"]
+                    )
                 if f"{full}.bias" in pt:
-                    new_attr = eqx.tree_at(lambda m: m.bias, new_attr, pt[f"{full}.bias"])
+                    new_attr = eqx.tree_at(
+                        lambda m: m.bias, new_attr, pt[f"{full}.bias"]
+                    )
                 obj = eqx.tree_at(lambda m: getattr(m, name), obj, new_attr)
                 continue
 
@@ -572,9 +666,13 @@ def _copy_into_tree(obj, pt: Dict[str, jnp.ndarray], prefix: str = ""):
             if isinstance(attr, eqx.nn.Linear):
                 new_attr = attr
                 if f"{full}.weight" in pt:
-                    new_attr = eqx.tree_at(lambda m: m.weight, new_attr, pt[f"{full}.weight"])
+                    new_attr = eqx.tree_at(
+                        lambda m: m.weight, new_attr, pt[f"{full}.weight"]
+                    )
                 if f"{full}.bias" in pt:
-                    new_attr = eqx.tree_at(lambda m: m.bias, new_attr, pt[f"{full}.bias"])
+                    new_attr = eqx.tree_at(
+                        lambda m: m.bias, new_attr, pt[f"{full}.bias"]
+                    )
                 obj = eqx.tree_at(lambda m: getattr(m, name), obj, new_attr)
                 continue
 
@@ -583,13 +681,21 @@ def _copy_into_tree(obj, pt: Dict[str, jnp.ndarray], prefix: str = ""):
                 w_key, b_key = f"{full}.weight", f"{full}.bias"
                 w_val = pt.get(w_key, getattr(attr, "weight"))
                 b_val = pt.get(b_key, getattr(attr, "bias"))
-                obj = eqx.tree_at(lambda m: (getattr(m, name).weight, getattr(m, name).bias), obj, (w_val, b_val))
+                obj = eqx.tree_at(
+                    lambda m: (getattr(m, name).weight, getattr(m, name).bias),
+                    obj,
+                    (w_val, b_val),
+                )
                 continue
             if isinstance(attr, eqx.nn.LayerNorm):
                 w_key, b_key = f"{full}.weight", f"{full}.bias"
                 w_val = pt.get(w_key, getattr(attr, "weight"))
                 b_val = pt.get(b_key, getattr(attr, "bias"))
-                obj = eqx.tree_at(lambda m: (getattr(m, name).weight, getattr(m, name).bias), obj, (w_val, b_val))
+                obj = eqx.tree_at(
+                    lambda m: (getattr(m, name).weight, getattr(m, name).bias),
+                    obj,
+                    (w_val, b_val),
+                )
                 continue
 
             # Tuples (features, blocks)
@@ -603,7 +709,9 @@ def _copy_into_tree(obj, pt: Dict[str, jnp.ndarray], prefix: str = ""):
 
             # Relative position bias table (ndarray param)
             if isinstance(attr, jnp.ndarray) and f"{full}" in pt:
-                obj = eqx.tree_at(lambda m: getattr(m, name), obj, jnp.asarray(pt[f"{full}"]))
+                obj = eqx.tree_at(
+                    lambda m: getattr(m, name), obj, jnp.asarray(pt[f"{full}"])
+                )
                 continue
 
             # Stateless (DropPath), computed indices/masks -> skip
@@ -615,9 +723,12 @@ def _copy_into_tree(obj, pt: Dict[str, jnp.ndarray], prefix: str = ""):
     return obj
 
 
-def load_torchvision_swin(model: SwinTransformer, npz_path: str, *, strict_fc: bool = True) -> SwinTransformer:
+def load_torchvision_swin(
+    model: SwinTransformer, npz_path: str, *, strict_fc: bool = True
+) -> SwinTransformer:
     """Load a torchvision Swin .npz (from state_dict()) into this model."""
     import numpy as np
+
     raw = dict(np.load(npz_path))
     pt: Dict[str, jnp.ndarray] = {}
     for k, v in raw.items():
@@ -643,13 +754,21 @@ def load_torchvision_swin(model: SwinTransformer, npz_path: str, *, strict_fc: b
 
 
 # Convenience wrappers
-def load_imagenet_swin_t(model: SwinTransformer, npz="swin_t_imagenet.npz", strict_fc: bool = True) -> SwinTransformer:
+def load_imagenet_swin_t(
+    model: SwinTransformer, npz="swin_t_imagenet.npz", strict_fc: bool = True
+) -> SwinTransformer:
     return load_torchvision_swin(model, npz, strict_fc=strict_fc)
 
-def load_imagenet_swin_s(model: SwinTransformer, npz="swin_s_imagenet.npz", strict_fc: bool = True) -> SwinTransformer:
+
+def load_imagenet_swin_s(
+    model: SwinTransformer, npz="swin_s_imagenet.npz", strict_fc: bool = True
+) -> SwinTransformer:
     return load_torchvision_swin(model, npz, strict_fc=strict_fc)
 
-def load_imagenet_swin_b(model: SwinTransformer, npz="swin_b_imagenet.npz", strict_fc: bool = True) -> SwinTransformer:
+
+def load_imagenet_swin_b(
+    model: SwinTransformer, npz="swin_b_imagenet.npz", strict_fc: bool = True
+) -> SwinTransformer:
     return load_torchvision_swin(model, npz, strict_fc=strict_fc)
 
 

@@ -71,6 +71,7 @@ import jax.random as jr
 # --------------------------- utilities --------------------------- #
 class DropPath(eqx.Module):
     """Stochastic Depth: drops the residual branch with prob=rate (row-wise)."""
+
     rate: float = eqx.field(static=True)
 
     def __call__(self, x: jnp.ndarray, *, key: jnp.ndarray) -> jnp.ndarray:
@@ -83,6 +84,7 @@ class DropPath(eqx.Module):
 
 class AdaptiveAvgPool2d(eqx.Module):
     """Exact AdaptiveAvgPool2d to (out_h, out_w) for single-sample CHW tensors."""
+
     out_h: int = eqx.field(static=True)
     out_w: int = eqx.field(static=True)
 
@@ -109,6 +111,7 @@ class AdaptiveAvgPool2d(eqx.Module):
 
 class LayerNorm2d(eqx.Module):
     """LayerNorm applied channel-wise on CHW input (channels-last semantics)."""
+
     weight: jnp.ndarray
     bias: jnp.ndarray
     eps: float = eqx.field(static=True)
@@ -132,11 +135,12 @@ class LayerNorm2d(eqx.Module):
 # --------------------------- building blocks --------------------------- #
 class Stem(eqx.Module):
     """Patchify: Conv(4x4, stride 4, bias=True) -> LayerNorm2d."""
+
     conv: eqx.nn.Conv2d
     norm: LayerNorm2d
 
     def __init__(self, cout: int, *, key):
-        k1, = jr.split(key, 1)
+        (k1,) = jr.split(key, 1)
         self.conv = eqx.nn.Conv2d(3, cout, 4, stride=4, use_bias=True, key=k1)
         self.norm = LayerNorm2d(cout, eps=1e-6)
 
@@ -148,11 +152,12 @@ class Stem(eqx.Module):
 
 class Downsample(eqx.Module):
     """Downsample between stages: LayerNorm2d -> Conv2d(2x2, stride 2, bias=True)."""
+
     norm: LayerNorm2d
     conv: eqx.nn.Conv2d
 
     def __init__(self, cin: int, cout: int, *, key):
-        k1, = jr.split(key, 1)
+        (k1,) = jr.split(key, 1)
         self.norm = LayerNorm2d(cin, eps=1e-6)
         self.conv = eqx.nn.Conv2d(cin, cout, 2, stride=2, use_bias=True, key=k1)
 
@@ -166,6 +171,7 @@ class CNBlock(eqx.Module):
     """ConvNeXt block (torchvision-compatible):
     DWConv(7x7 groups=C) -> LN -> PW Linear (4*C) -> GELU -> PW Linear (C) -> LayerScale -> DropPath + Residual
     """
+
     dwconv: eqx.nn.Conv2d
     norm: LayerNorm2d
     linear1: eqx.nn.Linear
@@ -175,7 +181,9 @@ class CNBlock(eqx.Module):
 
     def __init__(self, dim: int, layer_scale: float, sd_prob: float, *, key):
         kdw, k1, k2 = jr.split(key, 3)
-        self.dwconv = eqx.nn.Conv2d(dim, dim, 7, padding=3, groups=dim, use_bias=True, key=kdw)
+        self.dwconv = eqx.nn.Conv2d(
+            dim, dim, 7, padding=3, groups=dim, use_bias=True, key=kdw
+        )
         self.norm = LayerNorm2d(dim, eps=1e-6)
         self.linear1 = eqx.nn.Linear(dim, 4 * dim, key=k1)
         self.linear2 = eqx.nn.Linear(4 * dim, dim, key=k2)
@@ -225,7 +233,10 @@ _LAYER_SCALE_DEFAULT = 1e-6
 # --------------------------- ConvNeXt model --------------------------- #
 class ConvNeXt(eqx.Module):
     """ConvNeXt (Tiny/Small/Base/Large) in Equinox; torchvision-compatible for weight loading."""
-    features: Tuple[Any, ...]     # (Stem, Stage0(tuple[CNBlock]), Downsample, Stage1, Downsample, Stage2, Downsample, Stage3)
+
+    features: Tuple[
+        Any, ...
+    ]  # (Stem, Stage0(tuple[CNBlock]), Downsample, Stage1, Downsample, Stage2, Downsample, Stage3)
     avgpool: AdaptiveAvgPool2d
     classifier_norm: LayerNorm2d
     fc: eqx.nn.Linear
@@ -255,14 +266,20 @@ class ConvNeXt(eqx.Module):
 
         # Stages + Downsamples
         in_c = first_out
-        for (cin, cout, num_layers) in stages_cfg:
+        for cin, cout, num_layers in stages_cfg:
             assert cin == in_c, f"Config mismatch: expected cin={in_c}, got {cin}"
 
             stage_blocks: List[CNBlock] = []
             for _ in range(num_layers):
                 # linear sd ramp
-                sd = 0.0 if total_blocks <= 1 else sd_prob * (block_id / (total_blocks - 1.0))
-                stage_blocks.append(CNBlock(cin, _LAYER_SCALE_DEFAULT, sd, key=next(k_it)))
+                sd = (
+                    0.0
+                    if total_blocks <= 1
+                    else sd_prob * (block_id / (total_blocks - 1.0))
+                )
+                stage_blocks.append(
+                    CNBlock(cin, _LAYER_SCALE_DEFAULT, sd, key=next(k_it))
+                )
                 block_id += 1
             features.append(tuple(stage_blocks))
             # Downsample if needed
@@ -281,7 +298,9 @@ class ConvNeXt(eqx.Module):
 
     def _check_input(self, x: jnp.ndarray):
         if x.ndim != 3:
-            raise ValueError(f"ConvNeXt expects single sample [C,H,W]; got {tuple(x.shape)}.")
+            raise ValueError(
+                f"ConvNeXt expects single sample [C,H,W]; got {tuple(x.shape)}."
+            )
         if x.shape[0] != 3:
             raise ValueError(f"Expected 3 input channels; got {x.shape[0]}.")
 
@@ -306,7 +325,9 @@ class ConvNeXt(eqx.Module):
                 raise RuntimeError("Unknown feature element.")
 
         x = self.avgpool(x).reshape(-1)  # [C]
-        x, state = self.classifier_norm(x.reshape(-1, 1, 1), state=state)  # reuse LN2d; treat as CHW
+        x, state = self.classifier_norm(
+            x.reshape(-1, 1, 1), state=state
+        )  # reuse LN2d; treat as CHW
         x = x.reshape(-1)
         logits = self.fc(x)
         return logits, state
@@ -339,10 +360,7 @@ def _rename_pt_key(k: str) -> str | None:
     """
     # ConvNeXt uses LayerNorm (no running stats), so nothing to drop apart from non-param ops.
     # Keep only param tensors.
-    if not any(
-        k.endswith(suffix)
-        for suffix in (".weight", ".bias", "layer_scale")
-    ):
+    if not any(k.endswith(suffix) for suffix in (".weight", ".bias", "layer_scale")):
         return None
 
     # Stem
@@ -366,7 +384,12 @@ def _rename_pt_key(k: str) -> str | None:
     # Downsample
     # e.g., features.2.0.weight -> features.2.norm.weight
     parts = k.split(".")
-    if len(parts) >= 4 and parts[0] == "features" and parts[2] in {"0", "1"} and "block" not in k:
+    if (
+        len(parts) >= 4
+        and parts[0] == "features"
+        and parts[2] in {"0", "1"}
+        and "block" not in k
+    ):
         if parts[2] == "0":
             return k.replace(".0.", ".norm.")
         else:
@@ -390,18 +413,26 @@ def _copy_into_tree(obj, pt: Dict[str, jnp.ndarray], prefix: str = ""):
             if isinstance(attr, eqx.nn.Conv2d):
                 new_attr = attr
                 if f"{full}.weight" in pt:
-                    new_attr = eqx.tree_at(lambda m: m.weight, new_attr, pt[f"{full}.weight"])
+                    new_attr = eqx.tree_at(
+                        lambda m: m.weight, new_attr, pt[f"{full}.weight"]
+                    )
                 if f"{full}.bias" in pt:
-                    new_attr = eqx.tree_at(lambda m: m.bias, new_attr, pt[f"{full}.bias"])
+                    new_attr = eqx.tree_at(
+                        lambda m: m.bias, new_attr, pt[f"{full}.bias"]
+                    )
                 obj = eqx.tree_at(lambda m: getattr(m, name), obj, new_attr)
                 continue
 
             if isinstance(attr, eqx.nn.Linear):
                 new_attr = attr
                 if f"{full}.weight" in pt:
-                    new_attr = eqx.tree_at(lambda m: m.weight, new_attr, pt[f"{full}.weight"])
+                    new_attr = eqx.tree_at(
+                        lambda m: m.weight, new_attr, pt[f"{full}.weight"]
+                    )
                 if f"{full}.bias" in pt:
-                    new_attr = eqx.tree_at(lambda m: m.bias, new_attr, pt[f"{full}.bias"])
+                    new_attr = eqx.tree_at(
+                        lambda m: m.bias, new_attr, pt[f"{full}.bias"]
+                    )
                 obj = eqx.tree_at(lambda m: getattr(m, name), obj, new_attr)
                 continue
 
@@ -409,7 +440,11 @@ def _copy_into_tree(obj, pt: Dict[str, jnp.ndarray], prefix: str = ""):
                 w_key, b_key = f"{full}.weight", f"{full}.bias"
                 w_val = pt.get(w_key, getattr(attr, "weight"))
                 b_val = pt.get(b_key, getattr(attr, "bias"))
-                obj = eqx.tree_at(lambda m: (getattr(m, name).weight, getattr(m, name).bias), obj, (w_val, b_val))
+                obj = eqx.tree_at(
+                    lambda m: (getattr(m, name).weight, getattr(m, name).bias),
+                    obj,
+                    (w_val, b_val),
+                )
                 continue
 
             if isinstance(attr, tuple):
@@ -433,9 +468,12 @@ def _copy_into_tree(obj, pt: Dict[str, jnp.ndarray], prefix: str = ""):
     return obj
 
 
-def load_torchvision_convnext(model: ConvNeXt, npz_path: str, *, strict_fc: bool = True) -> ConvNeXt:
+def load_torchvision_convnext(
+    model: ConvNeXt, npz_path: str, *, strict_fc: bool = True
+) -> ConvNeXt:
     """Load a torchvision ConvNeXt .npz (from state_dict()) into this model."""
     import numpy as np
+
     raw = dict(np.load(npz_path))
     pt: Dict[str, jnp.ndarray] = {}
     for k, v in raw.items():
@@ -461,13 +499,27 @@ def load_torchvision_convnext(model: ConvNeXt, npz_path: str, *, strict_fc: bool
 
 
 # Convenience helpers per arch
-def load_imagenet_convnext_tiny(model: ConvNeXt, npz="convnext_tiny_imagenet.npz", strict_fc: bool = True) -> ConvNeXt:
+def load_imagenet_convnext_tiny(
+    model: ConvNeXt, npz="convnext_tiny_imagenet.npz", strict_fc: bool = True
+) -> ConvNeXt:
     return load_torchvision_convnext(model, npz, strict_fc=strict_fc)
-def load_imagenet_convnext_small(model: ConvNeXt, npz="convnext_small_imagenet.npz", strict_fc: bool = True) -> ConvNeXt:
+
+
+def load_imagenet_convnext_small(
+    model: ConvNeXt, npz="convnext_small_imagenet.npz", strict_fc: bool = True
+) -> ConvNeXt:
     return load_torchvision_convnext(model, npz, strict_fc=strict_fc)
-def load_imagenet_convnext_base(model: ConvNeXt, npz="convnext_base_imagenet.npz", strict_fc: bool = True) -> ConvNeXt:
+
+
+def load_imagenet_convnext_base(
+    model: ConvNeXt, npz="convnext_base_imagenet.npz", strict_fc: bool = True
+) -> ConvNeXt:
     return load_torchvision_convnext(model, npz, strict_fc=strict_fc)
-def load_imagenet_convnext_large(model: ConvNeXt, npz="convnext_large_imagenet.npz", strict_fc: bool = True) -> ConvNeXt:
+
+
+def load_imagenet_convnext_large(
+    model: ConvNeXt, npz="convnext_large_imagenet.npz", strict_fc: bool = True
+) -> ConvNeXt:
     return load_torchvision_convnext(model, npz, strict_fc=strict_fc)
 
 

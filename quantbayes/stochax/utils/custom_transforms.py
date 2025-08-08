@@ -1,5 +1,5 @@
 import jax
-import jax.scipy.ndimage as ndi 
+import jax.scipy.ndimage as ndi
 import jax.numpy as jnp
 import jax.random as jr
 from augmax.base import Transformation, InputType
@@ -67,18 +67,18 @@ class TumourGuidedCrop(Transformation):
 
     def apply(self, rng, values, input_types, invert: bool = False):
         if invert:
-            return values  
+            return values
 
-        img, mask = values  
-        H, W = img.shape[:2]  
+        img, mask = values
+        H, W = img.shape[:2]
         Npix = H * W
 
         rng, k_focus, k_pick = jr.split(rng, 3)
-        use_focus = jr.bernoulli(k_focus, self.p_focus)  
+        use_focus = jr.bernoulli(k_focus, self.p_focus)
 
-        K = max(1, int(self.focus_ratio * Npix))  
-        intensity = img.max(axis=-1).reshape(-1)  
-        _, idx_top = jax.lax.top_k(intensity, K)  
+        K = max(1, int(self.focus_ratio * Npix))
+        intensity = img.max(axis=-1).reshape(-1)
+        _, idx_top = jax.lax.top_k(intensity, K)
 
         idx_from_top = idx_top[jr.randint(k_pick, (), 0, K)]
         idx_random = jr.randint(k_pick, (), 0, Npix)
@@ -97,7 +97,7 @@ class TumourGuidedCrop(Transformation):
             mask, (top, left, 0), (self.crop_h, self.crop_w, mask.shape[-1])
         )
 
-        return [img_crop, mask_crop] 
+        return [img_crop, mask_crop]
 
 
 class MaskGuidedCrop(Transformation):
@@ -131,23 +131,22 @@ class MaskGuidedCrop(Transformation):
 
     def apply(self, rng, values, input_types, invert: bool = False):
         if invert:
-            return values  
+            return values
 
-        img, mask = values 
-        H, W = img.shape[:2]  
+        img, mask = values
+        H, W = img.shape[:2]
         N = H * W
 
         rng, k_pick, k_gumbel, k_rand = jr.split(rng, 4)
 
-        pos = (mask[..., 0] > 0).reshape(-1)  
-        has_pos = jnp.any(pos)  
+        pos = (mask[..., 0] > 0).reshape(-1)
+        has_pos = jnp.any(pos)
 
         gumbel = -jnp.log(-jnp.log(jr.uniform(k_gumbel, (N,))))
         scores = jnp.where(pos, gumbel, -jnp.inf)
-        idx_from_mask = jnp.argmax(scores)  
+        idx_from_mask = jnp.argmax(scores)
 
-        idx_random = jr.randint(k_rand, (), 0, N) 
-
+        idx_random = jr.randint(k_rand, (), 0, N)
 
         idx_focus = jax.lax.cond(
             has_pos, lambda _: idx_from_mask, lambda _: idx_random, operand=None
@@ -170,7 +169,7 @@ class MaskGuidedCrop(Transformation):
             mask, (top, left, 0), (self.crop_h, self.crop_w, mask.shape[-1])
         )
 
-        return [img_crop, mask_crop] 
+        return [img_crop, mask_crop]
 
 
 class RandomChoice(Transformation):
@@ -190,7 +189,7 @@ class RandomChoice(Transformation):
     ```python
     from augmax.base import InputType
     import augmax
-    from your_module import MaskGuidedCrop 
+    from your_module import MaskGuidedCrop
 
     # 1) Define a RandomChoice that either does a mask-guided crop or a random crop
     rand_crop = RandomChoice(
@@ -234,9 +233,7 @@ class RandomChoice(Transformation):
         else:
             idx = jax.random.choice(sample_key, a=len(self.transforms), p=self.p)
 
-        branch_keys = jnp.stack(
-            rest
-        )  
+        branch_keys = jnp.stack(rest)
         branches = [
             lambda _inp, t=t, key=branch_keys[i]: t.apply(
                 key, _inp, input_types, invert=invert
@@ -245,9 +242,11 @@ class RandomChoice(Transformation):
         ]
         return jax.lax.switch(idx, branches, inputs)
 
+
 class RandomScale(Transformation):
-    def __init__(self, min_s=0.9, max_s=1.1, p=0.5,
-                 input_types=(InputType.IMAGE, InputType.MASK)):
+    def __init__(
+        self, min_s=0.9, max_s=1.1, p=0.5, input_types=(InputType.IMAGE, InputType.MASK)
+    ):
         super().__init__(input_types=input_types)
         self.min_s, self.max_s, self.p = float(min_s), float(max_s), float(p)
 
@@ -257,16 +256,25 @@ class RandomScale(Transformation):
         img, mask = values
         rng, k_p, k_s = jr.split(rng, 3)
         do = jr.bernoulli(k_p, self.p)
-        s  = jr.uniform(k_s, (), minval=self.min_s, maxval=self.max_s)
+        s = jr.uniform(k_s, (), minval=self.min_s, maxval=self.max_s)
         img = jnp.where(do, img * s, img)
         return [img, mask]
 
 
 class AdditiveGaussianNoise(Transformation):
-    def __init__(self, sigma_min=0.0, sigma_max=0.02, p=0.3,
-                 input_types=(InputType.IMAGE, InputType.MASK)):
+    def __init__(
+        self,
+        sigma_min=0.0,
+        sigma_max=0.02,
+        p=0.3,
+        input_types=(InputType.IMAGE, InputType.MASK),
+    ):
         super().__init__(input_types=input_types)
-        self.sigma_min, self.sigma_max, self.p = float(sigma_min), float(sigma_max), float(p)
+        self.sigma_min, self.sigma_max, self.p = (
+            float(sigma_min),
+            float(sigma_max),
+            float(p),
+        )
 
     def apply(self, rng, values, input_types, invert=False):
         if invert:
@@ -295,16 +303,21 @@ class CoarseDropout(Transformation):
         Probability of applying the transform at all (0–1).
     """
 
-    def __init__(self, patch: int = 32, dropout_prob: float = 0.15, p: float = 0.2,
-                 input_types=(InputType.IMAGE, InputType.MASK)):
+    def __init__(
+        self,
+        patch: int = 32,
+        dropout_prob: float = 0.15,
+        p: float = 0.2,
+        input_types=(InputType.IMAGE, InputType.MASK),
+    ):
         super().__init__(input_types=input_types)
-        self.patch         = int(patch)
-        self.dropout_prob  = float(dropout_prob)
-        self.p             = float(p)
+        self.patch = int(patch)
+        self.dropout_prob = float(dropout_prob)
+        self.p = float(p)
 
     def apply(self, rng, values, input_types, invert: bool = False):
         if invert:
-            return values                             
+            return values
 
         img, mask = values
         H, W = img.shape[:2]
@@ -312,21 +325,21 @@ class CoarseDropout(Transformation):
         rng, k_apply, k_seed = jr.split(rng, 3)
         do = jr.bernoulli(k_apply, self.p)
 
-        seeds = jr.uniform(k_seed, (H, W)) < self.dropout_prob   
+        seeds = jr.uniform(k_seed, (H, W)) < self.dropout_prob
 
-        window = (self.patch, self.patch)           
-        seeds_f32 = seeds.astype(jnp.float32)        
+        window = (self.patch, self.patch)
+        seeds_f32 = seeds.astype(jnp.float32)
 
         counts = jax.lax.reduce_window(
             seeds_f32,
             0.0,
-            jax.lax.add,                
+            jax.lax.add,
             window_dimensions=window,
             window_strides=(1, 1),
-            padding='SAME'
+            padding="SAME",
         )
-        dropout_mask = counts > 0.0                 
-        dropout_mask = dropout_mask[..., None]     
+        dropout_mask = counts > 0.0
+        dropout_mask = dropout_mask[..., None]
 
         img = jnp.where(do & dropout_mask, 0.0, img)
         return [img, mask]

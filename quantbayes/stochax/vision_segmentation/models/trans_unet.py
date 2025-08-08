@@ -8,6 +8,7 @@ import jax.numpy as jnp
 import jax.random as jr
 from jaxtyping import Array, Float, PRNGKeyArray
 
+
 def _match(x: jnp.ndarray, ref: jnp.ndarray) -> jnp.ndarray:
     """Pad/crop so spatial dims of `x` match those of `ref`."""
     h, w = x.shape[-2:]
@@ -23,6 +24,7 @@ def _match(x: jnp.ndarray, ref: jnp.ndarray) -> jnp.ndarray:
         sh, sw = (-dh) // 2, (-dw) // 2
         x = x[(..., slice(sh, sh + H), slice(sw, sw + W))]
     return x
+
 
 class ConvBlock(eqx.Module):
     c1: eqx.nn.Conv2d
@@ -62,6 +64,7 @@ class Up(eqx.Module):
         x = jnp.concatenate([skip, x], axis=0)
         x, state = self.conv(x, key=k2, state=state)
         return x, state
+
 
 class PatchEmbedding(eqx.Module):
     linear: eqx.nn.Linear
@@ -111,6 +114,7 @@ class TransformerBlock(eqx.Module):
         h = jax.vmap(self.fc2)(h)
         h = self.drop2(h, key=k2)
         return x + h
+
 
 class TransUNet(eqx.Module):
     # encoder

@@ -1,4 +1,4 @@
-""""
+""" "
 
 Author: Joseph Margaryan
 Date: 2024-01-15
@@ -43,7 +43,10 @@ import jax.random as jr
 
 
 from quantbayes.stochax.vision_segmentation.models.unet_backbone import (
-    _match, ConvBlock, ResNetEncoder, _RESNET_SPECS
+    _match,
+    ConvBlock,
+    ResNetEncoder,
+    _RESNET_SPECS,
 )
 
 
@@ -110,13 +113,13 @@ class ASPP(eqx.Module):
         y3, state = self.b3(x, key=k3, state=state)
         y4, state = self.b4(x, key=k4, state=state)
 
-        gp = jnp.mean(x, axis=(1, 2), keepdims=True)  
-        gp, state = self.pool_proj(gp, key=k5, state=state)  
+        gp = jnp.mean(x, axis=(1, 2), keepdims=True)
+        gp, state = self.pool_proj(gp, key=k5, state=state)
         gp = jax.image.resize(
             gp, (gp.shape[0], x.shape[1], x.shape[2]), method="bilinear"
         )
 
-        cat = jnp.concatenate([y1, y2, y3, y4, gp], axis=0)  
+        cat = jnp.concatenate([y1, y2, y3, y4, gp], axis=0)
         proj = self.project(cat, key=k6)
         proj, state = self.bn_proj(proj, state)
         proj = jax.nn.relu(proj)
@@ -144,8 +147,8 @@ class DeepLabV3PlusResNet(eqx.Module):
 
         self.encoder = ResNetEncoder(backbone, key=k_enc)
         chans = _RESNET_SPECS[backbone]["channels"]
-        c_low = chans[1]  
-        c_high = chans[-1]  
+        c_low = chans[1]
+        c_high = chans[-1]
         #  Atrous Convolution ASPP Chen et al. 2017
         self.aspp = ASPP(c_high, 256, key=ks[0])
 
@@ -163,8 +166,8 @@ class DeepLabV3PlusResNet(eqx.Module):
 
         (conv1, l1, l2, l3, l4), state = self.encoder(x, key=k_enc, state=state)
 
-        low = l1  
-        high = l4 
+        low = l1
+        high = l4
 
         out_aspp, state = self.aspp(high, key=k_aspp, state=state)
 
@@ -212,12 +215,12 @@ if __name__ == "__main__":
     from quantbayes.stochax import (
         train,  # training loop
         predict,
-        make_augmax_augment, 
+        make_augmax_augment,
         make_dice_bce_loss,
     )
 
     rng = np.random.RandomState(0)
-    N, C, H, W, OUT_CH = 10, 3, 128, 128, 1  
+    N, C, H, W, OUT_CH = 10, 3, 128, 128, 1
 
     # images: N×C×H×W
     X_np = rng.rand(N, C, H, W).astype("float32")
@@ -265,7 +268,7 @@ if __name__ == "__main__":
         y_train=jnp.array(y_train),  # (N,1,H,W)
         X_val=jnp.array(X_val),
         y_val=jnp.array(y_val),
-        batch_size=32, 
+        batch_size=32,
         num_epochs=15,
         patience=4,
         key=train_key,

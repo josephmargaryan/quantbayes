@@ -6,6 +6,7 @@ Usage
 -----
 $ python save_imagenet_resnets.py
 """
+
 ###### Only run this script directly to load in the weights in your project ######
 
 from pathlib import Path
@@ -19,10 +20,11 @@ CHECKPOINTS = {
     "resnet50": resnet50,
 }
 
+
 def main():
     for name, builder in CHECKPOINTS.items():
         print(f"⇢ downloading {name} …")
-        model = builder(weights="IMAGENET1K_V1")          
+        model = builder(weights="IMAGENET1K_V1")
         ckpt_path = Path(f"{name}_imagenet.npz")
 
         print(f"↳ saving → {ckpt_path}")

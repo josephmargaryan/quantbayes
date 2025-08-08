@@ -105,7 +105,8 @@ class PatchEmbedding(eqx.Module):
         x = einops.rearrange(
             x,
             "c (h ph) (w pw) -> (h w) (c ph pw)",
-            ph=ps, pw=ps,
+            ph=ps,
+            pw=ps,
         )
         x = jax.vmap(self.linear)(x)
         return x
@@ -151,15 +152,15 @@ class MultiheadSelfAttention(eqx.Module):
 
         # Attention
         scale = 1.0 / math.sqrt(hd)
-        scores = jnp.matmul(q * scale, k)            # [H, N, N]
-        attn = jax.nn.softmax(scores, axis=-1)       # [H, N, N]
-        ctx = jnp.matmul(attn, v)                    # [H, N, hd]
+        scores = jnp.matmul(q * scale, k)  # [H, N, N]
+        attn = jax.nn.softmax(scores, axis=-1)  # [H, N, N]
+        ctx = jnp.matmul(attn, v)  # [H, N, hd]
 
         # Merge heads
         ctx = ctx.transpose(1, 0, 2).reshape(-1, D)  # [N, D]
 
         # Final projection
-        out = jax.vmap(self.out_proj)(ctx)           # [N, D]
+        out = jax.vmap(self.out_proj)(ctx)  # [N, D]
         return out
 
 
@@ -192,8 +193,8 @@ class AttentionBlock(eqx.Module):
 
     def __call__(self, x: jnp.ndarray, key: PRNGKeyArray) -> jnp.ndarray:
         # Self-attn branch
-        x_norm = jax.vmap(self.layer_norm1)(x)   # [N, D]
-        attn_out = self.attention(x_norm)        # [N, D]
+        x_norm = jax.vmap(self.layer_norm1)(x)  # [N, D]
+        attn_out = self.attention(x_norm)  # [N, D]
         x = x + attn_out
 
         # MLP branch
@@ -213,8 +214,8 @@ class AttentionBlock(eqx.Module):
 # ------------------------------- ViT Model ------------------------------- #
 class VisionTransformer(eqx.Module):
     patch_embedding: PatchEmbedding
-    positional_embedding: jnp.ndarray          # [1+N, D]
-    cls_token: jnp.ndarray                     # [1, D]
+    positional_embedding: jnp.ndarray  # [1+N, D]
+    cls_token: jnp.ndarray  # [1, D]
     attention_blocks: Tuple[AttentionBlock, ...]
     dropout: eqx.nn.Dropout
     norm: eqx.nn.LayerNorm
@@ -255,20 +256,24 @@ class VisionTransformer(eqx.Module):
         blocks = []
         block_keys = jr.split(k4, num_layers)
         for kb in block_keys:
-            blocks.append(AttentionBlock(embedding_dim, hidden_dim, num_heads, dropout_rate, kb))
+            blocks.append(
+                AttentionBlock(embedding_dim, hidden_dim, num_heads, dropout_rate, kb)
+            )
         self.attention_blocks = tuple(blocks)
 
         self.dropout = eqx.nn.Dropout(dropout_rate)
         self.norm = eqx.nn.LayerNorm(embedding_dim)
         self.head = eqx.nn.Linear(embedding_dim, num_classes, key=k5)
 
-    def __call__(self, x: Float[Array, "channels height width"], key: PRNGKeyArray, state):
+    def __call__(
+        self, x: Float[Array, "channels height width"], key: PRNGKeyArray, state
+    ):
         # Embed patches
-        x = self.patch_embedding(x)                           # [N_patches, D]
+        x = self.patch_embedding(x)  # [N_patches, D]
 
         # Prepend CLS and add pos
-        x = jnp.concatenate((self.cls_token, x), axis=0)      # [1+N, D]
-        pos = self.positional_embedding[: x.shape[0]]         # safe slice
+        x = jnp.concatenate((self.cls_token, x), axis=0)  # [1+N, D]
+        pos = self.positional_embedding[: x.shape[0]]  # safe slice
         x = x + pos
 
         # Transformer
@@ -278,8 +283,8 @@ class VisionTransformer(eqx.Module):
             x = block(x, key=k)
 
         # CLS -> norm -> head
-        x = self.norm(x[0])                                   # [D]
-        logits = self.head(x)                                 # [C]
+        x = self.norm(x[0])  # [D]
+        logits = self.head(x)  # [C]
         return logits, state
 
 
@@ -291,8 +296,8 @@ def _resize_pos_embedding(tv_pos: jnp.ndarray, target_len: int) -> jnp.ndarray:
     """
     B, L_tv, D = tv_pos.shape
     assert B == 1
-    cls_tok = tv_pos[:, :1, :]          # [1,1,D]
-    seq = tv_pos[:, 1:, :]              # [1, L_tv-1, D]
+    cls_tok = tv_pos[:, :1, :]  # [1,1,D]
+    seq = tv_pos[:, 1:, :]  # [1, L_tv-1, D]
 
     if (1 + seq.shape[1]) == target_len:
         return tv_pos
@@ -308,13 +313,15 @@ def _resize_pos_embedding(tv_pos: jnp.ndarray, target_len: int) -> jnp.ndarray:
         return jnp.concatenate([cls_tok, seq_resized], axis=1)
 
     # 2D grid → resize → flatten
-    seq_2d = seq.reshape(1, old_hw, old_hw, D)       # [1, H, W, D]
+    seq_2d = seq.reshape(1, old_hw, old_hw, D)  # [1, H, W, D]
     seq_resized = jimg.resize(seq_2d, (1, new_hw, new_hw, D), method="linear")
     seq_resized = seq_resized.reshape(1, new_hw * new_hw, D)
     return jnp.concatenate([cls_tok, seq_resized], axis=1)
 
 
-def load_torchvision_vit(model: VisionTransformer, npz_path: str, *, strict_fc: bool = True) -> VisionTransformer:
+def load_torchvision_vit(
+    model: VisionTransformer, npz_path: str, *, strict_fc: bool = True
+) -> VisionTransformer:
     """
     Load a torchvision ViT .npz (from state_dict()) into this model.
     Handles:
@@ -324,6 +331,7 @@ def load_torchvision_vit(model: VisionTransformer, npz_path: str, *, strict_fc: 
       - final encoder.ln and heads.head
     """
     import numpy as np
+
     raw = dict(np.load(npz_path))
 
     pt: Dict[str, jnp.ndarray] = {}
@@ -332,7 +340,7 @@ def load_torchvision_vit(model: VisionTransformer, npz_path: str, *, strict_fc: 
     if "conv_proj.weight" in raw:
         W = jnp.asarray(raw["conv_proj.weight"])  # [E, C, ph, pw]
         E, C, ph, pw = W.shape
-        W_lin = W.reshape(E, C * ph * pw)        # [E, C*ph*pw]
+        W_lin = W.reshape(E, C * ph * pw)  # [E, C*ph*pw]
         pt["patch_embedding.linear.weight"] = W_lin
         if "conv_proj.bias" in raw:
             pt["patch_embedding.linear.bias"] = jnp.asarray(raw["conv_proj.bias"])
@@ -342,9 +350,9 @@ def load_torchvision_vit(model: VisionTransformer, npz_path: str, *, strict_fc: 
         cls = jnp.asarray(raw["class_token"]).reshape(1, -1)  # [1, D]
         pt["cls_token"] = cls
     if "encoder.pos_embedding" in raw:
-        pos = jnp.asarray(raw["encoder.pos_embedding"])       # [1, L_tv, D]
+        pos = jnp.asarray(raw["encoder.pos_embedding"])  # [1, L_tv, D]
         L_target = model.positional_embedding.shape[0]
-        pos = _resize_pos_embedding(pos, L_target).squeeze(0) # [L_target, D]
+        pos = _resize_pos_embedding(pos, L_target).squeeze(0)  # [L_target, D]
         pt["positional_embedding"] = pos
 
     # 3) Transformer blocks
@@ -352,9 +360,12 @@ def load_torchvision_vit(model: VisionTransformer, npz_path: str, *, strict_fc: 
     D = model.embed_dim
     for i in range(n_layers):
         # LN1
-        w = raw.get(f"encoder.layers.{i}.ln_1.weight"); b = raw.get(f"encoder.layers.{i}.ln_1.bias")
-        if w is not None: pt[f"attention_blocks.{i}.layer_norm1.weight"] = jnp.asarray(w)
-        if b is not None: pt[f"attention_blocks.{i}.layer_norm1.bias"]  = jnp.asarray(b)
+        w = raw.get(f"encoder.layers.{i}.ln_1.weight")
+        b = raw.get(f"encoder.layers.{i}.ln_1.bias")
+        if w is not None:
+            pt[f"attention_blocks.{i}.layer_norm1.weight"] = jnp.asarray(w)
+        if b is not None:
+            pt[f"attention_blocks.{i}.layer_norm1.bias"] = jnp.asarray(b)
 
         # Self-attn QKV
         W_qkv = raw.get(f"encoder.layers.{i}.self_attention.in_proj_weight")
@@ -381,18 +392,27 @@ def load_torchvision_vit(model: VisionTransformer, npz_path: str, *, strict_fc: 
             pt[f"attention_blocks.{i}.attention.out_proj.bias"] = jnp.asarray(b_o)
 
         # LN2
-        w = raw.get(f"encoder.layers.{i}.ln_2.weight"); b = raw.get(f"encoder.layers.{i}.ln_2.bias")
-        if w is not None: pt[f"attention_blocks.{i}.layer_norm2.weight"] = jnp.asarray(w)
-        if b is not None: pt[f"attention_blocks.{i}.layer_norm2.bias"]  = jnp.asarray(b)
+        w = raw.get(f"encoder.layers.{i}.ln_2.weight")
+        b = raw.get(f"encoder.layers.{i}.ln_2.bias")
+        if w is not None:
+            pt[f"attention_blocks.{i}.layer_norm2.weight"] = jnp.asarray(w)
+        if b is not None:
+            pt[f"attention_blocks.{i}.layer_norm2.bias"] = jnp.asarray(b)
 
         # MLP
-        w = raw.get(f"encoder.layers.{i}.mlp.fc1.weight"); b = raw.get(f"encoder.layers.{i}.mlp.fc1.bias")
-        if w is not None: pt[f"attention_blocks.{i}.linear1.weight"] = jnp.asarray(w)
-        if b is not None: pt[f"attention_blocks.{i}.linear1.bias"]  = jnp.asarray(b)
+        w = raw.get(f"encoder.layers.{i}.mlp.fc1.weight")
+        b = raw.get(f"encoder.layers.{i}.mlp.fc1.bias")
+        if w is not None:
+            pt[f"attention_blocks.{i}.linear1.weight"] = jnp.asarray(w)
+        if b is not None:
+            pt[f"attention_blocks.{i}.linear1.bias"] = jnp.asarray(b)
 
-        w = raw.get(f"encoder.layers.{i}.mlp.fc2.weight"); b = raw.get(f"encoder.layers.{i}.mlp.fc2.bias")
-        if w is not None: pt[f"attention_blocks.{i}.linear2.weight"] = jnp.asarray(w)
-        if b is not None: pt[f"attention_blocks.{i}.linear2.bias"]  = jnp.asarray(b)
+        w = raw.get(f"encoder.layers.{i}.mlp.fc2.weight")
+        b = raw.get(f"encoder.layers.{i}.mlp.fc2.bias")
+        if w is not None:
+            pt[f"attention_blocks.{i}.linear2.weight"] = jnp.asarray(w)
+        if b is not None:
+            pt[f"attention_blocks.{i}.linear2.bias"] = jnp.asarray(b)
 
     # 4) Final norm + head
     if "encoder.ln.weight" in raw:
@@ -441,7 +461,11 @@ def _copy_into_tree(obj, pt: Dict[str, jnp.ndarray], prefix: str = ""):
                 w_key, b_key = f"{full}.weight", f"{full}.bias"
                 w_val = pt.get(w_key, getattr(attr, "weight"))
                 b_val = pt.get(b_key, getattr(attr, "bias"))
-                obj = eqx.tree_at(lambda m: (getattr(m, name).weight, getattr(m, name).bias), obj, (w_val, b_val))
+                obj = eqx.tree_at(
+                    lambda m: (getattr(m, name).weight, getattr(m, name).bias),
+                    obj,
+                    (w_val, b_val),
+                )
                 continue
 
             # Tuples of submodules (e.g., attention_blocks)
@@ -468,19 +492,33 @@ def _copy_into_tree(obj, pt: Dict[str, jnp.ndarray], prefix: str = ""):
 
 
 # --------------- Convenience per-arch loader wrappers (TV) --------------- #
-def load_imagenet_vit_b_16(model: VisionTransformer, npz="vit_b_16_imagenet.npz", strict_fc: bool = True) -> VisionTransformer:
+def load_imagenet_vit_b_16(
+    model: VisionTransformer, npz="vit_b_16_imagenet.npz", strict_fc: bool = True
+) -> VisionTransformer:
     return load_torchvision_vit(model, npz, strict_fc=strict_fc)
 
-def load_imagenet_vit_b_32(model: VisionTransformer, npz="vit_b_32_imagenet.npz", strict_fc: bool = True) -> VisionTransformer:
+
+def load_imagenet_vit_b_32(
+    model: VisionTransformer, npz="vit_b_32_imagenet.npz", strict_fc: bool = True
+) -> VisionTransformer:
     return load_torchvision_vit(model, npz, strict_fc=strict_fc)
 
-def load_imagenet_vit_l_16(model: VisionTransformer, npz="vit_l_16_imagenet.npz", strict_fc: bool = True) -> VisionTransformer:
+
+def load_imagenet_vit_l_16(
+    model: VisionTransformer, npz="vit_l_16_imagenet.npz", strict_fc: bool = True
+) -> VisionTransformer:
     return load_torchvision_vit(model, npz, strict_fc=strict_fc)
 
-def load_imagenet_vit_l_32(model: VisionTransformer, npz="vit_l_32_imagenet.npz", strict_fc: bool = True) -> VisionTransformer:
+
+def load_imagenet_vit_l_32(
+    model: VisionTransformer, npz="vit_l_32_imagenet.npz", strict_fc: bool = True
+) -> VisionTransformer:
     return load_torchvision_vit(model, npz, strict_fc=strict_fc)
 
-def load_imagenet_vit_h_14(model: VisionTransformer, npz="vit_h_14_imagenet.npz", strict_fc: bool = True) -> VisionTransformer:
+
+def load_imagenet_vit_h_14(
+    model: VisionTransformer, npz="vit_h_14_imagenet.npz", strict_fc: bool = True
+) -> VisionTransformer:
     return load_torchvision_vit(model, npz, strict_fc=strict_fc)
 
 
@@ -532,8 +570,8 @@ if __name__ == "__main__":
     model_key, train_key = jr.split(master_key)
 
     model, state = eqx.nn.make_with_state(VisionTransformer)(
-        embedding_dim=768,           # ViT-B
-        hidden_dim=768 * 4,         # MLP ratio 4
+        embedding_dim=768,  # ViT-B
+        hidden_dim=768 * 4,  # MLP ratio 4
         num_heads=12,
         num_layers=12,
         dropout_rate=0.1,

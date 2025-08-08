@@ -104,8 +104,10 @@ import jax.random as jr
 
 # --------------------------- small utils ---------------------------
 
+
 class DropPath(eqx.Module):
     rate: float = eqx.field(static=True)
+
     def __call__(self, x: jnp.ndarray, *, key: jnp.ndarray) -> jnp.ndarray:
         if self.rate <= 0.0:
             return x
@@ -116,8 +118,10 @@ class DropPath(eqx.Module):
 
 # --------------------------- encoder: MiT ---------------------------
 
+
 class SegformerOverlapPatchEmbeddings(eqx.Module):
     """OverlapPatchEmbeddings: conv k, stride s, padding=k//2, + LayerNorm (token-wise)."""
+
     proj: eqx.nn.Conv2d
     layer_norm: eqx.nn.LayerNorm
     patch_size: int = eqx.field(static=True)
@@ -127,8 +131,13 @@ class SegformerOverlapPatchEmbeddings(eqx.Module):
         self.patch_size = patch_size
         self.stride = stride
         self.proj = eqx.nn.Conv2d(
-            in_ch, hidden, kernel_size=patch_size, stride=stride,
-            padding=patch_size // 2, use_bias=True, key=key
+            in_ch,
+            hidden,
+            kernel_size=patch_size,
+            stride=stride,
+            padding=patch_size // 2,
+            use_bias=True,
+            key=key,
         )
         self.layer_norm = eqx.nn.LayerNorm(hidden, eps=1e-6)
 
@@ -144,6 +153,7 @@ class SegformerOverlapPatchEmbeddings(eqx.Module):
 
 class SegformerEfficientSelfAttention(eqx.Module):
     """EMSA: q from tokens; k,v from spatially reduced tokens via sr conv + LN."""
+
     hidden_size: int = eqx.field(static=True)
     num_attention_heads: int = eqx.field(static=True)
     sr_ratio: int = eqx.field(static=True)
@@ -156,7 +166,9 @@ class SegformerEfficientSelfAttention(eqx.Module):
     sr: eqx.nn.Conv2d | None
     layer_norm: eqx.nn.LayerNorm  # for reduced tokens
 
-    def __init__(self, hidden: int, heads: int, sr_ratio: int, attn_drop: float, *, key):
+    def __init__(
+        self, hidden: int, heads: int, sr_ratio: int, attn_drop: float, *, key
+    ):
         self.hidden_size = hidden
         self.num_attention_heads = heads
         self.sr_ratio = sr_ratio
@@ -168,7 +180,14 @@ class SegformerEfficientSelfAttention(eqx.Module):
         self.dropout = eqx.nn.Dropout(attn_drop)
 
         if sr_ratio > 1:
-            self.sr = eqx.nn.Conv2d(hidden, hidden, kernel_size=sr_ratio, stride=sr_ratio, use_bias=True, key=jr.fold_in(key, 7))
+            self.sr = eqx.nn.Conv2d(
+                hidden,
+                hidden,
+                kernel_size=sr_ratio,
+                stride=sr_ratio,
+                use_bias=True,
+                key=jr.fold_in(key, 7),
+            )
         else:
             self.sr = None
         self.layer_norm = eqx.nn.LayerNorm(hidden, eps=1e-6)
@@ -189,12 +208,12 @@ class SegformerEfficientSelfAttention(eqx.Module):
             red = tokens
         else:
             x = einops.rearrange(tokens, "(h w) c -> c h w", h=H, w=W)
-            x = self.sr(x, key=jr.fold_in(key, 1))                    # [C,H',W']
+            x = self.sr(x, key=jr.fold_in(key, 1))  # [C,H',W']
             Hr, Wr = x.shape[-2], x.shape[-1]
             red = einops.rearrange(x, "c h w -> (h w) c")
             red = jax.vmap(self.layer_norm)(red)
 
-        k = jax.vmap(self.key)(red)   # [N' , C]
+        k = jax.vmap(self.key)(red)  # [N' , C]
         v = jax.vmap(self.value)(red)
         k = einops.rearrange(k, "m (h d) -> h m d", h=Hh)
         v = einops.rearrange(v, "m (h d) -> h m d", h=Hh)
@@ -212,9 +231,11 @@ class SegformerEfficientSelfAttention(eqx.Module):
 class SegformerSelfOutput(eqx.Module):
     dense: eqx.nn.Linear
     dropout: eqx.nn.Dropout
+
     def __init__(self, hidden: int, drop: float, *, key):
         self.dense = eqx.nn.Linear(hidden, hidden, key=key)
         self.dropout = eqx.nn.Dropout(drop)
+
     def __call__(self, x: jnp.ndarray, *, key: jnp.ndarray):
         x = jax.vmap(self.dense)(x)
         x = self.dropout(x, key=key)
@@ -224,10 +245,23 @@ class SegformerSelfOutput(eqx.Module):
 class SegformerAttention(eqx.Module):
     self_attn: SegformerEfficientSelfAttention
     output: SegformerSelfOutput
-    def __init__(self, hidden: int, heads: int, sr_ratio: int, drop: float, attn_drop: float, *, key):
+
+    def __init__(
+        self,
+        hidden: int,
+        heads: int,
+        sr_ratio: int,
+        drop: float,
+        attn_drop: float,
+        *,
+        key,
+    ):
         k1, k2 = jr.split(key, 2)
-        self.self_attn = SegformerEfficientSelfAttention(hidden, heads, sr_ratio, attn_drop, key=k1)
+        self.self_attn = SegformerEfficientSelfAttention(
+            hidden, heads, sr_ratio, attn_drop, key=k1
+        )
         self.output = SegformerSelfOutput(hidden, drop, key=k2)
+
     def __call__(self, tokens, H, W, *, key):
         y = self.self_attn(tokens, H, W, key=jr.fold_in(key, 0))
         y = self.output(y, key=jr.fold_in(key, 1))
@@ -236,6 +270,7 @@ class SegformerAttention(eqx.Module):
 
 class SegformerDWConv(eqx.Module):
     dwconv: eqx.nn.Conv2d
+
     def __init__(self, dim: int, *, key):
         try:
             # Depthwise: groups=dim (preferred)
@@ -255,6 +290,7 @@ class SegformerMixFFN(eqx.Module):
     dwconv: SegformerDWConv
     dense2: eqx.nn.Linear
     dropout: eqx.nn.Dropout
+
     def __init__(self, dim: int, mlp_ratio: float, drop: float, *, key):
         k1, k2, k3 = jr.split(key, 3)
         hidden = int(dim * mlp_ratio)
@@ -262,6 +298,7 @@ class SegformerMixFFN(eqx.Module):
         self.dwconv = SegformerDWConv(hidden, key=k2)
         self.dense2 = eqx.nn.Linear(hidden, dim, key=k3)
         self.dropout = eqx.nn.Dropout(drop)
+
     def __call__(self, tokens: jnp.ndarray, H: int, W: int, *, key):
         t = jax.vmap(self.dense1)(tokens)
         t = self.dwconv(t, H, W, key=jr.fold_in(key, 0))
@@ -278,13 +315,28 @@ class SegformerLayer(eqx.Module):
     drop_path: DropPath
     layer_norm_2: eqx.nn.LayerNorm
     mlp: SegformerMixFFN
-    def __init__(self, hidden: int, heads: int, sr_ratio: int, mlp_ratio: float, drop_path: float, drop: float, attn_drop: float, *, key):
+
+    def __init__(
+        self,
+        hidden: int,
+        heads: int,
+        sr_ratio: int,
+        mlp_ratio: float,
+        drop_path: float,
+        drop: float,
+        attn_drop: float,
+        *,
+        key,
+    ):
         k1, k2, k3 = jr.split(key, 3)
         self.layer_norm_1 = eqx.nn.LayerNorm(hidden, eps=1e-6)
-        self.attention = SegformerAttention(hidden, heads, sr_ratio, drop, attn_drop, key=k1)
+        self.attention = SegformerAttention(
+            hidden, heads, sr_ratio, drop, attn_drop, key=k1
+        )
         self.drop_path = DropPath(drop_path)
         self.layer_norm_2 = eqx.nn.LayerNorm(hidden, eps=1e-6)
         self.mlp = SegformerMixFFN(hidden, mlp_ratio, drop, key=k2)
+
     def __call__(self, tokens: jnp.ndarray, H: int, W: int, *, key: jnp.ndarray):
         k1, k2 = jr.split(key, 2)
         t = jax.vmap(self.layer_norm_1)(tokens)
@@ -301,15 +353,36 @@ class SegformerLayer(eqx.Module):
 
 class SegformerEncoder(eqx.Module):
     """4-stage hierarchical encoder; returns CHW features for each stage."""
+
     patch_embeddings: Tuple[SegformerOverlapPatchEmbeddings, ...]
     block: Tuple[Tuple[SegformerLayer, ...], ...]
     layer_norm: Tuple[eqx.nn.LayerNorm, ...]
     depths: Tuple[int, int, int, int] = eqx.field(static=True)
 
-    def __init__(self, *, in_ch: int, hidden_sizes: List[int], depths: List[int],
-                 heads: List[int], sr_ratios: List[int], patch_sizes: List[int], strides: List[int],
-                 drop_path_rate: float, drop: float, attn_drop: float, key):
-        assert len(hidden_sizes) == len(depths) == len(heads) == len(sr_ratios) == len(patch_sizes) == len(strides) == 4
+    def __init__(
+        self,
+        *,
+        in_ch: int,
+        hidden_sizes: List[int],
+        depths: List[int],
+        heads: List[int],
+        sr_ratios: List[int],
+        patch_sizes: List[int],
+        strides: List[int],
+        drop_path_rate: float,
+        drop: float,
+        attn_drop: float,
+        key,
+    ):
+        assert (
+            len(hidden_sizes)
+            == len(depths)
+            == len(heads)
+            == len(sr_ratios)
+            == len(patch_sizes)
+            == len(strides)
+            == 4
+        )
         self.depths = tuple(depths)
 
         keys = iter(jr.split(key, 4096))
@@ -318,22 +391,34 @@ class SegformerEncoder(eqx.Module):
         pe = []
         in_c = in_ch
         for i in range(4):
-            pe.append(SegformerOverlapPatchEmbeddings(in_c, hidden_sizes[i], patch_sizes[i], strides[i], key=next(keys)))
+            pe.append(
+                SegformerOverlapPatchEmbeddings(
+                    in_c, hidden_sizes[i], patch_sizes[i], strides[i], key=next(keys)
+                )
+            )
             in_c = hidden_sizes[i]
         self.patch_embeddings = tuple(pe)
 
         # stochastic depth schedule across all blocks
         total = sum(depths)
-        sd = [ (drop_path_rate * i) / max(1, total - 1) for i in range(total) ]
+        sd = [(drop_path_rate * i) / max(1, total - 1) for i in range(total)]
         cur = 0
         blocks = []
         for i in range(4):
             layers = []
             for j in range(depths[i]):
-                layers.append(SegformerLayer(
-                    hidden_sizes[i], heads[i], sr_ratios[i], mlp_ratio=4.0,
-                    drop_path=sd[cur], drop=drop, attn_drop=attn_drop, key=next(keys)
-                ))
+                layers.append(
+                    SegformerLayer(
+                        hidden_sizes[i],
+                        heads[i],
+                        sr_ratios[i],
+                        mlp_ratio=4.0,
+                        drop_path=sd[cur],
+                        drop=drop,
+                        attn_drop=attn_drop,
+                        key=next(keys),
+                    )
+                )
                 cur += 1
             blocks.append(tuple(layers))
         self.block = tuple(blocks)
@@ -370,10 +455,13 @@ class SegformerEncoder(eqx.Module):
 
 # --------------------------- decode head ---------------------------
 
+
 class SegformerMLP(eqx.Module):
     proj: eqx.nn.Linear
+
     def __init__(self, input_dim: int, out_dim: int, *, key):
         self.proj = eqx.nn.Linear(input_dim, out_dim, key=key)
+
     def __call__(self, x_chw: jnp.ndarray):
         # x_chw: [C,H,W] -> tokens -> linear -> [Out,H,W]
         C, H, W = x_chw.shape
@@ -391,17 +479,43 @@ class SegformerDecodeHead(eqx.Module):
     classifier: eqx.nn.Conv2d
     decoder_hidden_size: int = eqx.field(static=True)
 
-    def __init__(self, hidden_sizes: List[int], decoder_hidden_size: int, num_classes: int, *, key):
+    def __init__(
+        self,
+        hidden_sizes: List[int],
+        decoder_hidden_size: int,
+        num_classes: int,
+        *,
+        key,
+    ):
         keys = iter(jr.split(key, 256))
-        self.linear_c = tuple(SegformerMLP(h, decoder_hidden_size, key=next(keys)) for h in hidden_sizes)
-        self.linear_fuse = eqx.nn.Conv2d(decoder_hidden_size * 4, decoder_hidden_size, 1, use_bias=False, key=next(keys))
-        self.batch_norm = eqx.nn.BatchNorm(decoder_hidden_size, axis_name="batch", mode="batch")
+        self.linear_c = tuple(
+            SegformerMLP(h, decoder_hidden_size, key=next(keys)) for h in hidden_sizes
+        )
+        self.linear_fuse = eqx.nn.Conv2d(
+            decoder_hidden_size * 4,
+            decoder_hidden_size,
+            1,
+            use_bias=False,
+            key=next(keys),
+        )
+        self.batch_norm = eqx.nn.BatchNorm(
+            decoder_hidden_size, axis_name="batch", mode="batch"
+        )
         self.activation = None  # use jax.nn.relu
         self.dropout = eqx.nn.Dropout(0.1)
-        self.classifier = eqx.nn.Conv2d(decoder_hidden_size, num_classes, 1, key=next(keys))
+        self.classifier = eqx.nn.Conv2d(
+            decoder_hidden_size, num_classes, 1, key=next(keys)
+        )
         self.decoder_hidden_size = decoder_hidden_size
 
-    def __call__(self, encoder_hidden_states: Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray], key, state):
+    def __call__(
+        self,
+        encoder_hidden_states: Tuple[
+            jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray
+        ],
+        key,
+        state,
+    ):
         # encoder_hidden_states: 4 CHW maps (1/4 .. 1/32)
         c1, c2, c3, c4 = encoder_hidden_states
         H0, W0 = c1.shape[-2], c1.shape[-1]
@@ -428,12 +542,33 @@ class SegformerDecodeHead(eqx.Module):
 
 _VARIANTS: Dict[str, Dict[str, Any]] = {
     # From HF docs/paper
-    "b0": dict(depths=[2, 2, 2, 2], hidden=[32, 64, 160, 256], heads=[1, 2, 5, 8], decoder=256),
-    "b1": dict(depths=[2, 2, 2, 2], hidden=[64, 128, 320, 512], heads=[1, 2, 5, 8], decoder=256),
-    "b2": dict(depths=[3, 4, 6, 3], hidden=[64, 128, 320, 512], heads=[1, 2, 5, 8], decoder=768),
-    "b3": dict(depths=[3, 4, 18, 3], hidden=[64, 128, 320, 512], heads=[1, 2, 5, 8], decoder=768),
-    "b4": dict(depths=[3, 8, 27, 3], hidden=[64, 128, 320, 512], heads=[1, 2, 5, 8], decoder=768),
-    "b5": dict(depths=[3, 6, 40, 3], hidden=[64, 128, 320, 512], heads=[1, 2, 5, 8], decoder=768),
+    "b0": dict(
+        depths=[2, 2, 2, 2], hidden=[32, 64, 160, 256], heads=[1, 2, 5, 8], decoder=256
+    ),
+    "b1": dict(
+        depths=[2, 2, 2, 2], hidden=[64, 128, 320, 512], heads=[1, 2, 5, 8], decoder=256
+    ),
+    "b2": dict(
+        depths=[3, 4, 6, 3], hidden=[64, 128, 320, 512], heads=[1, 2, 5, 8], decoder=768
+    ),
+    "b3": dict(
+        depths=[3, 4, 18, 3],
+        hidden=[64, 128, 320, 512],
+        heads=[1, 2, 5, 8],
+        decoder=768,
+    ),
+    "b4": dict(
+        depths=[3, 8, 27, 3],
+        hidden=[64, 128, 320, 512],
+        heads=[1, 2, 5, 8],
+        decoder=768,
+    ),
+    "b5": dict(
+        depths=[3, 6, 40, 3],
+        hidden=[64, 128, 320, 512],
+        heads=[1, 2, 5, 8],
+        decoder=768,
+    ),
 }
 _SR = [8, 4, 2, 1]
 _PATCH = [7, 3, 3, 3]
@@ -442,23 +577,45 @@ _STRIDE = [4, 2, 2, 2]
 
 class SegFormer(eqx.Module):
     """SegFormer — MiT encoder + all-MLP decode head."""
+
     segformer: SegformerEncoder
     decode_head: SegformerDecodeHead
     num_classes: int = eqx.field(static=True)
     arch: str = eqx.field(static=True)
 
-    def __init__(self, *, arch: str = "b0", num_classes: int = 150,
-                 drop_path_rate: float = 0.1, drop: float = 0.0, attn_drop: float = 0.0, key):
+    def __init__(
+        self,
+        *,
+        arch: str = "b0",
+        num_classes: int = 150,
+        drop_path_rate: float = 0.1,
+        drop: float = 0.0,
+        attn_drop: float = 0.0,
+        key,
+    ):
         if arch not in _VARIANTS:
             raise ValueError(f"Unknown arch '{arch}'. Choose one of {list(_VARIANTS)}.")
         cfg = _VARIANTS[arch]
-        depths, hidden, heads, dec = cfg["depths"], cfg["hidden"], cfg["heads"], cfg["decoder"]
+        depths, hidden, heads, dec = (
+            cfg["depths"],
+            cfg["hidden"],
+            cfg["heads"],
+            cfg["decoder"],
+        )
 
         k1, k2 = jr.split(key, 2)
         self.segformer = SegformerEncoder(
-            in_ch=3, hidden_sizes=hidden, depths=depths, heads=heads,
-            sr_ratios=_SR, patch_sizes=_PATCH, strides=_STRIDE,
-            drop_path_rate=drop_path_rate, drop=drop, attn_drop=attn_drop, key=k1
+            in_ch=3,
+            hidden_sizes=hidden,
+            depths=depths,
+            heads=heads,
+            sr_ratios=_SR,
+            patch_sizes=_PATCH,
+            strides=_STRIDE,
+            drop_path_rate=drop_path_rate,
+            drop=drop,
+            attn_drop=attn_drop,
+            key=k1,
         )
         self.decode_head = SegformerDecodeHead(hidden, dec, num_classes, key=k2)
 
@@ -471,11 +628,14 @@ class SegFormer(eqx.Module):
         feats, state = self.segformer(x, key=k_enc, state=state)
         logits_1_4, state = self.decode_head(feats, key=k_dec, state=state)
         # upsample to input size
-        logits = jax.image.resize(logits_1_4, (logits_1_4.shape[0], x.shape[1], x.shape[2]), method="linear")
+        logits = jax.image.resize(
+            logits_1_4, (logits_1_4.shape[0], x.shape[1], x.shape[2]), method="linear"
+        )
         return logits, state
 
 
 # --------------------------- HF Weight Loading ---------------------------
+
 
 def _rename_hf_key(k: str) -> str | None:
     """
@@ -501,31 +661,43 @@ def _rename_hf_key(k: str) -> str | None:
     return k
 
 
-def _copy_into(mod: eqx.Module, pt: Dict[str, jnp.ndarray], prefix: str = "") -> eqx.Module:
+def _copy_into(
+    mod: eqx.Module, pt: Dict[str, jnp.ndarray], prefix: str = ""
+) -> eqx.Module:
     """Recursively copy Linear/Conv/LayerNorm/BatchNorm params into the Equinox module."""
     for name, attr in vars(mod).items():
         full = f"{prefix}{name}"
         if isinstance(attr, eqx.nn.Conv2d):
             w, b = pt.get(f"{full}.weight"), pt.get(f"{full}.bias")
             if w is not None:
-                mod = eqx.tree_at(lambda m: getattr(m, name).weight, mod, jnp.asarray(w))
+                mod = eqx.tree_at(
+                    lambda m: getattr(m, name).weight, mod, jnp.asarray(w)
+                )
             if b is not None:
                 mod = eqx.tree_at(lambda m: getattr(m, name).bias, mod, jnp.asarray(b))
         elif isinstance(attr, eqx.nn.Linear):
             w, b = pt.get(f"{full}.weight"), pt.get(f"{full}.bias")
             if w is not None:
-                mod = eqx.tree_at(lambda m: getattr(m, name).weight, mod, jnp.asarray(w))
+                mod = eqx.tree_at(
+                    lambda m: getattr(m, name).weight, mod, jnp.asarray(w)
+                )
             if b is not None:
                 mod = eqx.tree_at(lambda m: getattr(m, name).bias, mod, jnp.asarray(b))
         elif isinstance(attr, eqx.nn.LayerNorm):
             w, b = pt.get(f"{full}.weight"), pt.get(f"{full}.bias")
             if w is not None and b is not None:
-                mod = eqx.tree_at(lambda m: (getattr(m, name).weight, getattr(m, name).bias), mod, (jnp.asarray(w), jnp.asarray(b)))
+                mod = eqx.tree_at(
+                    lambda m: (getattr(m, name).weight, getattr(m, name).bias),
+                    mod,
+                    (jnp.asarray(w), jnp.asarray(b)),
+                )
         elif isinstance(attr, eqx.nn.BatchNorm):
             # only affine params
             w, b = pt.get(f"{full}.weight"), pt.get(f"{full}.bias")
             if w is not None:
-                mod = eqx.tree_at(lambda m: getattr(m, name).weight, mod, jnp.asarray(w))
+                mod = eqx.tree_at(
+                    lambda m: getattr(m, name).weight, mod, jnp.asarray(w)
+                )
             if b is not None:
                 mod = eqx.tree_at(lambda m: getattr(m, name).bias, mod, jnp.asarray(b))
         elif isinstance(attr, tuple):
@@ -544,6 +716,7 @@ def _copy_into(mod: eqx.Module, pt: Dict[str, jnp.ndarray], prefix: str = "") ->
 def load_hf_segformer_encoder(model: SegFormer, npz_path: str) -> SegFormer:
     """Load MiT encoder weights saved from HF `SegformerModel` or `SegformerForSemanticSegmentation`."""
     import numpy as np
+
     raw = dict(np.load(npz_path))
     pt: Dict[str, jnp.ndarray] = {}
     for k, v in raw.items():
@@ -557,13 +730,16 @@ def load_hf_segformer_encoder(model: SegFormer, npz_path: str) -> SegFormer:
     return _copy_into(model, pt, prefix="")  # keys include "segformer..."
 
 
-def load_hf_segformer_full(model: SegFormer, npz_path: str, *, strict_head: bool = True) -> SegFormer:
+def load_hf_segformer_full(
+    model: SegFormer, npz_path: str, *, strict_head: bool = True
+) -> SegFormer:
     """Load full SegFormer (encoder + decode head) from HF checkpoint .npz.
 
     If your `num_classes` differs from the checkpoint's classifier shape,
     set `strict_head=False` to skip loading `decode_head.classifier.*`.
     """
     import numpy as np
+
     raw = dict(np.load(npz_path))
     pt: Dict[str, jnp.ndarray] = {}
     for k, v in raw.items():
@@ -644,7 +820,10 @@ if __name__ == "__main__":
     lr_sched = optax.cosine_decay_schedule(1e-3, decay_steps=300)
     optimizer = optax.adamw(
         learning_rate=lr_sched,
-        b1=0.9, b2=0.999, eps=1e-8, weight_decay=1e-4,
+        b1=0.9,
+        b2=0.999,
+        eps=1e-8,
+        weight_decay=1e-4,
     )
     opt_state = optimizer.init(eqx.filter(model, eqx.is_inexact_array))
 

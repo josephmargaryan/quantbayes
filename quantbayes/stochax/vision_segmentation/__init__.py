@@ -13,8 +13,20 @@ from .models.segformer import SegFormer
 from .models.hrnet_ocr import HRNetOCR
 
 
-__all__ = ["AttentionUNet", "DeepLabV3PlusResNet",
-           "UNetBackbone", "ResNetEncoder", "_RESNET_SPECS",
-           "UNetPPResNet", "UNet", "AttentionUNetResNet", 
-           "DeepLabV3Plus", "PSPNetResNet", "LinkNetResNet", 
-           "TransUNetResNet", "TransUNet", "SegFormer", "HRNetOCR"]
+__all__ = [
+    "AttentionUNet",
+    "DeepLabV3PlusResNet",
+    "UNetBackbone",
+    "ResNetEncoder",
+    "_RESNET_SPECS",
+    "UNetPPResNet",
+    "UNet",
+    "AttentionUNetResNet",
+    "DeepLabV3Plus",
+    "PSPNetResNet",
+    "LinkNetResNet",
+    "TransUNetResNet",
+    "TransUNet",
+    "SegFormer",
+    "HRNetOCR",
+]

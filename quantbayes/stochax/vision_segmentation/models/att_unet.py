@@ -16,13 +16,13 @@ def _match(x: jnp.ndarray, ref: jnp.ndarray) -> jnp.ndarray:
     H, W = ref.shape[-2:]
     dh, dw = H - h, W - w
 
-    if dh > 0 or dw > 0:  
+    if dh > 0 or dw > 0:
         pads = [(0, 0)] * (x.ndim - 2) + [
             (dh // 2, dh - dh // 2),
             (dw // 2, dw - dw // 2),
         ]
         x = jnp.pad(x, pads)
-    if dh < 0 or dw < 0:  
+    if dh < 0 or dw < 0:
         sh, sw = (-dh) // 2, (-dw) // 2
         x = x[(..., slice(sh, sh + H), slice(sw, sw + W))]
     return x
@@ -67,12 +67,13 @@ class AttentionBlock(eqx.Module):
         self.psi = eqx.nn.Conv2d(F_int, 1, 1, key=k3)
 
     def __call__(self, g: jnp.ndarray, x: jnp.ndarray) -> jnp.ndarray:
-        g1 = self.W_g(g)  
-        x1 = self.W_x(x) 
-        psi = jax.nn.relu(g1 + x1) 
-        psi = self.psi(psi)  
+        g1 = self.W_g(g)
+        x1 = self.W_x(x)
+        psi = jax.nn.relu(g1 + x1)
+        psi = self.psi(psi)
         psi = jax.nn.sigmoid(psi)
-        return x * psi  
+        return x * psi
+
 
 class UpAtt(eqx.Module):
     up: eqx.nn.ConvTranspose2d

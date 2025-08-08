@@ -70,8 +70,8 @@ class ASPP(eqx.Module):
             gp,
             (gp.shape[0], x.shape[1], x.shape[2]),
             method="bilinear",
-        )  
-        cat = jnp.concatenate([y1, y2, y3, y4, gp], axis=0)  
+        )
+        cat = jnp.concatenate([y1, y2, y3, y4, gp], axis=0)
         proj = self.project(cat, key=k6)
         proj, state = self.bn_proj(proj, state)
         proj = jax.nn.relu(proj)
@@ -121,7 +121,7 @@ class DeepLabV3Plus(eqx.Module):
         cat = jnp.concatenate([a_up, low], axis=0)
         d1, state = self.dec1(cat, key=k7, state=state)
         d2, state = self.dec2(d1, key=k8, state=state)
-        out_logits = self.out(d2)  
+        out_logits = self.out(d2)
         logits = jax.image.resize(
             out_logits,
             (out_logits.shape[0], x.shape[1], x.shape[2]),
@@ -149,14 +149,14 @@ if __name__ == "__main__":
     import equinox as eqx
 
     from quantbayes.stochax import (
-        train, 
+        train,
         predict,
-        make_augmax_augment, 
+        make_augmax_augment,
         make_dice_bce_loss,
     )
 
     rng = np.random.RandomState(0)
-    N, C, H, W, OUT_CH = 10, 3, 128, 128, 1  
+    N, C, H, W, OUT_CH = 10, 3, 128, 128, 1
 
     X_np = rng.rand(N, C, H, W).astype("float32")
 
@@ -178,7 +178,7 @@ if __name__ == "__main__":
     model, state = eqx.nn.make_with_state(DeepLabV3Plus)(
         in_ch=C,
         out_ch=OUT_CH,
-        base=8, 
+        base=8,
         key=model_key,
     )
 
@@ -202,12 +202,12 @@ if __name__ == "__main__":
         y_train=jnp.array(y_train),  # (N,1,H,W)
         X_val=jnp.array(X_val),
         y_val=jnp.array(y_val),
-        batch_size=32, 
+        batch_size=32,
         num_epochs=15,
         patience=4,
         key=train_key,
         augment_fn=augment_fn,  # our NCHW ↔ NHWC/HW wrapper
-        lambda_spec=0.0,  
+        lambda_spec=0.0,
     )
 
     plt.plot(tr_loss, label="train")

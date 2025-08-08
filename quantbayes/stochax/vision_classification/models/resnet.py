@@ -118,17 +118,28 @@ class Bottleneck(eqx.Module):
 
 # Mirrors torchvision layer configs; channels[-1] is the final feature dim.
 _RESNET_SPECS: Dict[str, Dict[str, Any]] = {
-    "resnet18":  dict(block=BasicBlock, layers=[2, 2, 2, 2],  channels=[64, 64, 128, 256, 512]),
-    "resnet34":  dict(block=BasicBlock, layers=[3, 4, 6, 3],  channels=[64, 64, 128, 256, 512]),
-    "resnet50":  dict(block=Bottleneck, layers=[3, 4, 6, 3],  channels=[64, 256, 512, 1024, 2048]),
-    "resnet101": dict(block=Bottleneck, layers=[3, 4, 23, 3], channels=[64, 256, 512, 1024, 2048]),
-    "resnet152": dict(block=Bottleneck, layers=[3, 8, 36, 3], channels=[64, 256, 512, 1024, 2048]),
+    "resnet18": dict(
+        block=BasicBlock, layers=[2, 2, 2, 2], channels=[64, 64, 128, 256, 512]
+    ),
+    "resnet34": dict(
+        block=BasicBlock, layers=[3, 4, 6, 3], channels=[64, 64, 128, 256, 512]
+    ),
+    "resnet50": dict(
+        block=Bottleneck, layers=[3, 4, 6, 3], channels=[64, 256, 512, 1024, 2048]
+    ),
+    "resnet101": dict(
+        block=Bottleneck, layers=[3, 4, 23, 3], channels=[64, 256, 512, 1024, 2048]
+    ),
+    "resnet152": dict(
+        block=Bottleneck, layers=[3, 8, 36, 3], channels=[64, 256, 512, 1024, 2048]
+    ),
 }
 
 
 # ------------------------- Model ------------------------- #
 class ResNetClassifier(eqx.Module):
     """Original ImageNet-style ResNet classifier."""
+
     conv1: eqx.nn.Conv2d
     bn1: eqx.nn.BatchNorm
     pool: eqx.nn.MaxPool2d
@@ -157,7 +168,9 @@ class ResNetClassifier(eqx.Module):
         self.bn1 = eqx.nn.BatchNorm(64, axis_name="batch", mode="batch")
         self.pool = eqx.nn.MaxPool2d(3, 2, padding=1)
 
-        def _make_layer(cin: int, cout: int, blocks: int, stride: int, kiter) -> Tuple[Tuple[eqx.Module, ...], int]:
+        def _make_layer(
+            cin: int, cout: int, blocks: int, stride: int, kiter
+        ) -> Tuple[Tuple[eqx.Module, ...], int]:
             mods: List[eqx.Module] = []
             c_in = cin
             for i in range(blocks):
@@ -166,12 +179,12 @@ class ResNetClassifier(eqx.Module):
                 c_in = cout * (4 if Block is Bottleneck else 1)
             return tuple(mods), c_in
 
-        kiter = iter(ks[1: 1 + num_blocks])
+        kiter = iter(ks[1 : 1 + num_blocks])
 
-        self.layers1, ch1 = _make_layer(64, 64,  layer_sizes[0], 1, kiter)
+        self.layers1, ch1 = _make_layer(64, 64, layer_sizes[0], 1, kiter)
         self.layers2, ch2 = _make_layer(ch1, 128, layer_sizes[1], 2, kiter)
         self.layers3, ch3 = _make_layer(ch2, 256, layer_sizes[2], 2, kiter)
-        self.layers4, _   = _make_layer(ch3, 512, layer_sizes[3], 2, kiter)
+        self.layers4, _ = _make_layer(ch3, 512, layer_sizes[3], 2, kiter)
 
         # classifier
         self.fc = eqx.nn.Linear(final_dim, num_classes, key=ks[-1])
@@ -181,7 +194,9 @@ class ResNetClassifier(eqx.Module):
 
     def _check_input(self, x: jnp.ndarray):
         if x.ndim != 3:
-            raise ValueError(f"ResNetClassifier expects single sample [C,H,W]; got shape {tuple(x.shape)}.")
+            raise ValueError(
+                f"ResNetClassifier expects single sample [C,H,W]; got shape {tuple(x.shape)}."
+            )
         if x.shape[0] != 3:
             # Still allow non-RGB but warn via exception to be explicit.
             # Change to soft assumption if you want to support other channel counts.
@@ -214,6 +229,7 @@ class ResNetClassifier(eqx.Module):
 #   conv1.*, bn1.*, layer{1..4}.{idx}.*, downsample.{0,1}.*  ->  conv1/bn1/layers{1..4}.{idx}.* with down_conv/down_bn
 # We keep fc.* if num_classes==1000 (shape match); otherwise skip it.
 
+
 def _rename_pt_key(k: str) -> str:
     # Keep stem + fc names; remap layer blocks; downsample -> (down_conv/down_bn)
     k = k.replace("downsample.0.", "down_conv.")
@@ -237,9 +253,13 @@ def _copy_into_tree(obj, pt: Dict[str, jnp.ndarray], prefix: str = ""):
             if isinstance(attr, eqx.nn.Conv2d):
                 new_attr = attr
                 if f"{full}.weight" in pt:
-                    new_attr = eqx.tree_at(lambda m: m.weight, new_attr, pt[f"{full}.weight"])
+                    new_attr = eqx.tree_at(
+                        lambda m: m.weight, new_attr, pt[f"{full}.weight"]
+                    )
                 if f"{full}.bias" in pt:
-                    new_attr = eqx.tree_at(lambda m: m.bias, new_attr, pt[f"{full}.bias"])
+                    new_attr = eqx.tree_at(
+                        lambda m: m.bias, new_attr, pt[f"{full}.bias"]
+                    )
                 obj = eqx.tree_at(lambda m: getattr(m, name), obj, new_attr)
                 continue
 
@@ -247,9 +267,13 @@ def _copy_into_tree(obj, pt: Dict[str, jnp.ndarray], prefix: str = ""):
             if isinstance(attr, eqx.nn.Linear):
                 new_attr = attr
                 if f"{full}.weight" in pt:
-                    new_attr = eqx.tree_at(lambda m: m.weight, new_attr, pt[f"{full}.weight"])
+                    new_attr = eqx.tree_at(
+                        lambda m: m.weight, new_attr, pt[f"{full}.weight"]
+                    )
                 if f"{full}.bias" in pt:
-                    new_attr = eqx.tree_at(lambda m: m.bias, new_attr, pt[f"{full}.bias"])
+                    new_attr = eqx.tree_at(
+                        lambda m: m.bias, new_attr, pt[f"{full}.bias"]
+                    )
                 obj = eqx.tree_at(lambda m: getattr(m, name), obj, new_attr)
                 continue
 
@@ -260,7 +284,10 @@ def _copy_into_tree(obj, pt: Dict[str, jnp.ndarray], prefix: str = ""):
                     obj = eqx.tree_at(
                         lambda m: (getattr(m, name).weight, getattr(m, name).bias),
                         obj,
-                        (pt.get(w_key, getattr(attr, "weight")), pt.get(b_key, getattr(attr, "bias"))),
+                        (
+                            pt.get(w_key, getattr(attr, "weight")),
+                            pt.get(b_key, getattr(attr, "bias")),
+                        ),
                     )
                 continue
 
@@ -303,9 +330,12 @@ def _copy_into_tree(obj, pt: Dict[str, jnp.ndarray], prefix: str = ""):
     return obj  # leaf
 
 
-def load_torchvision_resnet(model: ResNetClassifier, npz_path: str, *, strict_fc: bool = True) -> ResNetClassifier:
+def load_torchvision_resnet(
+    model: ResNetClassifier, npz_path: str, *, strict_fc: bool = True
+) -> ResNetClassifier:
     """Load a torchvision ResNet .npz (saved from `state_dict()`) into this classifier."""
     import numpy as np  # local import to avoid hard dependency when unused
+
     raw = dict(np.load(npz_path))
     # Keep only weight/bias arrays (ignore running stats/num_batches_tracked automatically)
     pt = {}
@@ -320,26 +350,42 @@ def load_torchvision_resnet(model: ResNetClassifier, npz_path: str, *, strict_fc
         have_out, have_in = pt[fc_w_key].shape
         if (want_out != have_out) or (want_in != have_in):
             if strict_fc:
-                raise ValueError(f"FC shape mismatch: want {(want_out, want_in)}, have {(have_out, have_in)}.")
+                raise ValueError(
+                    f"FC shape mismatch: want {(want_out, want_in)}, have {(have_out, have_in)}."
+                )
             pt.pop(fc_w_key, None)
             pt.pop(fc_b_key, None)
 
     return _copy_into_tree(model, pt, prefix="")
 
 
-def load_imagenet_resnet18(model: ResNetClassifier, npz="resnet18_imagenet.npz", strict_fc: bool = True) -> ResNetClassifier:
+def load_imagenet_resnet18(
+    model: ResNetClassifier, npz="resnet18_imagenet.npz", strict_fc: bool = True
+) -> ResNetClassifier:
     return load_torchvision_resnet(model, npz, strict_fc=strict_fc)
 
-def load_imagenet_resnet34(model: ResNetClassifier, npz="resnet34_imagenet.npz", strict_fc: bool = True) -> ResNetClassifier:
+
+def load_imagenet_resnet34(
+    model: ResNetClassifier, npz="resnet34_imagenet.npz", strict_fc: bool = True
+) -> ResNetClassifier:
     return load_torchvision_resnet(model, npz, strict_fc=strict_fc)
 
-def load_imagenet_resnet50(model: ResNetClassifier, npz="resnet50_imagenet.npz", strict_fc: bool = True) -> ResNetClassifier:
+
+def load_imagenet_resnet50(
+    model: ResNetClassifier, npz="resnet50_imagenet.npz", strict_fc: bool = True
+) -> ResNetClassifier:
     return load_torchvision_resnet(model, npz, strict_fc=strict_fc)
 
-def load_imagenet_resnet101(model: ResNetClassifier, npz="resnet101_imagenet.npz", strict_fc: bool = True) -> ResNetClassifier:
+
+def load_imagenet_resnet101(
+    model: ResNetClassifier, npz="resnet101_imagenet.npz", strict_fc: bool = True
+) -> ResNetClassifier:
     return load_torchvision_resnet(model, npz, strict_fc=strict_fc)
 
-def load_imagenet_resnet152(model: ResNetClassifier, npz="resnet152_imagenet.npz", strict_fc: bool = True) -> ResNetClassifier:
+
+def load_imagenet_resnet152(
+    model: ResNetClassifier, npz="resnet152_imagenet.npz", strict_fc: bool = True
+) -> ResNetClassifier:
     return load_torchvision_resnet(model, npz, strict_fc=strict_fc)
 
 
@@ -347,7 +393,7 @@ def load_imagenet_resnet152(model: ResNetClassifier, npz="resnet152_imagenet.npz
 # Usage:
 #   $ python save_torchvision_resnets.py
 # Generates resnet{18,34,50,101,152}_imagenet.npz files in CWD.
-SAVE_TORCH_HELPER = r'''
+SAVE_TORCH_HELPER = r"""
 from pathlib import Path
 import numpy as np
 from torchvision.models import (
@@ -373,7 +419,7 @@ def main():
 
 if __name__ == "__main__":
     main()
-'''
+"""
 
 
 # ------------------------- Smoke test ------------------------- #
@@ -403,7 +449,9 @@ if __name__ == "__main__":
 
     rng = np.random.RandomState(0)
     N, C, H, W, NUM_CLASSES = 1024, 3, 96, 96, 10
-    X_np = rng.rand(N, C, H, W).astype("float32")   # channel-first (single-sample at call time)
+    X_np = rng.rand(N, C, H, W).astype(
+        "float32"
+    )  # channel-first (single-sample at call time)
     y_np = rng.randint(0, NUM_CLASSES, size=(N,)).astype("int32")
 
     # train/val split

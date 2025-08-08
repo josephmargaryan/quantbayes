@@ -86,7 +86,7 @@ def train_zoom(
     patience_ctr = 0
 
     for ep in range(1, num_epochs + 1):
-        # Training 
+        # Training
         rng, perm = jr.split(rng)
         epoch_loss, n_seen = 0.0, 0
         for xb, yb in data_loader(

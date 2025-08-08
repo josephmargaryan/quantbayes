@@ -80,12 +80,15 @@ class ReLU(eqx.Module):
     def __call__(self, x, key=None, state=None):
         return jax.nn.relu(x), state
 
+
 class SiLU(eqx.Module):
     def __call__(self, x, key=None, state=None):
         return jax.nn.silu(x), state
 
+
 class DropPath(eqx.Module):
     """Stochastic Depth. Drops residual branch with prob=rate."""
+
     rate: float = eqx.field(static=True)
 
     def __call__(self, x: jnp.ndarray, *, key: jnp.ndarray) -> jnp.ndarray:
@@ -96,8 +99,10 @@ class DropPath(eqx.Module):
         mask = jr.bernoulli(key, p=keep)
         return x * (mask.astype(x.dtype) / keep)
 
+
 class AdaptiveAvgPool2d(eqx.Module):
     """Exact AdaptiveAvgPool2d to (out_h, out_w) for single-sample CHW tensors."""
+
     out_h: int = eqx.field(static=True)
     out_w: int = eqx.field(static=True)
 
@@ -125,13 +130,26 @@ class AdaptiveAvgPool2d(eqx.Module):
 # ------------------------- Conv/BN/Act blocks ------------------------- #
 class ConvBNActTV(eqx.Module):
     """Conv -> BN -> (SiLU or ReLU). Matches torchvision ConvNormActivation param shape/naming."""
+
     c0: eqx.nn.Conv2d
     c1: eqx.nn.BatchNorm
     use_silu: bool = eqx.field(static=True)
 
-    def __init__(self, cin: int, cout: int, k: int, stride: int, padding: int, *, use_silu: bool, key):
-        k1, = jr.split(key, 1)
-        self.c0 = eqx.nn.Conv2d(cin, cout, k, stride=stride, padding=padding, use_bias=False, key=k1)
+    def __init__(
+        self,
+        cin: int,
+        cout: int,
+        k: int,
+        stride: int,
+        padding: int,
+        *,
+        use_silu: bool,
+        key,
+    ):
+        (k1,) = jr.split(key, 1)
+        self.c0 = eqx.nn.Conv2d(
+            cin, cout, k, stride=stride, padding=padding, use_bias=False, key=k1
+        )
         self.c1 = eqx.nn.BatchNorm(cout, axis_name="batch", mode="batch")
         self.use_silu = use_silu
 
@@ -147,12 +165,15 @@ class ConvBNActTV(eqx.Module):
 
 class DWConvBNActTV(eqx.Module):
     """Depthwise Conv -> BN -> SiLU"""
+
     c0: eqx.nn.Conv2d
     c1: eqx.nn.BatchNorm
 
     def __init__(self, ch: int, k: int, stride: int, padding: int, *, key):
-        k1, = jr.split(key, 1)
-        self.c0 = eqx.nn.Conv2d(ch, ch, k, stride=stride, padding=padding, groups=ch, use_bias=False, key=k1)
+        (k1,) = jr.split(key, 1)
+        self.c0 = eqx.nn.Conv2d(
+            ch, ch, k, stride=stride, padding=padding, groups=ch, use_bias=False, key=k1
+        )
         self.c1 = eqx.nn.BatchNorm(ch, axis_name="batch", mode="batch")
 
     def __call__(self, x, key, state):
@@ -164,12 +185,15 @@ class DWConvBNActTV(eqx.Module):
 
 class ConvBNTV(eqx.Module):
     """Conv -> BN (no activation)"""
+
     c0: eqx.nn.Conv2d
     c1: eqx.nn.BatchNorm
 
     def __init__(self, cin: int, cout: int, k: int, stride: int, padding: int, *, key):
-        k1, = jr.split(key, 1)
-        self.c0 = eqx.nn.Conv2d(cin, cout, k, stride=stride, padding=padding, use_bias=False, key=k1)
+        (k1,) = jr.split(key, 1)
+        self.c0 = eqx.nn.Conv2d(
+            cin, cout, k, stride=stride, padding=padding, use_bias=False, key=k1
+        )
         self.c1 = eqx.nn.BatchNorm(cout, axis_name="batch", mode="batch")
 
     def __call__(self, x, key, state):
@@ -180,6 +204,7 @@ class ConvBNTV(eqx.Module):
 
 class SqueezeExcite(eqx.Module):
     """Squeeze-and-Excitation with two 1x1 convs (reduce/expand)."""
+
     c0: eqx.nn.Conv2d  # reduce
     c1: eqx.nn.Conv2d  # expand
 
@@ -192,9 +217,9 @@ class SqueezeExcite(eqx.Module):
     def __call__(self, x, key=None, state=None):
         # Global average pool to [C,1,1]
         s = jnp.mean(x, axis=(1, 2), keepdims=True)
-        s = self.c0(s)          # [reduced,1,1]
+        s = self.c0(s)  # [reduced,1,1]
         s = jax.nn.silu(s)
-        s = self.c1(s)          # [C,1,1]
+        s = self.c1(s)  # [C,1,1]
         s = jax.nn.sigmoid(s)
         return x * s, state
 
@@ -202,14 +227,22 @@ class SqueezeExcite(eqx.Module):
 # ------------------------------ MBConv ------------------------------ #
 class MBConvTV(eqx.Module):
     """Torchvision-compatible MBConv (with optional expansion), SE, and projection."""
-    block: Tuple[eqx.Module, ...]      # mirrors torchvision: sequence of sub-layers
+
+    block: Tuple[eqx.Module, ...]  # mirrors torchvision: sequence of sub-layers
     use_residual: bool = eqx.field(static=True)
     droppath: DropPath
 
     def __init__(
         self,
-        cin: int, cout: int, *, expand_ratio: int, kernel: int, stride: int, se_ratio: float,
-        drop_rate: float, key
+        cin: int,
+        cout: int,
+        *,
+        expand_ratio: int,
+        kernel: int,
+        stride: int,
+        se_ratio: float,
+        drop_rate: float,
+        key,
     ):
         ks = list(jr.split(key, 5))
         use_expand = expand_ratio != 1
@@ -219,18 +252,35 @@ class MBConvTV(eqx.Module):
         idx = 0
 
         if use_expand:
-            mods.append(ConvBNActTV(cin, exp_ch, k=1, stride=1, padding=0, use_silu=True, key=ks[idx])); idx += 1
-            mods.append(DWConvBNActTV(exp_ch, k=kernel, stride=stride, padding=kernel//2, key=ks[idx])); idx += 1
+            mods.append(
+                ConvBNActTV(
+                    cin, exp_ch, k=1, stride=1, padding=0, use_silu=True, key=ks[idx]
+                )
+            )
+            idx += 1
+            mods.append(
+                DWConvBNActTV(
+                    exp_ch, k=kernel, stride=stride, padding=kernel // 2, key=ks[idx]
+                )
+            )
+            idx += 1
         else:
             # No expand; depthwise runs on input channels
-            mods.append(DWConvBNActTV(cin, k=kernel, stride=stride, padding=kernel//2, key=ks[idx])); idx += 1
+            mods.append(
+                DWConvBNActTV(
+                    cin, k=kernel, stride=stride, padding=kernel // 2, key=ks[idx]
+                )
+            )
+            idx += 1
 
         # SE on the depthwise's channel-dim = exp_ch if expanded else cin
         se_ch = exp_ch if use_expand else cin
-        mods.append(SqueezeExcite(se_ch, se_ratio, key=ks[idx])); idx += 1
+        mods.append(SqueezeExcite(se_ch, se_ratio, key=ks[idx]))
+        idx += 1
 
         # Project to cout
-        mods.append(ConvBNTV(se_ch, cout, k=1, stride=1, padding=0, key=ks[idx])); idx += 1
+        mods.append(ConvBNTV(se_ch, cout, k=1, stride=1, padding=0, key=ks[idx]))
+        idx += 1
 
         self.block = tuple(mods)
         self.use_residual = (stride == 1) and (cin == cout)
@@ -265,15 +315,32 @@ _BASE_BLOCKS = [
 ]
 
 _VARIANTS: Dict[str, Dict[str, Any]] = {
-    "efficientnet_b0": dict(width=1.0, depth=1.0, dropout=0.2, drop_path=0.2, stem=32, head=1280),
-    "efficientnet_b1": dict(width=1.0, depth=1.1, dropout=0.2, drop_path=0.2, stem=32, head=1280),
-    "efficientnet_b2": dict(width=1.1, depth=1.2, dropout=0.3, drop_path=0.3, stem=32, head=1280),
-    "efficientnet_b3": dict(width=1.2, depth=1.4, dropout=0.3, drop_path=0.3, stem=40, head=1280),
-    "efficientnet_b4": dict(width=1.4, depth=1.8, dropout=0.4, drop_path=0.4, stem=48, head=1280),
-    "efficientnet_b5": dict(width=1.6, depth=2.2, dropout=0.4, drop_path=0.4, stem=48, head=1280),
-    "efficientnet_b6": dict(width=1.8, depth=2.6, dropout=0.5, drop_path=0.5, stem=56, head=1280),
-    "efficientnet_b7": dict(width=2.0, depth=3.1, dropout=0.5, drop_path=0.5, stem=64, head=1280),
+    "efficientnet_b0": dict(
+        width=1.0, depth=1.0, dropout=0.2, drop_path=0.2, stem=32, head=1280
+    ),
+    "efficientnet_b1": dict(
+        width=1.0, depth=1.1, dropout=0.2, drop_path=0.2, stem=32, head=1280
+    ),
+    "efficientnet_b2": dict(
+        width=1.1, depth=1.2, dropout=0.3, drop_path=0.3, stem=32, head=1280
+    ),
+    "efficientnet_b3": dict(
+        width=1.2, depth=1.4, dropout=0.3, drop_path=0.3, stem=40, head=1280
+    ),
+    "efficientnet_b4": dict(
+        width=1.4, depth=1.8, dropout=0.4, drop_path=0.4, stem=48, head=1280
+    ),
+    "efficientnet_b5": dict(
+        width=1.6, depth=2.2, dropout=0.4, drop_path=0.4, stem=48, head=1280
+    ),
+    "efficientnet_b6": dict(
+        width=1.8, depth=2.6, dropout=0.5, drop_path=0.5, stem=56, head=1280
+    ),
+    "efficientnet_b7": dict(
+        width=2.0, depth=3.1, dropout=0.5, drop_path=0.5, stem=64, head=1280
+    ),
 }
+
 
 def _round_filters(ch: int, width_mult: float, divisor: int = 8) -> int:
     ch *= width_mult
@@ -282,6 +349,7 @@ def _round_filters(ch: int, width_mult: float, divisor: int = 8) -> int:
         new_ch += divisor
     return int(new_ch)
 
+
 def _round_repeats(r: int, depth_mult: float) -> int:
     return int(math.ceil(depth_mult * r))
 
@@ -289,7 +357,10 @@ def _round_repeats(r: int, depth_mult: float) -> int:
 # ------------------------------ EfficientNet ------------------------------ #
 class EfficientNet(eqx.Module):
     """EfficientNet-Bx (B0–B7) implemented in Equinox; torchvision-compatible features layout."""
-    features: Tuple[Any, ...]       # stem: ConvBNActTV, stages: tuple[MBConvTV,...], head: ConvBNActTV
+
+    features: Tuple[
+        Any, ...
+    ]  # stem: ConvBNActTV, stages: tuple[MBConvTV,...], head: ConvBNActTV
     avgpool: AdaptiveAvgPool2d
     dr: eqx.nn.Dropout
     fc: eqx.nn.Linear
@@ -314,15 +385,19 @@ class EfficientNet(eqx.Module):
         k_iter = iter(big_keys)
 
         # Stem
-        stem = ConvBNActTV(3, stem_c, k=3, stride=2, padding=1, use_silu=True, key=next(k_iter))
+        stem = ConvBNActTV(
+            3, stem_c, k=3, stride=2, padding=1, use_silu=True, key=next(k_iter)
+        )
 
         # Stages
         features: List[Any] = [stem]
-        total_blocks = sum(_round_repeats(nb, depth) for _, _, nb, _, _, _ in _BASE_BLOCKS)
+        total_blocks = sum(
+            _round_repeats(nb, depth) for _, _, nb, _, _, _ in _BASE_BLOCKS
+        )
         block_id = 0
 
         in_c = stem_c
-        for (t, c, n, ksz, stride, se) in _BASE_BLOCKS:
+        for t, c, n, ksz, stride, se in _BASE_BLOCKS:
             out_c = _round_filters(c, width)
             reps = _round_repeats(n, depth)
 
@@ -332,7 +407,8 @@ class EfficientNet(eqx.Module):
                 drop = drop_path_rate * (block_id / max(1, total_blocks - 1))
                 blocks.append(
                     MBConvTV(
-                        in_c, out_c,
+                        in_c,
+                        out_c,
                         expand_ratio=t,
                         kernel=ksz,
                         stride=s,
@@ -346,7 +422,9 @@ class EfficientNet(eqx.Module):
             features.append(tuple(blocks))
 
         # Head
-        head = ConvBNActTV(in_c, head_c, k=1, stride=1, padding=0, use_silu=True, key=next(k_iter))
+        head = ConvBNActTV(
+            in_c, head_c, k=1, stride=1, padding=0, use_silu=True, key=next(k_iter)
+        )
         features.append(head)
 
         self.features = tuple(features)
@@ -359,7 +437,9 @@ class EfficientNet(eqx.Module):
 
     def _check_input(self, x: jnp.ndarray):
         if x.ndim != 3:
-            raise ValueError(f"EfficientNet expects single sample [C,H,W]; got {tuple(x.shape)}.")
+            raise ValueError(
+                f"EfficientNet expects single sample [C,H,W]; got {tuple(x.shape)}."
+            )
         if x.shape[0] != 3:
             raise ValueError(f"Expected 3 input channels; got {x.shape[0]}.")
 
@@ -368,6 +448,7 @@ class EfficientNet(eqx.Module):
 
         # Helper to walk features, which is [stem, (stage0 ...), (stage1 ...), ..., head]
         k_run = key
+
         def split():
             nonlocal k_run
             k1, k_run = jr.split(k_run)
@@ -428,9 +509,13 @@ def _copy_into_tree(obj, pt: Dict[str, jnp.ndarray], prefix: str = ""):
             if isinstance(attr, eqx.nn.Conv2d):
                 new_attr = attr
                 if f"{full}.weight" in pt:
-                    new_attr = eqx.tree_at(lambda m: m.weight, new_attr, pt[f"{full}.weight"])
+                    new_attr = eqx.tree_at(
+                        lambda m: m.weight, new_attr, pt[f"{full}.weight"]
+                    )
                 if f"{full}.bias" in pt:
-                    new_attr = eqx.tree_at(lambda m: m.bias, new_attr, pt[f"{full}.bias"])
+                    new_attr = eqx.tree_at(
+                        lambda m: m.bias, new_attr, pt[f"{full}.bias"]
+                    )
                 obj = eqx.tree_at(lambda m: getattr(m, name), obj, new_attr)
                 continue
 
@@ -438,9 +523,13 @@ def _copy_into_tree(obj, pt: Dict[str, jnp.ndarray], prefix: str = ""):
             if isinstance(attr, eqx.nn.Linear):
                 new_attr = attr
                 if f"{full}.weight" in pt:
-                    new_attr = eqx.tree_at(lambda m: m.weight, new_attr, pt[f"{full}.weight"])
+                    new_attr = eqx.tree_at(
+                        lambda m: m.weight, new_attr, pt[f"{full}.weight"]
+                    )
                 if f"{full}.bias" in pt:
-                    new_attr = eqx.tree_at(lambda m: m.bias, new_attr, pt[f"{full}.bias"])
+                    new_attr = eqx.tree_at(
+                        lambda m: m.bias, new_attr, pt[f"{full}.bias"]
+                    )
                 obj = eqx.tree_at(lambda m: getattr(m, name), obj, new_attr)
                 continue
 
@@ -451,7 +540,10 @@ def _copy_into_tree(obj, pt: Dict[str, jnp.ndarray], prefix: str = ""):
                     obj = eqx.tree_at(
                         lambda m: (getattr(m, name).weight, getattr(m, name).bias),
                         obj,
-                        (pt.get(w_key, getattr(attr, "weight")), pt.get(b_key, getattr(attr, "bias"))),
+                        (
+                            pt.get(w_key, getattr(attr, "weight")),
+                            pt.get(b_key, getattr(attr, "bias")),
+                        ),
                     )
                 continue
 
@@ -472,9 +564,12 @@ def _copy_into_tree(obj, pt: Dict[str, jnp.ndarray], prefix: str = ""):
     return obj
 
 
-def load_torchvision_efficientnet(model: EfficientNet, npz_path: str, *, strict_fc: bool = True) -> EfficientNet:
+def load_torchvision_efficientnet(
+    model: EfficientNet, npz_path: str, *, strict_fc: bool = True
+) -> EfficientNet:
     """Load a torchvision EfficientNet .npz (from state_dict()) into this model."""
     import numpy as np
+
     raw = dict(np.load(npz_path))
     pt: Dict[str, jnp.ndarray] = {}
     for k, v in raw.items():
@@ -500,21 +595,51 @@ def load_torchvision_efficientnet(model: EfficientNet, npz_path: str, *, strict_
 
 
 # Convenience per-arch loaders
-def load_imagenet_efficientnet_b0(model: EfficientNet, npz="efficientnet_b0_imagenet.npz", strict_fc: bool = True) -> EfficientNet:
+def load_imagenet_efficientnet_b0(
+    model: EfficientNet, npz="efficientnet_b0_imagenet.npz", strict_fc: bool = True
+) -> EfficientNet:
     return load_torchvision_efficientnet(model, npz, strict_fc=strict_fc)
-def load_imagenet_efficientnet_b1(model: EfficientNet, npz="efficientnet_b1_imagenet.npz", strict_fc: bool = True) -> EfficientNet:
+
+
+def load_imagenet_efficientnet_b1(
+    model: EfficientNet, npz="efficientnet_b1_imagenet.npz", strict_fc: bool = True
+) -> EfficientNet:
     return load_torchvision_efficientnet(model, npz, strict_fc=strict_fc)
-def load_imagenet_efficientnet_b2(model: EfficientNet, npz="efficientnet_b2_imagenet.npz", strict_fc: bool = True) -> EfficientNet:
+
+
+def load_imagenet_efficientnet_b2(
+    model: EfficientNet, npz="efficientnet_b2_imagenet.npz", strict_fc: bool = True
+) -> EfficientNet:
     return load_torchvision_efficientnet(model, npz, strict_fc=strict_fc)
-def load_imagenet_efficientnet_b3(model: EfficientNet, npz="efficientnet_b3_imagenet.npz", strict_fc: bool = True) -> EfficientNet:
+
+
+def load_imagenet_efficientnet_b3(
+    model: EfficientNet, npz="efficientnet_b3_imagenet.npz", strict_fc: bool = True
+) -> EfficientNet:
     return load_torchvision_efficientnet(model, npz, strict_fc=strict_fc)
-def load_imagenet_efficientnet_b4(model: EfficientNet, npz="efficientnet_b4_imagenet.npz", strict_fc: bool = True) -> EfficientNet:
+
+
+def load_imagenet_efficientnet_b4(
+    model: EfficientNet, npz="efficientnet_b4_imagenet.npz", strict_fc: bool = True
+) -> EfficientNet:
     return load_torchvision_efficientnet(model, npz, strict_fc=strict_fc)
-def load_imagenet_efficientnet_b5(model: EfficientNet, npz="efficientnet_b5_imagenet.npz", strict_fc: bool = True) -> EfficientNet:
+
+
+def load_imagenet_efficientnet_b5(
+    model: EfficientNet, npz="efficientnet_b5_imagenet.npz", strict_fc: bool = True
+) -> EfficientNet:
     return load_torchvision_efficientnet(model, npz, strict_fc=strict_fc)
-def load_imagenet_efficientnet_b6(model: EfficientNet, npz="efficientnet_b6_imagenet.npz", strict_fc: bool = True) -> EfficientNet:
+
+
+def load_imagenet_efficientnet_b6(
+    model: EfficientNet, npz="efficientnet_b6_imagenet.npz", strict_fc: bool = True
+) -> EfficientNet:
     return load_torchvision_efficientnet(model, npz, strict_fc=strict_fc)
-def load_imagenet_efficientnet_b7(model: EfficientNet, npz="efficientnet_b7_imagenet.npz", strict_fc: bool = True) -> EfficientNet:
+
+
+def load_imagenet_efficientnet_b7(
+    model: EfficientNet, npz="efficientnet_b7_imagenet.npz", strict_fc: bool = True
+) -> EfficientNet:
     return load_torchvision_efficientnet(model, npz, strict_fc=strict_fc)
 
 

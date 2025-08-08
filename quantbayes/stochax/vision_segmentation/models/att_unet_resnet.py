@@ -11,7 +11,10 @@ from typing import Any, Tuple
 import equinox as eqx
 import jax, jax.numpy as jnp, jax.random as jr
 from quantbayes.stochax.vision_segmentation.models.unet_backbone import (
-    _match, ConvBlock, ResNetEncoder, _RESNET_SPECS
+    _match,
+    ConvBlock,
+    ResNetEncoder,
+    _RESNET_SPECS,
 )
 
 
@@ -86,8 +89,8 @@ class UpAtt(eqx.Module):
         k1, k2 = jr.split(key, 2)
         x = self.up(x, key=k1)
         x, skip = _match(x, skip), _match(skip, x)
-        skip = self.att(x, skip)        
-        x_cat = jnp.concatenate([skip, x], axis=0)  
+        skip = self.att(x, skip)
+        x_cat = jnp.concatenate([skip, x], axis=0)
         x_out, state = self.conv(x_cat, key=k2, state=state)
         return x_out, state
 
@@ -150,9 +153,9 @@ if __name__ == "__main__":
     import equinox as eqx
 
     from quantbayes.stochax import (
-        train,  
+        train,
         predict,
-        make_augmax_augment,  
+        make_augmax_augment,
         make_dice_bce_loss,
     )
 
@@ -205,12 +208,12 @@ if __name__ == "__main__":
         y_train=jnp.array(y_train),  # (N,1,H,W)
         X_val=jnp.array(X_val),
         y_val=jnp.array(y_val),
-        batch_size=32,  
+        batch_size=32,
         num_epochs=15,
         patience=4,
         key=train_key,
-        augment_fn=augment_fn, 
-        lambda_spec=0.0,  
+        augment_fn=augment_fn,
+        lambda_spec=0.0,
     )
 
     plt.plot(tr_loss, label="train")

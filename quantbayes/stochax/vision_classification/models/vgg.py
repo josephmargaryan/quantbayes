@@ -77,12 +77,14 @@ import jax.random as jr
 # --------------------------- Small utility mods --------------------------- #
 class ReLU(eqx.Module):
     """Stateless ReLU that preserves `(x, state)` calling convention."""
+
     def __call__(self, x, key=None, state=None):
         return jax.nn.relu(x), state
 
 
 class AdaptiveAvgPool2d(eqx.Module):
     """Exact AdaptiveAvgPool2d to (out_h, out_w) for single-sample CHW tensors."""
+
     out_h: int = eqx.field(static=True)
     out_w: int = eqx.field(static=True)
 
@@ -116,13 +118,49 @@ _CFGS: Dict[str, List] = {
     # VGG13
     "B": [64, 64, "M", 128, 128, "M", 256, 256, "M", 512, 512, "M", 512, 512, "M"],
     # VGG16
-    "D": [64, 64, "M", 128, 128, "M", 256, 256, 256, "M", 512, 512, 512, "M", 512, 512, 512, "M"],
+    "D": [
+        64,
+        64,
+        "M",
+        128,
+        128,
+        "M",
+        256,
+        256,
+        256,
+        "M",
+        512,
+        512,
+        512,
+        "M",
+        512,
+        512,
+        512,
+        "M",
+    ],
     # VGG19
     "E": [
-        64, 64, "M", 128, 128, "M",
-        256, 256, 256, 256, "M",
-        512, 512, 512, 512, "M",
-        512, 512, 512, 512, "M",
+        64,
+        64,
+        "M",
+        128,
+        128,
+        "M",
+        256,
+        256,
+        256,
+        256,
+        "M",
+        512,
+        512,
+        512,
+        512,
+        "M",
+        512,
+        512,
+        512,
+        512,
+        "M",
     ],
 }
 
@@ -141,6 +179,7 @@ _ARCH_TO_CFG = {
 # ------------------------------- VGG model ------------------------------- #
 class VGG(eqx.Module):
     """VGG backbone + classifier, torchvision-compatible structure."""
+
     # feature extractor as a flat sequence (matches torchvision.features indices)
     features: Tuple[eqx.Module, ...]
     # adaptive avgpool to (7,7) for classifier compatibility
@@ -178,10 +217,14 @@ class VGG(eqx.Module):
             if v == "M":
                 feats.append(eqx.nn.MaxPool2d(kernel_size=2, stride=2))
             else:
-                conv = eqx.nn.Conv2d(in_ch, int(v), kernel_size=3, padding=1, key=next(ckey_iter))
+                conv = eqx.nn.Conv2d(
+                    in_ch, int(v), kernel_size=3, padding=1, key=next(ckey_iter)
+                )
                 feats.append(conv)
                 if use_bn:
-                    feats.append(eqx.nn.BatchNorm(int(v), axis_name="batch", mode="batch"))
+                    feats.append(
+                        eqx.nn.BatchNorm(int(v), axis_name="batch", mode="batch")
+                    )
                 feats.append(ReLU())
                 in_ch = int(v)
         self.features = tuple(feats)
@@ -203,7 +246,9 @@ class VGG(eqx.Module):
 
     def _check_input(self, x: jnp.ndarray):
         if x.ndim != 3:
-            raise ValueError(f"VGG expects single sample [C,H,W]; got shape {tuple(x.shape)}.")
+            raise ValueError(
+                f"VGG expects single sample [C,H,W]; got shape {tuple(x.shape)}."
+            )
         if x.shape[0] != 3:
             raise ValueError(f"Expected 3 input channels; got {x.shape[0]}.")
 
@@ -237,7 +282,7 @@ class VGG(eqx.Module):
 
         # Adaptive avgpool to 7x7 (classifier expects this)
         x = self.avgpool(x)  # [C, 7, 7]
-        x = x.reshape(-1)    # [C*7*7]
+        x = x.reshape(-1)  # [C*7*7]
 
         # Classifier
         x = self.fc1(x)
@@ -292,18 +337,26 @@ def _copy_into_tree(obj, pt: Dict[str, jnp.ndarray], prefix: str = ""):
             if isinstance(attr, eqx.nn.Conv2d):
                 new_attr = attr
                 if f"{full}.weight" in pt:
-                    new_attr = eqx.tree_at(lambda m: m.weight, new_attr, pt[f"{full}.weight"])
+                    new_attr = eqx.tree_at(
+                        lambda m: m.weight, new_attr, pt[f"{full}.weight"]
+                    )
                 if f"{full}.bias" in pt:
-                    new_attr = eqx.tree_at(lambda m: m.bias, new_attr, pt[f"{full}.bias"])
+                    new_attr = eqx.tree_at(
+                        lambda m: m.bias, new_attr, pt[f"{full}.bias"]
+                    )
                 obj = eqx.tree_at(lambda m: getattr(m, name), obj, new_attr)
                 continue
 
             if isinstance(attr, eqx.nn.Linear):
                 new_attr = attr
                 if f"{full}.weight" in pt:
-                    new_attr = eqx.tree_at(lambda m: m.weight, new_attr, pt[f"{full}.weight"])
+                    new_attr = eqx.tree_at(
+                        lambda m: m.weight, new_attr, pt[f"{full}.weight"]
+                    )
                 if f"{full}.bias" in pt:
-                    new_attr = eqx.tree_at(lambda m: m.bias, new_attr, pt[f"{full}.bias"])
+                    new_attr = eqx.tree_at(
+                        lambda m: m.bias, new_attr, pt[f"{full}.bias"]
+                    )
                 obj = eqx.tree_at(lambda m: getattr(m, name), obj, new_attr)
                 continue
 
@@ -313,7 +366,10 @@ def _copy_into_tree(obj, pt: Dict[str, jnp.ndarray], prefix: str = ""):
                     obj = eqx.tree_at(
                         lambda m: (getattr(m, name).weight, getattr(m, name).bias),
                         obj,
-                        (pt.get(w_key, getattr(attr, "weight")), pt.get(b_key, getattr(attr, "bias"))),
+                        (
+                            pt.get(w_key, getattr(attr, "weight")),
+                            pt.get(b_key, getattr(attr, "bias")),
+                        ),
                     )
                 continue
 
@@ -338,6 +394,7 @@ def load_torchvision_vgg(model: VGG, npz_path: str, *, strict_fc: bool = True) -
     If `strict_fc=False` and num_classes != 1000, skips final FC copy.
     """
     import numpy as np
+
     raw = dict(np.load(npz_path))
     pt = {}
     for k, v in raw.items():
@@ -366,28 +423,51 @@ def load_torchvision_vgg(model: VGG, npz_path: str, *, strict_fc: bool = True) -
 
 
 # Convenience arch-specific loaders
-def load_imagenet_vgg11(model: VGG, npz="vgg11_imagenet.npz", strict_fc: bool = True) -> VGG:
+def load_imagenet_vgg11(
+    model: VGG, npz="vgg11_imagenet.npz", strict_fc: bool = True
+) -> VGG:
     return load_torchvision_vgg(model, npz, strict_fc=strict_fc)
 
-def load_imagenet_vgg13(model: VGG, npz="vgg13_imagenet.npz", strict_fc: bool = True) -> VGG:
+
+def load_imagenet_vgg13(
+    model: VGG, npz="vgg13_imagenet.npz", strict_fc: bool = True
+) -> VGG:
     return load_torchvision_vgg(model, npz, strict_fc=strict_fc)
 
-def load_imagenet_vgg16(model: VGG, npz="vgg16_imagenet.npz", strict_fc: bool = True) -> VGG:
+
+def load_imagenet_vgg16(
+    model: VGG, npz="vgg16_imagenet.npz", strict_fc: bool = True
+) -> VGG:
     return load_torchvision_vgg(model, npz, strict_fc=strict_fc)
 
-def load_imagenet_vgg19(model: VGG, npz="vgg19_imagenet.npz", strict_fc: bool = True) -> VGG:
+
+def load_imagenet_vgg19(
+    model: VGG, npz="vgg19_imagenet.npz", strict_fc: bool = True
+) -> VGG:
     return load_torchvision_vgg(model, npz, strict_fc=strict_fc)
 
-def load_imagenet_vgg11_bn(model: VGG, npz="vgg11_bn_imagenet.npz", strict_fc: bool = True) -> VGG:
+
+def load_imagenet_vgg11_bn(
+    model: VGG, npz="vgg11_bn_imagenet.npz", strict_fc: bool = True
+) -> VGG:
     return load_torchvision_vgg(model, npz, strict_fc=strict_fc)
 
-def load_imagenet_vgg13_bn(model: VGG, npz="vgg13_bn_imagenet.npz", strict_fc: bool = True) -> VGG:
+
+def load_imagenet_vgg13_bn(
+    model: VGG, npz="vgg13_bn_imagenet.npz", strict_fc: bool = True
+) -> VGG:
     return load_torchvision_vgg(model, npz, strict_fc=strict_fc)
 
-def load_imagenet_vgg16_bn(model: VGG, npz="vgg16_bn_imagenet.npz", strict_fc: bool = True) -> VGG:
+
+def load_imagenet_vgg16_bn(
+    model: VGG, npz="vgg16_bn_imagenet.npz", strict_fc: bool = True
+) -> VGG:
     return load_torchvision_vgg(model, npz, strict_fc=strict_fc)
 
-def load_imagenet_vgg19_bn(model: VGG, npz="vgg19_bn_imagenet.npz", strict_fc: bool = True) -> VGG:
+
+def load_imagenet_vgg19_bn(
+    model: VGG, npz="vgg19_bn_imagenet.npz", strict_fc: bool = True
+) -> VGG:
     return load_torchvision_vgg(model, npz, strict_fc=strict_fc)
 
 

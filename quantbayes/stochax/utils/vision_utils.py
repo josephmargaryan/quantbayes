@@ -25,8 +25,11 @@ import equinox as eqx
 
 # ----------------------------- Classification ----------------------------- #
 
+
 @jax.jit
-def topk_accuracy(logits: jnp.ndarray, targets: jnp.ndarray, ks: Sequence[int] = (1, 5)) -> Dict[int, jnp.ndarray]:
+def topk_accuracy(
+    logits: jnp.ndarray, targets: jnp.ndarray, ks: Sequence[int] = (1, 5)
+) -> Dict[int, jnp.ndarray]:
     """
     logits: [B, C]
     targets: [B] int32
@@ -34,7 +37,7 @@ def topk_accuracy(logits: jnp.ndarray, targets: jnp.ndarray, ks: Sequence[int] =
     """
     ks = tuple(sorted(ks))
     topk = jnp.argsort(logits, axis=-1)[:, ::-1][:, : ks[-1]]  # [B, Kmax]
-    correct = (topk == targets[:, None])
+    correct = topk == targets[:, None]
     out = {}
     for k in ks:
         out[k] = jnp.mean(jnp.any(correct[:, :k], axis=1))
@@ -80,7 +83,10 @@ def classification_report_from_cm(cm: jnp.ndarray) -> Dict[str, jnp.ndarray]:
 
 # ------------------------------ Segmentation ------------------------------ #
 
-def _seg_to_labels(logits_or_labels: jnp.ndarray, from_logits: bool, channel_axis: int) -> jnp.ndarray:
+
+def _seg_to_labels(
+    logits_or_labels: jnp.ndarray, from_logits: bool, channel_axis: int
+) -> jnp.ndarray:
     if from_logits:
         x = jnp.moveaxis(logits_or_labels, channel_axis, -1)
         return jnp.argmax(x, axis=-1)
@@ -90,7 +96,7 @@ def _seg_to_labels(logits_or_labels: jnp.ndarray, from_logits: bool, channel_axi
 @jax.jit
 def segmentation_confusion_matrix(
     logits_or_labels: jnp.ndarray,  # [B, C, H, W] or [B, H, W]
-    targets_hw: jnp.ndarray,        # [B, H, W]
+    targets_hw: jnp.ndarray,  # [B, H, W]
     num_classes: int,
     *,
     from_logits: bool = True,
@@ -144,6 +150,7 @@ def dice_from_cm(cm: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray]:
 
 # -------- Boundary F1 (tolerant). Good for thin structures / edges. -------- #
 
+
 def _binary_boundary_map(mask_hw: jnp.ndarray) -> jnp.ndarray:
     """
     Simple boundary extraction via morphological gradient.
@@ -160,12 +167,14 @@ def _dilate_bool(mask_hw: jnp.ndarray, radius: int) -> jnp.ndarray:
     if radius <= 0:
         return mask_hw
     size = 2 * radius + 1
-    return ndi.maximum_filter(mask_hw.astype(jnp.float32), size=size, mode="nearest") > 0.0
+    return (
+        ndi.maximum_filter(mask_hw.astype(jnp.float32), size=size, mode="nearest") > 0.0
+    )
 
 
 def boundary_f1(
     logits_or_labels: jnp.ndarray,  # [B,C,H,W] or [B,H,W]
-    targets_hw: jnp.ndarray,        # [B,H,W]
+    targets_hw: jnp.ndarray,  # [B,H,W]
     num_classes: int,
     *,
     from_logits: bool = True,
@@ -205,12 +214,12 @@ def boundary_f1(
 
         # counts summed over batch
         tp_prec = jnp.sum((pb & tb_d).astype(jnp.float32))
-        tp_rec  = jnp.sum((tb & pb_d).astype(jnp.float32))
+        tp_rec = jnp.sum((tb & pb_d).astype(jnp.float32))
         denom_p = jnp.clip(jnp.sum(pb.astype(jnp.float32)), 1e-9)
         denom_t = jnp.clip(jnp.sum(tb.astype(jnp.float32)), 1e-9)
 
         precision = tp_prec / denom_p
-        recall    = tp_rec  / denom_t
+        recall = tp_rec / denom_t
         f1 = 2 * precision * recall / jnp.clip(precision + recall, 1e-9)
         return f1
 
@@ -219,6 +228,7 @@ def boundary_f1(
 
 
 # --------------------------------- EMA --------------------------------- #
+
 
 @dataclass
 class EMA:
@@ -233,28 +243,35 @@ def init_ema(model: Any, decay: float = 0.999) -> EMA:
 
 @eqx.filter_jit
 def update_ema(ema: EMA, model: Any) -> EMA:
-    new_params = eqx.apply_updates(ema.params, jax.tree_map(
-        lambda e, p: ema.decay * e + (1.0 - ema.decay) * p,
+    new_params = eqx.apply_updates(
         ema.params,
-        eqx.filter(model, eqx.is_inexact_array),
-    ))
+        jax.tree_map(
+            lambda e, p: ema.decay * e + (1.0 - ema.decay) * p,
+            ema.params,
+            eqx.filter(model, eqx.is_inexact_array),
+        ),
+    )
     return EMA(params=new_params, decay=ema.decay)
 
 
 def swap_ema_params(model: Any, ema: EMA) -> Any:
     """Return a copy of `model` with EMA params swapped in (for eval)."""
+
     def replace(_, y):
         return y
+
     return eqx.tree_map(replace, model, ema.params, is_leaf=eqx.is_inexact_array)
 
 
 # --------------------------- Dtype casting utils --------------------------- #
+
 
 def cast_tree(tree: Any, dtype=jnp.bfloat16, keep_fp32_predicate=None) -> Any:
     """
     Cast all inexact arrays to dtype, except those where keep_fp32_predicate(leaf_path, array) is True.
     `keep_fp32_predicate` can be None or a function taking (path, leaf) -> bool.
     """
+
     def _cast(path, x):
         if not eqx.is_inexact_array(x):
             return x
@@ -269,6 +286,7 @@ def cast_tree(tree: Any, dtype=jnp.bfloat16, keep_fp32_predicate=None) -> Any:
 
 
 # --------------------------- Optax helper: clipping ------------------------ #
+
 
 def make_optimizer_with_clipping(
     base: optax.GradientTransformation,
