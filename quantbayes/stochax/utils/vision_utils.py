@@ -22,6 +22,20 @@ import jax.scipy.ndimage as ndi
 import optax
 import equinox as eqx
 
+__all__ = [
+    "topk_accuracy",
+    "classification_confusion_matrix",
+    "classification_report_from_cm",
+    "segmentation_confusion_matrix",
+    "iou_from_cm",
+    "dice_from_cm",
+    "boundary_f1",
+    "EMA",
+    "init_ema",
+    "update_ema",
+    "swap_ema_params",
+]
+
 
 # ----------------------------- Classification ----------------------------- #
 

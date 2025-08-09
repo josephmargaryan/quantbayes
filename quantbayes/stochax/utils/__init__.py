@@ -23,6 +23,19 @@ from .custom_transforms import (
     AdditiveGaussianNoise,
     CoarseDropout,
 )
+from .vision_utils import (
+    EMA,
+    init_ema,
+    update_ema,
+    swap_ema_params,
+    topk_accuracy,
+    classification_confusion_matrix,
+    classification_report_from_cm,
+    segmentation_confusion_matrix,
+    iou_from_cm,
+    dice_from_cm,
+    boundary_f1,
+)
 
 
 __all__ = [
@@ -46,4 +59,15 @@ __all__ = [
     "RandomScale",
     "AdditiveGaussianNoise",
     "CoarseDropout",
+    "topk_accuracy",
+    "classification_confusion_matrix",
+    "classification_report_from_cm",
+    "segmentation_confusion_matrix",
+    "iou_from_cm",
+    "dice_from_cm",
+    "boundary_f1",
+    "EMA",
+    "init_ema",
+    "update_ema",
+    "swap_ema_params",
 ]

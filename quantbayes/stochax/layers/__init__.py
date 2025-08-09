@@ -15,11 +15,6 @@ from .custom_jvp import (
     AdaptiveSpectralDense,
     SpectralConv2d,
     AdaptiveSpectralConv2d,
-    GibbsKernel,
-    GibbsKernel2d,
-    InputWarping,
-    InputWarping2d,
-    SpectralPool2d,
 )
 
 from .layers import (
@@ -44,11 +39,6 @@ __all__ = [
     "AdaptiveSpectralDense",
     "SpectralConv2d",
     "AdaptiveSpectralConv2d",
-    "GibbsKernel",
-    "GibbsKernel2d",
-    "InputWarping",
-    "InputWarping2d",
     "FourierNeuralOperator",
     "MixtureOfTwoLayers",
-    "SpectralPool2d",
 ]
