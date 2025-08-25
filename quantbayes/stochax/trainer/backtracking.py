@@ -10,6 +10,7 @@ import jax.random as jr
 import optax
 import equinox as eqx
 
+from quantbayes.stochax.trainer.train import make_lipschitz_upper_fn
 from quantbayes.stochax.trainer.train import (
     data_loader,
     multiclass_loss,         # default; pass binary/regression when needed
@@ -18,7 +19,6 @@ from quantbayes.stochax.trainer.train import (
     AugmentFn,
 )
 from quantbayes.stochax.utils.regularizers import (
-    make_lipschitz_upper_fn,
     global_spectral_norm_penalty,
     sobolev_kernel_smoothness,
     sobolev_jacobian_penalty,

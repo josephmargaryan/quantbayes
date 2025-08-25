@@ -16,8 +16,8 @@ from quantbayes.stochax.trainer.train import (
     global_frobenius_penalty,
     AugmentFn,
 )
+from quantbayes.stochax.trainer.train import make_lipschitz_upper_fn
 from quantbayes.stochax.utils.regularizers import (
-    make_lipschitz_upper_fn,    # certified global UB builder
     global_spectral_norm_penalty,
     sobolev_kernel_smoothness,
     sobolev_jacobian_penalty,

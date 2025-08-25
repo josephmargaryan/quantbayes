@@ -4,14 +4,13 @@ from __future__ import annotations
 import pathlib
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union, Literal
 
-import jax
 import jax.numpy as jnp
 import jax.random as jr
 import optax
 import equinox as eqx
 
+from quantbayes.stochax.trainer.train import make_lipschitz_upper_fn
 from quantbayes.stochax.utils.regularizers import (
-    make_lipschitz_upper_fn,      # certified global UB builder
     global_spectral_norm_penalty, # Σ per-layer operator norms
     sobolev_kernel_smoothness,    # kernel smoothness
     sobolev_jacobian_penalty,     # Jacobian Sobolev (data-dependent)
