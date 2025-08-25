@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import pathlib
-from typing import Any, Callable, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union, Literal
 
 import jax
 import jax.numpy as jnp
@@ -10,17 +10,25 @@ import jax.random as jr
 import optax
 import equinox as eqx
 
+from quantbayes.stochax.utils.regularizers import (
+    make_lipschitz_upper_fn,      # certified global UB builder
+    global_spectral_norm_penalty, # Σ per-layer operator norms
+    sobolev_kernel_smoothness,    # kernel smoothness
+    sobolev_jacobian_penalty,     # Jacobian Sobolev (data-dependent)
+    lip_product_penalty,          # τ·log(Lip_upper)
+)
 from quantbayes.stochax.trainer.train import (
     data_loader,
-    multiclass_loss,  # sensible default; pass binary/regression as needed
+    multiclass_loss,              # sensible default; pass binary/regression as needed
     global_spectral_penalty,
     global_frobenius_penalty,
     AugmentFn,
 )
 
 Array = jnp.ndarray
-Key = jr.PRNGKey
 
+
+# ============================== value function ===============================
 
 def _make_value_fn(
     static_model_part: eqx.Module,
@@ -29,30 +37,87 @@ def _make_value_fn(
     yb: Array,
     key: jr.key,
     loss_fn: Callable,
+    # --- regularizer knobs (parity with SGD trainer) ---
     lambda_spec: float,
     lambda_frob: float,
+    lambda_specnorm: float,
+    lambda_sob_jac: float,
+    lambda_sob_kernel: float,
+    lambda_liplog: float,
+    sob_jac_apply: Optional[
+        Callable[[Any, Any, jnp.ndarray, jr.PRNGKey], jnp.ndarray]
+    ],
+    sob_jac_samples: int,
+    conv_tn_iters: int,
+    conv_fft_shape: Optional[Tuple[int, int]],
+    # ----------------------------------------------- #
     deterministic_objective: bool,
 ) -> Callable[[eqx.Module], Array]:
     """
-    Returns f(params) -> scalar objective on a *fixed* mini-batch.
-    If deterministic_objective=True, compute with model in inference_mode
+    Build f(params) -> scalar objective on a fixed mini-batch (xb, yb, key).
+
+    If deterministic_objective=True, evaluate the model in eqx.nn.inference_mode
     (freezes BatchNorm/Dropout) so the line search sees a smooth objective.
+    All regularizers mirror the main SGD trainer semantics.
     """
+    conv_mode = "tn" if conv_fft_shape is None else "circular_fft"
 
     def f(params: eqx.Module) -> Array:
         mdl = eqx.combine(params, static_model_part)
         if deterministic_objective:
             mdl = eqx.nn.inference_mode(mdl)
+
         base_loss, _ = loss_fn(mdl, state, xb, yb, key)
-        value = base_loss
-        if lambda_spec:
-            value = value + lambda_spec * global_spectral_penalty(mdl)
-        if lambda_frob:
-            value = value + lambda_frob * global_frobenius_penalty(mdl)
-        return value
+
+        # penalties (same semantics as SGD trainer)
+        pen_spec = lambda_spec * global_spectral_penalty(mdl) if lambda_spec > 0.0 else 0.0
+        pen_frob = lambda_frob * global_frobenius_penalty(mdl) if lambda_frob > 0.0 else 0.0
+
+        pen_specnorm = (
+            lambda_specnorm
+            * global_spectral_norm_penalty(
+                mdl,
+                conv_mode=conv_mode,
+                conv_tn_iters=conv_tn_iters,
+                conv_fft_shape=conv_fft_shape,
+            )
+            if lambda_specnorm > 0.0
+            else 0.0
+        )
+
+        pen_sob_k = (
+            lambda_sob_kernel * sobolev_kernel_smoothness(mdl)
+            if lambda_sob_kernel > 0.0
+            else 0.0
+        )
+
+        pen_sob_j = (
+            lambda_sob_jac
+            * sobolev_jacobian_penalty(
+                mdl, state, xb, key, sob_jac_apply, num_samples=sob_jac_samples
+            )
+            if (lambda_sob_jac > 0.0 and sob_jac_apply is not None)
+            else 0.0
+        )
+
+        pen_lip = (
+            lip_product_penalty(
+                mdl,
+                tau=lambda_liplog,
+                conv_mode=conv_mode,
+                conv_tn_iters=conv_tn_iters,
+                conv_fft_shape=conv_fft_shape,
+            )
+            if lambda_liplog > 0.0
+            else 0.0
+        )
+
+        return base_loss + (pen_spec + pen_frob + pen_specnorm + pen_sob_k + pen_sob_j + pen_lip)
 
     return f
 
+
+# ================================ trainer ====================================
 
 def train_lbfgs(
     model: eqx.Module,
@@ -65,24 +130,42 @@ def train_lbfgs(
     batch_size: int = 512,
     num_epochs: int = 30,
     patience: int = 5,
+    # base penalties
     lambda_spec: float = 0.0,
     lambda_frob: float = 0.0,
-    key: jr.key,
+    # extended penalties (parity with SGD trainer)
+    lambda_specnorm: float = 0.0,
+    lambda_sob_jac: float = 0.0,
+    lambda_sob_kernel: float = 0.0,
+    lambda_liplog: float = 0.0,
+    sob_jac_apply: Optional[
+        Callable[[Any, Any, jnp.ndarray, jr.PRNGKey], jnp.ndarray]
+    ] = None,
+    sob_jac_samples: int = 1,
+    conv_tn_iters: int = 8,
+    conv_fft_shape: Optional[Tuple[int, int]] = None,
+    # RNG + obj
+    key: jr.key = jr.PRNGKey(0),
     augment_fn: Optional[AugmentFn] = None,
     loss_fn: Callable = multiclass_loss,
     # L-BFGS/linesearch knobs
     memory_size: int = 10,
-    linesearch: Optional[
-        optax.GradientTransformation
-    ] = None,  # defaults to Zoom if None
+    linesearch: Optional[optax.GradientTransformation] = None,  # defaults to Zoom if None
     max_linesearch_steps: int = 15,  # used only if we construct a default Zoom
     zoom_c1: float = 1e-4,  # Armijo
-    zoom_c2: float = 0.9,  # strong Wolfe
+    zoom_c2: float = 0.9,   # strong Wolfe
     deterministic_objective: bool = True,  # freeze BN/Dropout during f + LS
     # checkpoints + logging
     ckpt_path: Optional[Union[str, pathlib.Path]] = None,
     checkpoint_interval: Optional[int] = None,
     return_penalty_history: bool = False,
+    # -------- Lipschitz logging (certified global UB) --------
+    log_global_bound_every: Optional[int] = None,
+    bound_conv_mode: Literal["tn", "circular_fft", "min_tn_circ_embed", "circ_plus_lr"] = "tn",
+    bound_tn_iters: int = 8,
+    bound_fft_shape: Optional[Tuple[int, int]] = None,
+    bound_input_shape: Optional[Tuple[int, int]] = None,
+    bound_recorder: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> Union[
     Tuple[eqx.Module, Any, List[float], List[float]],
     Tuple[eqx.Module, Any, List[float], List[float], List[float]],
@@ -90,13 +173,18 @@ def train_lbfgs(
     """
     Quasi-Newton training via Optax L-BFGS (+ Zoom line search by default).
 
-    Best practice:
-      * Keep the objective deterministic for the line search (freeze BN/Dropout),
-        and keep each batch *fixed* while searching along the step. (We do both.)
-      * L2/Frobenius regularisation goes through lambda_frob; spectral term via lambda_spec.
+    • Deterministic objective (recommended): set `deterministic_objective=True` to
+      freeze BN/Dropout during the line search, and keep (xb, yb, key) fixed
+      while searching along the step.
+    • Regularizers: supports the same set of penalties as the SGD trainer
+      (spectral, Frobenius, per-layer operator norms, Sobolev kernel/Jacobian,
+      and a gentle log-Lipschitz product penalty).
+    • Certified Lipschitz logging: set `log_global_bound_every` to compute a
+      global Lipschitz UB every k epochs via `make_lipschitz_upper_fn`.
 
-    Returns:
-      (best_model, best_state, train_losses, val_losses [, penalty_history])
+    Returns
+    -------
+    (best_model, best_state, train_losses, val_losses [, penalty_history])
     """
     if checkpoint_interval is not None:
         assert checkpoint_interval > 0, "`checkpoint_interval` must be > 0"
@@ -106,14 +194,22 @@ def train_lbfgs(
 
     # Choose linesearch
     if linesearch is None:
-        # Use strong-Wolfe Zoom by default (Optax recommended for L-BFGS).
-        # If you prefer backtracking, pass optax.scale_by_backtracking_linesearch(store_grad=True).
+        # Strong-Wolfe Zoom (Optax default for L-BFGS)
         linesearch = optax.scale_by_zoom_linesearch(
             max_linesearch_steps=max_linesearch_steps, c1=zoom_c1, c2=zoom_c2
         )
 
     solver = optax.lbfgs(memory_size=memory_size, linesearch=linesearch)
     opt_state = solver.init(params)
+
+    # --- optional Lipschitz UB fn (certified) ---
+    if log_global_bound_every is not None:
+        lip_fn = make_lipschitz_upper_fn(
+            conv_mode=bound_conv_mode,
+            conv_tn_iters=bound_tn_iters,
+            conv_fft_shape=bound_fft_shape,
+            conv_input_shape=bound_input_shape,
+        )
 
     rng, eval_rng = jr.split(key)
     best_val = jnp.inf
@@ -129,14 +225,9 @@ def train_lbfgs(
         epoch_loss, n_seen = 0.0, 0
 
         for xb, yb in data_loader(
-            X_train,
-            y_train,
-            batch_size=batch_size,
-            shuffle=True,
-            key=perm,
-            augment_fn=augment_fn,
+            X_train, y_train, batch_size=batch_size, shuffle=True, key=perm, augment_fn=augment_fn
         ):
-            # Freeze the mini-batch for the entire line search.
+            # Freeze the mini-batch for the whole line search
             rng, sk = jr.split(rng)
 
             f = _make_value_fn(
@@ -148,11 +239,18 @@ def train_lbfgs(
                 loss_fn=loss_fn,
                 lambda_spec=lambda_spec,
                 lambda_frob=lambda_frob,
+                lambda_specnorm=lambda_specnorm,
+                lambda_sob_jac=lambda_sob_jac,
+                lambda_sob_kernel=lambda_sob_kernel,
+                lambda_liplog=lambda_liplog,
+                sob_jac_apply=sob_jac_apply,
+                sob_jac_samples=sob_jac_samples,
+                conv_tn_iters=conv_tn_iters,
+                conv_fft_shape=conv_fft_shape,
                 deterministic_objective=deterministic_objective,
             )
 
-            # Recommended pattern: reuse (value, grad) across the LS when possible.
-            # (Optax caches these in opt_state between updates.)
+            # reuse (value, grad) via optax cache
             value_and_grad = optax.value_and_grad_from_state(f)
             value, grad = value_and_grad(params, state=opt_state)
 
@@ -166,30 +264,33 @@ def train_lbfgs(
 
         train_hist.append(epoch_loss / max(1, n_seen))
 
-        # ----- Validation (always inference mode for stability) -----
+        # ----- Validation (inference mode for stability) -----
         mdl_val = eqx.nn.inference_mode(eqx.combine(params, static))
         v_loss, n_val = 0.0, 0
-        for xb, yb in data_loader(
-            X_val,
-            y_val,
-            batch_size=batch_size,
-            shuffle=False,
-            key=eval_rng,
-            augment_fn=None,
-        ):
+        for xb, yb in data_loader(X_val, y_val, batch_size=batch_size, shuffle=False, key=eval_rng):
             eval_rng, vk = jr.split(eval_rng)
             l, _ = loss_fn(mdl_val, state, xb, yb, vk)
             v_loss += float(l) * xb.shape[0]
             n_val += xb.shape[0]
         val_hist.append(v_loss / max(1, n_val))
 
-        # Track penalty magnitude on current params
+        # Track penalty magnitude on current params (monitoring)
         pen_hist.append(float(global_spectral_penalty(eqx.combine(params, static))))
 
-        print(
-            f"[LBFGS | Epoch {epoch:3d}/{num_epochs}] "
-            f"Train={train_hist[-1]:.4f} | Val={val_hist[-1]:.4f}"
-        )
+        print(f"[LBFGS | Epoch {epoch:3d}/{num_epochs}] "
+              f"Train={train_hist[-1]:.4f} | Val={val_hist[-1]:.4f}")
+
+        # --- certified Lipschitz UB (epoch-level) ---
+        if (log_global_bound_every is not None) and (
+            (epoch % max(1, log_global_bound_every) == 0) or (epoch == num_epochs)
+        ):
+            mdl_raw = eqx.combine(params, static)
+            L_raw = float(lip_fn(mdl_raw))
+            L_eval = float(lip_fn(mdl_val))
+            rec = {"epoch": int(epoch), "L_raw": L_raw, "L_eval": L_eval, "mode": bound_conv_mode}
+            if bound_recorder is not None:
+                bound_recorder(rec)
+            print(f"    [Lipschitz UB] raw={L_raw:.6g}  eval={L_eval:.6g}  ({bound_conv_mode})")
 
         # Early stopping
         if val_hist[-1] < best_val - 1e-6:
@@ -210,12 +311,8 @@ def train_lbfgs(
                 print(f"Early stopping at epoch {epoch}")
                 break
 
-        # Periodic checkpoint of current weights
-        if (
-            ckpt_path is not None
-            and checkpoint_interval is not None
-            and epoch % checkpoint_interval == 0
-        ):
+        # Periodic checkpoint
+        if ckpt_path is not None and checkpoint_interval is not None and epoch % checkpoint_interval == 0:
             ckpt_file = pathlib.Path(str(ckpt_path).format(epoch=epoch))
             ckpt_file.parent.mkdir(parents=True, exist_ok=True)
             eqx.tree_serialise_leaves(
@@ -240,10 +337,23 @@ def train_lbfgs_full_data(
     *,
     batch_size: int = 512,
     num_epochs: int = 30,
-    key: jr.key,
-    augment_fn: Optional[AugmentFn] = None,
+    # base penalties (INCLUDED)
     lambda_spec: float = 0.0,
     lambda_frob: float = 0.0,
+    # extended penalties (INCLUDED)
+    lambda_specnorm: float = 0.0,
+    lambda_sob_jac: float = 0.0,
+    lambda_sob_kernel: float = 0.0,
+    lambda_liplog: float = 0.0,
+    sob_jac_apply: Optional[
+        Callable[[Any, Any, jnp.ndarray, jr.PRNGKey], jnp.ndarray]
+    ] = None,
+    sob_jac_samples: int = 1,
+    conv_tn_iters: int = 8,
+    conv_fft_shape: Optional[Tuple[int, int]] = None,
+    # RNG + obj
+    key: jr.key = jr.PRNGKey(0),
+    augment_fn: Optional[AugmentFn] = None,
     loss_fn: Callable = multiclass_loss,
     # L-BFGS knobs
     memory_size: int = 10,
@@ -256,35 +366,65 @@ def train_lbfgs_full_data(
     ckpt_path: Optional[Union[str, pathlib.Path]] = None,
     checkpoint_interval: Optional[int] = None,
     return_penalty_history: bool = False,
+    # Lipschitz logging passthrough
+    log_global_bound_every: Optional[int] = None,
+    bound_conv_mode: Literal["tn", "circular_fft", "min_tn_circ_embed", "circ_plus_lr"] = "tn",
+    bound_tn_iters: int = 8,
+    bound_fft_shape: Optional[Tuple[int, int]] = None,
+    bound_input_shape: Optional[Tuple[int, int]] = None,
+    bound_recorder: Optional[Callable[[Dict[str, Any]], None]] = None,
 ):
     """
     Combine train+val; disable early stop (patience=num_epochs).
+    Keeps checkpoints + optional certified Lipschitz logging.
+    Full pass-through of all regularizer knobs.
     """
     X_full = jnp.concatenate([X_train, X_val], axis=0)
     y_full = jnp.concatenate([y_train, y_val], axis=0)
+    # Minimal dummy val to keep shapes consistent; early stopping is disabled anyway.
     X_dummy, y_dummy = X_full[:1], y_full[:1]
+
     return train_lbfgs(
-        model,
-        state,
-        X_full,
-        y_full,
-        X_dummy,
-        y_dummy,
+        model=model,
+        state=state,
+        X_train=X_full,
+        y_train=y_full,
+        X_val=X_dummy,
+        y_val=y_dummy,
         batch_size=batch_size,
         num_epochs=num_epochs,
-        patience=num_epochs,
+        patience=num_epochs,  # effectively no early stop
+        # regularizers (FULL passthrough)
         lambda_spec=lambda_spec,
         lambda_frob=lambda_frob,
+        lambda_specnorm=lambda_specnorm,
+        lambda_sob_jac=lambda_sob_jac,
+        lambda_sob_kernel=lambda_sob_kernel,
+        lambda_liplog=lambda_liplog,
+        sob_jac_apply=sob_jac_apply,
+        sob_jac_samples=sob_jac_samples,
+        conv_tn_iters=conv_tn_iters,
+        conv_fft_shape=conv_fft_shape,
+        # RNG + obj
         key=key,
         augment_fn=augment_fn,
         loss_fn=loss_fn,
+        # L-BFGS knobs
         memory_size=memory_size,
         linesearch=linesearch,
         max_linesearch_steps=max_linesearch_steps,
         zoom_c1=zoom_c1,
         zoom_c2=zoom_c2,
         deterministic_objective=deterministic_objective,
+        # checkpoints + logging
         ckpt_path=ckpt_path,
         checkpoint_interval=checkpoint_interval,
         return_penalty_history=return_penalty_history,
+        # Lipschitz logging
+        log_global_bound_every=log_global_bound_every,
+        bound_conv_mode=bound_conv_mode,
+        bound_tn_iters=bound_tn_iters,
+        bound_fft_shape=bound_fft_shape,
+        bound_input_shape=bound_input_shape,
+        bound_recorder=bound_recorder,
     )

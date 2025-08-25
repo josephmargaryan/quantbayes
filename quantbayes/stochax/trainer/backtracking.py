@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import pathlib
-from typing import Any, Callable, List, Optional, Tuple, Union
+from typing import Any, Callable, List, Optional, Tuple, Union, Literal, Dict
 
 import jax
 import jax.numpy as jnp
@@ -12,14 +12,23 @@ import equinox as eqx
 
 from quantbayes.stochax.trainer.train import (
     data_loader,
-    multiclass_loss,  # default; pass binary/regression when needed
+    multiclass_loss,         # default; pass binary/regression when needed
     global_spectral_penalty,
     global_frobenius_penalty,
     AugmentFn,
 )
+from quantbayes.stochax.utils.regularizers import (
+    make_lipschitz_upper_fn,
+    global_spectral_norm_penalty,
+    sobolev_kernel_smoothness,
+    sobolev_jacobian_penalty,
+    lip_product_penalty,
+)
 
 Array = jnp.ndarray
-Key = jr.PRNGKey
+
+
+# ------------------------------ value fn -------------------------------------
 
 
 def _make_value_fn(
@@ -29,31 +38,88 @@ def _make_value_fn(
     yb: Array,
     key: jr.key,
     loss_fn: Callable,
+    # --- regularizer knobs (parity with SGD trainer) ---
     lambda_spec: float,
     lambda_frob: float,
+    lambda_specnorm: float,
+    lambda_sob_jac: float,
+    lambda_sob_kernel: float,
+    lambda_liplog: float,
+    sob_jac_apply: Optional[
+        Callable[[Any, Any, jnp.ndarray, jr.PRNGKey], jnp.ndarray]
+    ],
+    sob_jac_samples: int,
+    conv_tn_iters: int,
+    conv_fft_shape: Optional[Tuple[int, int]],
+    # ----------------------------------------------- #
     deterministic_objective: bool,
 ) -> Callable[[eqx.Module], Array]:
     """
-    Returns f(params) -> scalar objective on a *fixed* mini-batch.
+    Build f(params) -> scalar objective on a fixed mini-batch (xb, yb, key).
 
-    If deterministic_objective=True, we run the model in inference_mode
-    (freezes BN/Dropout), which makes the line search well-posed (smooth,
-    reproducible objective along the search direction).
+    If deterministic_objective=True, the model is evaluated in eqx.nn.inference_mode
+    (freezes BatchNorm/Dropout), making the line search well-posed.
+    All regularizers mirror the main SGD trainer semantics.
     """
+
+    conv_mode = "tn" if conv_fft_shape is None else "circular_fft"
 
     def f(params: eqx.Module) -> Array:
         mdl = eqx.combine(params, static_model_part)
         if deterministic_objective:
             mdl = eqx.nn.inference_mode(mdl)
+
         base, _ = loss_fn(mdl, state, xb, yb, key)
-        val = base
-        if lambda_spec:
-            val = val + lambda_spec * global_spectral_penalty(mdl)
-        if lambda_frob:
-            val = val + lambda_frob * global_frobenius_penalty(mdl)
-        return val
+
+        # --- penalties (identical semantics to SGD trainer) ---
+        pen_spec = lambda_spec * global_spectral_penalty(mdl) if lambda_spec > 0.0 else 0.0
+        pen_frob = lambda_frob * global_frobenius_penalty(mdl) if lambda_frob > 0.0 else 0.0
+
+        pen_specnorm = (
+            lambda_specnorm
+            * global_spectral_norm_penalty(
+                mdl,
+                conv_mode=conv_mode,
+                conv_tn_iters=conv_tn_iters,
+                conv_fft_shape=conv_fft_shape,
+            )
+            if lambda_specnorm > 0.0
+            else 0.0
+        )
+
+        pen_sob_k = (
+            lambda_sob_kernel * sobolev_kernel_smoothness(mdl)
+            if lambda_sob_kernel > 0.0
+            else 0.0
+        )
+
+        pen_sob_j = (
+            lambda_sob_jac
+            * sobolev_jacobian_penalty(
+                mdl, state, xb, key, sob_jac_apply, num_samples=sob_jac_samples
+            )
+            if (lambda_sob_jac > 0.0 and sob_jac_apply is not None)
+            else 0.0
+        )
+
+        pen_lip = (
+            lip_product_penalty(
+                mdl,
+                tau=lambda_liplog,
+                conv_mode=conv_mode,
+                conv_tn_iters=conv_tn_iters,
+                conv_fft_shape=conv_fft_shape,
+            )
+            if lambda_liplog > 0.0
+            else 0.0
+        )
+
+        return base + (pen_spec + pen_frob + pen_specnorm + pen_sob_k + pen_sob_j + pen_lip)
 
     return f
+
+
+# ------------------------------ trainer --------------------------------------
 
 
 def train_backtrack(
@@ -67,9 +133,22 @@ def train_backtrack(
     batch_size: int = 512,
     num_epochs: int = 20,
     patience: int = 5,
+    # base penalties
     lambda_spec: float = 0.0,
     lambda_frob: float = 0.0,
-    key: jr.key,
+    # regularizer parity with SGD trainer
+    lambda_specnorm: float = 0.0,
+    lambda_sob_jac: float = 0.0,
+    lambda_sob_kernel: float = 0.0,
+    lambda_liplog: float = 0.0,
+    sob_jac_apply: Optional[
+        Callable[[Any, Any, jnp.ndarray, jr.PRNGKey], jnp.ndarray]
+    ] = None,
+    sob_jac_samples: int = 1,
+    conv_tn_iters: int = 8,
+    conv_fft_shape: Optional[Tuple[int, int]] = None,
+    # RNG + obj
+    key: jr.key = jr.PRNGKey(0),
     augment_fn: Optional[AugmentFn] = None,
     loss_fn: Callable = multiclass_loss,
     # Backtracking knobs
@@ -79,17 +158,32 @@ def train_backtrack(
     ckpt_path: Optional[Union[str, pathlib.Path]] = None,
     checkpoint_interval: Optional[int] = None,
     return_penalty_history: bool = False,
+    # -------- Lipschitz logging (certified global UB) --------
+    log_global_bound_every: Optional[int] = None,
+    bound_conv_mode: Literal["tn", "circular_fft", "min_tn_circ_embed", "circ_plus_lr"] = "tn",
+    bound_tn_iters: int = 8,
+    bound_fft_shape: Optional[Tuple[int, int]] = None,
+    bound_input_shape: Optional[Tuple[int, int]] = None,
+    bound_recorder: Optional[Callable[[Dict[str, Any]], None]] = None,
 ) -> Union[
     Tuple[eqx.Module, Any, List[float], List[float]],
     Tuple[eqx.Module, Any, List[float], List[float], List[float]],
 ]:
     """
-    Strong-Wolfe backtracking line search with (negative) SGD direction.
+    Mini-batch backtracking line search (Strong-Wolfe) with SGD direction.
 
-    Best practice:
-      * Keep f deterministic during the search (freeze BN/Dropout) and keep
-        the sampled/augmented batch fixed while searching.
-      * Penalties are folded into the objective, so line search reasons about them too.
+    • Deterministic objective (recommended): set `deterministic_objective=True` to
+      freeze BN/Dropout during the line search, and keep (xb, yb, key) fixed
+      while searching along the step.
+    • Regularizers: supports the same set of penalties as the SGD trainer
+      (spectral, Frobenius, per-layer operator norms, Sobolev kernel/Jacobian,
+      and a gentle log-Lipschitz product penalty).
+    • Certified Lipschitz logging: set `log_global_bound_every` to compute a
+      global Lipschitz upper bound every k epochs via `make_lipschitz_upper_fn`.
+
+    Returns
+    -------
+    (best_model, best_state, train_losses, val_losses [, penalty_history])
     """
     if checkpoint_interval is not None:
         assert checkpoint_interval > 0, "`checkpoint_interval` must be > 0"
@@ -97,14 +191,21 @@ def train_backtrack(
     # params/static split
     params, static = eqx.partition(model, eqx.is_inexact_array)
 
-    # Direction = -grad (SGD with lr=1.0); LS scales it.
+    # Direction = -grad (lr=1.0); line search scales it.
     solver = optax.chain(
         optax.sgd(learning_rate=1.0),
-        optax.scale_by_backtracking_linesearch(
-            max_backtracking_steps=max_backtracking_steps
-        ),
+        optax.scale_by_backtracking_linesearch(max_backtracking_steps=max_backtracking_steps),
     )
     opt_state = solver.init(params)
+
+    # --- optional Lipschitz UB fn (certified) ---
+    if log_global_bound_every is not None:
+        lip_fn = make_lipschitz_upper_fn(
+            conv_mode=bound_conv_mode,
+            conv_tn_iters=bound_tn_iters,
+            conv_fft_shape=bound_fft_shape,
+            conv_input_shape=bound_input_shape,
+        )
 
     rng, eval_rng = jr.split(key)
     best_val = jnp.inf
@@ -127,7 +228,6 @@ def train_backtrack(
             key=perm,
             augment_fn=augment_fn,
         ):
-            # Freeze mini-batch for the entire line search
             rng, sk = jr.split(rng)
 
             f = _make_value_fn(
@@ -135,24 +235,27 @@ def train_backtrack(
                 state=state,
                 xb=xb,
                 yb=yb,
-                key=sk,
+                key=sk,  # fixed subkey across the line search
                 loss_fn=loss_fn,
                 lambda_spec=lambda_spec,
                 lambda_frob=lambda_frob,
+                lambda_specnorm=lambda_specnorm,
+                lambda_sob_jac=lambda_sob_jac,
+                lambda_sob_kernel=lambda_sob_kernel,
+                lambda_liplog=lambda_liplog,
+                sob_jac_apply=sob_jac_apply,
+                sob_jac_samples=sob_jac_samples,
+                conv_tn_iters=conv_tn_iters,
+                conv_fft_shape=conv_fft_shape,
                 deterministic_objective=deterministic_objective,
             )
 
-            # Reuse (value, grad) across LS via optax helper
+            # reuse (value, grad) via optax cache
             value_and_grad = optax.value_and_grad_from_state(f)
             value, grad = value_and_grad(params, state=opt_state)
 
             updates, opt_state = solver.update(
-                grad,
-                opt_state,
-                params,
-                value=value,
-                grad=grad,
-                value_fn=f,
+                grad, opt_state, params, value=value, grad=grad, value_fn=f
             )
             params = optax.apply_updates(params, updates)
 
@@ -161,7 +264,7 @@ def train_backtrack(
 
         train_hist.append(epoch_loss / max(1, n_seen))
 
-        # ----- Validation (always inference mode) -----
+        # ----- Validation (inference mode) -----
         mdl_val = eqx.nn.inference_mode(eqx.combine(params, static))
         v_loss, n_val = 0.0, 0
         for xb, yb in data_loader(
@@ -178,13 +281,25 @@ def train_backtrack(
             n_val += xb.shape[0]
         val_hist.append(v_loss / max(1, n_val))
 
-        # Track penalty magnitude on current params (for monitoring)
+        # Track penalty magnitude on current params (monitoring only)
         pen_hist.append(float(global_spectral_penalty(eqx.combine(params, static))))
 
         print(
             f"[BACKTRACK | Epoch {epoch:3d}/{num_epochs}] "
             f"Train={train_hist[-1]:.4f} | Val={val_hist[-1]:.4f}"
         )
+
+        # --- certified Lipschitz UB (epoch-level) ---
+        if (log_global_bound_every is not None) and (
+            (epoch % max(1, log_global_bound_every) == 0) or (epoch == num_epochs)
+        ):
+            mdl_raw = eqx.combine(params, static)
+            L_raw = float(lip_fn(mdl_raw))
+            L_eval = float(lip_fn(mdl_val))
+            rec = {"epoch": int(epoch), "L_raw": L_raw, "L_eval": L_eval, "mode": bound_conv_mode}
+            if bound_recorder is not None:
+                bound_recorder(rec)
+            print(f"    [Lipschitz UB] raw={L_raw:.6g}  eval={L_eval:.6g}  ({bound_conv_mode})")
 
         # Early stopping
         if val_hist[-1] < best_val - 1e-6:
@@ -195,8 +310,7 @@ def train_backtrack(
                 best_file = pathlib.Path(str(ckpt_path).format(epoch=epoch))
                 best_file.parent.mkdir(parents=True, exist_ok=True)
                 eqx.tree_serialise_leaves(
-                    best_file,
-                    {"model": eqx.combine(best_params, static), "state": best_state},
+                    best_file, {"model": eqx.combine(best_params, static), "state": best_state}
                 )
         else:
             patience_ctr += 1
@@ -204,7 +318,7 @@ def train_backtrack(
                 print(f"Early stopping at epoch {epoch}")
                 break
 
-        # Periodic checkpoint of the *current* weights
+        # Periodic checkpoint
         if (
             ckpt_path is not None
             and checkpoint_interval is not None
@@ -213,8 +327,7 @@ def train_backtrack(
             ckpt_file = pathlib.Path(str(ckpt_path).format(epoch=epoch))
             ckpt_file.parent.mkdir(parents=True, exist_ok=True)
             eqx.tree_serialise_leaves(
-                ckpt_file,
-                {"model": eqx.combine(params, static), "state": state},
+                ckpt_file, {"model": eqx.combine(params, static), "state": state}
             )
 
     final_model = eqx.combine(best_params, static)
@@ -234,35 +347,69 @@ def train_backtrack_full_data(
     *,
     batch_size: int = 512,
     num_epochs: int = 20,
-    key: jr.key,
-    augment_fn: Optional[AugmentFn] = None,
+    # base penalties (NOW INCLUDED)
     lambda_spec: float = 0.0,
     lambda_frob: float = 0.0,
+    # extended regularizers
+    lambda_specnorm: float = 0.0,
+    lambda_sob_jac: float = 0.0,
+    lambda_sob_kernel: float = 0.0,
+    lambda_liplog: float = 0.0,
+    sob_jac_apply: Optional[
+        Callable[[Any, Any, jnp.ndarray, jr.PRNGKey], jnp.ndarray]
+    ] = None,
+    sob_jac_samples: int = 1,
+    conv_tn_iters: int = 8,
+    conv_fft_shape: Optional[Tuple[int, int]] = None,
+    # obj + misc
+    key: jr.key = jr.PRNGKey(0),
+    augment_fn: Optional[AugmentFn] = None,
     loss_fn: Callable = multiclass_loss,
     max_backtracking_steps: int = 10,
     deterministic_objective: bool = True,
     ckpt_path: Optional[Union[str, pathlib.Path]] = None,
     checkpoint_interval: Optional[int] = None,
     return_penalty_history: bool = False,
+    # Lipschitz logging passthrough
+    log_global_bound_every: Optional[int] = None,
+    bound_conv_mode: Literal["tn", "circular_fft", "min_tn_circ_embed", "circ_plus_lr"] = "tn",
+    bound_tn_iters: int = 8,
+    bound_fft_shape: Optional[Tuple[int, int]] = None,
+    bound_input_shape: Optional[Tuple[int, int]] = None,
+    bound_recorder: Optional[Callable[[Dict[str, Any]], None]] = None,
 ):
     """
     Combine train+val; disable early stop (patience=num_epochs).
+    Keeps checkpoints + optional certified Lipschitz logging.
+    Full pass-through of all regularizer knobs.
     """
     X_full = jnp.concatenate([X_train, X_val], axis=0)
     y_full = jnp.concatenate([y_train, y_val], axis=0)
+    # Minimal dummy val to keep loop shape; early stopping is disabled anyway.
     X_dummy, y_dummy = X_full[:1], y_full[:1]
+
     return train_backtrack(
-        model,
-        state,
-        X_full,
-        y_full,
-        X_dummy,
-        y_dummy,
+        model=model,
+        state=state,
+        X_train=X_full,
+        y_train=y_full,
+        X_val=X_dummy,
+        y_val=y_dummy,
         batch_size=batch_size,
         num_epochs=num_epochs,
-        patience=num_epochs,
+        patience=num_epochs,  # effectively no early stop
+        # regularizers (FULL passthrough)
         lambda_spec=lambda_spec,
         lambda_frob=lambda_frob,
+        lambda_specnorm=lambda_specnorm,
+        lambda_sob_jac=lambda_sob_jac,
+        lambda_sob_kernel=lambda_sob_kernel,
+        lambda_liplog=lambda_liplog,
+        sob_jac_apply=sob_jac_apply,
+        sob_jac_samples=sob_jac_samples,
+        conv_tn_iters=conv_tn_iters,
+        conv_fft_shape=conv_fft_shape,
+        # obj + misc
         key=key,
         augment_fn=augment_fn,
         loss_fn=loss_fn,
@@ -271,4 +418,11 @@ def train_backtrack_full_data(
         ckpt_path=ckpt_path,
         checkpoint_interval=checkpoint_interval,
         return_penalty_history=return_penalty_history,
+        # Lipschitz logging
+        log_global_bound_every=log_global_bound_every,
+        bound_conv_mode=bound_conv_mode,
+        bound_tn_iters=bound_tn_iters,
+        bound_fft_shape=bound_fft_shape,
+        bound_input_shape=bound_input_shape,
+        bound_recorder=bound_recorder,
     )
