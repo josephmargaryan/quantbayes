@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quantbayes"
+version = "0.1.1"
+description = "A library for probabilistic and Bayesian machine learning models"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { file = "LICENSE" }
+authors = [{ name = "Joseph Margaryan", email = "josephmargaryan@gmail.com" }]
+urls = { Homepage = "https://github.com/josephmargaryan/quantbayes" }
+
+# ⚠️ Consider relaxing/organizing deps; see notes below.
+dependencies = [
+  "numpy>=1.26.0,<1.27",
+  "pandas>=2.2.0,<2.3",
+  "scipy>=1.15.3,<1.16",
+  "scikit-learn>=1.5.0,<1.7",
+  "matplotlib>=3.8.0,<3.11",
+  "seaborn>=0.13.0,<0.14",
+  # Heavy/optional stacks — consider moving to extras:
+  "torch>=2.5.0,<2.8",
+  "jax>=0.4.20,<0.6",
+  "jaxlib>=0.4.20,<0.6",
+  "numpyro>=0.17.2,<0.19",
+  "funsor>=0.4.0,<0.5",
+  "arviz>=0.20.0,<0.22",
+  "optuna>=4.0.0,<4.3",
+  "diffrax>=0.6.0,<0.8",
+  "optax>=0.2.3,<0.3",
+  "equinox>=0.12.0,<0.14",
+  "xgboost>=2.0.0,<3.1",
+  "catboost>=1.2.0,<1.3",
+  "lightgbm>=4.0.0,<4.7",
+  "einops>=0.6.0,<0.9",
+  "augmax>=0.4.1,<0.5",
+  "opencv-python>=4.7.0,<4.8",
+]
+
+[tool.setuptools]
+# Only package the Python modules under 'quantbayes'
+packages = { find = { include = ["quantbayes*"], exclude = ["DMiAI*", "images*", "kaggle*"] } }
+
+[tool.setuptools.package-data]
+# If you need to include non-.py files inside quantbayes, list globs here.
+# "quantbayes" = ["**/*.json", "**/*.yaml"]
+
+[tool.setuptools.exclude-package-data]
+# Ensure large assets aren't shipped
+"*" = ["*.png", "*.jpg", "*.gif", "*.csv", "*.ipynb"]
+
