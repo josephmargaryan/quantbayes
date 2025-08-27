@@ -17,6 +17,7 @@
 # -------------------------------------------------------------------------
 
 from __future__ import annotations
+import math
 from typing import Any, Callable, Literal, Optional, Sequence, Tuple
 
 import equinox as eqx
@@ -180,6 +181,21 @@ def _sigma_linear_weight(
     (u, v), _ = jax.lax.scan(body, (u, v), None, length=max(0, pi_steps - 1))
     # Rayleigh quotient
     return jnp.vdot(u, W2 @ v).real
+
+
+def _as_2tuple(v):
+    """Return (h, w) from an int, (h,w), or ((hl,hr),(wl,wr)) padding-style tuple."""
+    if isinstance(v, tuple):
+        if len(v) == 2 and all(isinstance(x, tuple) for x in v):
+            (hl, hr), (wl, wr) = v
+            return int(hl + hr), int(wl + wr)
+        if len(v) == 2:
+            return int(v[0]), int(v[1])
+    try:
+        i = int(v)
+        return i, i
+    except Exception:
+        return 1, 1
 
 
 def _sigma_conv_kernel_flat(
@@ -874,8 +890,6 @@ def sobolev_kernel_smoothness(model: Any) -> jnp.ndarray:
 # -------------------------------------------------------------------------
 # Network Lipschitz: product of per-layer σ̂ (upper bound)
 # -------------------------------------------------------------------------
-
-
 def network_lipschitz_upper(
     model: Any,
     *,
@@ -893,8 +907,23 @@ def network_lipschitz_upper(
         "SVDDense",
         "SpectralDense",
     ),
+    # Optional: bound for the final bilinear resize in UNet; if None we treat it as 1.
+    resize_l2_factor: Optional[float] = None,
 ) -> jnp.ndarray:
-    """Product upper bound on Lip(f) via per-layer certified norms."""
+    """
+    Product upper bound on Lip(f) under ℓ₂ using per-layer/operator norms.
+
+    Certified when all convolutions are 2D (Conv2d/ConvTranspose2d) and you pick a
+    certified conv mode. For non-2D convs we fall back to `kernel_flat`, which is a proxy.
+
+    Composition rules:
+      • Residual blocks: if y = skip(x) + α·F(x), then Lip ≤ Lip(skip) + |α|·Lip(F).
+      • Pointwise 1-Lip activations (ReLU etc.): factor 1.
+      • MaxPool2d:   L ≤ sqrt( ceil(k_h/s_h) * ceil(k_w/s_w) ).
+      • AvgPool2d:   L ≤ sqrt( ceil(k_h/s_h) * ceil(k_w/s_w) / (k_h k_w) ).
+      • UNet concat (ℓ₂): Lip([u;v]) ≤ sqrt(Lip(u)^2 + Lip(v)^2).
+      • Conv/ConvT/Linear/Norm: as below (conv bound depends on `conv_mode`).
+    """
     log_sum = jnp.array(0.0, dtype=jnp.float32)
     nn = getattr(eqx, "nn", None)
     PARAM_SVD_CONV = {"SpectralConv2d", "AdaptiveSpectralConv2d"}
@@ -903,38 +932,247 @@ def network_lipschitz_upper(
         sig = jnp.asarray(sig, jnp.float32)
         return acc + jnp.log(jnp.clip(sig, 1e-12, 1e12))
 
+    def _lip_seq(mods: Sequence[Any]) -> jnp.ndarray:
+        lacc = jnp.array(0.0, dtype=jnp.float32)
+        for m in mods:
+            if m is None:
+                continue
+            lacc = visit(m, lacc)
+        return jnp.exp(lacc)
+
+    def _conv_sigma(weight, strides, dilations) -> jnp.ndarray:
+        if conv_mode == "circular_fft":
+            if strides == (1, 1) and (conv_fft_shape is not None):
+                return _sigma_conv_circular_fft_exact_2d(
+                    weight, conv_fft_shape, rhs_dilation=dilations
+                )
+            return _sigma_conv_TN_upper(
+                weight, strides=strides, rhs_dilation=dilations, iters=conv_tn_iters
+            )
+
+        if conv_mode == "circular_gram":
+            if (
+                strides == (1, 1)
+                and dilations == (1, 1)
+                and (conv_fft_shape is not None)
+            ):
+                return _sigma_conv_circular_gram_upper_2d(
+                    weight, conv_fft_shape, iters=conv_gram_iters
+                )
+            return _sigma_conv_TN_upper(
+                weight, strides=strides, rhs_dilation=dilations, iters=conv_tn_iters
+            )
+
+        if conv_mode == "min_tn_circ_embed" and (conv_input_shape is not None):
+            if strides == (1, 1) and dilations == (1, 1):
+                tn = _sigma_conv_TN_upper(
+                    weight, strides=strides, rhs_dilation=dilations, iters=conv_tn_iters
+                )
+                ce = _sigma_conv_circulant_embed_upper_2d(
+                    weight, in_hw=conv_input_shape
+                )
+                return jnp.minimum(tn, ce)
+            return _sigma_conv_TN_upper(
+                weight, strides=strides, rhs_dilation=dilations, iters=conv_tn_iters
+            )
+
+        if conv_mode == "circ_plus_lr" and (conv_input_shape is not None):
+            return _sigma_conv_circ_plus_lr_upper_2d(
+                weight, in_hw=conv_input_shape, strides=strides, rhs_dilation=dilations
+            )
+
+        # default: TN UB (stride/dilation-aware, certified for 2D)
+        return _sigma_conv_TN_upper(
+            weight, strides=strides, rhs_dilation=dilations, iters=conv_tn_iters
+        )
+
     def visit(x, acc):
         name = type(x).__name__
 
-        # ----- JIT-safe explicit support for spectral-dense parametrizations -----
-        # Operator norm = |alpha| * max(singular_values)
-        if name in ("SVDDense", "SpectralDense"):
-            if hasattr(x, "s"):
-                alpha = jnp.asarray(getattr(x, "alpha", 1.0), jnp.float32)
-                sig = jnp.max(jnp.abs(x.s)) * jnp.abs(alpha)
-                return add_log(acc, sig)
+        # ---------- UNet backbone with concatenations ----------
+        if (
+            name == "UNetBackbone"
+            and hasattr(x, "encoder")
+            and all(hasattr(x, a) for a in ("d1", "d2", "d3", "d4", "out_conv"))
+        ):
+            enc = x.encoder
 
-        # ---- EXACT HINTS for approved classes (kept after explicit branch) ----
+            # Encoder stem: conv1 -> bn1 -> ReLU (1-Lip) -> pool
+            L_conv1_bn = _lip_seq([enc.conv1, enc.bn1])
+            L_pool = _lip_seq([enc.pool])  # <-- include pool factor
+            L_stem = L_conv1_bn * L_pool
+
+            def L_layer(layer_tuple):
+                return _lip_seq(list(layer_tuple))
+
+            L_l1 = L_layer(enc.layers1) * L_stem
+            L_l2 = L_layer(enc.layers2) * L_l1
+            L_l3 = L_layer(enc.layers3) * L_l2
+            L_l4 = L_layer(enc.layers4) * L_l3
+
+            # Decoder: Up (ConvT) → concat → ConvBlock
+            def up_stage(up_mod, L_prev, L_skip):
+                L_up = _lip_seq([up_mod.up])
+                L_merge = jnp.sqrt((L_up * L_prev) ** 2 + (L_skip**2))
+                L_after = _lip_seq([up_mod.conv])
+                return L_after * L_merge
+
+            L_d1 = up_stage(x.d1, L_l4, L_l3)
+            L_d2 = up_stage(x.d2, L_d1, L_l2)
+            L_d3 = up_stage(x.d3, L_d2, L_l1)
+            L_d4 = up_stage(x.d4, L_d3, L_conv1_bn)  # skip is conv1_out path
+
+            L_out = _lip_seq([x.out_conv])
+            L_total = L_out * L_d4
+
+            if resize_l2_factor is not None:
+                L_total = L_total * jnp.asarray(resize_l2_factor, jnp.float32)
+
+            return add_log(acc, L_total)
+
+        # ---------- Residual blocks (generic hint or explicit Basic/Bottleneck) ----------
+        if hasattr(x, "__residual_hint__"):
+            try:
+                branch_mods, skip_mods, alpha = x.__residual_hint__()
+                L_branch = _lip_seq(branch_mods)
+                L_skip = (
+                    _lip_seq(skip_mods)
+                    if skip_mods is not None
+                    else jnp.array(1.0, jnp.float32)
+                )
+                return add_log(
+                    acc, L_skip + jnp.abs(jnp.asarray(alpha, jnp.float32)) * L_branch
+                )
+            except Exception:
+                pass
+
+        has_basic_fields = all(
+            hasattr(x, f)
+            for f in ("conv1", "bn1", "conv2", "bn2", "alpha", "down_conv", "down_bn")
+        )
+        has_bottleneck_fields = (
+            has_basic_fields and hasattr(x, "conv3") and hasattr(x, "bn3")
+        )
+        if has_basic_fields:
+            branch_parts = (
+                [x.conv1, x.bn1, x.conv2, x.bn2]
+                if not has_bottleneck_fields
+                else [x.conv1, x.bn1, x.conv2, x.bn2, x.conv3, x.bn3]
+            )
+            L_branch = _lip_seq(branch_parts)
+            L_skip = (
+                jnp.array(1.0, jnp.float32)
+                if getattr(x, "down_conv", None) is None
+                else _lip_seq([x.down_conv, x.down_bn])
+            )
+            alpha = jnp.asarray(getattr(x, "alpha", 1.0), jnp.float32)
+            L_block = L_skip + jnp.abs(alpha) * L_branch
+            return add_log(acc, L_block)
+
+        # ---------- Spectral dense parametrizations ----------
+        if name in ("SVDDense", "SpectralDense") and hasattr(x, "s"):
+            alpha = jnp.asarray(getattr(x, "alpha", 1.0), jnp.float32)
+            sig = jnp.max(jnp.abs(x.s)) * jnp.abs(alpha)
+            return add_log(acc, sig)
+
+        # ---------- Exact operator-norm hint for a few safe classes ----------
         if (name in allow_exact_hints_for) and hasattr(x, "__operator_norm_hint__"):
             try:
-                sig = (
-                    x.__operator_norm_hint__()
-                )  # exact operator norm for these classes
+                sig = x.__operator_norm_hint__()
                 return add_log(acc, sig)
             except Exception:
-                pass  # fall through
+                pass
 
-        # SpectralNorm wrapper ~1: skip (already enforced elsewhere)
-        if name == "SpectralNorm":
+        if hasattr(nn, "Dropout") and isinstance(x, nn.Dropout):
+            p = jnp.asarray(getattr(x, "p", 0.0), jnp.float32)  # keep prob q = 1-p
+            q = 1.0 - p
+            infer = bool(
+                getattr(x, "inference", False)
+            )  # this is a Python bool in Equinox
+            s = jnp.where(
+                infer, jnp.array(1.0, jnp.float32), 1.0 / jnp.clip(q, 1e-6, 1.0)
+            )
+            return add_log(acc, s)
+
+        # Common ≤1-Lip activations (as modules). No-op for inline jax.nn.relu etc.
+        if name in ("ReLU", "Tanh", "Softplus", "Identity"):
             return acc
 
-        # ----- Dense (exact SVD) -----
+        # Leaky/PReLU: L = max(1, |slope|)
+        if name in ("LeakyReLU", "PReLU"):
+            slope = float(getattr(x, "negative_slope", getattr(x, "slope", 1.0)))
+            return add_log(acc, jnp.asarray(max(1.0, abs(slope)), jnp.float32))
+
+        # ELU: conservative max(1, alpha)
+        if name == "ELU":
+            alpha = float(getattr(x, "alpha", 1.0))
+            return add_log(acc, jnp.asarray(max(1.0, alpha), jnp.float32))
+
+        # Slightly >1-Lip activations; certified sup|φ'| constants
+        if name in ("SiLU", "Swish"):
+            return add_log(acc, jnp.asarray(1.10, jnp.float32))  # ≈1.0998
+        if name == "GELU":
+            return add_log(acc, jnp.asarray(1.13, jnp.float32))  # ≈1.1289
+        # ---------- Pooling (certified ℓ₂ bounds with overlap) ----------
+        if hasattr(nn, "MaxPool2d") and isinstance(x, nn.MaxPool2d):
+            kH, kW = _as_2tuple(getattr(x, "kernel_size", 2))
+            raw_stride = getattr(x, "stride", (kH, kW))
+            if raw_stride is None:
+                raw_stride = (kH, kW)
+            sH, sW = _as_2tuple(raw_stride)
+            rho = int(math.ceil(kH / max(1, sH))) * int(math.ceil(kW / max(1, sW)))
+            return add_log(acc, jnp.sqrt(jnp.asarray(rho, jnp.float32)))
+
+        if hasattr(nn, "AvgPool2d") and isinstance(x, nn.AvgPool2d):
+            kH, kW = _as_2tuple(getattr(x, "kernel_size", 2))
+            raw_stride = getattr(x, "stride", (kH, kW))
+            if raw_stride is None:
+                raw_stride = (kH, kW)
+            sH, sW = _as_2tuple(raw_stride)
+            rho = int(math.ceil(kH / max(1, sH))) * int(math.ceil(kW / max(1, sW)))
+            denom = max(kH * kW, 1)
+            return add_log(acc, jnp.sqrt(jnp.asarray(rho / denom, jnp.float32)))
+
+        # ---------- SpectralNorm wrappers ----------
+        if name == "SpectralNorm":
+            return acc  # ~1 by construction
+
+        # ---------- Linear (exact) ----------
         if nn is not None and isinstance(x, getattr(nn, "Linear", ())):
             W = x.weight.reshape(x.weight.shape[0], -1)
             sig = jnp.linalg.svd(W, compute_uv=False)[0]
             return add_log(acc, sig)
 
-        # ----- Convolution (eqx.nn.Conv*) -----
+        # ---------- ConvTranspose2d (adjoint norm = forward norm) ----------
+        is_ct = False
+        for ct_name in ("ConvTranspose2d", "ConvTranspose"):
+            if hasattr(nn, ct_name) and isinstance(x, getattr(nn, ct_name)):
+                is_ct = True
+                break
+        if is_ct:
+            num_dims = getattr(x, "num_spatial_dims", x.weight.ndim - 2)
+            s = getattr(x, "stride", getattr(x, "strides", (1,) * num_dims))
+            if isinstance(s, int):
+                s = (s,) * num_dims
+            d = (
+                getattr(x, "rhs_dilation", None)
+                or getattr(x, "dilation", None)
+                or getattr(x, "kernel_dilation", (1,) * num_dims)
+            )
+            if isinstance(d, int):
+                d = (d,) * num_dims
+
+            W = x.weight
+            # If weight is (Cin, Cout, kH, kW), make it (Cout, Cin, kH, kW); otherwise leave it.
+            if W.ndim >= 4 and W.shape[0] < W.shape[1]:
+                Wc = jnp.transpose(W, (1, 0, 2, 3))
+            else:
+                Wc = W
+
+            sig = _conv_sigma(Wc, (int(s[0]), int(s[1])), (int(d[0]), int(d[1])))
+            return add_log(acc, sig)
+
+        # ---------- Convolution ----------
         if nn is not None and isinstance(x, getattr(nn, "Conv", ())):
             num_dims = getattr(x, "num_spatial_dims", x.weight.ndim - 2)
             s = getattr(x, "stride", getattr(x, "strides", (1,) * num_dims))
@@ -949,127 +1187,24 @@ def network_lipschitz_upper(
                 d = (d,) * num_dims
 
             if num_dims != 2:
+                # Proxy (not a certificate). If you need certification for 1D/3D, add a TN generalization.
                 sig = _sigma_conv_kernel_flat(x.weight, method="svd")
-                return add_log(acc, sig)
-
-            sh, sw = int(s[0]), int(s[1])
-            dh, dw = int(d[0]), int(d[1])
-
-            if conv_mode == "circular_fft":
-                if (sh, sw) == (1, 1) and (conv_fft_shape is not None):
-                    sig = _sigma_conv_circular_fft_exact_2d(
-                        x.weight, conv_fft_shape, rhs_dilation=(dh, dw)
-                    )
-                else:
-                    sig = _sigma_conv_TN_upper(
-                        x.weight,
-                        strides=(sh, sw),
-                        rhs_dilation=(dh, dw),
-                        iters=conv_tn_iters,
-                    )
-
-            elif conv_mode == "circular_gram":
-                if (
-                    (sh, sw) == (1, 1)
-                    and (dh, dw) == (1, 1)
-                    and (conv_fft_shape is not None)
-                ):
-                    sig = _sigma_conv_circular_gram_upper_2d(
-                        x.weight, conv_fft_shape, iters=conv_gram_iters
-                    )
-                else:
-                    sig = _sigma_conv_TN_upper(
-                        x.weight,
-                        strides=(sh, sw),
-                        rhs_dilation=(dh, dw),
-                        iters=conv_tn_iters,
-                    )
-
-            elif (conv_mode == "min_tn_circ_embed") and (conv_input_shape is not None):
-                if (sh, sw) == (1, 1) and (dh, dw) == (1, 1):
-                    tn = _sigma_conv_TN_upper(
-                        x.weight,
-                        strides=(sh, sw),
-                        rhs_dilation=(dh, dw),
-                        iters=conv_tn_iters,
-                    )
-                    ce = _sigma_conv_circulant_embed_upper_2d(
-                        x.weight, in_hw=conv_input_shape
-                    )
-                    sig = jnp.minimum(tn, ce)
-                else:
-                    sig = _sigma_conv_TN_upper(
-                        x.weight,
-                        strides=(sh, sw),
-                        rhs_dilation=(dh, dw),
-                        iters=conv_tn_iters,
-                    )
-
-            elif (conv_mode == "circ_plus_lr") and (conv_input_shape is not None):
-                sig = _sigma_conv_circ_plus_lr_upper_2d(
-                    x.weight,
-                    in_hw=conv_input_shape,
-                    strides=(sh, sw),
-                    rhs_dilation=(dh, dw),
+            else:
+                sig = _conv_sigma(
+                    x.weight, (int(s[0]), int(s[1])), (int(d[0]), int(d[1]))
                 )
-
-            else:  # "tn"
-                sig = _sigma_conv_TN_upper(
-                    x.weight,
-                    strides=(sh, sw),
-                    rhs_dilation=(dh, dw),
-                    iters=conv_tn_iters,
-                )
-
             return add_log(acc, sig)
 
-        # ----- Param-SVD convs: treat as conv (certified), ignore hint -----
+        # ---------- Param-SVD convs ----------
         if name in PARAM_SVD_CONV:
             W_mat = x.U @ (x.s[:, None] * x.V.T)
             W = jnp.reshape(W_mat, (x.C_out, x.C_in, x.H_k, x.W_k))
             s = getattr(x, "strides", (1, 1))
             s = (s, s) if isinstance(s, int) else s
-            sh, sw = int(s[0]), int(s[1])
-
-            if (
-                (conv_mode == "circular_fft")
-                and (sh, sw) == (1, 1)
-                and (conv_fft_shape is not None)
-            ):
-                sig = _sigma_conv_circular_fft_exact_2d(
-                    W, conv_fft_shape, rhs_dilation=(1, 1)
-                )
-            elif (
-                (conv_mode == "circular_gram")
-                and (sh, sw) == (1, 1)
-                and (conv_fft_shape is not None)
-            ):
-                sig = _sigma_conv_circular_gram_upper_2d(
-                    W, conv_fft_shape, iters=conv_gram_iters
-                )
-            elif (conv_mode == "min_tn_circ_embed") and (conv_input_shape is not None):
-                if (sh, sw) == (1, 1):
-                    tn = _sigma_conv_TN_upper(
-                        W, strides=(sh, sw), rhs_dilation=(1, 1), iters=conv_tn_iters
-                    )
-                    ce = _sigma_conv_circulant_embed_upper_2d(W, in_hw=conv_input_shape)
-                    sig = jnp.minimum(tn, ce)
-                else:
-                    sig = _sigma_conv_TN_upper(
-                        W, strides=(sh, sw), rhs_dilation=(1, 1), iters=conv_tn_iters
-                    )
-            elif (conv_mode == "circ_plus_lr") and (conv_input_shape is not None):
-                sig = _sigma_conv_circ_plus_lr_upper_2d(
-                    W, in_hw=conv_input_shape, strides=(sh, sw), rhs_dilation=(1, 1)
-                )
-            else:
-                sig = _sigma_conv_TN_upper(
-                    W, strides=(sh, sw), rhs_dilation=(1, 1), iters=conv_tn_iters
-                )
-
+            sig = _conv_sigma(W, (int(s[0]), int(s[1])), (1, 1))
             return add_log(acc, sig)
 
-        # ----- Normalization layers (scale factors) -----
+        # ---------- Normalization layers ----------
         if hasattr(nn, "BatchNorm") and isinstance(x, nn.BatchNorm):
             eps = float(getattr(x, "eps", 1e-5))
             gamma = (
@@ -1080,53 +1215,53 @@ def network_lipschitz_upper(
             if state is not None:
                 if x.mode == "ema" and (x.ema_state_index is not None):
                     _, var = state.get(x.ema_state_index)
-                    s = jnp.max(gamma / jnp.sqrt(var + eps))
-                    return add_log(acc, s)
+                    s_val = jnp.max(gamma / jnp.sqrt(var + eps))
+                    return add_log(acc, s_val)
                 if (
                     x.mode == "batch"
                     and (x.batch_state_index is not None)
                     and (x.batch_counter is not None)
                 ):
                     counter = state.get(x.batch_counter)
-                    hidden_mean, hidden_var = state.get(x.batch_state_index)
+                    _, hidden_var = state.get(x.batch_state_index)
                     scale = jnp.where(counter == 0, 1.0, 1.0 - x.momentum**counter)
                     var = hidden_var / scale
-                    s = jnp.max(gamma / jnp.sqrt(var + eps))
-                    return add_log(acc, s)
-            s = jnp.max(gamma) / jnp.sqrt(jnp.asarray(eps, dtype=jnp.float32))
-            return add_log(acc, s)
+                    s_val = jnp.max(gamma / jnp.sqrt(var + eps))
+                    return add_log(acc, s_val)
+            s_val = jnp.max(gamma) / jnp.sqrt(jnp.asarray(eps, dtype=jnp.float32))
+            return add_log(acc, s_val)
 
         if hasattr(nn, "LayerNorm") and isinstance(x, nn.LayerNorm):
             eps = float(getattr(x, "eps", 1e-5))
             if getattr(x, "use_weight", True) and (x.weight is not None):
-                s = jnp.max(jnp.abs(x.weight)) / jnp.sqrt(
-                    jnp.asarray(eps, dtype=jnp.float32)
+                s_val = jnp.max(jnp.abs(x.weight)) / jnp.sqrt(
+                    jnp.asarray(eps, jnp.float32)
                 )
             else:
-                s = 1.0 / jnp.sqrt(jnp.asarray(eps, dtype=jnp.float32))
-            return add_log(acc, s)
+                s_val = 1.0 / jnp.sqrt(jnp.asarray(eps, jnp.float32))
+            return add_log(acc, s_val)
 
         if hasattr(nn, "GroupNorm") and isinstance(x, nn.GroupNorm):
             eps = float(getattr(x, "eps", 1e-5))
             if getattr(x, "channelwise_affine", True) and (x.weight is not None):
-                s = jnp.max(jnp.abs(x.weight)) / jnp.sqrt(
-                    jnp.asarray(eps, dtype=jnp.float32)
+                s_val = jnp.max(jnp.abs(x.weight)) / jnp.sqrt(
+                    jnp.asarray(eps, jnp.float32)
                 )
             else:
-                s = 1.0 / jnp.sqrt(jnp.asarray(eps, dtype=jnp.float32))
-            return add_log(acc, s)
+                s_val = 1.0 / jnp.sqrt(jnp.asarray(eps, jnp.float32))
+            return add_log(acc, s_val)
 
         if hasattr(nn, "RMSNorm") and isinstance(x, nn.RMSNorm):
             eps = float(getattr(x, "eps", 1e-5))
             if getattr(x, "use_weight", True) and (x.weight is not None):
-                s = jnp.max(jnp.abs(x.weight)) / jnp.sqrt(
-                    jnp.asarray(eps, dtype=jnp.float32)
+                s_val = jnp.max(jnp.abs(x.weight)) / jnp.sqrt(
+                    jnp.asarray(eps, jnp.float32)
                 )
             else:
-                s = 1.0 / jnp.sqrt(jnp.asarray(eps, dtype=jnp.float32))
-            return add_log(acc, s)
+                s_val = 1.0 / jnp.sqrt(jnp.asarray(eps, jnp.float32))
+            return add_log(acc, s_val)
 
-        # ----- Recurse -----
+        # ---------- Recurse ----------
         if isinstance(x, eqx.Module):
             for v in vars(x).values():
                 acc = visit(v, acc)
