@@ -978,52 +978,83 @@ def network_lipschitz_upper(
         "SpectralDense",
     ),
     resize_l2_factor: Optional[float] = None,
-    return_log: bool = False,  # <<< new (useful for debugging / analysis)
+    return_log: bool = False,
 ) -> jnp.ndarray:
     """
     Product upper bound on Lip(f) under ℓ₂ using per-layer/operator norms.
-    Numerically robust: accumulates in float64 log-space and clamps before exp.
-    Grid-aware: carries a per-layer (H,W) when `conv_input_shape` is provided,
-    which tightens CE / C+R bounds.
+
+    • Numerically robust: accumulates in log-space with consistent dtype.
+    • Grid-aware: carries a per-layer (H,W) when `conv_input_shape` is provided,
+      tightening CE / C+R bounds.
     """
-    LOGDT = jnp.float64
+    LOGDT = jnp.float32
     log_sum = jnp.array(0.0, dtype=LOGDT)
     nn = getattr(eqx, "nn", None)
     PARAM_SVD_CONV = {"SpectralConv2d", "AdaptiveSpectralConv2d"}
 
-    # ---- per-layer (H,W) propagation for grid-aware modes ----
+    # Track current input grid for upcoming convs if user passes a size.
     current_hw: Optional[Tuple[int, int]] = (
         tuple(map(int, conv_input_shape)) if conv_input_shape is not None else None
     )
 
     def add_log(acc, sig):
         sig = jnp.asarray(sig, LOGDT)
-        tiny = jnp.finfo(LOGDT).tiny
-        huge = jnp.finfo(LOGDT).max
-        return acc + jnp.log(jnp.clip(sig, tiny, huge))
+        lo = jnp.asarray(1e-12, LOGDT)
+        hi = jnp.asarray(1e12, LOGDT)
+        return acc + jnp.log(jnp.clip(sig, lo, hi))
+
+    # --- (very) simple SAME-like spatial updates (conservative, padding-agnostic) ---
+    def _pool_out_hw(hw, strides):
+        if hw is None:
+            return None
+        H, W = hw
+        sH, sW = strides
+        return (int(math.ceil(H / max(1, sH))), int(math.ceil(W / max(1, sW))))
+
+    def _conv_out_hw(hw, k, s, d, padding="SAME"):
+        # We only need reasonably conservative grid tracking to parametrize CE/C+R;
+        # using SAME-like ceil division is simple and safe.
+        if hw is None:
+            return None
+        H, W = hw
+        sH, sW = s
+        return (int(math.ceil(H / max(1, sH))), int(math.ceil(W / max(1, sW))))
+
+    def _convT_out_hw(hw, k, s, d, padding="SAME", output_padding=(0, 0)):
+        if hw is None:
+            return None
+        H, W = hw
+        sH, sW = s
+        # coarse inverse of conv stride
+        return (int(H * max(1, sH)), int(W * max(1, sW)))
 
     def _conv_sigma(weight, strides, dilations) -> jnp.ndarray:
+        # exact circular via FFT (stride=1; any dilation)
         if conv_mode == "circular_fft":
             if strides == (1, 1) and (conv_fft_shape is not None):
                 return _sigma_conv_circular_fft_exact_2d(
                     weight, conv_fft_shape, rhs_dilation=dilations
                 )
+            # otherwise: certified TN fallback
             return _sigma_conv_TN_upper(
                 weight, strides=strides, rhs_dilation=dilations, iters=conv_tn_iters
             )
 
+        # Gram iteration UB for circular stride=1, dilation=1 only
         if conv_mode == "circular_gram":
-            if strides == (1, 1) and (conv_fft_shape is not None):
+            if (
+                strides == (1, 1)
+                and dilations == (1, 1)
+                and (conv_fft_shape is not None)
+            ):
                 return _sigma_conv_circular_gram_upper_2d(
-                    weight,
-                    conv_fft_shape,
-                    rhs_dilation=dilations,
-                    iters=conv_gram_iters,
+                    weight, conv_fft_shape, iters=conv_gram_iters
                 )
             return _sigma_conv_TN_upper(
                 weight, strides=strides, rhs_dilation=dilations, iters=conv_tn_iters
             )
 
+        # min(TN, circulant-embed) — grid-aware
         if conv_mode == "min_tn_circ_embed" and (current_hw is not None):
             if strides == (1, 1) and dilations == (1, 1):
                 tn = _sigma_conv_TN_upper(
@@ -1035,6 +1066,7 @@ def network_lipschitz_upper(
                 weight, strides=strides, rhs_dilation=dilations, iters=conv_tn_iters
             )
 
+        # C + R (grid-aware)
         if conv_mode == "circ_plus_lr" and (current_hw is not None):
             return _sigma_conv_circ_plus_lr_upper_2d(
                 weight, in_hw=current_hw, strides=strides, rhs_dilation=dilations
@@ -1045,64 +1077,22 @@ def network_lipschitz_upper(
             weight, strides=strides, rhs_dilation=dilations, iters=conv_tn_iters
         )
 
-    def _lip_seq(mods: Sequence[Any]) -> jnp.ndarray:
-        lacc = jnp.array(0.0, dtype=LOGDT)
-        for m in mods:
-            if m is None:
-                continue
-            lacc = visit(m, lacc)
-        return lacc
-
     def visit(x, acc):
-        nonlocal current_hw  # we advance it as we traverse the graph
+        nonlocal current_hw
         name = type(x).__name__
 
-        # ---------- UNet backbone (kept from your original; grid updates flow through visit) ----------
-        if (
-            name == "UNetBackbone"
-            and hasattr(x, "encoder")
-            and all(hasattr(x, a) for a in ("d1", "d2", "d3", "d4", "out_conv"))
-        ):
-            enc = x.encoder
-            L_conv1_bn = _lip_seq([enc.conv1, enc.bn1])
-            acc = acc + L_conv1_bn
-            acc = visit(enc.pool, acc)  # pool factor + grid update
-
-            def L_layer(layer_tuple):
-                return _lip_seq(list(layer_tuple))
-
-            acc = acc + L_layer(enc.layers1)
-            acc = acc + L_layer(enc.layers2)
-            acc = acc + L_layer(enc.layers3)
-            acc = acc + L_layer(enc.layers4)
-
-            # Decoder stages (up -> concat -> conv)
-            def up_stage(up_mod):
-                l_before = visit(up_mod.up, jnp.array(0.0, dtype=LOGDT))
-                l_after = visit(up_mod.conv, jnp.array(0.0, dtype=LOGDT))
-                # concat: sqrt(a^2 + b^2); we just add log after computing both branches upstream
-                return l_before + l_after
-
-            acc = acc + up_stage(x.d1)
-            acc = acc + up_stage(x.d2)
-            acc = acc + up_stage(x.d3)
-            acc = acc + up_stage(x.d4)
-            acc = visit(x.out_conv, acc)
-
-            if resize_l2_factor is not None:
-                acc = add_log(acc, jnp.asarray(resize_l2_factor, LOGDT))
-            return acc
-
-        # ---------- Residual blocks via explicit hints ----------
+        # ---------- Residual blocks via explicit hint ----------
         if hasattr(x, "__residual_hint__"):
             try:
                 branch_mods, skip_mods, alpha = x.__residual_hint__()
-                l_branch = _lip_seq(branch_mods)
-                l_skip = (
-                    _lip_seq(skip_mods)
-                    if skip_mods is not None
-                    else jnp.array(0.0, dtype=LOGDT)
-                )
+                l_branch = jnp.array(0.0, dtype=LOGDT)
+                for m in branch_mods:
+                    l_branch = visit(m, l_branch)
+                l_skip = jnp.array(0.0, dtype=LOGDT)
+                if skip_mods is not None:
+                    for m in skip_mods:
+                        l_skip = visit(m, l_skip)
+                # Lip ≤ Lip(skip) + |α| Lip(branch)
                 return add_log(
                     acc,
                     jnp.exp(l_skip)
@@ -1111,13 +1101,13 @@ def network_lipschitz_upper(
             except Exception:
                 pass
 
-        # ---------- Spectral dense parametrizations ----------
+        # ---------- Spectral dense parametrizations (exact) ----------
         if name in ("SVDDense", "SpectralDense") and hasattr(x, "s"):
             alpha = jnp.asarray(getattr(x, "alpha", 1.0), LOGDT)
             sig = jnp.max(jnp.abs(x.s)) * jnp.abs(alpha)
             return add_log(acc, sig)
 
-        # Exact operator-norm hint for a few safe classes
+        # ---------- Exact per-layer operator-norm hint (e.g., RFFTCirculant2D) ----------
         if (name in allow_exact_hints_for) and hasattr(x, "__operator_norm_hint__"):
             try:
                 sig = x.__operator_norm_hint__()
@@ -1125,15 +1115,15 @@ def network_lipschitz_upper(
             except Exception:
                 pass
 
-        # Dropout
+        # ---------- Dropout ----------
         if hasattr(nn, "Dropout") and isinstance(x, nn.Dropout):
             p = jnp.asarray(getattr(x, "p", 0.0), LOGDT)
-            q = 1.0 - p
             infer = bool(getattr(x, "inference", False))
+            q = 1.0 - p
             s = jnp.where(infer, jnp.array(1.0, LOGDT), 1.0 / jnp.clip(q, 1e-6, 1.0))
             return add_log(acc, s)
 
-        # 1-Lip activations (module forms)
+        # ---------- Activations ----------
         if name in ("ReLU", "Tanh", "Softplus", "Identity"):
             return acc
         if name in ("LeakyReLU", "PReLU"):
@@ -1147,37 +1137,42 @@ def network_lipschitz_upper(
         if name == "GELU":
             return add_log(acc, jnp.asarray(1.13, LOGDT))
 
-        # Pooling (update grid too)
+        # ---------- Pooling (ℓ2 bounds with overlap) + grid update ----------
         if hasattr(nn, "MaxPool2d") and isinstance(x, nn.MaxPool2d):
             kH, kW = _as_2tuple(getattr(x, "kernel_size", 2))
-            raw_stride = getattr(x, "stride", (kH, kW)) or (kH, kW)
+            raw_stride = getattr(x, "stride", (kH, kW))
+            if raw_stride is None:
+                raw_stride = (kH, kW)
             sH, sW = _as_2tuple(raw_stride)
             rho = int(math.ceil(kH / max(1, sH))) * int(math.ceil(kW / max(1, sW)))
             acc = add_log(acc, jnp.sqrt(jnp.asarray(rho, LOGDT)))
-            current_hw = _conv_out_hw(current_hw, (kH, kW), (sH, sW), (1, 1), "SAME")
+            # grid (SAME-like)
+            current_hw = _pool_out_hw(current_hw, (sH, sW))
             return acc
 
         if hasattr(nn, "AvgPool2d") and isinstance(x, nn.AvgPool2d):
             kH, kW = _as_2tuple(getattr(x, "kernel_size", 2))
-            raw_stride = getattr(x, "stride", (kH, kW)) or (kH, kW)
+            raw_stride = getattr(x, "stride", (kH, kW))
+            if raw_stride is None:
+                raw_stride = (kH, kW)
             sH, sW = _as_2tuple(raw_stride)
             rho = int(math.ceil(kH / max(1, sH))) * int(math.ceil(kW / max(1, sW)))
             denom = max(kH * kW, 1)
             acc = add_log(acc, jnp.sqrt(jnp.asarray(rho / denom, LOGDT)))
-            current_hw = _conv_out_hw(current_hw, (kH, kW), (sH, sW), (1, 1), "SAME")
+            current_hw = _pool_out_hw(current_hw, (sH, sW))
             return acc
 
-        # SpectralNorm wrapper
+        # ---------- SpectralNorm wrapper ----------
         if name == "SpectralNorm":
             return acc
 
-        # Linear (exact)
+        # ---------- Linear (exact) ----------
         if nn is not None and isinstance(x, getattr(nn, "Linear", ())):
             W = x.weight.reshape(x.weight.shape[0], -1)
             sig = jnp.linalg.svd(W, compute_uv=False)[0]
             return add_log(acc, sig)
 
-        # ConvTranspose (adjoint norm = forward norm) + grid update
+        # ---------- ConvTranspose2d ----------
         is_ct = False
         for ct_name in ("ConvTranspose2d", "ConvTranspose"):
             if hasattr(nn, ct_name) and isinstance(x, getattr(nn, ct_name)):
@@ -1203,7 +1198,7 @@ def network_lipschitz_upper(
             sig = _conv_sigma(Wc, (int(s[0]), int(s[1])), (int(d[0]), int(d[1])))
             acc = add_log(acc, sig)
 
-            # advance grid (convT output size)
+            # grid update (coarse)
             kH, kW = int(W.shape[-2]), int(W.shape[-1])
             padding = getattr(x, "padding", "SAME")
             out_pad = getattr(x, "output_padding", (0, 0))
@@ -1218,7 +1213,7 @@ def network_lipschitz_upper(
             )
             return acc
 
-        # Convolution + grid update
+        # ---------- Convolution ----------
         if nn is not None and isinstance(x, getattr(nn, "Conv", ())):
             num_dims = getattr(x, "num_spatial_dims", x.weight.ndim - 2)
             s = getattr(x, "stride", getattr(x, "strides", (1,) * num_dims))
@@ -1238,7 +1233,7 @@ def network_lipschitz_upper(
             sig = _conv_sigma(x.weight, (int(s[0]), int(s[1])), (int(d[0]), int(d[1])))
             acc = add_log(acc, sig)
 
-            # advance grid
+            # grid update (SAME-like)
             kH, kW = int(x.weight.shape[-2]), int(x.weight.shape[-1])
             padding = getattr(x, "padding", "SAME")
             current_hw = _conv_out_hw(
@@ -1250,7 +1245,7 @@ def network_lipschitz_upper(
             )
             return acc
 
-        # Param-SVD convs → reconstruct kernel then treat as conv
+        # ---------- Param-SVD convs (reconstruct kernel) ----------
         if name in PARAM_SVD_CONV:
             W_mat = x.U @ (x.s[:, None] * x.V.T)
             W = jnp.reshape(W_mat, (x.C_out, x.C_in, x.H_k, x.W_k))
@@ -1259,7 +1254,7 @@ def network_lipschitz_upper(
             sig = _conv_sigma(W, (int(s[0]), int(s[1])), (1, 1))
             acc = add_log(acc, sig)
 
-            # advance grid
+            # grid update
             kH, kW = int(W.shape[-2]), int(W.shape[-1])
             padding = getattr(x, "padding", "SAME")
             current_hw = _conv_out_hw(
@@ -1267,13 +1262,13 @@ def network_lipschitz_upper(
             )
             return acc
 
-        # Normalization layers (unchanged logic, still BN-aware)
+        # ---------- Normalization layers ----------
         if hasattr(nn, "BatchNorm") and isinstance(x, nn.BatchNorm):
-            eps = float(getattr(x, "eps", 1e-5))
+            eps = jnp.asarray(getattr(x, "eps", 1e-5), LOGDT)
             gamma = (
                 jnp.abs(x.weight)
                 if getattr(x, "channelwise_affine", True) and (x.weight is not None)
-                else jnp.array(1.0, dtype=jnp.float32)
+                else jnp.array(1.0, dtype=LOGDT)
             )
             if state is not None:
                 if x.mode == "ema" and (x.ema_state_index is not None):
@@ -1291,23 +1286,21 @@ def network_lipschitz_upper(
                     var = hidden_var / scale
                     s_val = jnp.max(gamma / jnp.sqrt(var + eps))
                     return add_log(acc, s_val)
-            s_val = jnp.max(gamma) / jnp.sqrt(jnp.asarray(eps, jnp.float32))
+            s_val = jnp.max(gamma) / jnp.sqrt(eps)
             return add_log(acc, s_val)
 
         for name_norm in ("LayerNorm", "GroupNorm", "RMSNorm"):
             if hasattr(nn, name_norm) and isinstance(x, getattr(nn, name_norm)):
-                eps = float(getattr(x, "eps", 1e-5))
+                eps = jnp.asarray(getattr(x, "eps", 1e-5), LOGDT)
                 if getattr(x, "use_weight", True) and (
                     getattr(x, "weight", None) is not None
                 ):
-                    s_val = jnp.max(jnp.abs(x.weight)) / jnp.sqrt(
-                        jnp.asarray(eps, jnp.float32)
-                    )
+                    s_val = jnp.max(jnp.abs(x.weight)) / jnp.sqrt(eps)
                 else:
-                    s_val = 1.0 / jnp.sqrt(jnp.asarray(eps, jnp.float32))
+                    s_val = 1.0 / jnp.sqrt(eps)
                 return add_log(acc, s_val)
 
-        # Recurse
+        # ---------- Recurse ----------
         if isinstance(x, eqx.Module):
             for v in vars(x).values():
                 acc = visit(v, acc)
@@ -1323,13 +1316,14 @@ def network_lipschitz_upper(
 
         return acc
 
-    out_log = visit(model, log_sum)
+    ls = visit(model, log_sum)
     if return_log:
-        return out_log
-
-    MAXLOG = jnp.log(jnp.finfo(LOGDT).max) - 1.0
-    L = jnp.where(out_log > MAXLOG, jnp.inf, jnp.exp(out_log))
-    return L.astype(jnp.float32)
+        return ls
+    max_log = jnp.log(jnp.asarray(jnp.finfo(LOGDT).max, LOGDT)) - jnp.asarray(
+        1.0, LOGDT
+    )
+    ls = jnp.minimum(ls, max_log)
+    return jnp.exp(ls)
 
 
 def lip_product_penalty(
