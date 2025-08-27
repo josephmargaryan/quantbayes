@@ -452,8 +452,9 @@ def pretty_print_diagnostics(d: Dict[str, Any]) -> None:
                 print(f"{key}: {d[key]:.4g}")
 
     if "norm_margins_mean" in d:
+        # scientific notation so tiny values don't print as 0.000
         print(
-            "normalized margins: mean={:.3f}, std={:.3f}, q05={:.4g}, q50={:.3f}, q95={:.3f}".format(
+            "normalized margins: mean={:.3e}, std={:.3e}, q05={:.3e}, q50={:.3e}, q95={:.3e}".format(
                 d["norm_margins_mean"],
                 d["norm_margins_std"],
                 d["norm_margins_q05"],
@@ -472,7 +473,6 @@ def pretty_print_diagnostics(d: Dict[str, Any]) -> None:
             )
         )
 
-    # Top-σ layers (certified first)
     cert = d.get("cert_only_sigmas", [])
     emp = d.get("empirical_sigmas", [])
 

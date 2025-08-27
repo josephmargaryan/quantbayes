@@ -7,9 +7,10 @@ from quantbayes.stochax.utils.regularizers import network_lipschitz_upper
 def make_lipschitz_upper_fn(
     *,
     conv_mode: Literal[
-        "tn", "circular_fft", "min_tn_circ_embed", "circ_plus_lr"
+        "tn", "circular_fft", "circular_gram", "min_tn_circ_embed", "circ_plus_lr"
     ] = "tn",
     conv_tn_iters: int = 8,
+    conv_gram_iters: int = 5,  # <<< NEW: expose Gram-iteration steps
     conv_fft_shape: Optional[Tuple[int, int]] = None,
     conv_input_shape: Optional[Tuple[int, int]] = None,
     allow_exact_hints_for: Tuple[str, ...] = (
@@ -19,7 +20,17 @@ def make_lipschitz_upper_fn(
         "SpectralDense",
     ),
 ) -> Callable[[object, Optional[object]], jnp.ndarray]:
-    """JIT'd L(model, state) with a robust fallback for spectral-dense models."""
+    """Builds a JIT'd callable L(model, state) that returns a certified global
+    Lipschitz upper bound under ℓ2, using the selected convolution certificate.
+
+    Notes
+    -----
+    • Pass `conv_fft_shape=(H,W)` only for exact circular models.
+    • Pass `conv_input_shape=(H,W)` for grid-aware certificates
+      ("min_tn_circ_embed", "circ_plus_lr"); the network routine will propagate
+      (H,W) layer-by-layer to tighten the bound.
+    • BN-aware: the `state` argument is forwarded so BatchNorm uses running stats.
+    """
 
     def _L_params(params, static, state):
         m = eqx.combine(params, static)
@@ -28,6 +39,7 @@ def make_lipschitz_upper_fn(
             state=state,  # <-- critical for BN
             conv_mode=conv_mode,
             conv_tn_iters=conv_tn_iters,
+            conv_gram_iters=conv_gram_iters,  # <<< NEW
             conv_fft_shape=conv_fft_shape,
             conv_input_shape=conv_input_shape,
             allow_exact_hints_for=allow_exact_hints_for,
@@ -65,6 +77,7 @@ def make_lipschitz_upper_fn(
                 state=state,  # <-- also thread here
                 conv_mode=conv_mode,
                 conv_tn_iters=conv_tn_iters,
+                conv_gram_iters=conv_gram_iters,  # <<< NEW
                 conv_fft_shape=conv_fft_shape,
                 conv_input_shape=conv_input_shape,
                 allow_exact_hints_for=allow_exact_hints_for,
