@@ -671,3 +671,97 @@ def compute_and_save_diagnostics(*args, save_path: Optional[Union[str, os.PathLi
     if save_path is not None:
         save_diagnostics_npz(d, save_path, meta=save_meta)
     return d
+
+# =================================
+# NEW: overlay plotter (multi-runs)
+# =================================
+
+def plot_margin_overlays(
+    ds: Sequence[Dict[str, Any]],
+    labels: Sequence[str],
+    *,
+    which: Tuple[str, ...] = ("normalized",),  # default to the most comparable view
+    bins: int = 60,
+    show: bool = True,
+):
+    """
+    Overlay multiple margin distributions (and their CDFs) in a single figure.
+
+    Parameters
+    ----------
+    ds : list of diagnostics dicts            (e.g., from compute_diagnostics or load_diagnostics_npz)
+    labels : list of legend labels            (same length as ds)
+    which : subset of {"raw","normalized","radius"}; multiple -> stacked rows
+    bins : histogram bins
+    show : call plt.show()
+
+    Notes
+    -----
+    • For fair overlays on 'normalized' margins, ensure each diagnostics used the
+      *same* certified global bound construction (same conv_mode / input_shape).
+    • This function is additive and does not affect existing APIs.
+    """
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    assert len(ds) == len(labels), "labels must match number of diagnostics"
+
+    # Map selector -> (key, pretty title, x-label)
+    sel = {
+        "raw":        ("_margins_array",      "Margins",                         "margin"),
+        "normalized": ("_norm_margins_array", "Normalized margins",              "normalized margin"),
+        "radius":     ("_radii_array",        "Certified radius (lower bound)", "radius"),
+    }
+    which = tuple(w for w in which if w in sel)
+    if not which:
+        raise ValueError("`which` must include at least one of: 'raw','normalized','radius'.")
+
+    rows = len(which)
+    fig, axes = plt.subplots(rows, 2, figsize=(10, 3.5 * rows))
+    if rows == 1:
+        axes = np.array([axes], dtype=object)
+
+    for i, w in enumerate(which):
+        key, title, xlabel = sel[w]
+        # Gather arrays for this view
+        arrs = []
+        for d in ds:
+            a = d.get(key, None)
+            if a is None or (hasattr(a, "size") and a.size == 0):
+                arrs.append(np.asarray([]))
+            else:
+                arrs.append(np.asarray(a).ravel())
+
+        # Histogram overlay
+        axh = axes[i, 0]
+        common_min = min((a.min() for a in arrs if a.size), default=0.0)
+        common_max = max((a.max() for a in arrs if a.size), default=1.0)
+        edges = np.linspace(common_min, common_max, bins + 1)
+
+        for a, lab in zip(arrs, labels):
+            if a.size:
+                axh.hist(a, bins=edges, density=True, histtype="step", label=lab)
+        axh.axvline(0.0, linestyle="--")
+        axh.set_title(title + " — overlay")
+        axh.set_xlabel(xlabel)
+        axh.set_ylabel("density")
+        axh.legend()
+
+        # CDF overlay
+        axc = axes[i, 1]
+        xs = np.linspace(common_min, common_max, 512)
+        for a, lab in zip(arrs, labels):
+            if a.size:
+                cdf = np.array([(a <= x).mean() for x in xs])
+                axc.plot(xs, cdf, label=lab)
+        axc.axvline(0.0, linestyle="--")
+        axc.set_ylim(0, 1)
+        axc.set_title("CDF — overlay")
+        axc.set_xlabel(xlabel)
+        axc.set_ylabel("CDF")
+        axc.legend()
+
+    plt.tight_layout()
+    if show:
+        plt.show()
+    return fig, axes
