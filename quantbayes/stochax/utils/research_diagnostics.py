@@ -1,11 +1,17 @@
 # quantbayes/stochax/diagnostics/research_diagnostic.py
 from __future__ import annotations
+import os
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 __all__ = [
     "plot_margin_distribution",
+    "plot_margin_overlays",          # NEW
     "pretty_print_diagnostics",
     "compute_diagnostics",
+    "compute_and_save_diagnostics",  # NEW
+    "save_diagnostics_npz",          # NEW
+    "load_diagnostics_npz",          # NEW
 ]
 
 import math
@@ -18,30 +24,50 @@ import equinox as eqx
 
 
 """
-Example usage
--------------
+Example Usage:
+
 from functools import partial
-from quantbayes.stochax.utils.regularizers import global_spectral_norm_penalty
-from quantbayes.stochax.predict import predict  # optional but recommended
+from quantbayes.stochax.diagnostics.research_diagnostic import (
+    compute_and_save_diagnostics,
+    load_diagnostics_npz,
+    plot_margin_overlays,
+)
+from quantbayes.stochax import predict
+from quantbayes.stochax.utils.lip_upper import make_lipschitz_upper_fn
 
-L_fn = partial(
-    global_spectral_norm_penalty,
-    conv_mode="min_tn_circ_embed",
+# Pick one certified global bound (keep it the same across runs)
+L_fn = make_lipschitz_upper_fn(
+    conv_mode="circ_plus_lr",    # or "tn", but be consistent
     conv_tn_iters=8,
-    conv_input_shape=(32, 32),   # CIFAR
+    conv_input_shape=(32, 32),
 )
 
-d = compute_diagnostics(
-    best_model,
-    best_state,
-    margin_subset=(Xs, Ys),      # to compute margins/normalized margins/radii
-    predict_fn=predict,          # <— pass your library's predict to avoid circularity
-    key=key,
-    compute_empirical=False,     # keep certified-only unless you want quick estimates
-    lipschitz_upper_bound_fn=L_fn,  # <— your conv-aware global bound (preferred)
+# Train/evaluate normally; then:
+d_clean = compute_and_save_diagnostics(
+    model_clean, state_clean,
+    margin_subset=(X_val_clean, y_val_clean),
+    predict_fn=predict,
+    lipschitz_upper_bound_fn=L_fn,
+    save_path="diag_cifar10_clean.npz",
+    save_meta={"dataset": "CIFAR10", "labels": "clean"},
 )
-pretty_print_diagnostics(d)
-plot_margin_distribution(d)
+
+d_rand = compute_and_save_diagnostics(
+    model_rand, state_rand,
+    margin_subset=(X_val_rand, y_val_rand),
+    predict_fn=predict,
+    lipschitz_upper_bound_fn=L_fn,
+    save_path="diag_cifar10_rand.npz",
+    save_meta={"dataset": "CIFAR10", "labels": "random"},
+)
+
+# Later (or in another script):
+D1 = load_diagnostics_npz("diag_cifar10_clean.npz")
+D2 = load_diagnostics_npz("diag_cifar10_rand.npz")
+plot_margin_overlays([D1, D2],
+                     labels=["CIFAR-10", "CIFAR-10 (random labels)"],
+                     which=("normalized",))   # or ("raw","normalized")
+
 """
 
 
@@ -572,3 +598,76 @@ def plot_margin_distribution(
     if show:
         plt.show()
     return fig, axes
+
+# ================================
+# NEW: lightweight persistence API
+# ================================
+
+def save_diagnostics_npz(d: Dict[str, Any], path: Union[str, os.PathLike], meta: Optional[Dict[str, Any]] = None) -> None:
+    """Persist arrays + a few key scalars to a .npz (non-breaking helper)."""
+    import numpy as _np
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    pack = {}
+    # Arrays (use empty arrays if missing so files are uniform)
+    for k in ("_margins_array", "_norm_margins_array", "_radii_array", "_logits_array"):
+        v = d.get(k, None)
+        pack[k] = _np.asarray(v) if v is not None else _np.asarray([])
+
+    # Scalars used for context / reproducibility
+    for k in (
+        "layer_coverage_pct",
+        "n_layers_covered",
+        "serial_prod_sigma_bound",
+        "skipaware_lipschitz_bound",
+        "margins_mean", "margins_std", "margins_q05", "margins_q50", "margins_q95",
+        "norm_margins_mean", "norm_margins_std", "norm_margins_q05", "norm_margins_q50", "norm_margins_q95",
+        "cert_radius_lb_mean", "cert_radius_lb_q05", "cert_radius_lb_q50", "cert_radius_lb_q95",
+    ):
+        if k in d and d[k] is not None:
+            pack[k] = _np.array(d[k])
+
+    # Optional metadata (turn dict into a tiny JSON string)
+    if meta is None:
+        meta = {}
+    try:
+        import json as _json
+        pack["_meta_json"] = _np.array(_json.dumps(meta))
+    except Exception:
+        pass
+
+    _np.savez_compressed(path, **pack)
+
+
+def load_diagnostics_npz(path: Union[str, os.PathLike]) -> Dict[str, Any]:
+    """Load a previously saved diagnostics .npz into a dict using the same keys."""
+    import numpy as _np
+    out: Dict[str, Any] = {}
+    with _np.load(path, allow_pickle=False) as z:
+        for k in z.files:
+            out[k] = z[k]
+    # Be forgiving: promote numpy scalars to Python floats
+    for k, v in list(out.items()):
+        if isinstance(v, _np.ndarray) and v.ndim == 0:
+            try:
+                out[k] = float(v)
+            except Exception:
+                pass
+    # For convenience, also mirror arrays under the original keys (if present)
+    for k in ("_margins_array", "_norm_margins_array", "_radii_array", "_logits_array"):
+        out.setdefault(k, out.get(k, None))
+    return out
+
+
+def compute_and_save_diagnostics(*args, save_path: Optional[Union[str, os.PathLike]] = None,
+                                 save_meta: Optional[Dict[str, Any]] = None, **kwargs) -> Dict[str, Any]:
+    """
+    Thin wrapper: compute_diagnostics(...) then optionally save to .npz.
+    This avoids changing compute_diagnostics' signature.
+    """
+    d = compute_diagnostics(*args, **kwargs)
+    if save_path is not None:
+        save_diagnostics_npz(d, save_path, meta=save_meta)
+    return d
