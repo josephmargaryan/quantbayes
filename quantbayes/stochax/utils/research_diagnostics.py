@@ -6,12 +6,12 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 __all__ = [
     "plot_margin_distribution",
-    "plot_margin_overlays",          # NEW
+    "plot_margin_overlays",  # NEW
     "pretty_print_diagnostics",
     "compute_diagnostics",
     "compute_and_save_diagnostics",  # NEW
-    "save_diagnostics_npz",          # NEW
-    "load_diagnostics_npz",          # NEW
+    "save_diagnostics_npz",  # NEW
+    "load_diagnostics_npz",  # NEW
 ]
 
 import math
@@ -599,11 +599,17 @@ def plot_margin_distribution(
         plt.show()
     return fig, axes
 
+
 # ================================
 # NEW: lightweight persistence API
 # ================================
 
-def save_diagnostics_npz(d: Dict[str, Any], path: Union[str, os.PathLike], meta: Optional[Dict[str, Any]] = None) -> None:
+
+def save_diagnostics_npz(
+    d: Dict[str, Any],
+    path: Union[str, os.PathLike],
+    meta: Optional[Dict[str, Any]] = None,
+) -> None:
     """Persist arrays + a few key scalars to a .npz (non-breaking helper)."""
     import numpy as _np
 
@@ -622,9 +628,20 @@ def save_diagnostics_npz(d: Dict[str, Any], path: Union[str, os.PathLike], meta:
         "n_layers_covered",
         "serial_prod_sigma_bound",
         "skipaware_lipschitz_bound",
-        "margins_mean", "margins_std", "margins_q05", "margins_q50", "margins_q95",
-        "norm_margins_mean", "norm_margins_std", "norm_margins_q05", "norm_margins_q50", "norm_margins_q95",
-        "cert_radius_lb_mean", "cert_radius_lb_q05", "cert_radius_lb_q50", "cert_radius_lb_q95",
+        "margins_mean",
+        "margins_std",
+        "margins_q05",
+        "margins_q50",
+        "margins_q95",
+        "norm_margins_mean",
+        "norm_margins_std",
+        "norm_margins_q05",
+        "norm_margins_q50",
+        "norm_margins_q95",
+        "cert_radius_lb_mean",
+        "cert_radius_lb_q05",
+        "cert_radius_lb_q50",
+        "cert_radius_lb_q95",
     ):
         if k in d and d[k] is not None:
             pack[k] = _np.array(d[k])
@@ -634,6 +651,7 @@ def save_diagnostics_npz(d: Dict[str, Any], path: Union[str, os.PathLike], meta:
         meta = {}
     try:
         import json as _json
+
         pack["_meta_json"] = _np.array(_json.dumps(meta))
     except Exception:
         pass
@@ -644,6 +662,7 @@ def save_diagnostics_npz(d: Dict[str, Any], path: Union[str, os.PathLike], meta:
 def load_diagnostics_npz(path: Union[str, os.PathLike]) -> Dict[str, Any]:
     """Load a previously saved diagnostics .npz into a dict using the same keys."""
     import numpy as _np
+
     out: Dict[str, Any] = {}
     with _np.load(path, allow_pickle=False) as z:
         for k in z.files:
@@ -661,8 +680,12 @@ def load_diagnostics_npz(path: Union[str, os.PathLike]) -> Dict[str, Any]:
     return out
 
 
-def compute_and_save_diagnostics(*args, save_path: Optional[Union[str, os.PathLike]] = None,
-                                 save_meta: Optional[Dict[str, Any]] = None, **kwargs) -> Dict[str, Any]:
+def compute_and_save_diagnostics(
+    *args,
+    save_path: Optional[Union[str, os.PathLike]] = None,
+    save_meta: Optional[Dict[str, Any]] = None,
+    **kwargs,
+) -> Dict[str, Any]:
     """
     Thin wrapper: compute_diagnostics(...) then optionally save to .npz.
     This avoids changing compute_diagnostics' signature.
@@ -672,9 +695,11 @@ def compute_and_save_diagnostics(*args, save_path: Optional[Union[str, os.PathLi
         save_diagnostics_npz(d, save_path, meta=save_meta)
     return d
 
+
 # =================================
 # NEW: overlay plotter (multi-runs)
 # =================================
+
 
 def plot_margin_overlays(
     ds: Sequence[Dict[str, Any]],
@@ -708,13 +733,19 @@ def plot_margin_overlays(
 
     # Map selector -> (key, pretty title, x-label)
     sel = {
-        "raw":        ("_margins_array",      "Margins",                         "margin"),
-        "normalized": ("_norm_margins_array", "Normalized margins",              "normalized margin"),
-        "radius":     ("_radii_array",        "Certified radius (lower bound)", "radius"),
+        "raw": ("_margins_array", "Margins", "margin"),
+        "normalized": (
+            "_norm_margins_array",
+            "Normalized margins",
+            "normalized margin",
+        ),
+        "radius": ("_radii_array", "Certified radius (lower bound)", "radius"),
     }
     which = tuple(w for w in which if w in sel)
     if not which:
-        raise ValueError("`which` must include at least one of: 'raw','normalized','radius'.")
+        raise ValueError(
+            "`which` must include at least one of: 'raw','normalized','radius'."
+        )
 
     rows = len(which)
     fig, axes = plt.subplots(rows, 2, figsize=(10, 3.5 * rows))

@@ -24,7 +24,7 @@ from .spectral_layers import (
     SVDDense,
     GraphChebSobolev,
 )
-from .spectral_norm_spectral import SpectralNormSpectral
+from .specnorm import SpectralNorm
 
 __all__ = [
     # Custom layers
@@ -48,5 +48,5 @@ __all__ = [
     "SpectralTokenMixer",
     "SVDDense",
     "GraphChebSobolev",
-    "SpectralNormSpectral",
+    "SpectralNorm",
 ]
