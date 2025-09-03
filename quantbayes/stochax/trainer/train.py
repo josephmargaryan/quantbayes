@@ -261,6 +261,147 @@ def make_tversky_loss(alpha=0.3, beta=0.7, gamma=1.0):
     return make_loss_fn(per_example, expect_num_classes=False)
 
 
+def make_lmt_multiclass_loss(
+    *,
+    eps: float,
+    alpha: float = 1.0,
+    head_weights: Sequence[float] | None = None,
+    conv_mode: Literal[
+        "tn", "circular_fft", "circular_gram", "min_tn_circ_embed", "circ_plus_lr"
+    ] = "tn",
+    conv_tn_iters: int = 8,
+    conv_gram_iters: int = 5,
+    conv_fft_shape: Optional[Tuple[int, int]] = None,
+    conv_input_shape: Optional[Tuple[int, int]] = None,
+    stop_grad_L: bool = True,
+):
+    """
+    LMT for softmax CE:
+      z'_y = z_y - κ,   z'_j = z_j + κ (j≠y),  κ = α·ε·L_hat(model,state)
+
+    Notes:
+      • L_hat is BN/residual/concat/pooling-aware via certified global bound.
+      • For circular stride=1, use conv_mode="circular_fft" with conv_fft_shape=(H,W).
+      • For zero/reflect padding on a known grid, use "circ_plus_lr" or "min_tn_circ_embed"
+        with conv_input_shape=(H,W).
+    """
+
+    @eqx.filter_jit
+    def loss_fn(model, state, x, y, key):
+        L_hat = network_lipschitz_upper(
+            model,
+            state=state,
+            conv_mode=conv_mode,
+            conv_tn_iters=conv_tn_iters,
+            conv_gram_iters=conv_gram_iters,
+            conv_fft_shape=conv_fft_shape,
+            conv_input_shape=conv_input_shape,
+        )
+        if stop_grad_L:
+            L_hat = jax.lax.stop_gradient(L_hat)
+
+        kappa = jnp.asarray(alpha * eps, jnp.float32) * jnp.clip(L_hat, 1e-12, 1e12)
+
+        keys = jax.random.split(key, x.shape[0])
+        logits_or_list, state = jax.vmap(
+            model, in_axes=(0, 0, None), out_axes=(0, None), axis_name="batch"
+        )(x, keys, state)
+        preds = (
+            logits_or_list
+            if isinstance(logits_or_list, (list, tuple))
+            else [logits_or_list]
+        )
+
+        if head_weights is None:
+            w = [1.0 / len(preds)] * len(preds)
+        else:
+            w = jnp.asarray(head_weights, dtype=jnp.float32)
+            w = w / w.sum()
+
+        total = 0.0
+        for logit, weight in zip(preds, w):
+            K = logit.shape[-1]
+            assert K > 1, "LMT multiclass expects class dimension."
+            onehot = jax.nn.one_hot(y, num_classes=K, dtype=logit.dtype)
+            # z' = z + κ*(1 - 2·onehot)  ≡  z_y - κ, z_j + κ (j≠y)
+            logit_adj = logit + kappa[..., None] * (1.0 - 2.0 * onehot)
+            per_ex = optax.softmax_cross_entropy_with_integer_labels(logit_adj, y)
+            B = per_ex.shape[0]
+            total = total + weight * per_ex.reshape((B, -1)).mean(axis=1).mean()
+
+        return total, state
+
+    return loss_fn
+
+
+def make_lmt_binary_loss(
+    *,
+    eps: float,
+    alpha: float = 1.0,
+    head_weights: Sequence[float] | None = None,
+    conv_mode: Literal[
+        "tn", "circular_fft", "circular_gram", "min_tn_circ_embed", "circ_plus_lr"
+    ] = "tn",
+    conv_tn_iters: int = 8,
+    conv_gram_iters: int = 5,
+    conv_fft_shape: Optional[Tuple[int, int]] = None,
+    conv_input_shape: Optional[Tuple[int, int]] = None,
+    stop_grad_L: bool = True,
+):
+    """
+    LMT for sigmoid BCE with one logit per location:
+      s = 2y-1 ∈ {-1,+1},   z' = z - (2κ)·s,   κ = α·ε·L_hat(model,state)
+    """
+
+    @eqx.filter_jit
+    def loss_fn(model, state, x, y, key):
+        L_hat = network_lipschitz_upper(
+            model,
+            state=state,
+            conv_mode=conv_mode,
+            conv_tn_iters=conv_tn_iters,
+            conv_gram_iters=conv_gram_iters,
+            conv_fft_shape=conv_fft_shape,
+            conv_input_shape=conv_input_shape,
+        )
+        if stop_grad_L:
+            L_hat = jax.lax.stop_gradient(L_hat)
+
+        kappa = jnp.asarray(alpha * eps, jnp.float32) * jnp.clip(L_hat, 1e-12, 1e12)
+
+        keys = jax.random.split(key, x.shape[0])
+        logits_or_list, state = jax.vmap(
+            model, in_axes=(0, 0, None), out_axes=(0, None), axis_name="batch"
+        )(x, keys, state)
+        preds = (
+            logits_or_list
+            if isinstance(logits_or_list, (list, tuple))
+            else [logits_or_list]
+        )
+
+        if head_weights is None:
+            w = [1.0 / len(preds)] * len(preds)
+        else:
+            w = jnp.asarray(head_weights, dtype=jnp.float32)
+            w = w / w.sum()
+
+        total = 0.0
+        for logit, weight in zip(preds, w):
+            # allow trailing singleton channel
+            if logit.ndim == y.ndim + 1 and logit.shape[-1] == 1:
+                logit = logit.squeeze(-1)
+
+            sgn = 2.0 * y.astype(logit.dtype) - 1.0  # {-1,+1}
+            logit_adj = logit - (2.0 * kappa) * sgn
+            per_ex = optax.sigmoid_binary_cross_entropy(logit_adj, y)
+            B = per_ex.shape[0]
+            total = total + weight * per_ex.reshape((B, -1)).mean(axis=1).mean()
+
+        return total, state
+
+    return loss_fn
+
+
 _NORM_TYPES: Tuple[type, ...] = tuple(
     t
     for t in (
@@ -2221,8 +2362,8 @@ if __name__ == "__main__":
     batch_size = 32
 
     rng = np.random.RandomState(0)
-    N, H, W, C, NUM_CLASSES = 2048, 1, 28, 28, 1
-    X_np = rng.rand(N, H, W, C).astype("float32")  # [N, H, W, C]
+    N, C, H, W, NUM_CLASSES = 2048, 1, 28, 28, 10
+    X_np = rng.rand(N, C, H, W).astype("float32")  # [N, C, H, W]
     y_np = rng.randint(0, NUM_CLASSES, size=(N,)).astype("int32")
 
     # train / val split
@@ -2355,25 +2496,3 @@ if __name__ == "__main__":
     # ---------------- sanity: predictions shape ----------------
     logits = predict(best_model, best_state, jnp.array(X_val), jr.PRNGKey(0))
     print("Predictions shape:", logits.shape)
-
-    # ---------------- plot losses + Lipschitz curve on twin axis -------------
-    epochs = np.arange(1, len(tr_loss) + 1)
-    # brec logs only at chosen cadence; we plot eval (EMA if enabled)
-    bepochs = np.array([r["epoch"] for r in brec.data], int)
-    L_eval = np.array([r["L_eval"] for r in brec.data], float)
-    L_raw = np.array([r["L_raw"] for r in brec.data], float)
-
-    fig, ax1 = plt.subplots(figsize=(8, 4.5))
-    ax1.plot(epochs, tr_loss, label="train loss")
-    ax1.plot(epochs, va_loss, label="val loss")
-    ax1.set_xlabel("epoch")
-    ax1.set_ylabel("loss")
-    ax1.legend(loc="upper left")
-
-    ax2 = ax1.twinx()
-    ax2.plot(bepochs, L_eval, linestyle="--", marker="o", label="L_eval (certified)")
-    ax2.plot(bepochs, L_raw, linestyle=":", marker="x", label="L_raw (certified)")
-    ax2.set_ylabel("global Lipschitz upper bound")
-    ax2.legend(loc="upper right")
-    plt.tight_layout()
-    plt.show()

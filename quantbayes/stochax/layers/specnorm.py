@@ -16,7 +16,6 @@ from equinox.nn._stateful import State, StateIndex
 # =============================================================================
 # Prefer the stochax path; fall back to a plain quantbayes path if needed.
 from quantbayes.stochax.utils.regularizers import (
-    _sigma_conv_kernel_flat,
     _sigma_conv_circular_fft_exact_2d,
     _sigma_conv_circular_gram_upper_2d,
     _sigma_conv_circulant_embed_upper_2d,
@@ -34,14 +33,6 @@ def _is_name(x, names: Sequence[str]) -> bool:
     return any(type(x).__name__ == n for n in names)
 
 
-def _as_pair(v) -> Tuple[int, int]:
-    if isinstance(v, (tuple, list)):
-        assert len(v) == 2
-        return int(v[0]), int(v[1])
-    iv = int(v)
-    return iv, iv
-
-
 def _flatten_matrix(W: jnp.ndarray) -> jnp.ndarray:
     return W.reshape(W.shape[0], -1)
 
@@ -49,15 +40,6 @@ def _flatten_matrix(W: jnp.ndarray) -> jnp.ndarray:
 def _top_sigma_matrix_svd(W2: jnp.ndarray) -> jnp.ndarray:
     # Exact σ_max via SVD (JAX)
     return jnp.linalg.svd(W2, compute_uv=False)[0].astype(jnp.float32)
-
-
-def _power_iter_step(W: jnp.ndarray, u: jnp.ndarray, v: jnp.ndarray, eps: float):
-    # One bi-directional power-iteration step on a (possibly complex) matrix
-    u = W @ v
-    u = u / (jnp.linalg.norm(u) + eps)
-    v = (W.conj().T if jnp.iscomplexobj(W) else W.T) @ u
-    v = v / (jnp.linalg.norm(v) + eps)
-    return u, v
 
 
 def _max_abs(z: jnp.ndarray) -> jnp.ndarray:
@@ -71,80 +53,44 @@ def _max_abs(z: jnp.ndarray) -> jnp.ndarray:
 
 class SpectralNorm(StatefulLayer):
     """
-    Research-grade spectral normalization for Equinox modules and your custom spectral layers.
+    CERTIFIED-ONLY spectral normalization.
 
     Per call:
-      1) Estimate an operator norm σ̂ for the wrapped layer using a method appropriate
-         to that layer (exact / certified UB / PI).
-      2) Scale the layer parameters by 1 / scale, where:
-            scale = max(1, safety_factor * σ̂ / target)     if mode='clip'
-                    max(1e-12, safety_factor * σ̂ / target) if mode='force'
-         (Optionally `stop_gradient` through the scale for stability.)
+      1) Compute a certified operator norm σ for the wrapped layer:
+           • eqx.nn.Linear                → exact (top singular value via SVD)
+           • eqx.nn.Conv2d/ConvTranspose2d
+                 - 'tn'                  → certified TN upper bound (any stride/dilation)
+                 - 'circular_fft'        → exact for circular padding, stride=1 (any dilation) with fft_shape
+                 - 'circular_gram'       → certified Gram UB for circular, stride=1 with fft_shape
+                 - 'min_tn_circ_embed'   → min{TN, Circulant-Embed UB} (stride=1, dilation=1) with input_shape
+                 - 'circ_plus_lr'        → certified circulant+low-rank UB with input_shape (stride/dilation allowed)
+           • SVDDense/SpectralDense/AdaptiveSpectralDense → exact: max|s|
+           • SpectralConv2d/AdaptiveSpectralConv2d        → reconstruct kernel → chosen conv2d estimator
+           • RFFTCirculant1D                              → exact: max|H_half|
+           • RFFTCirculant2D                              → exact: per-frequency SVD over half-plane
+           • SpectralTokenMixer                           → exact with gate; +1 if residual
+      2) Scale layer parameters by 1 / scale, where
+            scale = max(1, safety_factor * σ / target)     if mode='clip'
+                    max(1e-12, safety_factor * σ / target) if mode='force'
 
-    Supported modules (matching your codebase):
-      • eqx.nn.Linear
-      • eqx.nn.Conv*, eqx.nn.ConvTranspose*  (2D gets SoTA: 'tn', 'circular_fft',
-        'circular_gram', 'kernel_flat', 'min_tn_circ_embed', 'circ_plus_lr')
-      • SVDDense, SpectralDense, AdaptiveSpectralDense (exact via max|s|)
-      • SpectralConv2d, AdaptiveSpectralConv2d (reconstruct kernel → conv estimator)
-      • RFFTCirculant1D (exact: max|H_half|)
-      • RFFTCirculant2D (choose 'svd' exact per-frequency SVD or 'pi-sampled')
-      • SpectralTokenMixer (exact with gate, +1 if residual enabled)
-
-    Notes
-    -----
-    • Stateful when using:
-        - 'pi_state' for Linear (persistent PI vectors), or
-        - 'pi-sampled' for spectral 2D (u,v per sampled frequency).
-      Otherwise it is stateless beyond the `inference` flag.
-    • For 2D convs:
-        - 'circular_fft' is exact for circular padding + stride=1 (any dilation).
-        - 'circular_gram' is a tight UB for circular stride=1.
-        - 'tn' is the certified UB for general strided/dilated convs.
-        - 'min_tn_circ_embed' and 'circ_plus_lr' are grid-aware UBs (require input size).
-    • For 1D/3D convs, we conservatively use 'kernel_flat'.
-    • This wrapper handles only normalization. If you also want regularization penalties,
-      use your `regularizers.py` independently in the loss.
+    No PI, no sampling, no heuristics, no silent fallbacks.
 
     Parameters
     ----------
     layer : eqx.Module
-        Module to wrap.
-    target : float
-        Desired per-layer Lipschitz cap (default 1.0).
-    mode : {'clip','force'}
-        'clip'  → no change if σ̂ <= target; otherwise scales down to target.
-        'force' → always scales to target (ignoring whether σ̂ <= target).
-    detach_scale : bool
-        Stop gradients through σ̂ (recommended).
-    safety_factor : float
-        Cushion to offset underestimation (PI/sampling). Default 1.05.
-    inference : bool
-        Freeze internal PI updates if True.
+    target : float                (default 1.0)
+    mode : {'clip','force'}       (default 'clip')
+    detach_scale : bool           (default True)
+    safety_factor : float         (default 1.0)
+    inference : bool              (default False)  # passed through to wrapped layer if it accepts it
 
-    Method selection
-    ----------------
-    linear_method : {'svd','pi','pi_state'}
-    conv2d_method : {'tn','circular_fft','circular_gram','kernel_flat',
-                     'min_tn_circ_embed','circ_plus_lr'}
-    convND_method : {'kernel_flat','tn'}      # used for Conv1d/Conv3d; default 'kernel_flat'
-    param_svd_conv2d_method : same set as conv2d_method
-    spectral2d_method : {'svd','pi-sampled'}  # for RFFTCirculant2D & similar
+    conv2d_method : {'tn','circular_fft','circular_gram','min_tn_circ_embed','circ_plus_lr'}
+    param_svd_conv2d_method : same as conv2d_method (used by SpectralConv2d*)
 
-    Conv settings
-    -------------
-    conv_tn_iters : int
-    conv_tn_certified : bool                # pass-through to _sigma_conv_TN_upper
-    conv_gram_iters : int
-    conv_fft_shape : Optional[(Hf,Wf)]      # for 'circular_fft'/'circular_gram'
-    conv_input_shape : Optional[(Hin,Win)]  # for 'min_tn_circ_embed'/'circ_plus_lr'
-
-    PI/sampling settings
-    --------------------
-    num_power_iterations : int     # Linear PI & spectral 2D PI-sampled
-    num_freq_samples : Optional[int]  # None = all half-plane frequencies
-    eps : float
-    key : PRNGKey (for state init)
+    conv_tn_iters : int           (default 10) — used by TN bound
+    conv_gram_iters : int         (default 5)
+    conv_fft_shape : Optional[(Hf,Wf)]  — required for 'circular_fft' / 'circular_gram'
+    conv_input_shape : Optional[(Hin,Win)] — required for 'min_tn_circ_embed' / 'circ_plus_lr'
     """
 
     # Wrapped layer & global knobs
@@ -155,87 +101,41 @@ class SpectralNorm(StatefulLayer):
     safety_factor: float = eqx.field(static=True)
     inference: bool
 
-    # Method selection
-    linear_method: Literal["svd", "pi", "pi_state"] = eqx.field(static=True)
+    # Method selection (certified-only)
     conv2d_method: Literal[
-        "tn",
-        "circular_fft",
-        "circular_gram",
-        "kernel_flat",
-        "min_tn_circ_embed",
-        "circ_plus_lr",
+        "tn", "circular_fft", "circular_gram", "min_tn_circ_embed", "circ_plus_lr"
     ] = eqx.field(static=True)
-    convND_method: Literal["kernel_flat", "tn"] = eqx.field(static=True)
     param_svd_conv2d_method: Literal[
-        "tn",
-        "circular_fft",
-        "circular_gram",
-        "kernel_flat",
-        "min_tn_circ_embed",
-        "circ_plus_lr",
+        "tn", "circular_fft", "circular_gram", "min_tn_circ_embed", "circ_plus_lr"
     ] = eqx.field(static=True)
-    spectral2d_method: Literal["svd", "pi-sampled"] = eqx.field(static=True)
 
     # Conv hyper-params
     conv_tn_iters: int = eqx.field(static=True)
-    conv_tn_certified: bool = eqx.field(static=True)
     conv_gram_iters: int = eqx.field(static=True)
     conv_fft_shape: Optional[Tuple[int, int]] = eqx.field(static=True)
     conv_input_shape: Optional[Tuple[int, int]] = eqx.field(static=True)
 
-    # PI/sampling hyper-params
-    num_power_iterations: int = eqx.field(static=True)
-    num_freq_samples: Optional[int] = eqx.field(static=True)
-    eps: float = eqx.field(static=True)
-
-    # State (optional)
-    _uv_linear_index: Optional[StateIndex[Tuple[jnp.ndarray, jnp.ndarray]]] = None
-    _freq_idx: Optional[jnp.ndarray] = eqx.field(
-        static=True, default=None
-    )  # (M,2) int32
-    _uv_freq_index: Optional[StateIndex[Tuple[jnp.ndarray, jnp.ndarray]]] = None
-
     def __init__(
         self,
         layer: eqx.Module,
+        *,
         target: float = 1.0,
         mode: Literal["clip", "force"] = "clip",
         detach_scale: bool = True,
-        safety_factor: float = 1.05,
+        safety_factor: float = 1.0,
         inference: bool = False,
-        # method choices
-        linear_method: Literal["svd", "pi", "pi_state"] = "svd",
         conv2d_method: Literal[
-            "tn",
-            "circular_fft",
-            "circular_gram",
-            "kernel_flat",
-            "min_tn_circ_embed",
-            "circ_plus_lr",
+            "tn", "circular_fft", "circular_gram", "min_tn_circ_embed", "circ_plus_lr"
         ] = "tn",
-        convND_method: Literal["kernel_flat", "tn"] = "kernel_flat",
         param_svd_conv2d_method: Literal[
-            "tn",
-            "circular_fft",
-            "circular_gram",
-            "kernel_flat",
-            "min_tn_circ_embed",
-            "circ_plus_lr",
+            "tn", "circular_fft", "circular_gram", "min_tn_circ_embed", "circ_plus_lr"
         ] = "tn",
-        spectral2d_method: Literal["svd", "pi-sampled"] = "svd",
-        # conv settings
         conv_tn_iters: int = 10,
-        conv_tn_certified: bool = True,
         conv_gram_iters: int = 5,
         conv_fft_shape: Optional[Tuple[int, int]] = None,
         conv_input_shape: Optional[Tuple[int, int]] = None,
-        # PI/sampling settings
-        num_power_iterations: int = 1,
-        num_freq_samples: Optional[int] = 64,
-        eps: float = 1e-12,
-        *,
-        key: Any,
     ):
+        # Store
         self.layer = layer
         self.target = float(target)
         self.mode = mode
@@ -243,167 +143,49 @@ class SpectralNorm(StatefulLayer):
         self.safety_factor = float(safety_factor)
         self.inference = bool(inference)
 
-        self.linear_method = linear_method
         self.conv2d_method = conv2d_method
-        self.convND_method = convND_method
         self.param_svd_conv2d_method = param_svd_conv2d_method
-        self.spectral2d_method = spectral2d_method
 
         self.conv_tn_iters = int(conv_tn_iters)
-        self.conv_tn_certified = bool(conv_tn_certified)
         self.conv_gram_iters = int(conv_gram_iters)
         self.conv_fft_shape = conv_fft_shape
         self.conv_input_shape = conv_input_shape
 
-        self.num_power_iterations = int(num_power_iterations)
-        self.num_freq_samples = num_freq_samples
-        self.eps = float(eps)
-
-        self._uv_linear_index = None
-        self._freq_idx = None
-        self._uv_freq_index = None
-
-        # ---- Initialize persistent Linear PI (if requested) ----
+        # Hard requirements (no silent fallback)
         if (
-            self.linear_method == "pi_state"
-            and hasattr(eqx.nn, "Linear")
-            and isinstance(layer, eqx.nn.Linear)
+            self.conv2d_method in {"circular_fft", "circular_gram"}
+            and self.conv_fft_shape is None
         ):
-            W = getattr(layer, "weight")
-            if W.ndim < 2:
-                raise ValueError("Linear weight must be at least 2D.")
-            W2 = W.reshape(W.shape[0], -1)
-            k1, k2 = jr.split(key, 2)
-            u0 = jr.normal(k1, (W2.shape[0],), dtype=W2.dtype)
-            v0 = jr.normal(k2, (W2.shape[1],), dtype=W2.dtype)
-            # Warm start
-            for _ in range(15):
-                u0, v0 = _power_iter_step(W2, u0, v0, self.eps)
-            self._uv_linear_index = StateIndex((u0, v0))
+            raise ValueError(f"{self.conv2d_method} requires conv_fft_shape=(Hf, Wf).")
+        if (
+            self.conv2d_method in {"min_tn_circ_embed", "circ_plus_lr"}
+            and self.conv_input_shape is None
+        ):
+            raise ValueError(
+                f"{self.conv2d_method} requires conv_input_shape=(Hin, Win)."
+            )
 
-        # ---- Initialize spectral-2D PI-sampled state (if requested) ----
-        if self.spectral2d_method == "pi-sampled":
-            if _is_name(layer, ["RFFTCirculant2D"]):
-                Co, Ci = int(layer.C_out), int(layer.C_in)
-                H_pad, W_half = int(layer.H_pad), int(layer.W_half)
-                self._init_freq_pi_state(Co, Ci, H_pad, W_half, key)
-            elif _is_name(
-                layer, ["SpectralCirculantLayer2d", "AdaptiveSpectralCirculantLayer2d"]
-            ):
-                # Expect a full complex FFT kernel
-                K_full = layer.get_fft_kernel()  # (Co, Ci, H_pad, W_pad), complex
-                Co, Ci, H_pad, W_pad = map(int, K_full.shape)
-                W_half = W_pad // 2 + 1
-                self._init_freq_pi_state(Co, Ci, H_pad, W_half, key)
+        if (
+            self.param_svd_conv2d_method in {"circular_fft", "circular_gram"}
+            and self.conv_fft_shape is None
+        ):
+            raise ValueError(
+                f"param_svd_conv2d_method={self.param_svd_conv2d_method} requires conv_fft_shape=(Hf, Wf)."
+            )
+        if (
+            self.param_svd_conv2d_method in {"min_tn_circ_embed", "circ_plus_lr"}
+            and self.conv_input_shape is None
+        ):
+            raise ValueError(
+                f"param_svd_conv2d_method={self.param_svd_conv2d_method} requires conv_input_shape=(Hin, Win)."
+            )
 
-    # -------------------------------------------------------------------------
-    # State init helpers (frequency-sampled PI for spectral 2D)
-    # -------------------------------------------------------------------------
+    # --- Linear (exact) -------------------------------------------------------
+    def _sigma_linear_exact(self, lin: eqx.nn.Linear) -> jnp.ndarray:
+        W = _flatten_matrix(lin.weight)
+        return _top_sigma_matrix_svd(W).astype(jnp.float32)
 
-    def _init_freq_pi_state(self, Co: int, Ci: int, H_pad: int, W_half: int, key: Any):
-        # Always include DC and Nyquist edges
-        special = [(0, 0)]
-        if H_pad % 2 == 0:
-            special.append((H_pad // 2, 0))
-        if W_half > 1:
-            special.append((0, W_half - 1))
-            if H_pad % 2 == 0:
-                special.append((H_pad // 2, W_half - 1))
-        special = jnp.array(special, dtype=jnp.int32)
-
-        # Pool of all half-plane indices, excluding special ones
-        UU, VV = jnp.meshgrid(
-            jnp.arange(H_pad, dtype=jnp.int32),
-            jnp.arange(W_half, dtype=jnp.int32),
-            indexing="ij",
-        )
-        all_idx = jnp.stack([UU.reshape(-1), VV.reshape(-1)], axis=1)
-
-        def not_special(idx):
-            eqs = jnp.all(idx[None, :] == special[:, :], axis=1)
-            return ~jnp.any(eqs)
-
-        mask = jax.vmap(not_special)(all_idx)
-        pool = all_idx[mask]
-
-        Mmax = H_pad * W_half
-        M = (
-            Mmax
-            if (self.num_freq_samples is None)
-            else int(min(self.num_freq_samples, Mmax))
-        )
-        rest_needed = max(0, M - special.shape[0])
-        k1, k2, k3 = jr.split(key, 3)
-        perm = (
-            jr.permutation(k1, pool.shape[0])
-            if pool.shape[0] > 0
-            else jnp.arange(0, dtype=jnp.int32)
-        )
-        chosen_rest = pool[perm[:rest_needed]] if rest_needed > 0 else pool[:0]
-        chosen = (
-            jnp.concatenate([special, chosen_rest], axis=0)
-            if rest_needed > 0
-            else special
-        )
-        self._freq_idx = chosen  # (M,2)
-
-        # Initialise PI vectors per sampled frequency
-        u0 = jr.normal(k2, (chosen.shape[0], Co))
-        v0 = jr.normal(k3, (chosen.shape[0], Ci))
-        u0 = u0 / (jnp.linalg.norm(u0, axis=1, keepdims=True) + self.eps)
-        v0 = v0 / (jnp.linalg.norm(v0, axis=1, keepdims=True) + self.eps)
-        self._uv_freq_index = StateIndex((u0, v0))
-
-    # -------------------------------------------------------------------------
-    # σ̂ estimators for each family
-    # -------------------------------------------------------------------------
-
-    # --- Linear-like matrices -------------------------------------------------
-    def _sigma_linear(
-        self, lin: eqx.nn.Linear, state: State
-    ) -> Tuple[jnp.ndarray, State]:
-        W2 = _flatten_matrix(lin.weight)
-        if self.linear_method == "svd":
-            sig = _top_sigma_matrix_svd(W2)
-            return sig, state
-
-        if self.linear_method == "pi":
-            # Stateless few-step PI
-            v = jnp.ones((W2.shape[1],), dtype=W2.dtype) / jnp.sqrt(W2.shape[1])
-            u = W2 @ v
-            u = u / (jnp.linalg.norm(u) + self.eps)
-            for _ in range(max(0, self.num_power_iterations - 1)):
-                v = W2.T @ u
-                v = v / (jnp.linalg.norm(v) + self.eps)
-                u = W2 @ v
-                u = u / (jnp.linalg.norm(u) + self.eps)
-            sig = jnp.vdot(u, W2 @ v).real
-            return jnp.asarray(jnp.abs(sig), jnp.float32), state
-
-        # persistent PI ('pi_state')
-        if self._uv_linear_index is None:
-            # fallback to stateless PI
-            v = jnp.ones((W2.shape[1],), dtype=W2.dtype) / jnp.sqrt(W2.shape[1])
-            u = W2 @ v
-            u = u / (jnp.linalg.norm(u) + self.eps)
-            for _ in range(max(0, self.num_power_iterations - 1)):
-                v = W2.T @ u
-                v = v / (jnp.linalg.norm(v) + self.eps)
-                u = W2 @ v
-                u = u / (jnp.linalg.norm(u) + self.eps)
-            sig = jnp.vdot(u, W2 @ v).real
-            return jnp.asarray(jnp.abs(sig), jnp.float32), state
-
-        u, v = state.get(self._uv_linear_index)
-        if not self.inference and self.num_power_iterations > 0:
-            Wsg = jax.lax.stop_gradient(W2)
-            for _ in range(self.num_power_iterations):
-                u, v = _power_iter_step(Wsg, u, v, self.eps)
-            state = state.set(self._uv_linear_index, (u, v))
-        sig = jnp.vdot(u, W2 @ v).real
-        return jnp.asarray(jnp.abs(sig), jnp.float32), state
-
-    # --- Conv/ConvTranspose helpers ------------------------------------------
+    # --- Conv helpers ---------------------------------------------------------
     def _conv_common_params(
         self, conv
     ) -> Tuple[jnp.ndarray, int, Tuple[int, int], Tuple[int, int]]:
@@ -419,7 +201,6 @@ class SpectralNorm(StatefulLayer):
         )
         if isinstance(dilation, int):
             dilation = (dilation,) * num_dims
-        # Return only the first two components for stride/dilation (2D paths use them)
         if num_dims == 1:
             stride = (int(stride[0]), 1)
             dilation = (int(dilation[0]), 1)
@@ -435,106 +216,80 @@ class SpectralNorm(StatefulLayer):
         dh, dw = dilation
         method = self.conv2d_method
 
-        if method == "kernel_flat":
-            return jnp.asarray(_sigma_conv_kernel_flat(W, method="svd"), jnp.float32)
+        if method == "tn":
+            return _sigma_conv_TN_upper(
+                W,
+                strides=(sh, sw),
+                rhs_dilation=(dh, dw),
+                iters=self.conv_tn_iters,
+                certify=True,
+            ).astype(jnp.float32)
 
         if method == "circular_fft":
-            if (sh, sw) == (1, 1) and (self.conv_fft_shape is not None):
-                return _sigma_conv_circular_fft_exact_2d(
-                    W, self.conv_fft_shape, rhs_dilation=(dh, dw)
+            if (sh, sw) != (1, 1):
+                raise ValueError(
+                    "circular_fft is exact only for stride=(1,1). Use 'tn' or 'circ_plus_lr'."
                 )
-            # fallback: TN UB
-            return _sigma_conv_TN_upper(
-                W,
-                strides=(sh, sw),
-                rhs_dilation=(dh, dw),
-                iters=self.conv_tn_iters,
-                certify=self.conv_tn_certified,
-            )
+            if self.conv_fft_shape is None:
+                raise ValueError("circular_fft requires conv_fft_shape=(Hf, Wf).")
+            return _sigma_conv_circular_fft_exact_2d(
+                W, self.conv_fft_shape, rhs_dilation=(dh, dw)
+            ).astype(jnp.float32)
 
         if method == "circular_gram":
-            if (sh, sw) == (1, 1) and (self.conv_fft_shape is not None):
-                return _sigma_conv_circular_gram_upper_2d(
-                    W,
-                    self.conv_fft_shape,
-                    rhs_dilation=(dh, dw),
-                    iters=self.conv_gram_iters,
+            if (sh, sw) != (1, 1):
+                raise ValueError(
+                    "circular_gram is supported for stride=(1,1). Use 'tn' or 'circ_plus_lr'."
                 )
-            return _sigma_conv_TN_upper(
+            if self.conv_fft_shape is None:
+                raise ValueError("circular_gram requires conv_fft_shape=(Hf, Wf).")
+            return _sigma_conv_circular_gram_upper_2d(
                 W,
-                strides=(sh, sw),
+                self.conv_fft_shape,
                 rhs_dilation=(dh, dw),
-                iters=self.conv_tn_iters,
-                certify=self.conv_tn_certified,
-            )
+                iters=self.conv_gram_iters,
+            ).astype(jnp.float32)
 
         if method == "min_tn_circ_embed":
             if self.conv_input_shape is None:
-                return _sigma_conv_TN_upper(
-                    W,
-                    strides=(sh, sw),
-                    rhs_dilation=(dh, dw),
-                    iters=self.conv_tn_iters,
-                    certify=self.conv_tn_certified,
+                raise ValueError(
+                    "min_tn_circ_embed requires conv_input_shape=(Hin, Win)."
                 )
-            if (sh, sw) == (1, 1) and (dh, dw) == (1, 1):
-                tn = _sigma_conv_TN_upper(
-                    W,
-                    strides=(1, 1),
-                    rhs_dilation=(1, 1),
-                    iters=self.conv_tn_iters,
-                    certify=self.conv_tn_certified,
+            if (sh, sw) != (1, 1) or (dh, dw) != (1, 1):
+                raise ValueError(
+                    "min_tn_circ_embed is defined for stride=(1,1), dilation=(1,1)."
                 )
-                ce = _sigma_conv_circulant_embed_upper_2d(
-                    W, in_hw=self.conv_input_shape
-                )
-                return jnp.minimum(tn, ce).astype(jnp.float32)
-            return _sigma_conv_TN_upper(
+            tn = _sigma_conv_TN_upper(
                 W,
-                strides=(sh, sw),
-                rhs_dilation=(dh, dw),
+                strides=(1, 1),
+                rhs_dilation=(1, 1),
                 iters=self.conv_tn_iters,
-                certify=self.conv_tn_certified,
+                certify=True,
             )
+            ce = _sigma_conv_circulant_embed_upper_2d(W, in_hw=self.conv_input_shape)
+            return jnp.minimum(tn, ce).astype(jnp.float32)
 
-        if method == "circ_plus_lr":
-            if self.conv_input_shape is None:
-                return _sigma_conv_TN_upper(
-                    W,
-                    strides=(sh, sw),
-                    rhs_dilation=(dh, dw),
-                    iters=self.conv_tn_iters,
-                    certify=self.conv_tn_certified,
-                )
-            return _sigma_conv_circ_plus_lr_upper_2d(
-                W, in_hw=self.conv_input_shape, strides=(sh, sw), rhs_dilation=(dh, dw)
-            )
+        # method == "circ_plus_lr"
+        if self.conv_input_shape is None:
+            raise ValueError("circ_plus_lr requires conv_input_shape=(Hin, Win).")
+        return _sigma_conv_circ_plus_lr_upper_2d(
+            W, in_hw=self.conv_input_shape, strides=(sh, sw), rhs_dilation=(dh, dw)
+        ).astype(jnp.float32)
 
-        # default: "tn"
-        return _sigma_conv_TN_upper(
-            W,
-            strides=(sh, sw),
-            rhs_dilation=(dh, dw),
-            iters=self.conv_tn_iters,
-            certify=self.conv_tn_certified,
-        )
-
-    def _sigma_conv(self, conv, state: State) -> Tuple[jnp.ndarray, State]:
+    def _sigma_conv(self, conv) -> jnp.ndarray:
         W, nd, stride, dilation = self._conv_common_params(conv)
         if nd != 2:
-            # 1D/3D conservative fallback
-            sig = _sigma_conv_kernel_flat(W, method="svd")
-            return jnp.asarray(sig, jnp.float32), state
-        sig = self._sigma_conv2d_weight(W, stride, dilation)
-        return jnp.asarray(sig, jnp.float32), state
+            raise ValueError("This SpectralNorm enforces certified convs for 2D only.")
+        return self._sigma_conv2d_weight(W, stride, dilation)
 
-    def _sigma_convT(self, convT, state: State) -> Tuple[jnp.ndarray, State]:
-        # Treat ConvTranspose via channel-swapped conv weight
+    def _sigma_convT(self, convT) -> jnp.ndarray:
         W = convT.weight
-        if W.ndim >= 4 and W.shape[0] < W.shape[1]:
-            Wc = jnp.transpose(W, (1, 0, 2, 3))
-        else:
-            Wc = W
+        # Channel-swap for transpose conv
+        Wc = (
+            jnp.transpose(W, (1, 0, 2, 3))
+            if (W.ndim >= 4 and W.shape[0] < W.shape[1])
+            else W
+        )
         stride = getattr(convT, "stride", getattr(convT, "strides", (1, 1)))
         if isinstance(stride, int):
             stride = (stride, stride)
@@ -545,30 +300,28 @@ class SpectralNorm(StatefulLayer):
         )
         if isinstance(dilation, int):
             dilation = (dilation, dilation)
-        sig = self._sigma_conv2d_weight(
+        return self._sigma_conv2d_weight(
             Wc, (int(stride[0]), int(stride[1])), (int(dilation[0]), int(dilation[1]))
         )
-        return jnp.asarray(sig, jnp.float32), state
 
     # --- Param-SVD convs: reconstruct kernel then call conv estimator ---------
-    def _sigma_param_svd_conv2d(self, mod, state: State) -> Tuple[jnp.ndarray, State]:
-        # U:(Co,r), V:(Cin*Kh*Kw,r), s:(r,)
+    def _sigma_param_svd_conv2d(self, mod) -> jnp.ndarray:
         Co, Ci, Kh, Kw = int(mod.C_out), int(mod.C_in), int(mod.H_k), int(mod.W_k)
-        W_mat = mod.U @ (mod.s[:, None] * mod.V.T)
-        W = W_mat.reshape(Co, Ci, Kh, Kw)
+        W_mat = mod.U @ (mod.s[:, None] * mod.V.T)  # (Co, Ci*Kh*Kw)
+        W = W_mat.reshape(Co, Ci, Kh, Kw)  # (Co, Ci, Kh, Kw)
         stride = getattr(mod, "strides", (1, 1))
         if isinstance(stride, int):
             stride = (stride, stride)
-        # Temporarily use the chosen method for param-SVD convs
+        # Temporarily switch method for param-SVD convs
         save = self.conv2d_method
         try:
             self.conv2d_method = self.param_svd_conv2d_method
             sig = self._sigma_conv2d_weight(W, (int(stride[0]), int(stride[1])), (1, 1))
         finally:
             self.conv2d_method = save
-        return jnp.asarray(sig, jnp.float32), state
+        return jnp.asarray(sig, jnp.float32)
 
-    # --- RFFTCirculant1D: exact ---------------------------------------------
+    # --- RFFTCirculant1D: exact ----------------------------------------------
     def _sigma_rfft_circ1d(self, mod) -> jnp.ndarray:
         return _max_abs(mod.H_half).astype(jnp.float32)
 
@@ -591,60 +344,25 @@ class SpectralNorm(StatefulLayer):
             else base.astype(jnp.float32)
         )
 
-    # --- RFFTCirculant2D & similar: exact SVD or PI-sampled over half-plane ---
+    # --- RFFTCirculant2D: exact per-frequency SVD over the half-plane ---------
     def _sigma_rfft_circ2d_svd(self, K_half: jnp.ndarray) -> jnp.ndarray:
         # K_half: (Co, Ci, Hf, W_half)
         mats = jnp.transpose(K_half, (2, 3, 0, 1)).reshape(
             -1, K_half.shape[0], K_half.shape[1]
-        )
-        svals = jax.vmap(lambda M: jnp.linalg.svd(M, compute_uv=False)[0])(mats)
+        )  # (Hf*W_half, Co, Ci)
+        svals = jax.vmap(lambda M: jnp.linalg.svd(M, compute_uv=False)[0])(
+            mats
+        )  # (Hf*W_half,)
         return jnp.max(jnp.real(svals)).astype(jnp.float32)
 
-    def _sigma_rfft_circ2d_pi(
-        self, K_half: jnp.ndarray, state: State
-    ) -> Tuple[jnp.ndarray, State]:
-        assert (
-            self._freq_idx is not None and self._uv_freq_index is not None
-        ), "PI state not initialised."
-        u, v = state.get(self._uv_freq_index)  # (M, Co), (M, Ci)
-        freq_idx = self._freq_idx  # (M,2)
-
-        def gather(idx):
-            u0, v0 = int(idx[0]), int(idx[1])
-            return K_half[:, :, u0, v0]  # (Co, Ci)
-
-        mats = jax.vmap(gather)(freq_idx)  # (M, Co, Ci)
-
-        if not self.inference and self.num_power_iterations > 0:
-            Mstop = jax.lax.stop_gradient(mats)
-
-            def step(uu, vv):
-                uu, vv = jax.vmap(_power_iter_step, in_axes=(0, 0, 0, None))(
-                    Mstop, uu, vv, self.eps
-                )
-                return uu, vv
-
-            uu, vv = u, v
-            for _ in range(self.num_power_iterations):
-                uu, vv = step(uu, vv)
-            state = state.set(self._uv_freq_index, (uu, vv))
-            u, v = uu, vv
-
-        est = jax.vmap(lambda M, uu, vv: jnp.vdot(uu, M @ vv))(mats, u, v)  # (M,)
-        sigma = jnp.max(jnp.abs(est)).astype(jnp.float32)
-        return sigma, state
-
-    # -------------------------------------------------------------------------
-    # Build a scaled "view" of the layer (pure; no in-place mutation)
-    # -------------------------------------------------------------------------
-
+    # --- Scaling --------------------------------------------------------------
     def _scale_layer(self, lyr: eqx.Module, scale: jnp.ndarray) -> eqx.Module:
         if self.detach_scale:
             scale = jax.lax.stop_gradient(scale)
 
         name = type(lyr).__name__
 
-        # --- Equinox built-ins ---
+        # Equinox
         if hasattr(eqx.nn, "Linear") and isinstance(lyr, eqx.nn.Linear):
             return tree_at(lambda m: m.weight, lyr, lyr.weight / scale)
 
@@ -654,7 +372,7 @@ class SpectralNorm(StatefulLayer):
         if hasattr(eqx.nn, "ConvTranspose") and isinstance(lyr, eqx.nn.ConvTranspose):
             return tree_at(lambda m: m.weight, lyr, lyr.weight / scale)
 
-        # --- Your spectral parametrisations ---
+        # Your spectral parametrisations (exact via their s/FFT parameters)
         if _is_name(lyr, ["SVDDense", "SpectralDense", "AdaptiveSpectralDense"]):
             return tree_at(lambda m: m.s, lyr, lyr.s / scale)
 
@@ -670,7 +388,6 @@ class SpectralNorm(StatefulLayer):
         if _is_name(lyr, ["SpectralTokenMixer"]):
             return tree_at(lambda m: m.H_half, lyr, lyr.H_half / scale)
 
-        # Optional: generic spectral-circulant variants with explicit real/imag
         if _is_name(lyr, ["SpectralCirculantLayer", "AdaptiveSpectralCirculantLayer"]):
             new = tree_at(lambda m: m.w_real, lyr, lyr.w_real / scale)
             new = tree_at(lambda m: m.w_imag, new, lyr.w_imag / scale)
@@ -685,55 +402,171 @@ class SpectralNorm(StatefulLayer):
 
         raise ValueError(f"Unsupported layer type for SpectralNorm: {name}")
 
-    # -------------------------------------------------------------------------
-    # Public API
-    # -------------------------------------------------------------------------
+    # --- Public API -----------------------------------------------------------
+    def __operator_norm_hint__(self) -> jnp.ndarray | None:
+        """
+        Advertise a certified per-layer cap to the global Lipschitz aggregator.
 
-    def __operator_norm_hint__(self) -> float | None:
+        Returns target IFF the wrapped layer+method combination is proven-correct
+        under our config; otherwise returns None so the aggregator won’t use a hint.
         """
-        Optional diagnostic (not used on the JIT path). If the wrapped layer
-        exposes its own hint, forward it; otherwise return None.
-        """
-        core = getattr(self, "layer", None)
-        if core is not None and hasattr(core, "__operator_norm_hint__"):
+        # Only advertise a cap when it’s actually a cap
+        if not (self.target > 0 and self.safety_factor >= 1.0):
+            return None
+
+        lyr = self.layer
+
+        # Exact linear
+        if hasattr(eqx.nn, "Linear") and isinstance(lyr, eqx.nn.Linear):
+            return jnp.asarray(self.target, jnp.float32)
+
+        # Helpers for conv stride/dilation
+        def _stride_dilation(_conv):
+            W = getattr(_conv, "weight", None)
+            nd = getattr(
+                _conv, "num_spatial_dims", (W.ndim - 2) if W is not None else 2
+            )
+            stride = getattr(_conv, "stride", getattr(_conv, "strides", (1, 1)))
+            if isinstance(stride, int):
+                stride = (stride, stride)
+            dilation = (
+                getattr(_conv, "rhs_dilation", None)
+                or getattr(_conv, "dilation", None)
+                or getattr(_conv, "kernel_dilation", (1, 1))
+            )
+            if isinstance(dilation, int):
+                dilation = (dilation, dilation)
+            return (
+                int(nd),
+                (int(stride[0]), int(stride[1])),
+                (int(dilation[0]), int(dilation[1])),
+            )
+
+        # Conv2d (only nd==2) — method-specific guards
+        if hasattr(eqx.nn, "Conv") and isinstance(lyr, eqx.nn.Conv):
+            nd, stride, dilation = _stride_dilation(lyr)
+            if nd != 2:
+                return None
+            if self.conv2d_method == "tn":
+                return jnp.asarray(self.target, jnp.float32)
+            if self.conv2d_method == "circular_fft":
+                return (
+                    jnp.asarray(self.target, jnp.float32)
+                    if stride == (1, 1) and self.conv_fft_shape is not None
+                    else None
+                )
+            if self.conv2d_method == "circular_gram":
+                return (
+                    jnp.asarray(self.target, jnp.float32)
+                    if stride == (1, 1) and self.conv_fft_shape is not None
+                    else None
+                )
+            if self.conv2d_method == "min_tn_circ_embed":
+                ok = (
+                    (stride == (1, 1))
+                    and (dilation == (1, 1))
+                    and (self.conv_input_shape is not None)
+                )
+                return jnp.asarray(self.target, jnp.float32) if ok else None
+            if self.conv2d_method == "circ_plus_lr":
+                return (
+                    jnp.asarray(self.target, jnp.float32)
+                    if self.conv_input_shape is not None
+                    else None
+                )
+            return None
+
+        # ConvTranspose2d — same guards
+        if hasattr(eqx.nn, "ConvTranspose") and isinstance(lyr, eqx.nn.ConvTranspose):
+            nd, stride, dilation = _stride_dilation(lyr)
+            if nd != 2:
+                return None
+            if self.conv2d_method == "tn":
+                return jnp.asarray(self.target, jnp.float32)
+            if self.conv2d_method == "circular_fft":
+                return (
+                    jnp.asarray(self.target, jnp.float32)
+                    if stride == (1, 1) and self.conv_fft_shape is not None
+                    else None
+                )
+            if self.conv2d_method == "circular_gram":
+                return (
+                    jnp.asarray(self.target, jnp.float32)
+                    if stride == (1, 1) and self.conv_fft_shape is not None
+                    else None
+                )
+            if self.conv2d_method == "min_tn_circ_embed":
+                ok = (
+                    (stride == (1, 1))
+                    and (dilation == (1, 1))
+                    and (self.conv_input_shape is not None)
+                )
+                return jnp.asarray(self.target, jnp.float32) if ok else None
+            if self.conv2d_method == "circ_plus_lr":
+                return (
+                    jnp.asarray(self.target, jnp.float32)
+                    if self.conv_input_shape is not None
+                    else None
+                )
+            return None
+
+        # Exact spectral parametrizations (all exact in your codebase)
+        if _is_name(
+            lyr,
+            [
+                "SVDDense",
+                "SpectralDense",
+                "AdaptiveSpectralDense",
+                "RFFTCirculant1D",
+                "RFFTCirculant2D",
+                "SpectralTokenMixer",
+                "SpectralCirculantLayer",
+                "AdaptiveSpectralCirculantLayer",
+                "SpectralCirculantLayer2d",
+                "AdaptiveSpectralCirculantLayer2d",
+            ],
+        ):
+            return jnp.asarray(self.target, jnp.float32)
+
+        # Forward a hint from the wrapped module if it has one (cast to JAX scalar)
+        if hasattr(lyr, "__operator_norm_hint__"):
             try:
-                v = core.__operator_norm_hint__()
-                if v is not None:
-                    return float(v)
+                v = lyr.__operator_norm_hint__()
+                return None if v is None else jnp.asarray(v, jnp.float32)
             except Exception:
-                pass
+                return None
+
         return None
 
     @named_scope("quantbayes.nn.SpectralNorm")
     def __call__(
         self,
         x: jnp.ndarray,
-        state: State,
+        state: "State",
         *,
         key: Any | None = None,
         inference: Optional[bool] = None,
-    ) -> Tuple[jnp.ndarray, State]:
+    ):
         if inference is not None:
             self.inference = bool(inference)
 
         lyr = self.layer
-        name = type(lyr).__name__
 
-        # 1) Compute σ̂ as a rank-0 JAX array
+        # 1) Certified σ
         if hasattr(eqx.nn, "Linear") and isinstance(lyr, eqx.nn.Linear):
-            sigma, state = self._sigma_linear(lyr, state)
+            sigma = self._sigma_linear_exact(lyr)
 
         elif hasattr(eqx.nn, "Conv") and isinstance(lyr, eqx.nn.Conv):
-            sigma, state = self._sigma_conv(lyr, state)
+            sigma = self._sigma_conv(lyr)
 
         elif hasattr(eqx.nn, "ConvTranspose") and isinstance(lyr, eqx.nn.ConvTranspose):
-            sigma, state = self._sigma_convT(lyr, state)
+            sigma = self._sigma_convT(lyr)
 
         elif _is_name(lyr, ["SVDDense", "SpectralDense", "AdaptiveSpectralDense"]):
             sigma = jnp.max(jnp.abs(lyr.s)).astype(jnp.float32)
 
         elif _is_name(lyr, ["SpectralConv2d", "AdaptiveSpectralConv2d"]):
-            sigma, state = self._sigma_param_svd_conv2d(lyr, state)
+            sigma = self._sigma_param_svd_conv2d(lyr)
 
         elif _is_name(lyr, ["RFFTCirculant1D"]):
             sigma = self._sigma_rfft_circ1d(lyr)
@@ -742,10 +575,7 @@ class SpectralNorm(StatefulLayer):
             sigma = self._sigma_token_mixer(lyr)
 
         elif _is_name(lyr, ["RFFTCirculant2D"]):
-            if self.spectral2d_method == "svd":
-                sigma = self._sigma_rfft_circ2d_svd(lyr.K_half)
-            else:
-                sigma, state = self._sigma_rfft_circ2d_pi(lyr.K_half, state)
+            sigma = self._sigma_rfft_circ2d_svd(lyr.K_half)
 
         elif _is_name(
             lyr, ["SpectralCirculantLayer2d", "AdaptiveSpectralCirculantLayer2d"]
@@ -753,10 +583,7 @@ class SpectralNorm(StatefulLayer):
             K_full = lyr.get_fft_kernel()  # (Co, Ci, H_pad, W_pad), complex
             W_half = (K_full.shape[-1] // 2) + 1
             K_half = K_full[..., :W_half]
-            if self.spectral2d_method == "svd":
-                sigma = self._sigma_rfft_circ2d_svd(K_half)
-            else:
-                sigma, state = self._sigma_rfft_circ2d_pi(K_half, state)
+            sigma = self._sigma_rfft_circ2d_svd(K_half)
 
         elif _is_name(
             lyr, ["SpectralCirculantLayer", "AdaptiveSpectralCirculantLayer"]
@@ -764,14 +591,14 @@ class SpectralNorm(StatefulLayer):
             if hasattr(lyr, "get_fourier_coeffs"):
                 sigma = _max_abs(lyr.get_fourier_coeffs()).astype(jnp.float32)
             else:
-                raise ValueError(
-                    f"{name} missing get_fourier_coeffs() for norm estimate."
-                )
+                raise ValueError(f"{type(lyr).__name__} missing get_fourier_coeffs().")
 
         else:
-            raise ValueError(f"Unsupported layer type for SpectralNorm: {name}")
+            raise ValueError(
+                f"Unsupported layer type for SpectralNorm: {type(lyr).__name__}"
+            )
 
-        # 2) Compute scaling with cushion
+        # 2) Scaling
         sigma_adj = sigma * jnp.asarray(self.safety_factor, jnp.float32)
         if self.mode == "clip":
             scale = jnp.maximum(1.0, sigma_adj / jnp.asarray(self.target, jnp.float32))
@@ -780,14 +607,14 @@ class SpectralNorm(StatefulLayer):
                 1e-12, sigma_adj / jnp.asarray(self.target, jnp.float32)
             )
 
-        # 3) Scaled "view" and forward
+        # 3) Apply and forward
         eff = self._scale_layer(lyr, scale)
         try:
-            out = eff(x, key=key)  # many eqx layers accept key=...
+            out = eff(x, key=key)
         except TypeError:
             out = eff(x)
 
-        return out, state
+        return out, state  # state is passed through untouched
 
 
 # =============================================================================
@@ -822,12 +649,6 @@ if __name__ == "__main__":
             core = eqx.nn.Linear(5, 10, key=k1)
             self.l1 = SpectralNorm(
                 core,
-                target=1.0,
-                mode="clip",
-                linear_method="svd",  # or 'pi' / 'pi_state'
-                conv2d_method="tn",  # irrelevant here
-                spectral2d_method="svd",  # irrelevant here
-                key=k2,
             )
             self.l2 = eqx.nn.Linear(10, 1, key=k3)
 

@@ -681,8 +681,9 @@ class SpectralDense(eqx.Module, _SpectralMixin):
         W = self.U @ (self.s[:, None] * self.V.T)
         return x @ W.T + self.bias
 
-    def __operator_norm_hint__(self) -> float:
-        return float(jnp.max(jnp.abs(self.s)))
+    def __operator_norm_hint__(self):
+        # exact: max |s| ; return JAX scalar (jit-safe)
+        return jnp.max(jnp.abs(self.s)).astype(jnp.float32)
 
 
 class AdaptiveSpectralDense(SpectralDense):
@@ -729,8 +730,9 @@ class AdaptiveSpectralDense(SpectralDense):
         α_total = _alpha_bounded(self.alpha_raw + self.delta_alpha)
         return 1.0 + k_norm**α_total
 
-    def __operator_norm_hint__(self) -> float:
-        return float(jnp.max(jnp.abs(self.s)))
+    def __operator_norm_hint__(self):
+        # exact: max |s| ; return JAX scalar (jit-safe)
+        return jnp.max(jnp.abs(self.s)).astype(jnp.float32)
 
 
 # ============================ Spectral SVD (Conv2d) ===========================
@@ -1030,8 +1032,9 @@ class RFFTCirculant1D(eqx.Module):
             else y[..., : self.in_features]
         )
 
-    def __operator_norm_hint__(self) -> float:
-        return float(jnp.max(jnp.abs(self._half_clean())))
+    def __operator_norm_hint__(self):
+        # exact: max |H_half|
+        return jnp.max(jnp.abs(self._half_clean())).astype(jnp.float32)
 
 
 class RFFTCirculant2D(eqx.Module):
@@ -1225,7 +1228,7 @@ class RFFTCirculant2D(eqx.Module):
 
         return y[0] if single else y
 
-    def __operator_norm_hint__(self) -> float:
+    def __operator_norm_hint__(self):
         K = self.K_half
         m = self._lowpass_mask_half()
         if m is not None:
@@ -1236,7 +1239,8 @@ class RFFTCirculant2D(eqx.Module):
             K.reshape(self.C_out, self.C_in, HW), (2, 0, 1)
         )  # (HW, Co, Ci)
         svals = jax.vmap(lambda M: jnp.linalg.svd(M, compute_uv=False)[0])(Khw)
-        return float(jnp.max(svals))
+        # exact per-frequency SVD over half-plane; return JAX scalar (jit-safe)
+        return jnp.max(jnp.real(svals)).astype(jnp.float32)
 
 
 class SpectralTokenMixer(eqx.Module, _SpectralMixin):
@@ -1349,11 +1353,12 @@ class SpectralTokenMixer(eqx.Module, _SpectralMixin):
         return y[0] if single else y
 
     # NEW (conservative; residual adds ≤1)
-    def __operator_norm_hint__(self) -> float:
+    def __operator_norm_hint__(self):
+        # exact with gate; +1 if residual
         g = jnp.max(jnp.abs(self.gate))
         h = jnp.max(jnp.abs(self.H_half))
-        t = g * h
-        return float(1.0 + t) if self.use_residual else float(t)
+        base = (g * h).astype(jnp.float32)
+        return base + jnp.array(1.0, jnp.float32) if self.use_residual else base
 
 
 class SVDDense(eqx.Module, _SpectralMixin):
@@ -1395,8 +1400,9 @@ class SVDDense(eqx.Module, _SpectralMixin):
         y = z @ self.U.T
         return y + self.bias
 
-    def __operator_norm_hint__(self) -> float:
-        return float(jnp.max(jnp.abs(self.s)))
+    def __operator_norm_hint__(self):
+        # exact: max |s| ; return JAX scalar (jit-safe)
+        return jnp.max(jnp.abs(self.s)).astype(jnp.float32)
 
     @classmethod
     def from_linear(

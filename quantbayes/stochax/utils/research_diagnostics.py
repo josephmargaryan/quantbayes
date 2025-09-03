@@ -129,71 +129,30 @@ def _sv_max_power_flat(W: jnp.ndarray, iters: int = 2) -> jnp.ndarray:
     return jnp.linalg.norm(W2 @ v)
 
 
-def _gather_sigmas_no_recurse(
-    obj: Any, path: str, out: List[_SigmaEntry], allow_empirical: bool
-) -> None:
+def _gather_sigmas_no_recurse(obj: Any, path: str, out: List[_SigmaEntry]) -> None:
     """
-    Append σ entries into `out`.
+    Append certified σ entries into `out`.
     Policy:
       1) If module supplies a certified __operator_norm_hint__, use it and STOP.
-      2) Otherwise, if allow_empirical=True, we MAY add empirical estimates for
-         simple linear/conv layers (flatten + quick power-iter), then STOP.
-      3) Else, recurse into children.
+      2) Else recurse into children.
     """
-    # 1) Certified hint wins and is atomic (do not dive deeper).
     hint = _try_operator_norm_hint(obj)
     if hint is not None:
         out.append(_SigmaEntry(hint, type(obj).__name__, path, "hint"))
         return
 
-    # 2) Optional empirical fallback (NOT certified; off by default).
-    if allow_empirical:
-        try:
-            import equinox.nn as nn  # local import to avoid hard coupling
-        except Exception:
-            nn = None
-
-        if nn is not None:
-            # Linear
-            if isinstance(obj, getattr(nn, "Linear", ())) and hasattr(obj, "weight"):
-                s = _sv_max_power_flat(obj.weight, iters=2)
-                out.append(_SigmaEntry(float(s), type(obj).__name__, path, "empirical"))
-                return
-
-            # Conv / ConvTranspose families -> treat as flattened kernel proxy (empirical)
-            conv_like = tuple(
-                getattr(nn, k)
-                for k in ("Conv", "Conv1d", "Conv2d", "Conv3d")
-                if hasattr(nn, k)
-            ) + tuple(
-                getattr(nn, k)
-                for k in (
-                    "ConvTranspose",
-                    "ConvTranspose1d",
-                    "ConvTranspose2d",
-                    "ConvTranspose3d",
-                )
-                if hasattr(nn, k)
-            )
-            if isinstance(obj, conv_like) and hasattr(obj, "weight"):
-                s = _sv_max_power_flat(obj.weight, iters=2)
-                out.append(_SigmaEntry(float(s), type(obj).__name__, path, "empirical"))
-                return
-
-    # 3) Recurse
     if isinstance(obj, (list, tuple)):
         for i, v in enumerate(obj):
-            _gather_sigmas_no_recurse(v, f"{path}[{i}]", out, allow_empirical)
+            _gather_sigmas_no_recurse(v, f"{path}[{i}]", out)
         return
     if isinstance(obj, dict):
         for k, v in obj.items():
-            _gather_sigmas_no_recurse(v, f"{path}.{k}", out, allow_empirical)
+            _gather_sigmas_no_recurse(v, f"{path}.{k}", out)
         return
     if isinstance(obj, eqx.Module):
         for k, v in vars(obj).items():
-            _gather_sigmas_no_recurse(v, f"{path}.{k}", out, allow_empirical)
+            _gather_sigmas_no_recurse(v, f"{path}.{k}", out)
         return
-    # Leaf and no σ → nothing to add
 
 
 def _prod_sigmas_stable(sigmas: Sequence[float]) -> float:
@@ -312,105 +271,103 @@ def compute_diagnostics(
         Callable[[eqx.Module, Any, jnp.ndarray, Optional[jr.KeyArray]], jnp.ndarray]
     ] = None,
     key: Optional[jr.KeyArray] = None,
-    compute_empirical: bool = False,  # if True, allow non-certified σ for uncovered layers
-    forbid_unknown_as_one: bool = True,  # if True and uncovered layers exist, clamp L>=1
-    lipschitz_upper_bound_fn: Optional[
-        Callable[[eqx.Module], Union[float, jnp.ndarray]]
-    ] = None,
+    lipschitz_upper_bound_fn: Callable[..., Union[float, jnp.ndarray]],
+    include_coverage: bool = False,
+    include_sigma_lists: bool = False,
 ) -> Dict[str, Any]:
     """
-    Compute model diagnostics:
-      - layer coverage (fraction of linear-like ops with certified hints)
-      - σ product bound (certified-only, no double-count via wrapper)
-      - optional margins, Lipschitz-normalized margins, and certified radius summaries
-
-    Notes
-    -----
-    • The σ product is a *serial* multiply of certified hints only.
-      For true skip/parallel structure (e.g., residual blocks), prefer passing a
-      global bound via `lipschitz_upper_bound_fn`, which becomes the L used for
-      normalized margins and certified radii.
+    Certified-only diagnostics.
+      - Requires a certified global Lipschitz bound function (BN-aware).
+      - No empirical layer estimates; no heuristic fallbacks.
     """
-    # 1) Gather σ entries — certified hints are atomic (no recursion under them).
+
+    # 1) Gather certified per-layer hints (for optional reporting only).
     sig_entries: List[_SigmaEntry] = []
-    _gather_sigmas_no_recurse(
-        model, path="model", out=sig_entries, allow_empirical=compute_empirical
-    )
-
+    _gather_sigmas_no_recurse(model, path="model", out=sig_entries)
     covered_cert = [e for e in sig_entries if e.source == "hint"]
-    covered_emp = [e for e in sig_entries if e.source == "empirical"]
 
-    n_candidates = len(sig_entries)
-    n_cert = len(covered_cert)
-    coverage = 100.0 * (n_cert / max(1, n_candidates))
-
-    # Certified-only σ product (stable)
-    cert_sigmas = [e.sigma for e in covered_cert]
-    serial_prod_sigma_bound = _prod_sigmas_stable(cert_sigmas) if cert_sigmas else 1.0
-
-    # Optional override (e.g., conv-aware global L)
-    L_from_override: Optional[float] = None
-    if lipschitz_upper_bound_fn is not None:
-        try:
-            L_from_override = float(lipschitz_upper_bound_fn(model))
-            if not (math.isfinite(L_from_override) and L_from_override > 0):
-                L_from_override = None
-        except Exception:
-            L_from_override = None
-
-    # Safe Lipschitz used for normalized margins + radius:
-    # prefer override; else clamp σ-product to >= 1 if forbid_unknown_as_one
-    if L_from_override is not None:
-        L_used = float(L_from_override)
-    else:
-        L_used = float(serial_prod_sigma_bound)
-        if forbid_unknown_as_one:
-            L_used = float(max(1.0, L_used))
-
+    # 2) Global certified L (required)
+    try:
+        L_val = float(lipschitz_upper_bound_fn(model, state))
+    except TypeError:
+        L_val = float(lipschitz_upper_bound_fn(model))  # allow (model,) signature
+    if not (math.isfinite(L_val) and L_val > 0):
+        raise ValueError(
+            "Certified global bound function returned a non-finite or non-positive value."
+        )
     out: Dict[str, Any] = {
-        "layer_coverage_pct": float(coverage),
-        "n_layers_covered": int(n_cert),
-        "serial_prod_sigma_bound": float(serial_prod_sigma_bound),
-        "skipaware_lipschitz_bound": float(L_used),
-        "sigmas": [
-            e.as_tuple()
-            for e in sorted(sig_entries, key=lambda t: t.sigma, reverse=True)
-        ],
-        "cert_only_sigmas": [
-            e.as_tuple()
-            for e in sorted(covered_cert, key=lambda t: t.sigma, reverse=True)
-        ],
-        "empirical_sigmas": [
-            e.as_tuple()
-            for e in sorted(covered_emp, key=lambda t: t.sigma, reverse=True)
-        ],
+        "skipaware_lipschitz_bound": float(L_val),
+        "L_source": "override",  # explicitly from the certified override
+        "L_clamped_to_one": False,
     }
+    out["L_raw_override"] = float(L_val)
 
-    # 2) Margins & certified radii (if data provided)
+    # Optional coverage & lists
+    if include_coverage:
+        n_candidates = len(sig_entries)
+        n_cert = len(covered_cert)
+        coverage_pct = 100.0 * (n_cert / max(1, n_candidates))
+        out.update(
+            {
+                "layer_coverage_pct": float(coverage_pct),
+                "n_layers_covered": int(n_cert),
+                "n_layers_considered": int(n_candidates),
+            }
+        )
+    if include_sigma_lists:
+        out.update(
+            {
+                "cert_only_sigmas": [
+                    e.as_tuple()
+                    for e in sorted(covered_cert, key=lambda t: t.sigma, reverse=True)
+                ],
+            }
+        )
+
+    # 3) Margins & certified radii (if data provided)
     if margin_subset is not None:
         Xs, Ys = margin_subset
+        logits = (
+            _default_predict_logits(model, state, Xs, key)
+            if predict_fn is None
+            else _call_predict(predict_fn, model, state, Xs, key)
+        )
 
-        # Choose prediction path
-        if predict_fn is None:
-            logits = _default_predict_logits(model, state, Xs, key=key)
-        else:
-            logits = _call_predict(predict_fn, model, state, Xs, key)
+        def _margins_from_logits(
+            logits_arr: jnp.ndarray, y_arr: jnp.ndarray
+        ) -> jnp.ndarray:
+            if logits_arr.ndim >= y_arr.ndim + 1 and logits_arr.shape[-1] >= 2:
+                K = logits_arr.shape[-1]
+                y_oh = jnp.take_along_axis(
+                    logits_arr, y_arr[..., None], axis=-1
+                ).squeeze(-1)
+                z_max_others = jnp.max(
+                    jnp.where(
+                        jax.nn.one_hot(y_arr, K, dtype=logits_arr.dtype) > 0,
+                        -jnp.inf,
+                        logits_arr,
+                    ),
+                    axis=-1,
+                )
+                return (y_oh - z_max_others).astype(jnp.float32)
+            z = logits_arr
+            if z.ndim == y_arr.ndim + 1 and z.shape[-1] == 1:
+                z = z.squeeze(-1)
+            sgn = 2.0 * y_arr.astype(z.dtype) - 1.0
+            return (sgn * z).astype(jnp.float32)
 
-        # Raw margins
-        margins = multiclass_margins(logits, Ys).astype(jnp.float32)
+        margins = _margins_from_logits(logits, Ys)
         mstats = _summary_stats(margins)
 
-        # Normalized margins (by L_used)
-        norm_margins = margins / jnp.float32(max(L_used, 1e-12))
+        L_safe = jnp.float32(max(L_val, 1e-12))
+        norm_margins = margins / L_safe
         nstats = _summary_stats(norm_margins)
 
-        # Certified L2 radius lower bound: r >= margin_+ / (2L)
-        radii = jnp.maximum(margins, 0.0) / (2.0 * jnp.float32(max(L_used, 1e-12)))
+        radii = jnp.maximum(margins, 0.0) / (2.0 * L_safe)
         rstats = _summary_stats(radii)
 
         out.update(
             {
-                # Raw margins
                 "margins_mean": mstats["mean"],
                 "margins_std": mstats["std"],
                 "margins_q05": mstats["q05"],
@@ -420,18 +377,15 @@ def compute_diagnostics(
                 "gamma@0.0": gamma_at_eps(margins, 0.0),
                 "gamma@0.1": gamma_at_eps(margins, 0.1),
                 "gamma@0.5": gamma_at_eps(margins, 0.5),
-                # Normalized margins
                 "norm_margins_mean": nstats["mean"],
                 "norm_margins_std": nstats["std"],
                 "norm_margins_q05": nstats["q05"],
                 "norm_margins_q50": nstats["q50"],
                 "norm_margins_q95": nstats["q95"],
-                # Certified radius (lower bound)
                 "cert_radius_lb_mean": rstats["mean"],
                 "cert_radius_lb_q05": rstats["q05"],
                 "cert_radius_lb_q50": rstats["q50"],
                 "cert_radius_lb_q95": rstats["q95"],
-                # Arrays for plotting
                 "_margins_array": margins,
                 "_norm_margins_array": norm_margins,
                 "_radii_array": radii,
@@ -447,76 +401,165 @@ def compute_diagnostics(
 # =============================================================================
 
 
-def pretty_print_diagnostics(d: Dict[str, Any]) -> None:
-    print("— diagnostics (CERTIFIED where marked) —")
-    cov = d.get("layer_coverage_pct", 0.0)
-    n_cov = d.get("n_layers_covered", 0)
-    print(f"layer coverage: {cov:.1f}%  ({n_cov} covered)")
+def pretty_print_diagnostics(
+    diag: Dict[str, Any],
+    *,
+    topk_layer_hints: int = 10,
+) -> str:
+    """
+    Render a certified-only diagnostics report as a string.
 
-    sp = d.get("serial_prod_sigma_bound", None)
-    if sp is not None:
-        print(f"serial_prod_sigma_bound: {sp:g}")
+    Expects the dictionary returned by `compute_diagnostics(...)` (the certified-only
+    version). This function prints ONLY certified quantities:
+      - Global Lipschitz upper bound L (skip/parallel-aware, BN running stats)
+      - (Optional) coverage of certified per-layer hints
+      - (Optional) summary stats for margins, normalized margins, and certified radii
+      - (Optional) gamma@ε entries if present
+      - (Optional) top-k certified per-layer operator norms from hints (for inspection only)
 
-    L = d.get("skipaware_lipschitz_bound", None)
-    if L is not None:
-        print(f"skipaware_lipschitz_bound: {L:g}")
+    No heuristic/empirical layer estimates are displayed. No σ-product lines are shown.
 
-    if "margins_mean" in d:
-        print(
-            "margins: mean={:.3f}, std={:.3f}, q05={:.4g}, q50={:.3f}, q95={:.3f}, frac<=0={:.4g}".format(
-                d["margins_mean"],
-                d["margins_std"],
-                d["margins_q05"],
-                d["margins_q50"],
-                d["margins_q95"],
-                d["margins_frac_nonpos"],
-            )
+    Args:
+        diag: Output dict from `compute_diagnostics(...)`.
+        topk_layer_hints: How many certified per-layer hint entries to show (0 disables).
+
+    Returns:
+        A single formatted string (no side effects).
+    """
+
+    def _fmt(x: Any) -> str:
+        try:
+            return f"{float(x):.6g}"
+        except Exception:
+            return str(x)
+
+    def _have(*keys: str) -> bool:
+        return all(k in diag for k in keys)
+
+    lines: List[str] = []
+    lines.append("— Certified diagnostics (ℓ2) —")
+
+    # Global L (required)
+    if "skipaware_lipschitz_bound" not in diag:
+        raise KeyError(
+            "pretty_print_diagnostics: missing 'skipaware_lipschitz_bound' in diagnostics dict."
         )
-        for eps in (0.0, 0.1, 0.5):
-            key = f"gamma@{eps}"
-            if key in d:
-                print(f"{key}: {d[key]:.4g}")
-
-    if "norm_margins_mean" in d:
-        # scientific notation so tiny values don't print as 0.000
-        print(
-            "normalized margins: mean={:.3e}, std={:.3e}, q05={:.3e}, q50={:.3e}, q95={:.3e}".format(
-                d["norm_margins_mean"],
-                d["norm_margins_std"],
-                d["norm_margins_q05"],
-                d["norm_margins_q50"],
-                d["norm_margins_q95"],
-            )
+    L = diag["skipaware_lipschitz_bound"]
+    L_src = diag.get("L_source", "certified")
+    lines.append(f"L (global certified upper bound): {_fmt(L)} [{L_src}]")
+    if bool(diag.get("L_clamped_to_one", False)):
+        lines.append("Note: L was clamped to ≥ 1.0 for normalization.")
+    if _have("layer_coverage_pct", "n_layers_covered", "n_layers_considered"):
+        lines.append(
+            "Certified layer-hint coverage: "
+            f"{int(diag['n_layers_covered'])}/{int(diag['n_layers_considered'])} "
+            f"({_fmt(diag['layer_coverage_pct'])}%)"
         )
 
-    if "cert_radius_lb_mean" in d:
-        print(
-            "cert_radius_lb: mean={:.3f}, q05={:.4g}, q50={:.3f}, q95={:.3f}".format(
-                d["cert_radius_lb_mean"],
-                d["cert_radius_lb_q05"],
-                d["cert_radius_lb_q50"],
-                d["cert_radius_lb_q95"],
-            )
+    # Margins & normalized margins & certified radii (optional block)
+    have_margins = _have(
+        "margins_mean",
+        "margins_std",
+        "margins_q05",
+        "margins_q50",
+        "margins_q95",
+        "margins_frac_nonpos",
+    )
+    have_norm_margins = _have(
+        "norm_margins_mean",
+        "norm_margins_std",
+        "norm_margins_q05",
+        "norm_margins_q50",
+        "norm_margins_q95",
+    )
+    have_radii = _have(
+        "cert_radius_lb_mean",
+        "cert_radius_lb_q05",
+        "cert_radius_lb_q50",
+        "cert_radius_lb_q95",
+    )
+
+    if have_margins or have_norm_margins or have_radii:
+        lines.append("")
+    if have_margins:
+        lines.append("Margins (y − max other):")
+        lines.append(
+            "  "
+            f"mean={_fmt(diag['margins_mean'])}  "
+            f"std={_fmt(diag['margins_std'])}  "
+            f"q05={_fmt(diag['margins_q05'])}  "
+            f"q50={_fmt(diag['margins_q50'])}  "
+            f"q95={_fmt(diag['margins_q95'])}  "
+            f"frac≤0={_fmt(diag['margins_frac_nonpos'])}"
         )
 
-    cert = d.get("cert_only_sigmas", [])
-    emp = d.get("empirical_sigmas", [])
+    if have_norm_margins:
+        lines.append("Normalized margins (by L):")
+        lines.append(
+            "  "
+            f"mean={_fmt(diag['norm_margins_mean'])}  "
+            f"std={_fmt(diag['norm_margins_std'])}  "
+            f"q05={_fmt(diag['norm_margins_q05'])}  "
+            f"q50={_fmt(diag['norm_margins_q50'])}  "
+            f"q95={_fmt(diag['norm_margins_q95'])}"
+        )
 
-    def _fmt(entries: List[Tuple[float, str, str, str]]) -> List[str]:
-        rows = []
-        for s, qn, pth, src in entries:
-            tag = "[hint]" if src == "hint" else "[emp]"
-            rows.append(f"  {s:.4g}      {qn:<24} @ {pth:<30} {tag}")
-        return rows
+    if have_radii:
+        lines.append("Certified radii (lower bounds):")
+        lines.append(
+            "  "
+            f"mean={_fmt(diag['cert_radius_lb_mean'])}  "
+            f"q05={_fmt(diag['cert_radius_lb_q05'])}  "
+            f"q50={_fmt(diag['cert_radius_lb_q50'])}  "
+            f"q95={_fmt(diag['cert_radius_lb_q95'])}"
+        )
 
-    if cert:
-        print("top-σ (certified) layers:")
-        for line in _fmt(cert[:8]):
-            print(line)
-    if emp:
-        print("top-σ (empirical) layers:")
-        for line in _fmt(emp[:8]):
-            print(line)
+    # gamma@ε lines if present (e.g., 'gamma@0.0', 'gamma@0.1', ...)
+    gamma_items = [
+        (k, diag[k])
+        for k in diag.keys()
+        if isinstance(k, str) and k.startswith("gamma@")
+    ]
+    if gamma_items:
+
+        def _parse_eps(k: str) -> float:
+            try:
+                return float(k.split("@", 1)[1])
+            except Exception:
+                return float("inf")
+
+        gamma_items.sort(key=lambda kv: _parse_eps(kv[0]))
+        lines.append("Certified γ@ε (fraction with margin ≤ ε):")  # <-- fixed label
+        lines.append("  " + "  ".join(f"{k}={_fmt(v)}" for k, v in gamma_items))
+
+    # Top-k certified hint entries (not used to form L; for inspection only)
+    if topk_layer_hints > 0 and "cert_only_sigmas" in diag and diag["cert_only_sigmas"]:
+        entries = list(diag["cert_only_sigmas"])
+        # Expect tuples of (sigma, type_name, path, source)
+        try:
+            entries.sort(key=lambda t: float(t[0]), reverse=True)
+        except Exception:
+            entries.sort(key=lambda t: str(t[0]), reverse=True)
+
+        k = min(topk_layer_hints, len(entries))
+        if k > 0:
+            lines.append("")
+            lines.append(
+                f"Top-{k} certified per-layer operator norms (hints; not used to form L):"
+            )
+            for i in range(k):
+                e = entries[i]
+                sigma = e[0] if len(e) > 0 else None
+                type_name = e[1] if len(e) > 1 else "<?>"
+                path = e[2] if len(e) > 2 else "<?>"
+                lines.append(f"  {i+1:>2}. σ={_fmt(sigma)}  {type_name}  @ {path}")
+
+    lines.append("")
+    lines.append(
+        "All values are computed with certified bounds only (no heuristics). "
+        "BatchNorm uses running statistics."
+    )
+    return "\n".join(lines)
 
 
 def plot_margin_distribution(
