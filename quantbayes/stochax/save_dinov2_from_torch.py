@@ -1,31 +1,53 @@
-# save_dinov2_from_torch.py
 """
-Export a PyTorch DINOv2/timm/FAIR checkpoint to .npz.
+Download DINOv2 backbones from PyTorch Hub and save as NumPy .npz for Equinox loaders.
 
-- Point to a local .pth/.pt or programmatically load from timm/facebookresearch.
-- Saves raw state_dict() tensors with original keys; the Equinox loader handles renaming.
+Usage examples:
+  $ python quantbayes/stochax/save_dinov2_from_torch.py --arch vits14 --registers
+  $ python quantbayes/stochax/save_dinov2_from_torch.py --arch vitb14
+  $ python quantbayes/stochax/save_dinov2_from_torch.py --arch vitl14 --registers
+
+Files will be named like: dinov2_vitb14_reg.npz
 """
+
 from pathlib import Path
+import argparse
 import numpy as np
 import torch
 
-# Example: local path or torch.hub load
-ckpt_path = "dinov2_base_pretrain.pth"  # change to your file
+
+ALIASES = {
+    "vits14": ("facebookresearch/dinov2", "dinov2_vits14"),
+    "vitb14": ("facebookresearch/dinov2", "dinov2_vitb14"),
+    "vitl14": ("facebookresearch/dinov2", "dinov2_vitl14"),
+    "vitg14": ("facebookresearch/dinov2", "dinov2_vitg14"),
+}
+ALIASES_REG = {
+    "vits14": ("facebookresearch/dinov2", "dinov2_vits14_reg"),
+    "vitb14": ("facebookresearch/dinov2", "dinov2_vitb14_reg"),
+    "vitl14": ("facebookresearch/dinov2", "dinov2_vitl14_reg"),
+    "vitg14": ("facebookresearch/dinov2", "dinov2_vitg14_reg"),
+}
 
 
 def main():
-    sd = torch.load(ckpt_path, map_location="cpu")
-    # If the file contains a dict with "model" or "state_dict", pick it:
-    if isinstance(sd, dict) and "state_dict" in sd:
-        sd = sd["state_dict"]
-    elif isinstance(sd, dict) and "model" in sd and isinstance(sd["model"], dict):
-        sd = sd["model"]
-
-    out = Path(Path(ckpt_path).stem + ".npz")
-    np.savez(
-        out, **{k: (v.cpu().numpy() if hasattr(v, "cpu") else v) for k, v in sd.items()}
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--arch", required=True, choices=list(ALIASES.keys()))
+    ap.add_argument(
+        "--registers", action="store_true", help="Use *with registers* variant"
     )
-    print(f"✓ saved: {out}")
+    ap.add_argument("--out", type=Path, default=Path("."))
+    args = ap.parse_args()
+
+    repo, name = (ALIASES_REG if args.registers else ALIASES)[args.arch]
+    print(f"⇢ loading torch.hub {repo}:{name}")
+    model = torch.hub.load(repo, name, trust_repo=True)
+    sd = model.state_dict()
+
+    suffix = "reg" if args.registers else "noreg"
+    fname = args.out / f"dinov2_{args.arch}_{suffix}.npz"
+    print(f"↳ saving → {fname}")
+    np.savez(fname, **{k: v.cpu().numpy() for k, v in sd.items()})
+    print("✓ done")
 
 
 if __name__ == "__main__":

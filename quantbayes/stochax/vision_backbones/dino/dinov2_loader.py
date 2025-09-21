@@ -1,18 +1,12 @@
-# quantbayes/stochax/vision_backbones/dino/dinov2_loader.py
-import jax
 from __future__ import annotations
 from typing import Any, Dict, Tuple, Optional, Literal
-
-import re
-import math
-import numpy as np
-import jax.numpy as jnp
+import re, math, numpy as np
+import jax, jax.numpy as jnp
 import equinox as eqx
 from equinox import tree_at
 
-
 _HAS_SPECTRAL = False
-SVDDense = object  # placeholder
+SVDDense = object
 try:
     from quantbayes.stochax.layers.spectral_layers import SVDDense  # type: ignore
 
@@ -32,65 +26,35 @@ def _as_jnp(x):
     return jnp.asarray(x)
 
 
-def _resize_pos_embed_2d(tv_pos: jnp.ndarray, target_len: int) -> jnp.ndarray:
-    """tv_pos: [1,L_tv,D] or [L_tv,D] → [1, L_target, D]; keeps CLS at 0; 2D-aware if square."""
-    if tv_pos.ndim == 2:
-        tv_pos = tv_pos[None, ...]
-    cls = tv_pos[:, :1, :]
-    seq = tv_pos[:, 1:, :]  # [1, L-1, D]
-    L_tv = int(seq.shape[1])
+def _strip_known_prefixes(k: str) -> str:
+    for p in ("module.", "model.", "backbone.", "trunk."):
+        if k.startswith(p):
+            return k[len(p) :]
+    return k
+
+
+def _resize_pos(tv: jnp.ndarray, target_len: int) -> jnp.ndarray:
+    if tv.ndim == 2:
+        tv = tv[None, ...]
+    cls, seq = tv[:, :1, :], tv[:, 1:, :]
     L_tgt = int(target_len - 1)
-    if L_tv == L_tgt:
-        return tv_pos
-    old_hw = int(round(math.sqrt(L_tv)))
-    new_hw = int(round(math.sqrt(L_tgt)))
-    if old_hw * old_hw == L_tv and new_hw * new_hw == L_tgt:
-        # 2D resize
-        seq2 = seq.reshape(1, old_hw, old_hw, seq.shape[-1])
+    if seq.shape[1] == L_tgt:
+        return tv
+    old = int(seq.shape[1])
+    oh = int(round(math.sqrt(old)))
+    nh = int(round(math.sqrt(L_tgt)))
+    if oh * oh == old and nh * nh == L_tgt:
         seq2 = jax.image.resize(
-            seq2, (1, new_hw, new_hw, seq.shape[-1]), method="linear"
-        )
-        seq2 = seq2.reshape(1, new_hw * new_hw, seq.shape[-1])
+            seq.reshape(1, oh, oh, seq.shape[-1]),
+            (1, nh, nh, seq.shape[-1]),
+            method="linear",
+        ).reshape(1, nh * nh, seq.shape[-1])
     else:
-        # length-only fallback
         seq2 = jax.image.resize(seq, (1, L_tgt, seq.shape[-1]), method="linear")
     return jnp.concatenate([cls, seq2], axis=1)
 
 
-def _infer_block_prefixes(keys: Dict[str, Any], depth: int) -> Dict[int, str]:
-    """
-    DINOv2 checkpoints sometimes chunk blocks: e.g. 'blocks.0.3.attn.qkv.weight'.
-    Return a dict i->prefix like 'blocks.{i}' or 'blocks.0.{i}' that actually exists.
-    """
-    kset = set(keys)
-    out = {}
-    for i in range(depth):
-        candidates = [
-            f"blocks.{i}",
-            f"blocks.0.{i}",
-            f"backbone.blocks.{i}",
-            f"backbone.blocks.0.{i}",
-            f"model.backbone.blocks.{i}",
-            f"encoder.block.{i}",
-            f"encoder.layers.{i}",
-        ]
-        for p in candidates:
-            if any(k.startswith(p + ".") for k in kset):
-                out[i] = p
-                break
-        if i not in out:
-            # try regex
-            for k in kset:
-                m = re.match(r"(.*blocks\.\d+\.)" + str(i) + r"\.", k)
-                if m:
-                    out[i] = m.group(1) + str(i)
-                    break
-    return out
-
-
-def _copy_svddense(mod, W, b, report):
-    import jax
-
+def _svd_warmstart_svddense(mod, W, b, report):
     U, s, Vh = jnp.linalg.svd(W, full_matrices=False)
     r = min(len(s), getattr(mod, "s").shape[0])
     U = jax.lax.stop_gradient(U[:, :r].astype(mod.U.dtype))
@@ -111,7 +75,7 @@ def _copy_into(
     pt: Dict[str, jnp.ndarray],
     *,
     prefix: str,
-    spectral_warmstart: bool,
+    spectral: bool,
     report: Dict[str, Any],
 ):
     w_key, b_key = f"{prefix}.weight", f"{prefix}.bias"
@@ -123,10 +87,10 @@ def _copy_into(
             return pt[prefix]
         return obj
 
-    if _HAS_SPECTRAL and isinstance(obj, SVDDense) and spectral_warmstart:
+    if _HAS_SPECTRAL and isinstance(obj, SVDDense) and spectral:
         if w_key in pt:
             try:
-                new = _copy_svddense(obj, pt[w_key], pt.get(b_key), report)
+                new = _svd_warmstart_svddense(obj, pt[w_key], pt.get(b_key), report)
                 report["used"].add(w_key)
                 if b_key in pt:
                     report["used"].add(b_key)
@@ -167,11 +131,7 @@ def _copy_into(
         for name, child in vars(obj).items():
             child_prefix = name if prefix == "" else f"{prefix}.{name}"
             new_child = _copy_into(
-                child,
-                pt,
-                prefix=child_prefix,
-                spectral_warmstart=spectral_warmstart,
-                report=report,
+                child, pt, prefix=child_prefix, spectral=spectral, report=report
             )
             if new_child is not child:
                 try:
@@ -184,15 +144,7 @@ def _copy_into(
         seq = []
         for i, c in enumerate(obj):
             pfx = f"{prefix}.{i}" if prefix else str(i)
-            seq.append(
-                _copy_into(
-                    c,
-                    pt,
-                    prefix=pfx,
-                    spectral_warmstart=spectral_warmstart,
-                    report=report,
-                )
-            )
+            seq.append(_copy_into(c, pt, prefix=pfx, spectral=spectral, report=report))
         return type(obj)(seq)
 
     if isinstance(obj, dict):
@@ -201,7 +153,7 @@ def _copy_into(
                 v,
                 pt,
                 prefix=f"{prefix}.{k}" if prefix else k,
-                spectral_warmstart=spectral_warmstart,
+                spectral=spectral,
                 report=report,
             )
             for k, v in obj.items()
@@ -218,98 +170,73 @@ def load_dinov2(
     spectral_warmstart: Literal["skip", "svd"] = "skip",
     verbose: bool = True,
 ) -> Tuple[eqx.Module, Dict[str, Any]]:
-    """
-    Load a DINO/DINOv2 checkpoint saved as .npz (see save scripts).
-    - Maps conv patch_embed to Linear
-    - Handles fused qkv → (q,k,v) split
-    - Resizes positional embedding to current num_patches (CLS+patches only)
-    - Copies register_tokens if present
-    - Optionally SVD-warm-starts SVDDense
-    """
     raw = dict(np.load(npz_path, allow_pickle=False))
-    # jnp-ify
-    for k in list(raw.keys()):
-        raw[k] = _as_jnp(raw[k])
+    # unify prefixes (module./model./backbone./trunk.)
+    raw = {_strip_known_prefixes(k): _as_jnp(v) for k, v in raw.items()}
 
-    # build param table in terms of *your* module paths
     pt: Dict[str, jnp.ndarray] = {}
 
-    # ---- Patch embedding conv -> linear
-    Wpe = None
-    for k in (
-        "patch_embed.proj.weight",
-        "backbone.patch_embed.proj.weight",
-        "model.patch_embed.proj.weight",
-    ):
-        if k in raw:
-            Wpe = raw[k]
-            break
+    # patch embed conv -> linear
+    Wpe = raw.get("patch_embed.proj.weight", None)
+    if Wpe is None:
+        Wpe = raw.get("embedding.conv.weight", None)
     if Wpe is not None:
         E, C, ph, pw = map(int, Wpe.shape)
         pt["patch_embedding.linear.weight"] = Wpe.reshape(E, C * ph * pw)
-        b_key = None
-        for k in (
-            "patch_embed.proj.bias",
-            "backbone.patch_embed.proj.bias",
-            "model.patch_embed.proj.bias",
-        ):
-            if k in raw:
-                b_key = k
-                break
-        if b_key is not None:
-            pt["patch_embedding.linear.bias"] = raw[b_key]
+        Bpe = raw.get("patch_embed.proj.bias", raw.get("embedding.conv.bias", None))
+        if Bpe is not None:
+            pt["patch_embedding.linear.bias"] = Bpe
 
-    # ---- Tokens: cls / register / mask / pos_embed
-    for k in ("cls_token", "backbone.cls_token", "model.cls_token"):
-        if k in raw:
-            v = raw[k].reshape(-1, raw[k].shape[-1])  # [1,D]
-            pt["cls_token"] = v
-            break
-    # register tokens [1,R,D] or [R,D]
-    for k in ("register_tokens", "backbone.register_tokens", "model.register_tokens"):
-        if k in raw:
-            v = raw[k]
-            v = v.reshape(-1, v.shape[-1]) if v.ndim == 3 else v
-            pt["register_tokens"] = v
-            break
-    # pos_embed [1,1+N_tv,D] -> [1+N_cur,D]
-    for k in ("pos_embed", "backbone.pos_embed", "model.pos_embed"):
-        if k in raw:
-            tv = raw[k]
-            # eqx tree carries target num_patches on attribute
-            L_target = int(
-                getattr(eqx_tree, "positional_embedding").shape[0]
-            )  # [1+N, D]
-            pos = _resize_pos_embed_2d(tv, L_target).squeeze(0)
-            pt["positional_embedding"] = pos
-            break
+    # tokens/pos
+    if "cls_token" in raw:
+        pt["cls_token"] = raw["cls_token"].reshape(-1, raw["cls_token"].shape[-1])
+    if "register_tokens" in raw:
+        reg = raw["register_tokens"]
+        pt["register_tokens"] = reg.reshape(-1, reg.shape[-1]) if reg.ndim == 3 else reg
+    if "pos_embed" in raw:
+        L_target = int(getattr(eqx_tree, "positional_embedding").shape[0])
+        pt["positional_embedding"] = _resize_pos(raw["pos_embed"], L_target).squeeze(0)
 
-    # ---- Final norm
-    for wname in ("norm.weight", "backbone.norm.weight", "model.norm.weight"):
-        if wname in raw:
-            pt["norm.weight"] = raw[wname]
-            break
-    for bname in ("norm.bias", "backbone.norm.bias", "model.norm.bias"):
-        if bname in raw:
-            pt["norm.bias"] = raw[bname]
-            break
+    # final norm
+    if "norm.weight" in raw:
+        pt["norm.weight"] = raw["norm.weight"]
+    if "norm.bias" in raw:
+        pt["norm.bias"] = raw["norm.bias"]
 
-    # ---- Blocks
+    # blocks: try a few prefix schemes automatically
     depth = len(getattr(eqx_tree, "attention_blocks"))
-    prefixes = _infer_block_prefixes(raw.keys(), depth)
+
+    def find_block_prefix(i: int) -> Optional[str]:
+        cand_roots = ["blocks", "encoder.block", "encoder.layers"]
+        for root in cand_roots:
+            p = f"{root}.{i}."
+            if any(k.startswith(p) for k in raw.keys()):
+                return f"{root}.{i}"
+        # also allow chunked blocks like "blocks.0.{i}."
+        m = [k for k in raw.keys() if re.search(rf"blocks\.\d+\.{i}\.", k)]
+        if m:
+            return re.sub(rf"(blocks\.\d+\.{i}).*", r"\1", m[0])
+        # last resort: model.blocks.* was stripped; try direct qkv key probe
+        for k in raw.keys():
+            if re.search(rf"(.*blocks\.){i}\.attn\.qkv\.weight$", k):
+                return re.sub(r"\.attn\..*$", "", k)
+        return None
 
     for i in range(depth):
-        pref = prefixes.get(i, f"blocks.{i}")
-        # LayerNorms
-        for suf_src, suf_dst in (("norm1", "layer_norm1"), ("norm2", "layer_norm2")):
-            w = f"{pref}.{suf_src}.weight"
-            b = f"{pref}.{suf_src}.bias"
-            if w in raw:
-                pt[f"attention_blocks.{i}.{suf_dst}.weight"] = raw[w]
-            if b in raw:
-                pt[f"attention_blocks.{i}.{suf_dst}.bias"] = raw[b]
+        pref = find_block_prefix(i)
+        if pref is None:
+            continue
 
-        # qkv fused
+        # ln1/ln2 (DINOv2 uses norm1/norm2)
+        for src, dst in (("norm1", "norm1"), ("norm2", "norm2")):
+            w = f"{pref}.{src}.weight"
+            b = f"{pref}.{src}.bias"
+            if w in raw:
+                pt[f"attention_blocks.{i}.{dst}.weight"] = raw[w]
+            if b in raw:
+                pt[f"attention_blocks.{i}.{dst}.bias"] = raw[b]
+
+        # qkv fused → split
         for qkv_w in (
             f"{pref}.attn.qkv.weight",
             f"{pref}.self_attention.qkv.weight",
@@ -333,6 +260,7 @@ def load_dinov2(
                 pt[f"attention_blocks.{i}.attn.k_proj.bias"] = bk
                 pt[f"attention_blocks.{i}.attn.v_proj.bias"] = bv
                 break
+
         # out proj
         for ow in (
             f"{pref}.attn.proj.weight",
@@ -350,7 +278,8 @@ def load_dinov2(
             if ob in raw:
                 pt[f"attention_blocks.{i}.attn.out_proj.bias"] = raw[ob]
                 break
-        # mlp
+
+        # mlp (fc1/fc2 or 0/3)
         for w1 in (f"{pref}.mlp.fc1.weight", f"{pref}.mlp.0.weight"):
             if w1 in raw:
                 pt[f"attention_blocks.{i}.mlp1.weight"] = raw[w1]
@@ -367,27 +296,20 @@ def load_dinov2(
             if b2 in raw:
                 pt[f"attention_blocks.{i}.mlp2.bias"] = raw[b2]
                 break
-        # LayerScale (gamma or grandma)
-        for tag, dst in (("ls1", "ls1"), ("ls2", "ls2")):
-            g = None
-            for gk in (f"{pref}.{tag}.gamma", f"{pref}.{tag}.grandma"):
-                if gk in raw:
-                    g = raw[gk]
-                    break
+
+        # LayerScale gamma/grandma
+        for tag in ("ls1", "ls2"):
+            g = raw.get(f"{pref}.{tag}.gamma", raw.get(f"{pref}.{tag}.grandma", None))
             if g is not None:
-                pt[f"attention_blocks.{i}.{dst}"] = g
+                pt[f"attention_blocks.{i}.{tag}"] = g
 
-    # ---- Head (often identity) — load only if shapes match or strict_fc=True
-    for wname in ("head.weight", "backbone.head.weight", "model.head.weight"):
-        if wname in raw:
-            pt["head.weight"] = raw[wname]
-            break
-    for bname in ("head.bias", "backbone.head.bias", "model.head.bias"):
-        if bname in raw:
-            pt["head.bias"] = raw[bname]
-            break
+    # head (often identity)
+    if "head.weight" in raw and "weight" in vars(eqx_tree.head):
+        pt["head.weight"] = raw["head.weight"]
+    if "head.bias" in raw and getattr(eqx_tree.head, "bias", None) is not None:
+        pt["head.bias"] = raw["head.bias"]
 
-    # ---- now copy into tree
+    # copy into tree
     report = {
         "used": set(),
         "unused_keys": [],
@@ -398,22 +320,17 @@ def load_dinov2(
         "n_total_pt": sum(_numel(v) for v in pt.values()),
     }
     new_tree = _copy_into(
-        eqx_tree,
-        pt,
-        prefix="",
-        spectral_warmstart=(spectral_warmstart == "svd"),
-        report=report,
+        eqx_tree, pt, prefix="", spectral=(spectral_warmstart == "svd"), report=report
     )
     report["unused_keys"] = sorted(set(pt.keys()) - report["used"])
     report["coverage"] = float(report["n_loaded"]) / max(1, report["n_total_pt"])
 
-    # head shape sanity when strict
     if strict_fc and ("head.weight" in pt):
         want = tuple(getattr(new_tree.head, "weight").shape)
         have = tuple(pt["head.weight"].shape)
-        if have != want:
+        if want != have:
             raise ValueError(
-                f"Head shape mismatch PT {have} vs model {want} (strict_fc=True)."
+                f"Head mismatch: PT {have} vs model {want} (strict_fc=True)."
             )
 
     if verbose:
@@ -422,8 +339,10 @@ def load_dinov2(
         )
         if report["unused_keys"]:
             print(
-                f"[dinov2 loader] note: {len(report['unused_keys'])} mapped params unused (expected if layers absent)."
+                f"[dinov2 loader] mapped-but-unused params: {len(report['unused_keys'])}"
             )
-        if report["mismatch"]:
-            print(f"[dinov2 loader] mismatches: {len(report['mismatch'])}.")
+        if report["spectral_errors"]:
+            print(
+                f"[dinov2 loader] spectral warmstart errors: {report['spectral_errors'][:3]} ..."
+            )
     return new_tree, report
