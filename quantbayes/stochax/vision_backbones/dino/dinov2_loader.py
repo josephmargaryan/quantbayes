@@ -1,261 +1,429 @@
-# dinov2_loader.py
-"""
-Load a DINOv2 ViT checkpoint saved as .npz into DINOViTEncoder (Equinox).
-
-- Handles official FAIR/timm/HF-ish key patterns.
-- Supports fused or split (q,k,v) attention projections.
-- Converts 1D pos_embed (with/without CLS) to 2D learned grid.
-- Verifies/register-token count when strict=True.
-
-Usage:
-    enc = build_dinov2_encoder("vitb14", image_size=518, num_registers=4, use_cls=True, key=...)
-    enc = load_dinov2_npz(enc, "dinov2-base.npz", strict=True)
-"""
-
+# quantbayes/stochax/vision_backbones/dino/dinov2_loader.py
+import jax
 from __future__ import annotations
-from typing import Dict, Tuple
+from typing import Any, Dict, Tuple, Optional, Literal
+
+import re
+import math
 import numpy as np
 import jax.numpy as jnp
 import equinox as eqx
-
-from .vit_dino_eqx import DINOViTEncoder
-
-
-def _sqrt_int(n: int) -> Tuple[int, int]:
-    r = int(round(n**0.5))
-    if r * r == n:
-        return r, r
-    # Try a nearby factorization (rectangular grids)
-    for a in range(max(1, r - 8), r + 9):
-        if a > 0 and n % a == 0:
-            return a, n // a
-    # Fallback: nearest square
-    return r, max(1, n // max(1, r))
+from equinox import tree_at
 
 
-def _strip_prefixes(k: str) -> str:
-    for p in ("module.", "model.", "backbone.", "vit."):
-        if k.startswith(p):
-            return k[len(p) :]
-    return k
+_HAS_SPECTRAL = False
+SVDDense = object  # placeholder
+try:
+    from quantbayes.stochax.layers.spectral_layers import SVDDense  # type: ignore
+
+    _HAS_SPECTRAL = True
+except Exception:
+    pass
 
 
-def _rename_dinov2_key(k: str) -> str:
+def _numel(a) -> int:
+    try:
+        return int(a.size)
+    except Exception:
+        return int(np.prod(a.shape))
+
+
+def _as_jnp(x):
+    return jnp.asarray(x)
+
+
+def _resize_pos_embed_2d(tv_pos: jnp.ndarray, target_len: int) -> jnp.ndarray:
+    """tv_pos: [1,L_tv,D] or [L_tv,D] → [1, L_target, D]; keeps CLS at 0; 2D-aware if square."""
+    if tv_pos.ndim == 2:
+        tv_pos = tv_pos[None, ...]
+    cls = tv_pos[:, :1, :]
+    seq = tv_pos[:, 1:, :]  # [1, L-1, D]
+    L_tv = int(seq.shape[1])
+    L_tgt = int(target_len - 1)
+    if L_tv == L_tgt:
+        return tv_pos
+    old_hw = int(round(math.sqrt(L_tv)))
+    new_hw = int(round(math.sqrt(L_tgt)))
+    if old_hw * old_hw == L_tv and new_hw * new_hw == L_tgt:
+        # 2D resize
+        seq2 = seq.reshape(1, old_hw, old_hw, seq.shape[-1])
+        seq2 = jax.image.resize(
+            seq2, (1, new_hw, new_hw, seq.shape[-1]), method="linear"
+        )
+        seq2 = seq2.reshape(1, new_hw * new_hw, seq.shape[-1])
+    else:
+        # length-only fallback
+        seq2 = jax.image.resize(seq, (1, L_tgt, seq.shape[-1]), method="linear")
+    return jnp.concatenate([cls, seq2], axis=1)
+
+
+def _infer_block_prefixes(keys: Dict[str, Any], depth: int) -> Dict[int, str]:
     """
-    Map common DINOv2/timm/HF-ish keys to our Equinox tree names.
-
-    Accepted endpoints after rename:
-      - patch_embed.(weight|bias)
-      - cls_token
-      - reg_token  (or register_tokens)
-      - pos_embed
-      - blocks.{i}.(ln1|ln2).(weight|bias)
-      - blocks.{i}.attn.(qkv.weight|qkv.bias|proj.weight|proj.bias)
-      - blocks.{i}.mlp.(fc1|fc2).(weight|bias)
-      - norm.(weight|bias)
+    DINOv2 checkpoints sometimes chunk blocks: e.g. 'blocks.0.3.attn.qkv.weight'.
+    Return a dict i->prefix like 'blocks.{i}' or 'blocks.0.{i}' that actually exists.
     """
-    k = _strip_prefixes(k)
-
-    # Patch embed (HF: embeddings.patch_embeddings.projection.*)
-    k = k.replace("embeddings.patch_embeddings.projection.", "patch_embed.")
-    k = k.replace("patch_embed.proj.", "patch_embed.")
-    k = k.replace("patch_embed.projection.", "patch_embed.")
-
-    # Blocks
-    k = k.replace("blocks.", "blocks.")
-    k = k.replace(".norm1.", ".ln1.")
-    k = k.replace(".norm2.", ".ln2.")
-
-    # Attention (HF split paths)
-    k = k.replace(".attention.attention.query.", ".attn.qkv_q.")
-    k = k.replace(".attention.attention.key.", ".attn.qkv_k.")
-    k = k.replace(".attention.attention.value.", ".attn.qkv_v.")
-    k = k.replace(".attention.output.dense.", ".attn.proj.")
-
-    # MLP (timm/HF)
-    k = k.replace(".mlp.fc1.", ".mlp.fc1.")
-    k = k.replace(".mlp.fc2.", ".mlp.fc2.")
-    k = k.replace(".intermediate.dense.", ".mlp.fc1.")
-    k = k.replace(".output.dense.", ".mlp.fc2.")
-
-    # Final norm
-    k = k.replace("norm.", "norm.")
-
-    # Positional & tokens
-    if k in (
-        "pos_embed",
-        "embeddings.position_embeddings",
-        "embeddings.position_embedding",
-    ):
-        k = "pos_embed"
-    if k in ("cls_token", "embeddings.cls_token"):
-        k = "cls_token"
-    if k in ("reg_token", "register_token", "register_tokens"):
-        k = "reg_token"
-    return k
+    kset = set(keys)
+    out = {}
+    for i in range(depth):
+        candidates = [
+            f"blocks.{i}",
+            f"blocks.0.{i}",
+            f"backbone.blocks.{i}",
+            f"backbone.blocks.0.{i}",
+            f"model.backbone.blocks.{i}",
+            f"encoder.block.{i}",
+            f"encoder.layers.{i}",
+        ]
+        for p in candidates:
+            if any(k.startswith(p + ".") for k in kset):
+                out[i] = p
+                break
+        if i not in out:
+            # try regex
+            for k in kset:
+                m = re.match(r"(.*blocks\.\d+\.)" + str(i) + r"\.", k)
+                if m:
+                    out[i] = m.group(1) + str(i)
+                    break
+    return out
 
 
-def _copy_into_tree(obj, pt: Dict[str, jnp.ndarray], prefix: str = ""):
-    """Recursively copy Conv2d/Linear/LayerNorm params (and ndarray leaves) into an Equinox pytree."""
-    if isinstance(obj, eqx.Module):
-        for name, attr in vars(obj).items():
-            full = f"{prefix}{name}"
+def _copy_svddense(mod, W, b, report):
+    import jax
 
-            # Conv2d
-            if isinstance(attr, eqx.nn.Conv2d):
-                new_attr = attr
-                if f"{full}.weight" in pt:
-                    new_attr = eqx.tree_at(
-                        lambda m: m.weight, new_attr, pt[f"{full}.weight"]
-                    )
-                if f"{full}.bias" in pt:
-                    new_attr = eqx.tree_at(
-                        lambda m: m.bias, new_attr, pt[f"{full}.bias"]
-                    )
-                obj = eqx.tree_at(lambda m: getattr(m, name), obj, new_attr)
-                continue
+    U, s, Vh = jnp.linalg.svd(W, full_matrices=False)
+    r = min(len(s), getattr(mod, "s").shape[0])
+    U = jax.lax.stop_gradient(U[:, :r].astype(mod.U.dtype))
+    V = jax.lax.stop_gradient(Vh.T[:, :r].astype(mod.V.dtype))
+    s = s[:r].astype(mod.s.dtype)
+    new = tree_at(lambda m: m.U, mod, U)
+    new = tree_at(lambda m: m.V, new, V)
+    new = tree_at(lambda m: m.s, new, s)
+    if hasattr(new, "bias") and (b is not None):
+        new = tree_at(lambda m: m.bias, new, b.astype(new.bias.dtype))
+    report["spectral_warmstarted"] += 1
+    report["n_loaded"] += _numel(W) + (_numel(b) if (b is not None) else 0)
+    return new
 
-            # Linear
-            if isinstance(attr, eqx.nn.Linear):
-                new_attr = attr
-                if f"{full}.weight" in pt:
-                    new_attr = eqx.tree_at(
-                        lambda m: m.weight, new_attr, pt[f"{full}.weight"]
-                    )
-                if f"{full}.bias" in pt:
-                    new_attr = eqx.tree_at(
-                        lambda m: m.bias, new_attr, pt[f"{full}.bias"]
-                    )
-                obj = eqx.tree_at(lambda m: getattr(m, name), obj, new_attr)
-                continue
 
-            # LayerNorm
-            if isinstance(attr, eqx.nn.LayerNorm):
-                w_key, b_key = f"{full}.weight", f"{full}.bias"
-                if (w_key in pt) or (b_key in pt):
-                    obj = eqx.tree_at(
-                        lambda m: (getattr(m, name).weight, getattr(m, name).bias),
-                        obj,
-                        (
-                            pt.get(w_key, getattr(attr, "weight")),
-                            pt.get(b_key, getattr(attr, "bias")),
-                        ),
-                    )
-                continue
+def _copy_into(
+    obj,
+    pt: Dict[str, jnp.ndarray],
+    *,
+    prefix: str,
+    spectral_warmstart: bool,
+    report: Dict[str, Any],
+):
+    w_key, b_key = f"{prefix}.weight", f"{prefix}.bias"
 
-            # Tuples of submodules
-            if isinstance(attr, tuple):
-                new_tuple = []
-                for i, child in enumerate(attr):
-                    child_full = f"{full}.{i}"
-                    new_tuple.append(_copy_into_tree(child, pt, prefix=child_full))
-                obj = eqx.tree_at(lambda m: getattr(m, name), obj, tuple(new_tuple))
-                continue
-
-            # Raw ndarray leaves (tokens/pos_grid) handled explicitly elsewhere
+    if isinstance(obj, jnp.ndarray):
+        if prefix in pt and tuple(pt[prefix].shape) == tuple(obj.shape):
+            report["used"].add(prefix)
+            report["n_loaded"] += _numel(pt[prefix])
+            return pt[prefix]
         return obj
+
+    if _HAS_SPECTRAL and isinstance(obj, SVDDense) and spectral_warmstart:
+        if w_key in pt:
+            try:
+                new = _copy_svddense(obj, pt[w_key], pt.get(b_key), report)
+                report["used"].add(w_key)
+                if b_key in pt:
+                    report["used"].add(b_key)
+                return new
+            except Exception as e:
+                report["spectral_errors"].append((prefix, repr(e)))
+                report["used"].add(w_key)
+                if b_key in pt:
+                    report["used"].add(b_key)
+                return obj
+
+    if isinstance(obj, eqx.nn.Linear):
+        if w_key in pt and tuple(pt[w_key].shape) == tuple(obj.weight.shape):
+            new = tree_at(lambda m: m.weight, obj, pt[w_key])
+            report["used"].add(w_key)
+            report["n_loaded"] += _numel(pt[w_key])
+            if b_key in pt and (obj.bias is not None):
+                new = tree_at(lambda m: m.bias, new, pt[b_key])
+                report["used"].add(b_key)
+                report["n_loaded"] += _numel(pt[b_key])
+            return new
+        return obj
+
+    if isinstance(obj, eqx.nn.LayerNorm):
+        new = obj
+        if w_key in pt:
+            new = tree_at(lambda m: m.weight, new, pt[w_key])
+            report["used"].add(w_key)
+            report["n_loaded"] += _numel(pt[w_key])
+        if b_key in pt:
+            new = tree_at(lambda m: m.bias, new, pt[b_key])
+            report["used"].add(b_key)
+            report["n_loaded"] += _numel(pt[b_key])
+        return new
+
+    if isinstance(obj, eqx.Module):
+        new_obj = obj
+        for name, child in vars(obj).items():
+            child_prefix = name if prefix == "" else f"{prefix}.{name}"
+            new_child = _copy_into(
+                child,
+                pt,
+                prefix=child_prefix,
+                spectral_warmstart=spectral_warmstart,
+                report=report,
+            )
+            if new_child is not child:
+                try:
+                    new_obj = tree_at(lambda m: getattr(m, name), new_obj, new_child)
+                except TypeError:
+                    object.__setattr__(new_obj, name, new_child)
+        return new_obj
+
+    if isinstance(obj, (list, tuple)):
+        seq = []
+        for i, c in enumerate(obj):
+            pfx = f"{prefix}.{i}" if prefix else str(i)
+            seq.append(
+                _copy_into(
+                    c,
+                    pt,
+                    prefix=pfx,
+                    spectral_warmstart=spectral_warmstart,
+                    report=report,
+                )
+            )
+        return type(obj)(seq)
+
+    if isinstance(obj, dict):
+        return {
+            k: _copy_into(
+                v,
+                pt,
+                prefix=f"{prefix}.{k}" if prefix else k,
+                spectral_warmstart=spectral_warmstart,
+                report=report,
+            )
+            for k, v in obj.items()
+        }
+
     return obj
 
 
-def load_dinov2_npz(
-    encoder: DINOViTEncoder, npz_path: str, *, strict: bool = True
-) -> DINOViTEncoder:
+def load_dinov2(
+    eqx_tree: eqx.Module,
+    npz_path: str,
+    *,
+    strict_fc: bool = False,
+    spectral_warmstart: Literal["skip", "svd"] = "skip",
+    verbose: bool = True,
+) -> Tuple[eqx.Module, Dict[str, Any]]:
     """
-    Load a DINOv2-style ViT checkpoint saved as .npz into our DINOViTEncoder.
-
-    Important expected mappings:
-      - patch_embed.(weight|bias)
-      - cls_token, reg_token (optional)
-      - pos_embed: [1,N,D] or [Gh,Gw,D] or [N,D]  → pos_grid: [Gh,Gw,D]
-      - blocks.{i}.(ln1|ln2).(weight|bias)
-      - blocks.{i}.attn.(qkv.weight|qkv.bias|proj.weight|proj.bias)
-      - blocks.{i}.mlp.(fc1|fc2).(weight|bias)
-      - norm.(weight|bias)
+    Load a DINO/DINOv2 checkpoint saved as .npz (see save scripts).
+    - Maps conv patch_embed to Linear
+    - Handles fused qkv → (q,k,v) split
+    - Resizes positional embedding to current num_patches (CLS+patches only)
+    - Copies register_tokens if present
+    - Optionally SVD-warm-starts SVDDense
     """
     raw = dict(np.load(npz_path, allow_pickle=False))
-    # transform keys
+    # jnp-ify
+    for k in list(raw.keys()):
+        raw[k] = _as_jnp(raw[k])
+
+    # build param table in terms of *your* module paths
     pt: Dict[str, jnp.ndarray] = {}
-    for k, v in raw.items():
-        new_k = _rename_dinov2_key(k)
-        pt[new_k] = jnp.asarray(v)
 
-    # ---- tokens & pos grid (explicit) ---- #
-    # cls_token
-    if "cls_token" in pt:
-        ct = pt["cls_token"]
-        if ct.ndim == 3:  # [1,1,D]
-            ct = ct[0, 0]
-        elif ct.ndim == 2:  # [1,D]
-            ct = ct[0]
-        assert ct.shape == (
-            encoder.dim,
-        ), f"cls_token dim mismatch: {ct.shape} vs {(encoder.dim,)}"
-        encoder = eqx.tree_at(lambda m: m.cls_token, encoder, ct)
+    # ---- Patch embedding conv -> linear
+    Wpe = None
+    for k in (
+        "patch_embed.proj.weight",
+        "backbone.patch_embed.proj.weight",
+        "model.patch_embed.proj.weight",
+    ):
+        if k in raw:
+            Wpe = raw[k]
+            break
+    if Wpe is not None:
+        E, C, ph, pw = map(int, Wpe.shape)
+        pt["patch_embedding.linear.weight"] = Wpe.reshape(E, C * ph * pw)
+        b_key = None
+        for k in (
+            "patch_embed.proj.bias",
+            "backbone.patch_embed.proj.bias",
+            "model.patch_embed.proj.bias",
+        ):
+            if k in raw:
+                b_key = k
+                break
+        if b_key is not None:
+            pt["patch_embedding.linear.bias"] = raw[b_key]
 
-    # reg_token(s)
-    if "reg_token" in pt:
-        rt = pt["reg_token"]
-        if rt.ndim == 3:  # [1,R,D]
-            rt = rt[0]
-        assert (
-            rt.shape[-1] == encoder.dim
-        ), f"reg_token D mismatch: {rt.shape} vs (*,{encoder.dim})"
-        R = rt.shape[0]
-        if encoder.num_registers != R:
-            if strict:
-                raise ValueError(
-                    f"Checkpoint has {R} register tokens; encoder.num_registers={encoder.num_registers}."
-                )
-        encoder = eqx.tree_at(lambda m: m.reg_tokens, encoder, rt)
+    # ---- Tokens: cls / register / mask / pos_embed
+    for k in ("cls_token", "backbone.cls_token", "model.cls_token"):
+        if k in raw:
+            v = raw[k].reshape(-1, raw[k].shape[-1])  # [1,D]
+            pt["cls_token"] = v
+            break
+    # register tokens [1,R,D] or [R,D]
+    for k in ("register_tokens", "backbone.register_tokens", "model.register_tokens"):
+        if k in raw:
+            v = raw[k]
+            v = v.reshape(-1, v.shape[-1]) if v.ndim == 3 else v
+            pt["register_tokens"] = v
+            break
+    # pos_embed [1,1+N_tv,D] -> [1+N_cur,D]
+    for k in ("pos_embed", "backbone.pos_embed", "model.pos_embed"):
+        if k in raw:
+            tv = raw[k]
+            # eqx tree carries target num_patches on attribute
+            L_target = int(
+                getattr(eqx_tree, "positional_embedding").shape[0]
+            )  # [1+N, D]
+            pos = _resize_pos_embed_2d(tv, L_target).squeeze(0)
+            pt["positional_embedding"] = pos
+            break
 
-    # pos_embed → pos_grid [Gh,Gw,D] (strip cls if present)
-    if "pos_embed" in pt:
-        pe = pt["pos_embed"]
-        if pe.ndim == 3 and pe.shape[0] == 1:
-            pe = pe[0]  # [N,D] or [Gh,Gw,D]
-        if pe.ndim == 2:  # [N, D] → try to infer grid
-            N, D = pe.shape
-            # If first token is CLS, drop it (common HF convention)
-            if encoder.use_cls and (N - 1) in (
-                encoder.pos_grid.shape[0] * encoder.pos_grid.shape[1],
-            ):
-                pe = pe[1:]
-                N = N - 1
-            Gh, Gw = _sqrt_int(N)
-            pe = pe.reshape(Gh, Gw, D)
-        assert (
-            pe.shape[-1] == encoder.dim
-        ), f"pos_embed dim mismatch: {pe.shape} vs (*,* ,{encoder.dim})"
-        encoder = eqx.tree_at(lambda m: m.pos_grid, encoder, pe)
+    # ---- Final norm
+    for wname in ("norm.weight", "backbone.norm.weight", "model.norm.weight"):
+        if wname in raw:
+            pt["norm.weight"] = raw[wname]
+            break
+    for bname in ("norm.bias", "backbone.norm.bias", "model.norm.bias"):
+        if bname in raw:
+            pt["norm.bias"] = raw[bname]
+            break
 
-    # ---- fuse split q/k/v (HF) into qkv ---- #
-    q_keys = [k for k in list(pt.keys()) if ".attn.qkv_q." in k]
-    if q_keys:
-        fused: Dict[str, jnp.ndarray] = {}
-        for kq in q_keys:
-            base = kq.replace(".attn.qkv_q.", ".attn.qkv.")
-            kk = kq.replace("_q.", "_k.")
-            kv = kq.replace("_q.", "_v.")
-            Wq, Wk, Wv = pt[kq], pt[kk], pt[kv]
-            fused[base + "weight"] = jnp.concatenate([Wq, Wk, Wv], axis=0)
-            bq = pt.get(kq.replace("weight", "bias"))
-            bk = pt.get(kk.replace("weight", "bias"))
-            bv = pt.get(kv.replace("weight", "bias"))
-            if bq is not None and bk is not None and bv is not None:
-                fused[base + "bias"] = jnp.concatenate([bq, bk, bv], axis=0)
-            # remove originals
-            for kk_ in (
-                kq,
-                kk,
-                kv,
-                kq.replace("weight", "bias"),
-                kk.replace("weight", "bias"),
-                kv.replace("weight", "bias"),
-            ):
-                pt.pop(kk_, None)
-        pt.update(fused)
+    # ---- Blocks
+    depth = len(getattr(eqx_tree, "attention_blocks"))
+    prefixes = _infer_block_prefixes(raw.keys(), depth)
 
-    # ---- copy rest into the tree ---- #
-    encoder = _copy_into_tree(encoder, pt, prefix="")
+    for i in range(depth):
+        pref = prefixes.get(i, f"blocks.{i}")
+        # LayerNorms
+        for suf_src, suf_dst in (("norm1", "layer_norm1"), ("norm2", "layer_norm2")):
+            w = f"{pref}.{suf_src}.weight"
+            b = f"{pref}.{suf_src}.bias"
+            if w in raw:
+                pt[f"attention_blocks.{i}.{suf_dst}.weight"] = raw[w]
+            if b in raw:
+                pt[f"attention_blocks.{i}.{suf_dst}.bias"] = raw[b]
 
-    return encoder
+        # qkv fused
+        for qkv_w in (
+            f"{pref}.attn.qkv.weight",
+            f"{pref}.self_attention.qkv.weight",
+            f"{pref}.attn.in_proj_weight",
+        ):
+            if qkv_w in raw:
+                W = raw[qkv_w]
+                Wq, Wk, Wv = jnp.split(W, 3, axis=0)
+                pt[f"attention_blocks.{i}.attn.q_proj.weight"] = Wq
+                pt[f"attention_blocks.{i}.attn.k_proj.weight"] = Wk
+                pt[f"attention_blocks.{i}.attn.v_proj.weight"] = Wv
+                break
+        for qkv_b in (
+            f"{pref}.attn.qkv.bias",
+            f"{pref}.self_attention.qkv.bias",
+            f"{pref}.attn.in_proj_bias",
+        ):
+            if qkv_b in raw:
+                bq, bk, bv = jnp.split(raw[qkv_b], 3, axis=0)
+                pt[f"attention_blocks.{i}.attn.q_proj.bias"] = bq
+                pt[f"attention_blocks.{i}.attn.k_proj.bias"] = bk
+                pt[f"attention_blocks.{i}.attn.v_proj.bias"] = bv
+                break
+        # out proj
+        for ow in (
+            f"{pref}.attn.proj.weight",
+            f"{pref}.attention.proj.weight",
+            f"{pref}.attn.out_proj.weight",
+        ):
+            if ow in raw:
+                pt[f"attention_blocks.{i}.attn.out_proj.weight"] = raw[ow]
+                break
+        for ob in (
+            f"{pref}.attn.proj.bias",
+            f"{pref}.attention.proj.bias",
+            f"{pref}.attn.out_proj.bias",
+        ):
+            if ob in raw:
+                pt[f"attention_blocks.{i}.attn.out_proj.bias"] = raw[ob]
+                break
+        # mlp
+        for w1 in (f"{pref}.mlp.fc1.weight", f"{pref}.mlp.0.weight"):
+            if w1 in raw:
+                pt[f"attention_blocks.{i}.mlp1.weight"] = raw[w1]
+                break
+        for b1 in (f"{pref}.mlp.fc1.bias", f"{pref}.mlp.0.bias"):
+            if b1 in raw:
+                pt[f"attention_blocks.{i}.mlp1.bias"] = raw[b1]
+                break
+        for w2 in (f"{pref}.mlp.fc2.weight", f"{pref}.mlp.3.weight"):
+            if w2 in raw:
+                pt[f"attention_blocks.{i}.mlp2.weight"] = raw[w2]
+                break
+        for b2 in (f"{pref}.mlp.fc2.bias", f"{pref}.mlp.3.bias"):
+            if b2 in raw:
+                pt[f"attention_blocks.{i}.mlp2.bias"] = raw[b2]
+                break
+        # LayerScale (gamma or grandma)
+        for tag, dst in (("ls1", "ls1"), ("ls2", "ls2")):
+            g = None
+            for gk in (f"{pref}.{tag}.gamma", f"{pref}.{tag}.grandma"):
+                if gk in raw:
+                    g = raw[gk]
+                    break
+            if g is not None:
+                pt[f"attention_blocks.{i}.{dst}"] = g
+
+    # ---- Head (often identity) — load only if shapes match or strict_fc=True
+    for wname in ("head.weight", "backbone.head.weight", "model.head.weight"):
+        if wname in raw:
+            pt["head.weight"] = raw[wname]
+            break
+    for bname in ("head.bias", "backbone.head.bias", "model.head.bias"):
+        if bname in raw:
+            pt["head.bias"] = raw[bname]
+            break
+
+    # ---- now copy into tree
+    report = {
+        "used": set(),
+        "unused_keys": [],
+        "mismatch": [],
+        "spectral_warmstarted": 0,
+        "spectral_errors": [],
+        "n_loaded": 0,
+        "n_total_pt": sum(_numel(v) for v in pt.values()),
+    }
+    new_tree = _copy_into(
+        eqx_tree,
+        pt,
+        prefix="",
+        spectral_warmstart=(spectral_warmstart == "svd"),
+        report=report,
+    )
+    report["unused_keys"] = sorted(set(pt.keys()) - report["used"])
+    report["coverage"] = float(report["n_loaded"]) / max(1, report["n_total_pt"])
+
+    # head shape sanity when strict
+    if strict_fc and ("head.weight" in pt):
+        want = tuple(getattr(new_tree.head, "weight").shape)
+        have = tuple(pt["head.weight"].shape)
+        if have != want:
+            raise ValueError(
+                f"Head shape mismatch PT {have} vs model {want} (strict_fc=True)."
+            )
+
+    if verbose:
+        print(
+            f"[dinov2 loader] coverage ~{100*report['coverage']:.2f}% | spectral-warmstarted: {report['spectral_warmstarted']}"
+        )
+        if report["unused_keys"]:
+            print(
+                f"[dinov2 loader] note: {len(report['unused_keys'])} mapped params unused (expected if layers absent)."
+            )
+        if report["mismatch"]:
+            print(f"[dinov2 loader] mismatches: {len(report['mismatch'])}.")
+    return new_tree, report

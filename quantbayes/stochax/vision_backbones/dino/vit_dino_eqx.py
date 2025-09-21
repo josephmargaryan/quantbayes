@@ -1,305 +1,257 @@
-# vit_dino_eqx.py
-"""
-Equinox DINO(v2) ViT encoder + thin classifier/segmentation wrappers.
-
-- Single-sample forward, channel-first input x: [C,H,W].
-- __call__(self, x, key, state) -> (out, state).
-- Encoder returns ((cls, grid), state):
-    cls: [D] or None (if use_cls=False)
-    grid: [D, H_p, W_p] patch-grid features (H_p = H//patch).
-- Supports DINOv2 "register" tokens (num_registers in {0,4,8} typically).
-- Positional embeddings stored as a learned 2D grid (pretrain resolution)
-  and bilinearly interpolated at run time for any input size.
-
-Best practices:
-- No BatchNorm/stateful layers; state is threaded but unused.
-- Minimal, faithful ViT (pre-norm, GELU MLP, fused QKV attention).
-- No Dropout/DropPath inside (DINO uses strong augmentation/multicrop during pretrain).
-"""
-
+# quantbayes/stochax/vision_backbones/dino/vit_dino_eqx.py
 from __future__ import annotations
-from typing import Tuple, Optional, Dict
+from typing import Tuple, Optional, Literal
 
+import math
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jr
 
 
-# ------------------------- specs ------------------------- #
-DINOV2_SPECS: Dict[str, Dict] = {
-    # DINOv2 variants, patch size 14
-    "vits14": dict(patch=14, dim=384, depth=12, heads=6),
-    "vitb14": dict(patch=14, dim=768, depth=12, heads=12),
-    "vitl14": dict(patch=14, dim=1024, depth=24, heads=16),
-    "vitg14": dict(patch=14, dim=1536, depth=40, heads=24),
-}
+Pool = Literal["cls", "mean_patch"]
 
 
-# ------------------------- helpers ------------------------- #
-def _to_patches(
-    x: jnp.ndarray, conv: eqx.nn.Conv2d
-) -> Tuple[jnp.ndarray, Tuple[int, int]]:
-    # x: [C,H,W] → conv: [D, H', W'] → tokens [H'*W', D]
-    z = conv(x, key=None)
-    D, Hh, Ww = z.shape
-    tokens = jnp.reshape(jnp.moveaxis(z, 0, -1), (Hh * Ww, D))
-    return tokens, (Hh, Ww)
+class PatchEmbedding(eqx.Module):
+    """(C,H,W) -> (N_patches, D).  DINO uses a conv in PyTorch; here we keep the
+    same linearized equivalent so weight export is easy."""
+
+    linear: eqx.nn.Linear
+    patch_size: int
+    in_ch: int = eqx.field(static=True)
+    out_dim: int = eqx.field(static=True)
+
+    def __init__(self, in_channels: int, embed_dim: int, patch_size: int, *, key):
+        self.in_ch = int(in_channels)
+        self.out_dim = int(embed_dim)
+        self.patch_size = int(patch_size)
+        self.linear = eqx.nn.Linear(
+            patch_size * patch_size * in_channels, embed_dim, key=key
+        )
+
+    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
+        # x: [C,H,W], H/W % patch_size == 0 (assert upstream)
+        ps = self.patch_size
+        C, H, W = x.shape
+        assert H % ps == 0 and W % ps == 0, "H,W must be multiples of patch size"
+        # unfold into (N_patches, C*ps*ps) and apply linear per patch
+        # reshape → vmap(linear)
+        nH, nW = H // ps, W // ps
+        patches = x.reshape(C, nH, ps, nW, ps).transpose(
+            1, 3, 0, 2, 4
+        )  # [nH,nW,C,ps,ps]
+        patches = patches.reshape(nH * nW, C * ps * ps)  # [N, C*ps*ps]
+        return jax.vmap(self.linear)(patches)  # [N, D]
 
 
-def _interp_pos_grid(pos_grid: jnp.ndarray, Hh: int, Ww: int) -> jnp.ndarray:
-    # pos_grid: [Gh, Gw, D] → bilinear to [Hh, Ww, D]
-    Gh, Gw, D = pos_grid.shape
-    ys = jnp.linspace(0, Gh - 1, Hh)
-    xs = jnp.linspace(0, Gw - 1, Ww)
-    yy, xx = jnp.meshgrid(ys, xs, indexing="ij")
-    y0 = jnp.floor(yy).astype(jnp.int32)
-    x0 = jnp.floor(xx).astype(jnp.int32)
-    y1 = jnp.minimum(y0 + 1, Gh - 1)
-    x1 = jnp.minimum(x0 + 1, Gw - 1)
-    wy = yy - y0
-    wx = xx - x0
-    p00 = pos_grid[y0, x0]  # [Hh,Ww,D]
-    p10 = pos_grid[y1, x0]
-    p01 = pos_grid[y0, x1]
-    p11 = pos_grid[y1, x1]
-    top = (1 - wx)[..., None] * p00 + wx[..., None] * p01
-    bot = (1 - wx)[..., None] * p10 + wx[..., None] * p11
-    return (1 - wy)[..., None] * top + wy[..., None] * bot  # [Hh,Ww,D]
-
-
-# ------------------------- core blocks ------------------------- #
-class Attention(eqx.Module):
-    qkv: eqx.nn.Linear  # fused [D -> 3D]
-    proj: eqx.nn.Linear
+class MultiheadSelfAttention(eqx.Module):
+    q_proj: eqx.nn.Linear
+    k_proj: eqx.nn.Linear
+    v_proj: eqx.nn.Linear
+    out_proj: eqx.nn.Linear
     num_heads: int = eqx.field(static=True)
-    scale: float = eqx.field(static=True)
+    embed_dim: int = eqx.field(static=True)
+    head_dim: int = eqx.field(static=True)
 
-    def __init__(self, dim: int, num_heads: int, *, key):
-        k1, k2 = jr.split(key, 2)
-        self.qkv = eqx.nn.Linear(dim, 3 * dim, key=k1)
-        self.proj = eqx.nn.Linear(dim, dim, key=k2)
-        object.__setattr__(self, "num_heads", int(num_heads))
-        head_dim = dim // num_heads
-        object.__setattr__(self, "scale", 1.0 / (head_dim**0.5))
+    def __init__(self, embed_dim: int, num_heads: int, *, key):
+        if embed_dim % num_heads != 0:
+            raise ValueError("embed_dim must be divisible by num_heads")
+        kq, kk, kv, ko = jr.split(key, 4)
+        self.embed_dim = int(embed_dim)
+        self.num_heads = int(num_heads)
+        self.head_dim = self.embed_dim // self.num_heads
+        self.q_proj = eqx.nn.Linear(self.embed_dim, self.embed_dim, key=kq)
+        self.k_proj = eqx.nn.Linear(self.embed_dim, self.embed_dim, key=kk)
+        self.v_proj = eqx.nn.Linear(self.embed_dim, self.embed_dim, key=kv)
+        self.out_proj = eqx.nn.Linear(self.embed_dim, self.embed_dim, key=ko)
 
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
         # x: [N, D]
-        N, D = x.shape
-        H = self.num_heads
-        Dh = D // H
-
-        qkv = self.qkv(x)  # [N, 3D]
-        q, k, v = jnp.split(qkv, 3, axis=-1)  # [N, D] each
-
-        def _reshape(a):  # [N, D] → [H, N, Dh]
-            return a.reshape(N, H, Dh).transpose(1, 0, 2)
-
-        q, k, v = map(_reshape, (q, k, v))
-
-        attn = jax.nn.softmax(jnp.einsum("hnd,hmd->hnm", q * self.scale, k), axis=-1)
-        out = jnp.einsum("hnm,hmd->hnd", attn, v)  # [H,N,Dh]
-        out = out.transpose(1, 0, 2).reshape(N, D)  # [N,D]
-        return self.proj(out)
+        D, H, hd = self.embed_dim, self.num_heads, self.head_dim
+        q = jax.vmap(self.q_proj)(x)  # [N,D]
+        k = jax.vmap(self.k_proj)(x)
+        v = jax.vmap(self.v_proj)(x)
+        # split heads
+        q = q.reshape(-1, H, hd).transpose(1, 0, 2)  # [H,N,hd]
+        k = k.reshape(-1, H, hd).transpose(1, 2, 0)  # [H,hd,N]
+        v = v.reshape(-1, H, hd).transpose(1, 0, 2)  # [H,N,hd]
+        scale = 1.0 / math.sqrt(hd)
+        attn = jax.nn.softmax(jnp.matmul(q * scale, k), axis=-1)  # [H,N,N]
+        ctx = jnp.matmul(attn, v).transpose(1, 0, 2).reshape(-1, D)  # [N,D]
+        return jax.vmap(self.out_proj)(ctx)
 
 
-class MLP(eqx.Module):
-    fc1: eqx.nn.Linear
-    fc2: eqx.nn.Linear
+class AttentionBlock(eqx.Module):
+    norm1: eqx.nn.LayerNorm
+    attn: MultiheadSelfAttention
+    norm2: eqx.nn.LayerNorm
+    mlp1: eqx.nn.Linear
+    mlp2: eqx.nn.Linear
+    dropout1: eqx.nn.Dropout
+    dropout2: eqx.nn.Dropout
+    # optional LayerScale (DINOv2 often uses tiny gamma)
+    ls1: jnp.ndarray | None
+    ls2: jnp.ndarray | None
 
-    def __init__(self, dim: int, mlp_ratio: float, *, key):
-        k1, k2 = jr.split(key, 2)
-        hidden = int(dim * mlp_ratio)
-        self.fc1 = eqx.nn.Linear(dim, hidden, key=k1)
-        self.fc2 = eqx.nn.Linear(hidden, dim, key=k2)
+    def __init__(
+        self,
+        embed_dim: int,
+        hidden_dim: int,
+        num_heads: int,
+        dropout_rate: float,
+        *,
+        key,
+        layer_scale_init: float | None = 1e-5,
+    ):
+        k_attn, k_mlp = jr.split(key, 2)
+        self.norm1 = eqx.nn.LayerNorm(embed_dim)
+        self.attn = MultiheadSelfAttention(embed_dim, num_heads, key=k_attn)
+        self.norm2 = eqx.nn.LayerNorm(embed_dim)
+        self.mlp1 = eqx.nn.Linear(embed_dim, hidden_dim, key=k_mlp)
+        self.mlp2 = eqx.nn.Linear(hidden_dim, embed_dim, key=jr.split(k_mlp, 2)[1])
+        self.dropout1 = eqx.nn.Dropout(dropout_rate)
+        self.dropout2 = eqx.nn.Dropout(dropout_rate)
+        if layer_scale_init and layer_scale_init > 0:
+            self.ls1 = jnp.ones((embed_dim,), dtype=jnp.float32) * float(
+                layer_scale_init
+            )
+            self.ls2 = jnp.ones((embed_dim,), dtype=jnp.float32) * float(
+                layer_scale_init
+            )
+        else:
+            self.ls1 = None
+            self.ls2 = None
 
-    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
-        return self.fc2(jax.nn.gelu(self.fc1(x)))
+    def __call__(self, x: jnp.ndarray, *, key) -> jnp.ndarray:
+        k1, k2 = jr.split(key)
+        # pre-norm
+        a = self.attn(jax.vmap(self.norm1)(x))
+        a = self.dropout1(a, key=k1)
+        if self.ls1 is not None:
+            x = x + a * self.ls1
+        else:
+            x = x + a
 
-
-class ViTBlock(eqx.Module):
-    ln1: eqx.nn.LayerNorm
-    attn: Attention
-    ln2: eqx.nn.LayerNorm
-    mlp: MLP
-
-    def __init__(self, dim: int, heads: int, mlp_ratio: float, *, key):
-        k1, k2, k3 = jr.split(key, 3)
-        self.ln1 = eqx.nn.LayerNorm(dim, elementwise_affine=True)
-        self.attn = Attention(dim, heads, key=k1)
-        self.ln2 = eqx.nn.LayerNorm(dim, elementwise_affine=True)
-        self.mlp = MLP(dim, mlp_ratio, key=k2)
-
-    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
-        x = x + self.attn(self.ln1(x))
-        x = x + self.mlp(self.ln2(x))
+        m = jax.vmap(self.mlp2)(
+            jax.vmap(jax.nn.gelu)(jax.vmap(self.mlp1)(jax.vmap(self.norm2)(x)))
+        )
+        m = self.dropout2(m, key=k2)
+        if self.ls2 is not None:
+            x = x + m * self.ls2
+        else:
+            x = x + m
         return x
 
 
-# ------------------------- encoder ------------------------- #
-class DINOViTEncoder(eqx.Module):
-    # patch embed
-    patch_embed: eqx.nn.Conv2d  # 3→D, kernel=stride=patch
-    # tokens
-    cls_token: jnp.ndarray  # [D] or empty
-    reg_tokens: Optional[jnp.ndarray]  # [R, D] or None
-    # learned positional grid at pretrain resolution
-    pos_grid: jnp.ndarray  # [Gh, Gw, D]
-    # transformer
-    blocks: Tuple[ViTBlock, ...]
+class DinoVisionTransformer(eqx.Module):
+    """DINO/DINOv2-style ViT with optional register tokens.
+
+    Fields are named to match your loaders & surgery utils:
+    - patch_embedding.linear.{weight,bias}
+    - positional_embedding (learnable) for [CLS + patches] only
+    - cls_token, register_tokens (R x D or None)
+    - attention_blocks[i].{layer_norm1,attention,layer_norm2,linear1,linear2}
+    - norm, head
+    """
+
+    patch_embedding: PatchEmbedding
+    positional_embedding: jnp.ndarray  # [1 + N_patches, D]
+    cls_token: jnp.ndarray  # [1, D]
+    register_tokens: jnp.ndarray | None  # [R, D] or None
+    attention_blocks: Tuple[AttentionBlock, ...]
     norm: eqx.nn.LayerNorm
+    head: eqx.nn.Linear
+    dropout: eqx.nn.Dropout
 
     # statics
-    dim: int = eqx.field(static=True)
-    patch: int = eqx.field(static=True)
-    num_registers: int = eqx.field(static=True)
-    use_cls: bool = eqx.field(static=True)
+    embed_dim: int = eqx.field(static=True)
+    num_layers: int = eqx.field(static=True)
+    patch_size: int = eqx.field(static=True)
+    num_patches: int = eqx.field(static=True)
+    n_register_tokens: int = eqx.field(static=True)
+    pool: Pool = eqx.field(static=True)
 
     def __init__(
         self,
         *,
-        image_size: int = 518,  # DINOv2 pretrain crop; grid = (image_size // patch)
-        patch: int = 14,
-        dim: int = 768,
-        depth: int = 12,
-        heads: int = 12,
-        mlp_ratio: float = 4.0,
-        num_registers: int = 0,  # 0/4/8 for DINOv2
-        use_cls: bool = True,
+        embedding_dim: int,
+        hidden_dim: int,
+        num_heads: int,
+        num_layers: int,
+        patch_size: int,
+        num_patches: int,
+        num_classes: int,
+        n_register_tokens: int = 0,
+        dropout_rate: float = 0.0,
+        layer_scale_init: float | None = 1e-5,
+        pool: Pool = "cls",
+        channels: int = 3,
         key,
     ):
-        k_conv, k_tok, k_blocks = jr.split(key, 3)
-        self.patch_embed = eqx.nn.Conv2d(
-            3, dim, kernel_size=patch, stride=patch, padding=0, key=k_conv
-        )
+        k_patch, k_misc = jr.split(key)
+        self.embed_dim = int(embedding_dim)
+        self.num_layers = int(num_layers)
+        self.patch_size = int(patch_size)
+        self.num_patches = int(num_patches)
+        self.n_register_tokens = int(n_register_tokens)
+        self.pool = pool
 
-        Gh = max(1, image_size // patch)
-        Gw = max(1, image_size // patch)
-        self.pos_grid = jr.normal(k_tok, (Gh, Gw, dim)) * 0.02
-
-        self.cls_token = (
-            jr.normal(jr.fold_in(k_tok, 1), (dim,)) * 0.02
-            if use_cls
-            else jnp.zeros((0,), dtype=jnp.float32)
+        self.patch_embedding = PatchEmbedding(
+            channels, embedding_dim, patch_size, key=k_patch
         )
-        self.reg_tokens = (
-            jr.normal(jr.fold_in(k_tok, 2), (num_registers, dim)) * 0.02
-            if num_registers > 0
+        self.positional_embedding = jr.normal(k_misc, (1 + num_patches, embedding_dim))
+        self.cls_token = jr.normal(jr.fold_in(k_misc, 1), (1, embedding_dim))
+        self.register_tokens = (
+            jr.normal(jr.fold_in(k_misc, 2), (n_register_tokens, embedding_dim))
+            if n_register_tokens > 0
             else None
         )
 
-        ks = jr.split(k_blocks, depth)
-        self.blocks = tuple(
-            ViTBlock(dim, heads, mlp_ratio, key=ks[i]) for i in range(depth)
-        )
-        self.norm = eqx.nn.LayerNorm(dim, elementwise_affine=True)
+        blocks = []
+        keys = jr.split(jr.fold_in(k_misc, 3), num_layers)
+        for kb in keys:
+            blocks.append(
+                AttentionBlock(
+                    embedding_dim,
+                    hidden_dim,
+                    num_heads,
+                    dropout_rate,
+                    key=kb,
+                    layer_scale_init=layer_scale_init,
+                )
+            )
+        self.attention_blocks = tuple(blocks)
+        self.norm = eqx.nn.LayerNorm(embedding_dim)
+        self.head = eqx.nn.Linear(embedding_dim, num_classes, key=jr.fold_in(k_misc, 4))
+        self.dropout = eqx.nn.Dropout(dropout_rate)
 
-        object.__setattr__(self, "dim", dim)
-        object.__setattr__(self, "patch", patch)
-        object.__setattr__(self, "num_registers", int(num_registers))
-        object.__setattr__(self, "use_cls", bool(use_cls))
+    def _tokens(self, x: jnp.ndarray, *, key) -> jnp.ndarray:
+        """Build token sequence: [CLS, (R registers), patches] + add pos to [CLS+patches]."""
+        ps = self.patch_size
+        C, H, W = x.shape
+        if (H % ps) or (W % ps):
+            raise ValueError(f"H,W must be multiples of patch size={ps}; got {(H,W)}.")
+        patches = self.patch_embedding(x)  # [N,D]
+        seq = jnp.concatenate([self.cls_token, patches], axis=0)  # [1+N, D]
+        seq = seq + self.positional_embedding[: seq.shape[0]]
+        if self.register_tokens is not None and self.register_tokens.shape[0] > 0:
+            seq = jnp.concatenate([seq[:1], self.register_tokens, seq[1:]], axis=0)
+        return self.dropout(seq, key=key)
 
     def __call__(self, x: jnp.ndarray, key, state):
-        # x: [C,H,W]; returns (cls, grid) where grid is [D,H//patch,W//patch]
-        tokens, (Hh, Ww) = _to_patches(x, self.patch_embed)  # [N, D]
-        pos = _interp_pos_grid(self.pos_grid, Hh, Ww).reshape(Hh * Ww, self.dim)
-        seq = tokens + pos
-
-        if self.num_registers > 0:
-            seq = jnp.concatenate([self.reg_tokens, seq], axis=0)
-        if self.use_cls:
-            seq = jnp.concatenate([self.cls_token[None, :], seq], axis=0)
-
-        for blk in self.blocks:
-            seq = blk(seq)
-
-        seq = self.norm(seq)
-
-        off = 0
-        cls = None
-        if self.use_cls:
-            cls = seq[0]
-            off = 1
-        if self.num_registers > 0:
-            off += self.num_registers
-        patch_tok = seq[off:]  # [Hh*Ww, D]
-        grid = jnp.moveaxis(
-            jnp.reshape(patch_tok, (Hh, Ww, self.dim)), -1, 0
-        )  # [D,Hh,Ww]
-        return (cls, grid), state
-
-
-# ------------------------- thin wrappers ------------------------- #
-class DINOClassifier(eqx.Module):
-    """Linear/head-on-CLS classifier. Freeze encoder for linear probe, or fine-tune."""
-
-    encoder: DINOViTEncoder
-    head: eqx.nn.Linear  # linear probe on CLS
-
-    def __init__(self, num_classes: int, *, encoder: DINOViTEncoder, key):
-        if not encoder.use_cls:
-            raise ValueError("DINOClassifier requires use_cls=True in encoder.")
-        self.encoder = encoder
-        self.head = eqx.nn.Linear(encoder.dim, num_classes, key=key)
-
-    def __call__(self, x, key, state):
-        (cls, _), state = self.encoder(x, key=key, state=state)
-        logits = self.head(cls)
+        # x: [C,H,W] single sample
+        ktoks, *krest = jr.split(key, self.num_layers + 1)
+        x = self._tokens(x, key=ktoks)  # [1+R+N, D]
+        for block, kb in zip(self.attention_blocks, krest):
+            x = block(x, key=kb)
+        x = jax.vmap(self.norm)(x)  # [T,D]
+        # pooling
+        if self.pool == "cls":
+            feat = x[0]
+        else:  # mean over patches (exclude CLS + registers)
+            start = 1 + (
+                self.register_tokens.shape[0] if self.register_tokens is not None else 0
+            )
+            feat = jnp.mean(x[start:], axis=0)
+        logits = self.head(feat)
         return logits, state
-
-
-class DINODenseHead(eqx.Module):
-    """Minimal dense head for segmentation: 1x1 conv on patch grid + bilinear upsample."""
-
-    proj: eqx.nn.Conv2d
-
-    def __init__(self, in_ch: int, out_ch: int, *, key):
-        self.proj = eqx.nn.Conv2d(in_ch, out_ch, kernel_size=1, key=key)
-
-    def __call__(self, grid: jnp.ndarray, image_hw: Tuple[int, int], *, key=None):
-        # grid: [C,Hh,Ww] -> logits: [out_ch,H,W]
-        H, W = image_hw
-        logits = self.proj(grid, key=key)
-        return jax.image.resize(logits, (logits.shape[0], H, W), method="bilinear")
-
-
-class DINOSegmenter(eqx.Module):
-    """Encoder + simple dense head wrapper with your standard call signature."""
-
-    encoder: DINOViTEncoder
-    head: DINODenseHead
-
-    def __init__(self, out_ch: int, *, encoder: DINOViTEncoder, key):
-        if encoder.use_cls:
-            raise ValueError("DINOSegmenter expects use_cls=False for dense tasks.")
-        self.encoder = encoder
-        self.head = DINODenseHead(encoder.dim, out_ch, key=key)
-
-    def __call__(self, x, key, state):
-        (_, grid), state = self.encoder(x, key=key, state=state)
-        logits = self.head(grid, image_hw=x.shape[-2:], key=None)
-        return logits, state
-
-
-# ------------------------- convenience builder ------------------------- #
-def build_dinov2_encoder(
-    name: str,
-    *,
-    image_size: int = 518,
-    num_registers: int = 0,
-    use_cls: bool = True,
-    key,
-) -> DINOViTEncoder:
-    if name not in DINOV2_SPECS:
-        raise ValueError(f"Unknown spec '{name}'. Valid: {list(DINOV2_SPECS.keys())}")
-    spec = DINOV2_SPECS[name]
-    return DINOViTEncoder(
-        image_size=image_size,
-        patch=spec["patch"],
-        dim=spec["dim"],
-        depth=spec["depth"],
-        heads=spec["heads"],
-        num_registers=num_registers,
-        use_cls=use_cls,
-        key=key,
-    )

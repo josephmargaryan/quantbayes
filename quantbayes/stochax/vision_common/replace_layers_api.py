@@ -186,7 +186,13 @@ VitSurgeryKind = Literal[
 def apply_vit_replacements(
     model: eqx.Module,
     *,
-    kind: VitSurgeryKind,
+    kind: Literal[
+        "none",
+        "svddense_linear",
+        "svddense_mlp_only",
+        "svddense_qkv_only",
+        "svddense_qkv_mlp",
+    ],
     alpha_init: float = 1.0,
     key: jr.KeyArray = jr.PRNGKey(0),
     replace_head: bool = True,
@@ -276,7 +282,13 @@ def warmstart_vit_from_imagenet(
     model: eqx.Module,
     npz_path: str,
     *,
-    kind: VitSurgeryKind,
+    kind: Literal[
+        "none",
+        "svddense_linear",
+        "svddense_mlp_only",
+        "svddense_qkv_only",
+        "svddense_qkv_mlp",
+    ],
     strict_fc: bool = True,
     verbose: bool = True,
 ) -> Tuple[eqx.Module, Dict[str, Any]]:
@@ -295,7 +307,13 @@ def warmstart_vit_from_imagenet(
 def spectralize_and_warmstart_vit(
     model: eqx.Module,
     *,
-    kind: VitSurgeryKind,
+    kind: Literal[
+        "none",
+        "svddense_linear",
+        "svddense_mlp_only",
+        "svddense_qkv_only",
+        "svddense_qkv_mlp",
+    ],
     npz_path: Optional[str] = None,
     alpha_init: float = 1.0,
     strict_fc: bool = True,
@@ -575,3 +593,107 @@ def spectralize_and_warmstart_cnn(
         report["svd"] = rep_svd
 
     return spec_model, report, aux
+
+
+# === DINO / DINOv2 wrappers ===============================================
+from quantbayes.stochax.vision_backbones.dino.dinov2_loader import (
+    load_dinov2 as _load_dino,
+)
+
+VitSurgeryKind = Literal[
+    "none",
+    "svddense_linear",  # replace all eqx.nn.Linear with SVDDense
+    "svddense_mlp_only",  # only MLP (fc1/fc2) + head
+    "svddense_qkv_only",  # only Q/K/V/Out projections
+    "svddense_qkv_mlp",  # qkv+out + mlp (+head optional via replace_head)
+]
+
+
+def apply_dino_replacements(
+    model: eqx.Module,
+    *,
+    kind: Literal[
+        "none",
+        "svddense_linear",
+        "svddense_mlp_only",
+        "svddense_qkv_only",
+        "svddense_qkv_mlp",
+    ],
+    alpha_init: float = 1.0,
+    key: jr.KeyArray = jr.PRNGKey(0),
+    replace_head: bool = True,
+    svddense_rank: int | None = None,
+    svddense_rank_cap: int = 512,
+) -> tuple[eqx.Module, dict[str, Any]]:
+    # We can share the ViT path rules because our DINO module uses identical
+    # attribute names (patch_embedding.linear, attention_blocks[i].*, head, norm).
+    return apply_vit_replacements(
+        model,
+        kind=kind,
+        alpha_init=alpha_init,
+        key=key,
+        replace_head=replace_head,
+        svddense_rank=svddense_rank,
+        svddense_rank_cap=svddense_rank_cap,
+    )
+
+
+def warmstart_dino_from_pretrained(
+    model: eqx.Module,
+    npz_path: str,
+    *,
+    kind: Literal[
+        "none",
+        "svddense_linear",
+        "svddense_mlp_only",
+        "svddense_qkv_only",
+        "svddense_qkv_mlp",
+    ],
+    strict_fc: bool = False,
+    verbose: bool = True,
+) -> tuple[eqx.Module, dict[str, Any]]:
+    sw = "svd" if kind != "none" else "skip"
+    new_model, report = _load_dino(
+        model,
+        npz_path,
+        strict_fc=strict_fc,
+        spectral_warmstart=sw,
+        verbose=verbose,
+    )
+    return new_model, report
+
+
+def spectralize_and_warmstart_dino(
+    model: eqx.Module,
+    *,
+    kind: Literal[
+        "none",
+        "svddense_linear",
+        "svddense_mlp_only",
+        "svddense_qkv_only",
+        "svddense_qkv_mlp",
+    ],
+    npz_path: str | None = None,
+    alpha_init: float = 1.0,
+    strict_fc: bool = False,
+    key: jr.KeyArray = jr.PRNGKey(0),
+    verbose: bool = True,
+    replace_head: bool = True,
+    svddense_rank: int | None = None,
+    svddense_rank_cap: int = 512,
+) -> tuple[eqx.Module, dict[str, Any], dict[str, Any]]:
+    model, aux = apply_dino_replacements(
+        model,
+        kind=kind,
+        alpha_init=alpha_init,
+        key=key,
+        replace_head=replace_head,
+        svddense_rank=svddense_rank,
+        svddense_rank_cap=svddense_rank_cap,
+    )
+    report: dict[str, Any] = {}
+    if npz_path is not None:
+        model, report = warmstart_dino_from_pretrained(
+            model, npz_path, kind=kind, strict_fc=strict_fc, verbose=verbose
+        )
+    return model, report, aux
