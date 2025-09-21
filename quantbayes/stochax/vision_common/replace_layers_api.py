@@ -18,6 +18,15 @@ from quantbayes.stochax.vision_common.spectral_surgery import (
     warmstart_svd_from_vanilla,  # already present, reuse
 )
 from quantbayes.stochax.vision_common.pretrained_vit import load_imagenet_vit
+from quantbayes.stochax.vision_common.pretrained_convnext import (
+    load_imagenet_convnext as _load_convnext,
+)
+from quantbayes.stochax.vision_common.pretrained_efficientnet import (
+    load_imagenet_efficientnet as _load_eff,
+)
+from quantbayes.stochax.vision_common.pretrained_swin import (
+    load_imagenet_swin as _load_swin,
+)
 
 SurgeryKind = Literal[
     "none",
@@ -695,5 +704,184 @@ def spectralize_and_warmstart_dino(
     if npz_path is not None:
         model, report = warmstart_dino_from_pretrained(
             model, npz_path, kind=kind, strict_fc=strict_fc, verbose=verbose
+        )
+    return model, report, aux
+
+
+def spectralize_and_warmstart_convnext(
+    model: eqx.Module,
+    *,
+    kind: SurgeryKind,  # recommend "svddense_linear" for ConvNeXt
+    npz_path: str | None = None,
+    input_hw: Tuple[int, int] = (224, 224),
+    alpha_init: float = 1.0,
+    strict_fc: bool = True,
+    key: jr.KeyArray = jr.PRNGKey(0),
+    svddense_rank: int | None = None,
+    svddense_rank_cap: int = 512,
+    verbose: bool = True,
+) -> tuple[eqx.Module, dict[str, Any], dict[str, Any]]:
+    # Surgery: use CNN-agnostic helpers; rfft only touches 3x3 s=1 so for ConvNeXt prefer SVDDense
+    model, aux = apply_cnn_replacements(
+        model,
+        kind=kind,
+        input_hw=input_hw,
+        alpha_init=alpha_init,
+        key=key,
+        svddense_rank=svddense_rank,
+        svddense_rank_cap=svddense_rank_cap,
+    )
+    report: dict[str, Any] = {}
+    if npz_path is not None:
+        sw = "svd" if ("svddense" in kind) else "skip"
+        model, report = _load_convnext(
+            model, npz_path, strict_fc=strict_fc, spectral_warmstart=sw, verbose=verbose
+        )
+    return model, report, aux
+
+
+# ---------------------- EfficientNet ----------------------
+def spectralize_and_warmstart_efficientnet(
+    model: eqx.Module,
+    *,
+    kind: SurgeryKind,  # "svddense_linear" is safest; rfft covers only some 3x3
+    npz_path: str | None = None,
+    input_hw: Tuple[int, int] = (224, 224),
+    alpha_init: float = 1.0,
+    strict_fc: bool = True,
+    key: jr.KeyArray = jr.PRNGKey(0),
+    svddense_rank: int | None = None,
+    svddense_rank_cap: int = 512,
+    verbose: bool = True,
+) -> tuple[eqx.Module, dict[str, Any], dict[str, Any]]:
+    model, aux = apply_cnn_replacements(
+        model,
+        kind=kind,
+        input_hw=input_hw,
+        alpha_init=alpha_init,
+        key=key,
+        svddense_rank=svddense_rank,
+        svddense_rank_cap=svddense_rank_cap,
+    )
+    report: dict[str, Any] = {}
+    if npz_path is not None:
+        sw = "svd" if ("svddense" in kind) else "skip"
+        model, report = _load_eff(
+            model, npz_path, strict_fc=strict_fc, spectral_warmstart=sw, verbose=verbose
+        )
+    return model, report, aux
+
+
+# ---------------------- Swin: replacements + warm-start ----------------------
+SwinSurgeryKind = Literal[
+    "none",
+    "svddense_linear",  # replace all Linear
+    "svddense_attn_mlp",  # qkv/proj + MLP fc1/fc2 (+ head optional)
+]
+
+
+def apply_swin_replacements(
+    model: eqx.Module,
+    *,
+    kind: SwinSurgeryKind,
+    alpha_init: float = 1.0,
+    key: jr.KeyArray = jr.PRNGKey(0),
+    replace_head: bool = True,
+    svddense_rank: int | None = None,
+    svddense_rank_cap: int = 512,
+) -> tuple[eqx.Module, dict[str, Any]]:
+    if kind == "none":
+        return model, {}
+    # Walk and replace eqx.nn.Linear leaves based on path rules
+    keys = iter(jr.split(key, 100_000))
+
+    def want(path: str) -> bool:
+        if kind == "svddense_linear":
+            return isinstance(path, str)
+        if kind == "svddense_attn_mlp":
+            return (
+                (".attn.qkv" in path)
+                or (".attn.proj" in path)
+                or (".mlp.fc1" in path)
+                or (".mlp.fc2" in path)
+                or (replace_head and path.endswith("head"))
+            )
+        return False
+
+    def _replace(obj, path: str):
+        if isinstance(obj, eqx.nn.Linear) and want(path):
+            from quantbayes.stochax.vision_common.spectral_surgery import (
+                _linear_to_svddense,
+            )
+
+            return _linear_to_svddense(
+                obj,
+                rank=svddense_rank,
+                key=next(keys),
+                alpha_init=alpha_init,
+                rank_cap=svddense_rank_cap,
+            )
+        return obj
+
+    def walk(obj, prefix=""):
+        if isinstance(obj, eqx.Module):
+            new = obj
+            for name, child in vars(obj).items():
+                p = name if prefix == "" else f"{prefix}.{name}"
+                rep = _replace(child, p)
+                if rep is child:
+                    rep = walk(child, p)
+                if rep is not child:
+                    try:
+                        new = eqx.tree_at(lambda m: getattr(m, name), new, rep)
+                    except TypeError:
+                        object.__setattr__(new, name, rep)
+            return new
+        if isinstance(obj, tuple):
+            return tuple(
+                walk(c, f"{prefix}.{i}" if prefix else str(i))
+                for i, c in enumerate(obj)
+            )
+        if isinstance(obj, list):
+            return [
+                walk(c, f"{prefix}.{i}" if prefix else str(i))
+                for i, c in enumerate(obj)
+            ]
+        if isinstance(obj, dict):
+            return {
+                k: walk(v, f"{prefix}.{k}" if prefix else k) for k, v in obj.items()
+            }
+        return obj
+
+    return walk(model), {}
+
+
+def spectralize_and_warmstart_swin(
+    model: eqx.Module,
+    *,
+    kind: SwinSurgeryKind,
+    npz_path: str | None = None,
+    alpha_init: float = 1.0,
+    strict_fc: bool = True,
+    key: jr.KeyArray = jr.PRNGKey(0),
+    replace_head: bool = True,
+    svddense_rank: int | None = None,
+    svddense_rank_cap: int = 512,
+    verbose: bool = True,
+) -> tuple[eqx.Module, dict[str, Any], dict[str, Any]]:
+    model, aux = apply_swin_replacements(
+        model,
+        kind=kind,
+        alpha_init=alpha_init,
+        key=key,
+        replace_head=replace_head,
+        svddense_rank=svddense_rank,
+        svddense_rank_cap=svddense_rank_cap,
+    )
+    report: dict[str, Any] = {}
+    if npz_path is not None:
+        sw = "svd" if kind != "none" else "skip"
+        model, report = _load_swin(
+            model, npz_path, strict_fc=strict_fc, spectral_warmstart=sw, verbose=verbose
         )
     return model, report, aux
