@@ -14,6 +14,7 @@ from . import (
     torch_based,
     var,
     spectral,
+    dp,
 )
 
 __all__ = [
@@ -32,4 +33,5 @@ __all__ = [
     "ensemble",
     "hyperparameter_tune",
     "spectral",
+    "dp",
 ]

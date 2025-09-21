@@ -116,7 +116,7 @@ class _LowRankJointSampler:
     def sample(self) -> jnp.ndarray:
         loc, V, d = self.params()
         if self.mode == "dense":
-            cov = V @ V.T + jnp.diag(d)
+            cov = V @ V.T + jnp.diag(d**2)
             return numpyro.sample(
                 self.joint,
                 dist.MultivariateNormal(loc, covariance_matrix=cov),
@@ -145,7 +145,7 @@ class _LowRankJointSampler:
             + self.jitter
         )
         if self.mode == "dense":
-            cov = V @ V.T + jnp.diag(d)
+            cov = V @ V.T + jnp.diag(d**2)
             mvn = dist.MultivariateNormal(loc, covariance_matrix=cov)
             return mvn.sample(rng_key, sample_shape)
         key1, key2 = jax.random.split(rng_key)
