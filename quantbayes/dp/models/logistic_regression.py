@@ -31,13 +31,12 @@ def logistic_grad(w: np.ndarray, X: np.ndarray, y: np.ndarray) -> np.ndarray:
 
 def logistic_loss(w: np.ndarray, X: np.ndarray, y: np.ndarray) -> float:
     """
-    Average unregularized logistic loss (for reporting):
+    Average unregularized logistic loss:
       (1/n) sum log(1 + exp(-y w^T x))
+    Use a numerically stable softplus via logaddexp.
     """
-    z = -y * (X @ w)
-    # log(1+exp(z)) stably:
-    out = np.where(z > 0, z + np.log1p(np.exp(-z)), np.log1p(np.exp(z)))
-    return float(out.mean())
+    z = -y * (X @ w)  # shape (n,)
+    return float(np.logaddexp(0.0, z).mean())
 
 
 def train_logreg_gd(
