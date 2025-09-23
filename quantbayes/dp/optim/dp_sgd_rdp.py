@@ -76,23 +76,19 @@ def dp_sgd_rdp_logreg(
         # Poisson subsample
         mask = _poisson_sample_mask(n, sample_rate, rng)
         idx = np.where(mask)[0]
+        denom = max(1, idx.size)
         if idx.size == 0:
-            # No samples this step; pure regularization/noise step (rare for small q)
-            noise = rng.normal(0.0, sigma * clip_norm, size=d)
-            noisy_avg = noise  # divide by 1
+            g_sum = np.zeros(d, dtype=float)
         else:
             Xb, yb = X[idx], y[idx]
-            # Per-example gradient -> clip per example
             g_i = _logistic_grad_per_example(w, Xb, yb)  # (b, d)
-            # add regularization to the average (lam * w) outside; keep clipping only for data term
             norms = np.linalg.norm(g_i, axis=1, keepdims=True) + 1e-12
             scale = np.minimum(1.0, clip_norm / norms)
-            g_clipped = g_i * scale  # (b, d)
+            g_clipped = g_i * scale
             g_sum = g_clipped.sum(axis=0)
-            noise = rng.normal(0.0, sigma * clip_norm, size=d)
-            noisy_avg = (g_sum + noise) / float(idx.size)
 
-        # Add regularization and take a step
+        noise = rng.normal(0.0, sigma * clip_norm, size=d)
+        noisy_avg = (g_sum + noise) / float(denom)
         g_step = noisy_avg + lam * w
         w = w - lr * g_step
 

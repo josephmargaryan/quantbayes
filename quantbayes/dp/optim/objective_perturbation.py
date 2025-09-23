@@ -14,14 +14,16 @@ def train_objective_perturbed(
     steps: int = 5000,
     lr: float = 0.05,
     seed: Optional[int] = None,
-    c: float = 0.25,  # Hessian bound for clipped logistic
+    c: float = 0.25,  # Hessian bound under ||x||<=1
     enforce_assumptions: bool = True,
-) -> Tuple[np.ndarray, np.ndarray]:
+    return_noise: bool = False,
+) -> np.ndarray | Tuple[np.ndarray, np.ndarray]:
     """
-    Lecture-aligned objective perturbation.
-    Minimise: (1/n)∑ ell + (lam/2)||w||^2 + (1/n)<b,w>,  with  b ~ sLaplace(beta),
-    where  beta = eps/(2L).  (No 'n' in beta.)
-    Requires lam > c to apply the change-of-variables proof (Lecture 3.2, Theorem 2).
+    Objective perturbation (Lecture 3.2, Thm 2).
+    Minimise: (1/n)∑ ell + (lam/2)||w||^2 + (1/n)<b,w>, with b ~ sLaplace(beta), beta=eps/(2L).
+    Requires lam > c for the theorem to apply.
+
+    By default returns only the private weights. Set return_noise=True for internal testing.
     """
     if eps <= 0:
         raise ValueError("eps must be > 0")
@@ -42,4 +44,5 @@ def train_objective_perturbed(
     for _ in range(steps):
         g = logistic_grad(w, X, y) + lam * w + (b / n)
         w -= lr * g
-    return w, b
+
+    return (w, b) if return_noise else w
