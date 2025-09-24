@@ -21,7 +21,8 @@ def model(X, y=None):
 
 clf = bnn.NumpyroClassifier(
     model=model,
-    method="nuts",
+    method="svi",
+    num_steps=100,
     logits_site="logits",  # or set proba_site="proba"
     n_posterior_samples=200,
     random_state=0,
@@ -39,3 +40,10 @@ y_hat = clf.predict(X_test)  # argmax over averaged probabilities
 
 acc = accuracy_score(np.array(y_hat), np.array(y_test))
 print(f"Test accuracy: {acc:.3f}")
+
+import matplotlib.pyplot as plt 
+plt.plot(clf.losses)
+plt.xlabel("SVI step")
+plt.ylabel("ELBO loss")
+plt.title("SVI Training Loss")
+plt.show()
