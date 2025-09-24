@@ -40,6 +40,7 @@ from .layers.spectral_layers import (
     GraphChebSobolev,
 )
 from . import guide
+from .wrapper.base import NumpyroClassifier, NumpyroRegressor
 from .mini_batching import make_scheduler, SVITrainer
 
 __all__ = [

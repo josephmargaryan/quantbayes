@@ -73,8 +73,7 @@ from numpyro.optim import Adam, Adagrad
 
 from sklearn.base import BaseEstimator, ClassifierMixin, RegressorMixin
 from sklearn.preprocessing import LabelEncoder
-from sklearn.utils.validation import check_is_fitted
-
+from sklearn.exceptions import NotFittedError
 
 # Optional imports for SteinVI & mixture predictive
 _HAS_EINSTEIN = False
@@ -83,7 +82,6 @@ try:
 
     _HAS_EINSTEIN = True
 except Exception:
-    # We allow usage without SteinVI; if method="steinvi" we'll raise a helpful error.
     pass
 
 
@@ -97,7 +95,6 @@ def _as_prng_key(
         return jax.random.PRNGKey(0)
     if isinstance(random_state, (int, np.integer)):
         return jax.random.PRNGKey(int(random_state))
-    # Fallback: hash the state
     return jax.random.PRNGKey(np.random.SeedSequence().entropy)
 
 
@@ -116,7 +113,6 @@ def _sigmoid(x: jnp.ndarray) -> jnp.ndarray:
 
 
 def _to_device_array(x) -> jnp.ndarray:
-    # Accept numpy / jax arrays; pass through shape
     if isinstance(x, jnp.ndarray):
         return x
     return jnp.asarray(x)
@@ -191,6 +187,7 @@ class _NumpyroBase(BaseEstimator):
     # sklearn plumbing --------------------------------------------------------
 
     def _more_tags(self) -> Dict[str, object]:
+        # Back-compat for sklearn <=1.4; harmless for >=1.5
         return {
             "non_deterministic": True,
             "requires_y": True,
@@ -202,8 +199,21 @@ class _NumpyroBase(BaseEstimator):
         return getattr(self, "fitted_", False)
 
     def get_params(self, deep: bool = True) -> Dict[str, object]:
-        # BaseEstimator would do this automatically, but we keep it explicit.
         return super().get_params(deep=deep)
+
+    # Internal fitted-check (robust across sklearn versions)
+    def _ensure_fitted(self, attributes: Optional[Sequence[str]] = None) -> None:
+        if not getattr(self, "fitted_", False):
+            raise NotFittedError(
+                f"{self.__class__.__name__} is not fitted yet. Call fit() first."
+            )
+        if attributes:
+            missing = [a for a in attributes if not hasattr(self, a)]
+            if missing:
+                raise NotFittedError(
+                    f"{self.__class__.__name__} is missing fitted attribute(s): {missing}. "
+                    "Did you call fit()?"
+                )
 
     # core fit/predict utils --------------------------------------------------
 
@@ -287,7 +297,6 @@ class _NumpyroBase(BaseEstimator):
             result = self._inference_.run(
                 self._rng_, int(self.num_steps), X, y, progress_bar=self.progress_bar
             )
-            # Keep the whole result; we’ll read params via API:
             self._stein_result_ = result
             self.params_ = self._inference_.get_params(result.state)
             self.posterior_samples_ = None
@@ -299,7 +308,7 @@ class _NumpyroBase(BaseEstimator):
 
     # prediction core: returns Predictive-like callable
     def _make_predictive(self, n_samples: Optional[int] = None):
-        check_is_fitted(self, attributes=["fitted_"])
+        self._ensure_fitted()
         n = int(n_samples or self.n_posterior_samples)
         if self._backend_ == "mcmc":
             return Predictive(self.model, posterior_samples=self.posterior_samples_)
@@ -311,7 +320,6 @@ class _NumpyroBase(BaseEstimator):
                 num_samples=n,
             )
         elif self._backend_ == "steinvi":
-            # Build a mixture across stein particles
             return MixtureGuidePredictive(
                 model=self.model,
                 guide=self._inference_.guide,
@@ -353,11 +361,6 @@ class _NumpyroBase(BaseEstimator):
 class NumpyroRegressor(_NumpyroBase, RegressorMixin):
     """
     sklearn-style regressor that wraps a NumPyro model.
-
-    Conventions:
-    - Uses `predict_site` (default "y") as the numeric response.
-    - `predict` returns the posterior predictive MEAN over samples.
-    - Use `predict_posterior` for full draws and uncertainty.
     """
 
     def __init__(
@@ -406,25 +409,16 @@ class NumpyroRegressor(_NumpyroBase, RegressorMixin):
         )
 
     def predict(self, X):
-        """Posterior predictive mean for the chosen `predict_site` (default: 'y')."""
+        self._ensure_fitted()
         site = self.predict_site or "y"
         draws = self.predict_posterior(X, sites=[site])[site]  # (S, N, ...)
         mean = np.array(jnp.mean(draws, axis=0))
         return mean.squeeze()
 
-    # RegressorMixin provides score() = R^2 by default.
-
 
 class NumpyroClassifier(_NumpyroBase, ClassifierMixin):
     """
     sklearn-style classifier that wraps a NumPyro model.
-
-    Conventions:
-    - The model should expose either:
-        * probabilities in `proba_site` (e.g., Bernoulli probs or categorical probs), OR
-        * logits in `logits_site` (pre-sigmoid for binary or pre-softmax for multiclass).
-    - `predict_proba` returns averaged probabilities across posterior samples.
-    - `predict` returns argmax over averaged probabilities mapped back to original labels.
     """
 
     def __init__(
@@ -482,7 +476,6 @@ class NumpyroClassifier(_NumpyroBase, ClassifierMixin):
         return self
 
     def _posterior_proba(self, X) -> np.ndarray:
-        # Decide which site to use: proba_site -> probabilities; else logits_site.
         if self.proba_site is not None:
             site = self.proba_site
             draws = self.predict_posterior(X, sites=[site])[
@@ -491,7 +484,7 @@ class NumpyroClassifier(_NumpyroBase, ClassifierMixin):
             probs = jnp.mean(draws, axis=0)  # (N, C?) or (N,)
             probs = probs if probs.ndim > 1 else jnp.stack([1 - probs, probs], axis=-1)
             return np.array(probs)
-        # else use logits
+
         site = self.logits_site or "logits"
         draws = self.predict_posterior(X, sites=[site])[site]  # (S, N, C?) or (S, N)
         logits = jnp.mean(draws, axis=0)  # (N, C?) or (N,)
@@ -503,26 +496,21 @@ class NumpyroClassifier(_NumpyroBase, ClassifierMixin):
         return np.array(probs)
 
     def predict_proba(self, X):
-        """Average posterior probabilities across samples."""
-        check_is_fitted(self, attributes=["fitted_", "_label_encoder_"])
+        self._ensure_fitted(attributes=["_label_encoder_"])
         return self._posterior_proba(X)
 
     def predict(self, X):
-        """Argmax over averaged probabilities; returns original class labels."""
         probs = self.predict_proba(X)  # (N, C)
         idx = np.argmax(probs, axis=-1)
         y_hat = self._label_encoder_.inverse_transform(idx)
         return y_hat
 
-    # --- add inside NumpyroClassifier --------------------------------------------
-
     def decision_function(self, X):
         """
         Return averaged logits (multiclass) or log-odds (binary).
-        If only probabilities are available (proba_site), we convert to log-odds/logits.
         Shape: (N,) for binary, (N, C) for multiclass.
         """
-        check_is_fitted(self, attributes=["fitted_", "_label_encoder_"])
+        self._ensure_fitted(attributes=["_label_encoder_"])
         X = _to_device_array(X)
 
         if self.logits_site is not None:
@@ -530,7 +518,6 @@ class NumpyroClassifier(_NumpyroBase, ClassifierMixin):
                 self.logits_site
             ]
             logits = jnp.mean(draws, axis=0)
-            # Binary logits can be shape (N,) or (N,1); squeeze if needed
             logits = (
                 logits.squeeze(-1)
                 if logits.ndim == 2 and logits.shape[-1] == 1
@@ -538,9 +525,7 @@ class NumpyroClassifier(_NumpyroBase, ClassifierMixin):
             )
             return np.array(logits)
 
-        # fall back to proba -> logits
         if self.proba_site is None:
-            # last resort: reuse predict_proba then log/softmax inverse
             probs = self.predict_proba(X)
         else:
             draws = self.predict_posterior(X, sites=[self.proba_site])[self.proba_site]
@@ -551,74 +536,7 @@ class NumpyroClassifier(_NumpyroBase, ClassifierMixin):
         probs = jnp.clip(probs, eps, 1 - eps)
 
         if probs.shape[-1] == 2:
-            # binary log-odds
             logit = jnp.log(probs[..., 1] / probs[..., 0])
             return np.array(logit)
         else:
-            # multiclass logits up to affine constant: log p (good enough for ranking)
             return np.array(jnp.log(probs))
-
-    def predict_log_proba(self, X):
-        """
-        Return log-probabilities averaged over posterior samples (log of mean probs).
-        Shape: (N, C); for binary ensure two columns.
-        """
-        probs = self.predict_proba(X)
-        eps = 1e-9
-        return np.log(np.clip(probs, eps, 1.0))
-
-    # ClassifierMixin provides score() = accuracy by default.
-
-
-# ----------------------------- Extra utilities -------------------------------
-
-
-class NumpyroPosteriorMixin:
-    """Optional mixin with convenience posterior utilities."""
-
-    def predict_mean_std(
-        self,
-        X,
-        site: Optional[str] = None,
-        num_samples: Optional[int] = None,
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Return posterior predictive mean and std for a numeric site.
-        Defaults to estimator's `predict_site` if available, else 'y'.
-        """
-        if site is None:
-            site = getattr(self, "predict_site", None) or "y"
-        draws = self.predict_posterior(X, sites=[site], num_samples=num_samples)[site]
-        mean = np.array(jnp.mean(draws, axis=0))
-        std = np.array(jnp.std(draws, axis=0))
-        return mean, std
-
-    def predict_quantiles(
-        self,
-        X,
-        site: Optional[str] = None,
-        q: Sequence[float] = (0.05, 0.5, 0.95),
-        num_samples: Optional[int] = None,
-    ) -> np.ndarray:
-        """
-        Return posterior predictive quantiles for a numeric site.
-        Shape: (len(q), ...) ordered by q.
-        """
-        if site is None:
-            site = getattr(self, "predict_site", None) or "y"
-        draws = self.predict_posterior(X, sites=[site], num_samples=num_samples)[site]
-        qs = np.quantile(np.array(draws), q, axis=0)
-        return qs
-
-
-# If you want, you can export convenience classes with the mixin included:
-class NumpyroRegressorPlus(NumpyroPosteriorMixin, NumpyroRegressor):
-    """Regressor with posterior convenience methods included."""
-
-    pass
-
-
-class NumpyroClassifierPlus(NumpyroPosteriorMixin, NumpyroClassifier):
-    """Classifier with posterior convenience methods included."""
-
-    pass
