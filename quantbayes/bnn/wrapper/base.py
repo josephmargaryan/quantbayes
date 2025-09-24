@@ -293,7 +293,8 @@ class _NumpyroBase(BaseEstimator):
             for i in range(int(self.num_steps)):
                 svi_state, loss = self._inference_.update(svi_state, X, y)
                 self.losses.append(loss)
-                print(f"SVI step {i+1}/{self.num_steps}", end="\r")
+                print(f"\rSVI step {i+1}/{self.num_steps}", end="", flush=True)
+            print() 
             self.params_ = self._inference_.get_params(svi_state)
             self.posterior_samples_ = None
         elif self._backend_ == "steinvi":
