@@ -2,6 +2,7 @@ import jax
 import numpy as np
 import numpyro
 import numpyro.distributions as dist
+from numpyro.infer.autoguide import AutoGuideList, AutoNormal
 import jax.numpy as jnp
 from sklearn.metrics import accuracy_score
 
@@ -19,8 +20,24 @@ def model(X, y=None):
         numpyro.sample("obs", dist.Categorical(logits=X), obs=y)
 
 
+my_guide = AutoGuideList(model)
+my_guide.append(
+    bnn.guide.LowRankRFFTGuide2d(
+        model, prefix="rfft2d", C_in=1, C_out=1, H_pad=28, W_pad=28, rank=8
+    )
+)
+my_guide.append(
+    AutoNormal(
+        numpyro.handlers.block(
+            model, hide=["rfft2d_real", "rfft2d_imag", "rfft2d_alpha_z", "logits"]
+        ),
+        init_loc_fn=numpyro.infer.init_to_feasible,
+    )
+)
+
 clf = bnn.NumpyroClassifier(
     model=model,
+    guide=my_guide,
     method="svi",
     num_steps=100,
     logits_site="logits",  # or set proba_site="proba"
@@ -41,7 +58,8 @@ y_hat = clf.predict(X_test)  # argmax over averaged probabilities
 acc = accuracy_score(np.array(y_hat), np.array(y_test))
 print(f"Test accuracy: {acc:.3f}")
 
-import matplotlib.pyplot as plt 
+import matplotlib.pyplot as plt
+
 plt.plot(clf.losses)
 plt.xlabel("SVI step")
 plt.ylabel("ELBO loss")

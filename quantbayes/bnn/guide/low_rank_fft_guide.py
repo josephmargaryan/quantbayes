@@ -261,6 +261,118 @@ class LowRankAdaptiveFFTGuide(AutoGuide):
         }
 
 
+class LowRankRFFTGuide1d(AutoGuide):
+    """
+    Variational guide for RFFTCirculant1D that parameterizes the HALF-SPECTRUM
+    active coefficients wr/wi of length K, matching the model sites:
+      - {prefix}_real : (K,)
+      - {prefix}_imag : (K,) with DC (and Nyquist if even & using full half) forced real.
+
+    Optionally, include a variational factor for the model's scalar
+    '{prefix}_alpha_z' by setting include_alpha=True (otherwise let another guide
+    like AutoNormal handle it).
+
+    Args:
+        model: NumPyro model.
+        prefix: Must match the layer's `name` (default "rfft1d").
+        padded_dim: FFT length used by the layer (H_pad).
+        K: Number of active half-spectrum coefficients (defaults to k_half).
+        rank: Low-rank dimension for the joint Gaussian over [real, imag].
+        jitter: Diagonal jitter for numerical stability.
+        mode: Low-rank sampler mode (e.g., "reparam").
+        zero_dc_nyquist_imag: Zero imaginary parts at DC (and Nyquist if applicable).
+        include_alpha: If True, add a Normal variational factor for '{prefix}_alpha_z'.
+    """
+
+    def __init__(
+        self,
+        model,
+        prefix: str,
+        *,
+        padded_dim: int,
+        K: Optional[int] = None,
+        rank: int = 8,
+        jitter: float = 1e-4,
+        mode: str = "reparam",
+        zero_dc_nyquist_imag: bool = True,
+        include_alpha: bool = False,
+    ):
+        super().__init__(model)
+        self.prefix = prefix
+        self.padded_dim = int(padded_dim)
+        self.k_half = self.padded_dim // 2 + 1
+        self.K = self.k_half if (K is None or K > self.k_half) else int(K)
+        self.zero_dc_nyquist_imag = bool(zero_dc_nyquist_imag)
+        self.include_alpha = bool(include_alpha)
+
+        # joint low-rank Gaussian over concatenated [real[0:K], imag[0:K]]
+        self.sampler = _LowRankJointSampler(
+            f"{prefix}_joint",
+            dim=2 * self.K,
+            rank=rank,
+            jitter=jitter,
+            mode=mode,
+        )
+
+        if self.include_alpha:
+            # scalar Normal variational factor for alpha_z
+            self._alpha_loc_name = f"{prefix}_alpha_loc"
+            self._alpha_rho_name = f"{prefix}_alpha_rho"
+
+    def __call__(self, *args, **kwargs):
+        z = self.sampler.sample()  # shape (..., 2K)
+        real_k, imag_k = jnp.split(z, 2, axis=-1)  # each (..., K)
+
+        if self.zero_dc_nyquist_imag:
+            imag_k = imag_k.at[..., 0].set(0.0)
+            if (self.padded_dim % 2 == 0) and (self.K == self.k_half) and (self.K > 1):
+                imag_k = imag_k.at[..., -1].set(0.0)
+
+        numpyro.sample(f"{self.prefix}_real", dist.Delta(real_k).to_event(1))
+        numpyro.sample(f"{self.prefix}_imag", dist.Delta(imag_k).to_event(1))
+
+        if self.include_alpha:
+            loc = numpyro.param(self._alpha_loc_name, 0.0)
+            rho = numpyro.param(self._alpha_rho_name, -2.0)
+            scale = jax.nn.softplus(rho)
+            numpyro.sample(f"{self.prefix}_alpha_z", dist.Normal(loc, scale))
+
+        # returning is optional; provided for convenience
+        out = {
+            f"{self.prefix}_real": real_k,
+            f"{self.prefix}_imag": imag_k,
+        }
+        if self.include_alpha:
+            out[f"{self.prefix}_alpha_z"] = loc
+        return out
+
+    def sample_posterior(self, rng_key, params, sample_shape=()):
+        z = self.sampler.sample_posterior(rng_key, params, sample_shape)  # (..., 2K)
+        real_k, imag_k = jnp.split(z, 2, axis=-1)  # each (..., K)
+
+        if self.zero_dc_nyquist_imag:
+            imag_k = imag_k.at[..., 0].set(0.0)
+            if (self.padded_dim % 2 == 0) and (self.K == self.k_half) and (self.K > 1):
+                imag_k = imag_k.at[..., -1].set(0.0)
+
+        out = {
+            f"{self.prefix}_real": real_k,
+            f"{self.prefix}_imag": imag_k,
+        }
+
+        if self.include_alpha:
+            import jax.random as jr
+
+            loc = params[self._alpha_loc_name]
+            rho = params[self._alpha_rho_name]
+            scale = jax.nn.softplus(rho)
+            key_alpha, _ = jr.split(rng_key)
+            alpha = dist.Normal(loc, scale).sample(key_alpha, sample_shape)
+            out[f"{self.prefix}_alpha_z"] = alpha
+
+        return out
+
+
 class LowRankFFTGuide2d(AutoGuide):
     """
     2D FFT half-plane low-rank guide:
@@ -384,6 +496,92 @@ class LowRankAdaptiveFFTGuide2d(AutoGuide):
             f"{self.prefix}_delta_alpha": delta_map,
             f"{self.prefix}_real": r_full,
             f"{self.prefix}_imag": i_full,
+        }
+
+
+class LowRankRFFTGuide2d(AutoGuide):
+    """
+    2D FFT low-rank guide over the HALF-PLANE (what rfft2 uses).
+    - Samples half-plane sites `{prefix}_real` / `{prefix}_imag` with shape
+      (C_out, C_in, H_pad, W_half).
+    - Writes optional deterministic full-plane tensors for inspection:
+      `{prefix}_real_full`, `{prefix}_imag_full`.
+    """
+
+    def __init__(
+        self,
+        model,
+        prefix: str,
+        *,
+        C_out: int,
+        C_in: int,
+        H_pad: int,
+        W_pad: int,
+        rank: int = 8,
+        jitter: float = 1e-4,
+        mode: str = "reparam",
+        zero_dc_nyquist_imag: bool = True,
+    ):
+        super().__init__(model)
+        self.prefix = prefix
+        self.C_out, self.C_in = int(C_out), int(C_in)
+        self.H_pad, self.W_pad = int(H_pad), int(W_pad)
+        self.W_half = self.W_pad // 2 + 1
+        self.shape_hp = (self.C_out, self.C_in, self.H_pad, self.W_half)
+        M = self.C_out * self.C_in * self.H_pad * self.W_half
+        self.sampler = _LowRankJointSampler(
+            f"{prefix}_joint", dim=2 * M, rank=rank, jitter=jitter, mode=mode
+        )
+        self.zero_dc_nyquist_imag = bool(zero_dc_nyquist_imag)
+
+    def __call__(self, *args, **kwargs):
+        # sample a joint low-rank vector and split into real/imag halves
+        z = self.sampler.sample()
+        real_hp_vec, imag_hp_vec = jnp.split(z, 2, axis=-1)
+        real_hp = real_hp_vec.reshape(self.shape_hp)
+        imag_hp = imag_hp_vec.reshape(self.shape_hp)
+
+        # enforce purely real DC (and Nyquist column if even width), matching layer behavior
+        if self.zero_dc_nyquist_imag:
+            imag_hp = imag_hp.at[..., :, 0].set(0.0)
+            if (self.W_pad % 2 == 0) and (self.W_half > 1):
+                imag_hp = imag_hp.at[..., :, -1].set(0.0)
+
+        # *** IMPORTANT: sample HALF-PLANE at the sites expected by the model ***
+        numpyro.sample(f"{self.prefix}_real", dist.Delta(real_hp).to_event(4))
+        numpyro.sample(f"{self.prefix}_imag", dist.Delta(imag_hp).to_event(4))
+
+        # Optional: expose the hermitian-completed full-plane for debugging/visualization
+        r_full, i_full = halfplane_to_full_multi(
+            real_hp, imag_hp, self.H_pad, self.W_pad
+        )
+        numpyro.deterministic(f"{self.prefix}_real_full", r_full)
+        numpyro.deterministic(f"{self.prefix}_imag_full", i_full)
+
+        # return mapping (optional)
+        return {f"{self.prefix}_real": real_hp, f"{self.prefix}_imag": imag_hp}
+
+    def sample_posterior(self, rng_key, params, sample_shape=()):
+        z = self.sampler.sample_posterior(rng_key, params, sample_shape)
+        real_hp_vec, imag_hp_vec = jnp.split(z, 2, axis=-1)
+        shp_hp = sample_shape + self.shape_hp
+        real_hp = real_hp_vec.reshape(shp_hp)
+        imag_hp = imag_hp_vec.reshape(shp_hp)
+
+        if self.zero_dc_nyquist_imag:
+            imag_hp = imag_hp.at[..., :, 0].set(0.0)
+            if (self.W_pad % 2 == 0) and (self.W_half > 1):
+                imag_hp = imag_hp.at[..., :, -1].set(0.0)
+
+        # keep half-plane at sample sites; also provide full-plane dict for convenience
+        r_full, i_full = halfplane_to_full_multi(
+            real_hp, imag_hp, self.H_pad, self.W_pad
+        )
+        return {
+            f"{self.prefix}_real": real_hp,
+            f"{self.prefix}_imag": imag_hp,
+            f"{self.prefix}_real_full": r_full,
+            f"{self.prefix}_imag_full": i_full,
         }
 
 

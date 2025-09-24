@@ -6,6 +6,8 @@ from .low_rank_fft_guide import (
     # Mean-field fallbacks (for huge D)
     MeanFieldFFTGuide,
     MeanFieldFFTGuide2d,
+    LowRankRFFTGuide2d,
+    LowRankRFFTGuide1d,
 )
 
 __all__ = [
@@ -17,4 +19,7 @@ __all__ = [
     # Mean-field fallbacks (for huge D)
     "MeanFieldFFTGuide",
     "MeanFieldFFTGuide2d",
+    # Real-valued FFT guides
+    "LowRankRFFTGuide2d",
+    "LowRankRFFTGuide1d",
 ]

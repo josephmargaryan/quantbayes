@@ -294,7 +294,7 @@ class _NumpyroBase(BaseEstimator):
                 svi_state, loss = self._inference_.update(svi_state, X, y)
                 self.losses.append(loss)
                 print(f"\rSVI step {i+1}/{self.num_steps}", end="", flush=True)
-            print() 
+            print()
             self.params_ = self._inference_.get_params(svi_state)
             self.posterior_samples_ = None
         elif self._backend_ == "steinvi":
