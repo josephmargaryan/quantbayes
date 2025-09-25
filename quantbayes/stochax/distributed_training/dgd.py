@@ -233,7 +233,7 @@ class DGDTrainerEqx:
                     models_half[i], self.states[i], Xi, yi, sub
                 )
                 grads.append(gi)
-                print(f"\rEpoch {t+1}/{self.num_steps}", end="", flush=True)
+                print(f"\rEpoch {t+1}/{self.T}", end="", flush=True)
             print()
             # GD step on params
             params_list = [
