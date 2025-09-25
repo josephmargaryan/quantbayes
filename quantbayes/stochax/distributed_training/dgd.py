@@ -24,6 +24,17 @@ __all__ = [
 ]
 
 
+def _maybe_l2_penalty(pyparams, lam: Optional[float]) -> Array:
+    """0.5 * lam * ||params||^2 if lam>0 else 0."""
+    if lam is None or lam <= 0:
+        return jnp.asarray(0.0, dtype=jnp.float32)
+    return (
+        0.5
+        * lam
+        * sum(jnp.sum(jnp.square(leaf)) for leaf in jax.tree_util.tree_leaves(pyparams))
+    )
+
+
 def laplacian_from_edges(n_nodes: int, edges: List[Tuple[int, int]]) -> Array:
     """Undirected graph Laplacian L = D - A (nodes indexed 0..n-1)."""
     A = np.zeros((n_nodes, n_nodes), dtype=np.float32)
@@ -115,7 +126,7 @@ class DGDTrainerEqx:
         model_init_fn: Callable[[PRNG], eqx.Module],
         n_nodes: int,
         edges: List[Tuple[int, int]],
-        lam: float,
+        lam: Optional[float],
         alpha: float,
         gamma: float,
         T: int,
@@ -125,7 +136,7 @@ class DGDTrainerEqx:
         self.model_init_fn = model_init_fn
         self.n_nodes = n_nodes
         self.edges = edges
-        self.lam = float(lam)
+        self.lam = lam if (lam is not None and lam > 0.0) else None
         self.alpha = float(alpha)
         self.gamma = float(gamma)
         self.T = int(T)
@@ -155,28 +166,14 @@ class DGDTrainerEqx:
     def _local_fullbatch_grad(
         self, model: eqx.Module, state: Any, X: Array, y: Array, key: PRNG
     ):
-        """
-        Compute gradient of local objective (average logistic + L2 on weights).
-        Your binary_loss has signature (model, state, xb, yb, key)->(loss, new_state).
-        We add L2 on all trainable leaves except biases if you wish; here we add on all leaves
-        for simplicity. If you want to skip biases, filter by leaf name in your model.
-        """
+        def loss_with_reg(m: eqx.Module, s: Any, xb: Array, yb: Array, k: PRNG):
+            base, new_s = self.loss_fn(m, s, xb, yb, k)  # CE over xb
+            if self.lam is not None:
+                p = eqx.filter(m, eqx.is_inexact_array)
+                base = base + _maybe_l2_penalty(p, self.lam)
+            return base, new_s
 
-        def loss_with_l2(m: eqx.Module, s: Any, xb: Array, yb: Array, k: PRNG):
-            base, new_s = self.loss_fn(m, s, xb, yb, k)  # average CE over xb
-            # L2 penalty on trainable leaves
-            p = eqx.filter(m, eqx.is_inexact_array)
-            l2 = (
-                0.5
-                * self.lam
-                * sum(
-                    [jnp.sum(jnp.square(leaf)) for leaf in jax.tree_util.tree_leaves(p)]
-                )
-            )
-            return base + l2, new_s
-
-        # Value+grad; we only use grad; keep state unchanged by using old state (loss_fn returns new state)
-        (loss_val, _), grad = eqx.filter_value_and_grad(loss_with_l2, has_aux=True)(
+        (loss_val, _), grad = eqx.filter_value_and_grad(loss_with_reg, has_aux=True)(
             model, state, X, y, key
         )
         return loss_val, grad
@@ -219,7 +216,6 @@ class DGDTrainerEqx:
         k = self.key if eval_key is None else eval_key
 
         for t in range(self.T):
-            print(f"DGD iter {t+1}/{self.T}", end="\r", flush=True)
             # ----- Phase 1: Gossip (mix) -----
             params_half = _tree_mix(self.W, params_list)  # list of params after mixing
 
@@ -237,7 +233,8 @@ class DGDTrainerEqx:
                     models_half[i], self.states[i], Xi, yi, sub
                 )
                 grads.append(gi)
-
+                print(f"\rEpoch {t+1}/{self.num_steps}", end="", flush=True)
+            print()
             # GD step on params
             params_list = [
                 jax.tree_util.tree_map(lambda p, g: p - self.gamma * g, ph, gi)
@@ -257,7 +254,7 @@ class DGDTrainerEqx:
 
             # Consensus squared distance
             hist_consensus.append(self._consensus_distance(params_list))
-
+        print()
         # Keep final models
         self.models = [_combine_params(p, s) for p, s in zip(params_list, static_list)]
         self.key = k
@@ -271,37 +268,32 @@ def centralized_gd_eqx(
     model_init_fn: Callable[[PRNG], eqx.Module],
     X: Array,
     y: Array,
-    lam: float,
+    lam: Optional[float],  # <-- changed
     gamma: float,
     T: int,
     loss_fn: Callable,
     key: Optional[PRNG] = None,
 ) -> Tuple[eqx.Module, List[float]]:
-    """
-    Full-batch GD on a single Equinox model using the same binary_loss (+L2) and step size.
-    """
     k = jr.PRNGKey(0) if key is None else key
     model, state = eqx.nn.make_with_state(model_init_fn)(k)
 
-    def loss_with_l2(m: eqx.Module, s: Any, xb: Array, yb: Array, k: PRNG):
-        base, new_s = loss_fn(m, s, xb, yb, k)
-        p = eqx.filter(m, eqx.is_inexact_array)
-        l2 = (
-            0.5
-            * lam
-            * sum([jnp.sum(jnp.square(leaf)) for leaf in jax.tree_util.tree_leaves(p)])
-        )
-        return base + l2, new_s
+    def loss_with_reg(m: eqx.Module, s: Any, xb: Array, yb: Array, k: PRNG):
+        base, new_s = loss_fn(m, s, xb, yb, k)  # CE
+        if lam is not None and lam > 0.0:
+            p = eqx.filter(m, eqx.is_inexact_array)
+            base = base + _maybe_l2_penalty(p, lam)
+        return base, new_s
 
     losses: List[float] = []
     for _ in range(T):
-        (loss_val, _), grads = eqx.filter_value_and_grad(loss_with_l2, has_aux=True)(
+        (loss_val, _), grads = eqx.filter_value_and_grad(loss_with_reg, has_aux=True)(
             model, state, X, y, k
         )
         losses.append(float(loss_val))
         params, static = _partition_params(model)
         new_params = jax.tree_util.tree_map(lambda p, g: p - gamma * g, params, grads)
         model = _combine_params(new_params, static)
+
     return model, losses
 
 
