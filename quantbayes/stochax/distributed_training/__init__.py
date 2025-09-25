@@ -7,6 +7,9 @@ from .dgd import (
     centralized_gd_eqx,
     plot_global_loss_q3,
     plot_consensus_q3,
+    safe_alpha,
+    plot_q4_cases,
+    plot_link_replacement,
 )
 
 __all__ = [
@@ -18,4 +21,7 @@ __all__ = [
     "centralized_gd_eqx",
     "plot_global_loss_q3",
     "plot_consensus_q3",
+    "safe_alpha",
+    "plot_q4_cases",
+    "plot_link_replacement",
 ]

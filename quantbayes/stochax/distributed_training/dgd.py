@@ -18,6 +18,9 @@ __all__ = [
     "centralized_gd_eqx",
     "plot_global_loss_q3",
     "plot_consensus_q3",
+    "plot_q4_cases",  # add
+    "plot_link_replacement",  # add
+    "safe_alpha",  # add
 ]
 
 
@@ -216,6 +219,7 @@ class DGDTrainerEqx:
         k = self.key if eval_key is None else eval_key
 
         for t in range(self.T):
+            print(f"DGD iter {t+1}/{self.T}", end="\r", flush=True)
             # ----- Phase 1: Gossip (mix) -----
             params_half = _tree_mix(self.W, params_list)  # list of params after mixing
 
