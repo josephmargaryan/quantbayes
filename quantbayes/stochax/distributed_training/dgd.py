@@ -114,11 +114,13 @@ def _tree_mix(W: Array, param_list: List[Any]) -> List[Any]:
 
 class DGDTrainerEqx:
     """
-    Peer-to-peer DGD (exact algorithm in assignment):
+    P2P DGD:
       θ_{t+1/2} = (I - α L) θ_t
-      θ_{t+1}^i  = θ_{t+1/2}^i - γ ∇L_i(θ_{t+1/2}^i)
+      θ_{t+1}^i  = θ_{t+1/2}^i - γ ∇ L_i(θ_{t+1/2}^i)
 
-    Uses your Equinox model + binary_loss for local objectives.
+    • Mix only PARAMETERS (not BN state).
+    • Local step is one full-batch GD update (plain gradient descent).
+    • Optional L2 via _maybe_l2_penalty(m, lam) implements 0.5*lam*||θ||^2.
     """
 
     def __init__(
@@ -130,8 +132,10 @@ class DGDTrainerEqx:
         alpha: float,
         gamma: float,
         T: int,
-        loss_fn: Callable,  # e.g., your binary_loss
+        loss_fn: Callable,  # e.g., binary_loss
         key: Optional[PRNG] = None,
+        *,
+        eval_inference_mode: bool = True,  # BN-safe eval
     ):
         self.model_init_fn = model_init_fn
         self.n_nodes = n_nodes
@@ -145,13 +149,18 @@ class DGDTrainerEqx:
 
         # Mixing matrix (gossip)
         self.W = mixing_matrix(n_nodes, edges, self.alpha)
+        # (Optional sanity) ensure symmetric & row-stochastic
+        rs = jnp.sum(self.W, axis=1)
+        assert jnp.allclose(self.W, self.W.T, atol=1e-6), "W must be symmetric"
+        assert jnp.allclose(rs, jnp.ones_like(rs), atol=1e-6), "Rows of W must sum to 1"
 
-        # Filled by `fit(...)`
+        self.eval_inference_mode = eval_inference_mode
+
+        # Filled by fit(...)
         self.models: List[eqx.Module] = []
         self.states: List[Any] = []
 
     def _init_models(self) -> None:
-        """Initialize one model per node."""
         models, states = [], []
         k = self.key
         for _ in range(self.n_nodes):
@@ -163,48 +172,42 @@ class DGDTrainerEqx:
         self.models = models
         self.states = states
 
-    def _local_fullbatch_grad(
+    def _local_fullbatch_grad_and_state(
         self, model: eqx.Module, state: Any, X: Array, y: Array, key: PRNG
     ):
+        """Plain full-batch GD (with optional 0.5*lam*||θ||^2)."""
+
         def loss_with_reg(m: eqx.Module, s: Any, xb: Array, yb: Array, k: PRNG):
-            base, new_s = self.loss_fn(m, s, xb, yb, k)  # CE over xb
+            base, new_s = self.loss_fn(m, s, xb, yb, k)
             if self.lam is not None:
                 p = eqx.filter(m, eqx.is_inexact_array)
                 base = base + _maybe_l2_penalty(p, self.lam)
             return base, new_s
 
-        (loss_val, _), grad = eqx.filter_value_and_grad(loss_with_reg, has_aux=True)(
-            model, state, X, y, key
-        )
-        return loss_val, grad
+        (loss_val, new_s), grad = eqx.filter_value_and_grad(
+            loss_with_reg, has_aux=True
+        )(model, state, X, y, key)
+        return loss_val, grad, new_s
 
     def _consensus_distance(self, params_list: List[Any]) -> float:
-        """(1/n) sum_i ||θ_i - θ̄||^2 using flattened params."""
         vecs = [_flatten_params_l2(p) for p in params_list]
-        stack = jnp.stack(vecs, axis=0)  # (n, P)
-        mean = jnp.mean(stack, axis=0, keepdims=True)  # (1, P)
-        sq = jnp.sum((stack - mean) ** 2, axis=1)  # (n,)
+        stack = jnp.stack(vecs, axis=0)
+        mean = jnp.mean(stack, axis=0, keepdims=True)
+        sq = jnp.sum((stack - mean) ** 2, axis=1)
         return float(jnp.mean(sq))
 
     def fit(
         self,
-        parts: List[
-            Tuple[Array, Array]
-        ],  # [(X_i, y_i)] for i=0..n-1  (labels in {0,1})
+        parts: List[Tuple[Array, Array]],  # [(X_i, y_i)] per node
         X_full: Array,
         y_full: Array,
         eval_key: Optional[PRNG] = None,
     ) -> Dict[str, List[float]]:
-        """
-        Run DGD for T iterations.
-        Returns dict with histories: 'loss_node1', 'consensus_sq'.
-        """
         if not self.models:
             self._init_models()
 
-        # Split models into (params, static) so we can mix params only
-        params_list = []
-        static_list = []
+        # Work on (params, static) to mix params only
+        params_list, static_list = [], []
         for m in self.models:
             p, s = _partition_params(m)
             params_list.append(p)
@@ -213,51 +216,58 @@ class DGDTrainerEqx:
         hist_loss_node1: List[float] = []
         hist_consensus: List[float] = []
 
-        k = self.key if eval_key is None else eval_key
+        rng = self.key if eval_key is None else eval_key
+        log_interval = max(1, self.T // 10)
 
         for t in range(self.T):
-            # ----- Phase 1: Gossip (mix) -----
-            params_half = _tree_mix(self.W, params_list)  # list of params after mixing
-
-            # Convert to models for local gradients
+            # 1) Gossip
+            params_half = _tree_mix(self.W, params_list)
             models_half = [
                 _combine_params(ph, s) for ph, s in zip(params_half, static_list)
             ]
 
-            # ----- Phase 2: Local gradient descent (full batch per node) -----
-            grads = []
+            # 2) Local full-batch GD (exactly one step)
+            new_params_list = []
             for i in range(self.n_nodes):
                 Xi, yi = parts[i]
-                k, sub = jr.split(k)
-                _, gi = self._local_fullbatch_grad(
+                rng, sub = jr.split(rng)
+                _, gi, new_state_i = self._local_fullbatch_grad_and_state(
                     models_half[i], self.states[i], Xi, yi, sub
                 )
-                grads.append(gi)
-                print(f"\rEpoch {t+1}/{self.T}", end="", flush=True)
-            print()
-            # GD step on params
-            params_list = [
-                jax.tree_util.tree_map(lambda p, g: p - self.gamma * g, ph, gi)
-                for ph, gi in zip(params_half, grads)
-            ]
+                # θ_{t+1}^i = θ_{t+1/2}^i − γ ∇L_i(θ_{t+1/2}^i)
+                updated = jax.tree_util.tree_map(
+                    lambda p, g: p - self.gamma * g, params_half[i], gi
+                )
+                new_params_list.append(updated)
+                self.states[i] = new_state_i  # keep BN/etc state local to node i
 
-            # ----- Logging -----
-            # Build node 0 model (node index 0) after the step
+            params_list = new_params_list
+
+            # Logging (global loss of node 1; consensus distance)
             model_node1 = _combine_params(params_list[0], static_list[0])
-
-            # Global training loss for node 1 (evaluate on full training data)
-            # Using your eval_step; it expects (model, state, X, y, key, loss_fn)
+            model_eval = (
+                eqx.nn.inference_mode(model_node1, value=True)
+                if self.eval_inference_mode
+                else model_node1
+            )
+            rng, eval_sub = jr.split(rng)
             loss_node1 = float(
-                eval_step(model_node1, self.states[0], X_full, y_full, k, self.loss_fn)
+                eval_step(
+                    model_eval, self.states[0], X_full, y_full, eval_sub, self.loss_fn
+                )
             )
             hist_loss_node1.append(loss_node1)
-
-            # Consensus squared distance
             hist_consensus.append(self._consensus_distance(params_list))
-        print()
-        # Keep final models
+
+            if ((t + 1) % log_interval == 0) or ((t + 1) == self.T):
+                print(
+                    f"[{t+1}/{self.T}] loss(node1)={hist_loss_node1[-1]:.4f} cons={hist_consensus[-1]:.3e}",
+                    flush=True,
+                )
+
+        # Recombine final models
         self.models = [_combine_params(p, s) for p, s in zip(params_list, static_list)]
-        self.key = k
+        self.key = rng
         return {"loss_node1": hist_loss_node1, "consensus_sq": hist_consensus}
 
 
@@ -268,31 +278,41 @@ def centralized_gd_eqx(
     model_init_fn: Callable[[PRNG], eqx.Module],
     X: Array,
     y: Array,
-    lam: Optional[float],  # <-- changed
+    lam: Optional[float],
     gamma: float,
     T: int,
     loss_fn: Callable,
     key: Optional[PRNG] = None,
 ) -> Tuple[eqx.Module, List[float]]:
-    k = jr.PRNGKey(0) if key is None else key
-    model, state = eqx.nn.make_with_state(model_init_fn)(k)
+    rng = jr.PRNGKey(0) if key is None else key
+    model, state = eqx.nn.make_with_state(model_init_fn)(rng)
 
     def loss_with_reg(m: eqx.Module, s: Any, xb: Array, yb: Array, k: PRNG):
-        base, new_s = loss_fn(m, s, xb, yb, k)  # CE
+        base, new_s = loss_fn(m, s, xb, yb, k)
         if lam is not None and lam > 0.0:
             p = eqx.filter(m, eqx.is_inexact_array)
-            base = base + _maybe_l2_penalty(p, lam)
+            base = base + _maybe_l2_penalty(p, lam)  # 0.5*lam*||θ||^2
         return base, new_s
 
     losses: List[float] = []
     for _ in range(T):
-        (loss_val, _), grads = eqx.filter_value_and_grad(loss_with_reg, has_aux=True)(
-            model, state, X, y, k
-        )
-        losses.append(float(loss_val))
+        rng, sub = jr.split(rng)
+        (tot, new_state), grads = eqx.filter_value_and_grad(
+            loss_with_reg, has_aux=True
+        )(model, state, X, y, sub)
         params, static = _partition_params(model)
         new_params = jax.tree_util.tree_map(lambda p, g: p - gamma * g, params, grads)
         model = _combine_params(new_params, static)
+        state = new_state
+
+        # Report base loss (no penalty) for comparability
+        rng, esub = jr.split(rng)
+        loss_val = float(
+            eval_step(
+                eqx.nn.inference_mode(model, value=True), state, X, y, esub, loss_fn
+            )
+        )
+        losses.append(loss_val)
 
     return model, losses
 
@@ -429,7 +449,7 @@ if __name__ == "__main__":
         def __init__(self, key):
             self.lin = eqx.nn.Linear(d, 1, key=key)  # bias=True by default
 
-        def __call__(self, x, key=None, state=None):
+        def __call__(self, x, key, state):
             return self.lin(x), state  # (logits, state)
 
     def model_init_fn(key: jax.Array) -> eqx.Module:
