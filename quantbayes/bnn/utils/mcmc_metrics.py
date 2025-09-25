@@ -25,7 +25,7 @@ def count_params_mcmc(samples):
     return total_params
 
 
-def evaluate_mcmc(model: bnn.Module) -> dict:
+def evaluate_mcmc(model) -> dict:
     """
     Evaluate an MCMC model by computing common diagnostics and return a summary dictionary.
 
