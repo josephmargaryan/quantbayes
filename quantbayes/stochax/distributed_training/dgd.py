@@ -317,25 +317,49 @@ def centralized_gd_eqx(
     return model, losses
 
 
+def _clip_for_log(y, eps: float = 1e-12):
+    """Ensure strictly positive values for log-scale plots."""
+    y = np.asarray(y, dtype=np.float64)
+    return np.maximum(y, eps)
+
+
 def plot_global_loss_q3(
     histories: dict,
     centralized: list[float] | None = None,
-    title="Global training loss (node 1)",
+    title: str = "Global training loss (node 1)",
     save: str | None = None,
+    *,
+    yscale: str = "log",  # "log" | "linear" | "symlog"
+    eps: float = 1e-12,
 ):
     """
     histories: {"line": {"loss_node1": [...]}, "ring": {...}, "star": {...}}
     centralized: list of global losses from centralized GD (optional)
     """
     plt.figure(figsize=(7.2, 4.2))
+
     if centralized is not None:
-        plt.plot(centralized, label="centralized GD", linewidth=3)
+        y = centralized
+        if yscale in {"log", "symlog"}:
+            y = _clip_for_log(y, eps)
+        plt.plot(y, label="centralized GD", linewidth=3)
+
     for name, hist in histories.items():
-        plt.plot(hist["loss_node1"], label=f"DGD - {name}", linewidth=2)
+        y = hist["loss_node1"]
+        if yscale in {"log", "symlog"}:
+            y = _clip_for_log(y, eps)
+        plt.plot(y, label=f"DGD - {name}", linewidth=2)
+
+    if yscale:
+        plt.yscale(yscale)
+        if yscale == "log":
+            plt.ylim(bottom=eps)
+
     plt.xlabel("iteration t")
     plt.ylabel("global training loss (node 1)")
     plt.title(title)
     plt.legend()
+    plt.grid(True, which="both", alpha=0.35, linewidth=0.6)
     plt.tight_layout()
     if save:
         plt.savefig(save, dpi=180)
@@ -343,18 +367,33 @@ def plot_global_loss_q3(
 
 
 def plot_consensus_q3(
-    histories: dict, title="Consensus distance", save: str | None = None
+    histories: dict,
+    title: str = "Consensus distance",
+    save: str | None = None,
+    *,
+    yscale: str = "log",
+    eps: float = 1e-12,
 ):
     """
     histories: {"line": {"consensus_sq": [...]}, "ring": {...}, "star": {...}}
     """
     plt.figure(figsize=(7.2, 4.2))
     for name, hist in histories.items():
-        plt.plot(hist["consensus_sq"], label=name, linewidth=2)
+        y = hist["consensus_sq"]
+        if yscale in {"log", "symlog"}:
+            y = _clip_for_log(y, eps)
+        plt.plot(y, label=name, linewidth=2)
+
+    if yscale:
+        plt.yscale(yscale)
+        if yscale == "log":
+            plt.ylim(bottom=eps)
+
     plt.xlabel("iteration t")
     plt.ylabel("squared consensus distance")
     plt.title(title)
     plt.legend()
+    plt.grid(True, which="both", alpha=0.35, linewidth=0.6)
     plt.tight_layout()
     if save:
         plt.savefig(save, dpi=180)
@@ -364,17 +403,33 @@ def plot_consensus_q3(
 def plot_q4_cases(
     hist_C: dict,
     hist_D: dict,
-    title_prefix="Global training loss (node 1)",
+    title_prefix: str = "Global training loss (node 1)",
     save: str | None = None,
+    *,
+    yscale: str = "log",
+    eps: float = 1e-12,
 ):
     """Compare Case C vs Case D for a fixed topology."""
     plt.figure(figsize=(7.2, 4.2))
-    plt.plot(hist_C["loss_node1"], label="Case C", linewidth=2)
-    plt.plot(hist_D["loss_node1"], label="Case D", linewidth=2)
+    yC = hist_C["loss_node1"]
+    yD = hist_D["loss_node1"]
+    if yscale in {"log", "symlog"}:
+        yC = _clip_for_log(yC, eps)
+        yD = _clip_for_log(yD, eps)
+
+    plt.plot(yC, label="Case C", linewidth=2)
+    plt.plot(yD, label="Case D", linewidth=2)
+
+    if yscale:
+        plt.yscale(yscale)
+        if yscale == "log":
+            plt.ylim(bottom=eps)
+
     plt.xlabel("iteration t")
     plt.ylabel("global training loss (node 1)")
     plt.title(f"{title_prefix}: Case C vs Case D")
     plt.legend()
+    plt.grid(True, which="both", alpha=0.35, linewidth=0.6)
     plt.tight_layout()
     if save:
         plt.savefig(save, dpi=180)
@@ -384,16 +439,29 @@ def plot_q4_cases(
 def plot_link_replacement(
     best_hist: dict,
     best_edges: list[tuple[int, int]],
-    title="Case C — best link replacement",
+    title: str = "Case C — best link replacement",
     save: str | None = None,
+    *,
+    yscale: str = "log",
+    eps: float = 1e-12,
 ):
     """Show the best-performing link replacement run (already selected)."""
     plt.figure(figsize=(7.2, 4.2))
-    plt.plot(best_hist["loss_node1"], label=f"{best_edges}", linewidth=2)
+    y = best_hist["loss_node1"]
+    if yscale in {"log", "symlog"}:
+        y = _clip_for_log(y, eps)
+    plt.plot(y, label=f"{best_edges}", linewidth=2)
+
+    if yscale:
+        plt.yscale(yscale)
+        if yscale == "log":
+            plt.ylim(bottom=eps)
+
     plt.xlabel("iteration t")
     plt.ylabel("global training loss (node 1)")
     plt.title(title)
     plt.legend()
+    plt.grid(True, which="both", alpha=0.35, linewidth=0.6)
     plt.tight_layout()
     if save:
         plt.savefig(save, dpi=180)
