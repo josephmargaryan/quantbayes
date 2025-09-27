@@ -480,24 +480,56 @@ class NumpyroClassifier(_NumpyroBase, ClassifierMixin):
         return self
 
     def _posterior_proba(self, X) -> np.ndarray:
-        if self.proba_site is not None:
-            site = self.proba_site
-            draws = self.predict_posterior(X, sites=[site])[
-                site
-            ]  # (S, N, C?) or (S, N)
-            probs = jnp.mean(draws, axis=0)  # (N, C?) or (N,)
-            probs = probs if probs.ndim > 1 else jnp.stack([1 - probs, probs], axis=-1)
-            return np.array(probs)
+        self._ensure_fitted(attributes=["_label_encoder_"])
+        X = _to_device_array(X)
 
+        # If the model exposes probabilities directly, prefer them.
+        if self.proba_site is not None:
+            samples = self.predict_posterior(X, sites=[self.proba_site])
+            draws = samples.get(self.proba_site)
+            if draws is None:
+                raise KeyError(f"Requested proba_site='{self.proba_site}' not found.")
+            probs = jnp.mean(draws, axis=0)  # (N,) or (N,C?) or (N,1)
+            if probs.ndim == 1:
+                probs = jnp.stack([1.0 - probs, probs], axis=-1)
+            elif probs.shape[-1] == 1:
+                p1 = probs[..., 0]
+                probs = jnp.stack([1.0 - p1, p1], axis=-1)
+            return np.asarray(probs)
+
+        # Otherwise consume logits (default name 'logits'); average *probabilities* per draw.
         site = self.logits_site or "logits"
-        draws = self.predict_posterior(X, sites=[site])[site]  # (S, N, C?) or (S, N)
-        logits = jnp.mean(draws, axis=0)  # (N, C?) or (N,)
-        if logits.ndim == 1 or (self.n_classes_ == 2 and logits.shape[-1] == 1):
-            p1 = _sigmoid(logits if logits.ndim == 1 else logits[..., 0])
+        samples = self.predict_posterior(X, sites=[site])
+        draws = samples.get(site)
+
+        # Optional auto-detection: if 'logits' missing, try 'proba' once (keeps the promise in Notes)
+        if draws is None:
+            probe = self.predict_posterior(X, num_samples=1)  # cheap introspection
+            if "proba" in probe:
+                draws = self.predict_posterior(X, sites=["proba"])["proba"]
+                probs = jnp.mean(draws, axis=0)
+                if probs.ndim == 1:
+                    probs = jnp.stack([1.0 - probs, probs], axis=-1)
+                elif probs.shape[-1] == 1:
+                    p1 = probs[..., 0]
+                    probs = jnp.stack([1.0 - p1, p1], axis=-1)
+                return np.asarray(probs)
+            available = list(probe.keys())
+            raise KeyError(
+                f"Neither site '{site}' nor 'proba' found. Available sites: {available}"
+            )
+
+        # Binary: (S, N) or (S, N, 1) -> average sigmoid
+        if draws.ndim == 2 or (draws.ndim == 3 and draws.shape[-1] == 1):
+            logits = draws if draws.ndim == 2 else draws[..., 0]
+            p1 = jax.nn.sigmoid(logits)  # (S, N)
+            p1 = jnp.mean(p1, axis=0)  # (N,)
             probs = jnp.stack([1.0 - p1, p1], axis=-1)
-        else:
-            probs = _softmax(logits, axis=-1)
-        return np.array(probs)
+            return np.asarray(probs)
+
+        # Multiclass: (S, N, C) -> average softmax
+        probs = jnp.mean(jax.nn.softmax(draws, axis=-1), axis=0)  # (N, C)
+        return np.asarray(probs)
 
     def predict_proba(self, X):
         self._ensure_fitted(attributes=["_label_encoder_"])
