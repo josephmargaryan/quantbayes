@@ -18,9 +18,9 @@ __all__ = [
     "centralized_gd_eqx",
     "plot_global_loss_q3",
     "plot_consensus_q3",
-    "plot_q4_cases",  # add
-    "plot_link_replacement",  # add
-    "safe_alpha",  # add
+    "plot_q4_cases",
+    "plot_link_replacement",
+    "safe_alpha",
 ]
 
 
@@ -132,10 +132,10 @@ class DGDTrainerEqx:
         alpha: float,
         gamma: float,
         T: int,
-        loss_fn: Callable,  # e.g., binary_loss
+        loss_fn: Callable,
         key: Optional[PRNG] = None,
         *,
-        eval_inference_mode: bool = True,  # BN-safe eval
+        eval_inference_mode: bool = True,
     ):
         self.model_init_fn = model_init_fn
         self.n_nodes = n_nodes
@@ -149,7 +149,7 @@ class DGDTrainerEqx:
 
         # Mixing matrix (gossip)
         self.W = mixing_matrix(n_nodes, edges, self.alpha)
-        # (Optional sanity) ensure symmetric & row-stochastic
+
         rs = jnp.sum(self.W, axis=1)
         assert jnp.allclose(self.W, self.W.T, atol=1e-6), "W must be symmetric"
         assert jnp.allclose(rs, jnp.ones_like(rs), atol=1e-6), "Rows of W must sum to 1"
@@ -234,7 +234,7 @@ class DGDTrainerEqx:
                 _, gi, new_state_i = self._local_fullbatch_grad_and_state(
                     models_half[i], self.states[i], Xi, yi, sub
                 )
-                # θ_{t+1}^i = θ_{t+1/2}^i − γ ∇L_i(θ_{t+1/2}^i)
+                # local GD step
                 updated = jax.tree_util.tree_map(
                     lambda p, g: p - self.gamma * g, params_half[i], gi
                 )
@@ -271,7 +271,7 @@ class DGDTrainerEqx:
         return {"loss_node1": hist_loss_node1, "consensus_sq": hist_consensus}
 
 
-# ---------- centralized GD baseline (same model class) ----------
+# ---------- centralized GD baseline ----------
 
 
 def centralized_gd_eqx(
@@ -305,7 +305,7 @@ def centralized_gd_eqx(
         model = _combine_params(new_params, static)
         state = new_state
 
-        # Report base loss (no penalty) for comparability
+        # Report base loss
         rng, esub = jr.split(rng)
         loss_val = float(
             eval_step(
@@ -411,13 +411,8 @@ if __name__ == "__main__":
     import jax.random as jr
     import equinox as eqx
 
-    # If you placed the trainer in a module, uncomment this import:
-    # from dgd_trainer_eqx import DGDTrainerEqx, centralized_gd_eqx, safe_alpha
     from quantbayes.stochax.trainer.train import binary_loss, eval_step
 
-    # ------------------------------
-    # 1) Synthetic binary dataset
-    # ------------------------------
     rng = np.random.RandomState(0)
     n_total, d = 4000, 50
     X = rng.randn(n_total, d).astype(np.float32)
@@ -426,14 +421,12 @@ if __name__ == "__main__":
     p = 1.0 / (1.0 + np.exp(-logits))
     y = (rng.rand(n_total) < p).astype(np.float32)
 
-    # Shuffle + split 80/20
     idx = rng.permutation(n_total)
     X, y = X[idx], y[idx]
     n_train = int(0.8 * n_total)
     X_tr_np, X_te_np = X[:n_train], X[n_train:]
     y_tr_np, y_te_np = y[:n_train], y[n_train:]
 
-    # Standardize using train stats
     mu = X_tr_np.mean(axis=0, keepdims=True)
     sd = X_tr_np.std(axis=0, keepdims=True) + 1e-8
     X_tr_np = (X_tr_np - mu) / sd
@@ -444,24 +437,18 @@ if __name__ == "__main__":
     X_te = jnp.array(X_te_np)
     y_te = jnp.array(y_te_np)
 
-    # ------------------------------
-    # 2) Simple Equinox logistic model
-    # ------------------------------
     class LR(eqx.Module):
         lin: eqx.nn.Linear
 
         def __init__(self, key):
-            self.lin = eqx.nn.Linear(d, 1, key=key)  # bias=True by default
+            self.lin = eqx.nn.Linear(d, 1, key=key)
 
         def __call__(self, x, key, state):
-            return self.lin(x), state  # (logits, state)
+            return self.lin(x), state
 
     def model_init_fn(key: jax.Array) -> eqx.Module:
         return LR(key)
 
-    # ------------------------------
-    # 3) Uniform partition across 4 nodes
-    # ------------------------------
     def uniform_partition(X: jnp.ndarray, y: jnp.ndarray, n_nodes: int):
         N = X.shape[0]
         base, rem = divmod(N, n_nodes)
@@ -475,9 +462,6 @@ if __name__ == "__main__":
 
     parts = uniform_partition(X_tr, y_tr, 4)
 
-    # ------------------------------
-    # 4) Topologies + hyperparameters
-    # ------------------------------
     edges_line = [(0, 1), (1, 2), (2, 3)]
     edges_ring = [(0, 1), (1, 2), (2, 3), (3, 0)]
     edges_star = [(3, 0), (3, 1), (3, 2)]
@@ -487,7 +471,6 @@ if __name__ == "__main__":
     alpha_ring = safe_alpha(edges_ring, 4)
     alpha_star = safe_alpha(edges_star, 4)
 
-    # Rough gamma from smoothness: L_smooth ≈ 0.25 * λ_max(X^T X / n) + lam
     def estimate_gamma(X: jnp.ndarray, lam: float) -> float:
         n = X.shape[0]
         XtX = (X.T @ X) / n
@@ -502,9 +485,6 @@ if __name__ == "__main__":
     gamma = float(estimate_gamma(X_tr, lam))
     T = 300
 
-    # ------------------------------
-    # 5) Train DGD per topology (node 1 = index 0) + centralized baseline
-    # ------------------------------
     trainer_line = DGDTrainerEqx(
         model_init_fn,
         4,
@@ -547,9 +527,6 @@ if __name__ == "__main__":
         model_init_fn, X_tr, y_tr, lam, gamma, T, binary_loss, jr.PRNGKey(123)
     )
 
-    # ------------------------------
-    # 6) Automatic plots
-    # ------------------------------
     histories = {"line": hist_line, "ring": hist_ring, "star": hist_star}
     plot_global_loss_q3(
         histories,
