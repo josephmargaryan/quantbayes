@@ -11,6 +11,14 @@ from .dgd import (
     plot_q4_cases,
     plot_link_replacement,
 )
+from .dsgd_trainer_eqx import (
+    DSGDTrainerEqx,
+    DGDTrainerSwitchingEqx,
+    make_batch_schedule_powerlaw,
+    make_batch_schedule_piecewise,
+    plot_dsgd_global_losses,
+    plot_consensus,
+)
 
 __all__ = [
     "CentralizedTrainer",
@@ -24,4 +32,10 @@ __all__ = [
     "safe_alpha",
     "plot_q4_cases",
     "plot_link_replacement",
+    "DSGDTrainerEqx",
+    "DGDTrainerSwitchingEqx",
+    "make_batch_schedule_powerlaw",
+    "make_batch_schedule_piecewise",
+    "plot_dsgd_global_losses",
+    "plot_consensus",
 ]
