@@ -6,6 +6,11 @@
 *.out
 *.so
 
+checkpoints/
+reconstruct.ipynb
+AI_STATS_CIFAR_PLOTS.py
+AI_STATS_MNIST_PLOTS.py
+
 # Virtual environments
 venv/
 .env/
