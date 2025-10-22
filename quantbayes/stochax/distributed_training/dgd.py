@@ -131,7 +131,7 @@ class DGDTrainerEqx:
         edges: List[Tuple[int, int]],
         lam: Optional[float],
         alpha: float,
-        gamma: float,
+        gamma: float | Callable[[int], float],
         T: int,
         loss_fn: Callable,
         key: Optional[PRNG] = None,
@@ -144,7 +144,7 @@ class DGDTrainerEqx:
         self.edges = edges
         self.lam = lam if (lam is not None and lam > 0.0) else None
         self.alpha = float(alpha)
-        self.gamma = float(gamma)
+        self.gamma = gamma
         self.T = int(T)
         self.loss_fn = loss_fn
         self.key = key if key is not None else jr.PRNGKey(0)
@@ -199,9 +199,12 @@ class DGDTrainerEqx:
         sq = jnp.sum((stack - mean) ** 2, axis=1)
         return float(jnp.mean(sq))
 
+    def _gamma_t(self, t: int) -> float:
+        return float(self.gamma(t)) if callable(self.gamma) else float(self.gamma)
+
     def fit(
         self,
-        parts: List[Tuple[Array, Array]],  # [(X_i, y_i)] per node
+        parts: List[Tuple[Array, Array]],
         X_full: Array,
         y_full: Array,
         eval_key: Optional[PRNG] = None,
@@ -209,7 +212,6 @@ class DGDTrainerEqx:
         if not self.models:
             self._init_models()
 
-        # Work on (params, static) to mix params only
         params_list, static_list = [], []
         for m in self.models:
             p, s = _partition_params(m)
@@ -229,7 +231,8 @@ class DGDTrainerEqx:
                 _combine_params(ph, s) for ph, s in zip(params_half, static_list)
             ]
 
-            # 2) Local full-batch GD (exactly one step)
+            # 2) Local full-batch GD (schedule)
+            step = self._gamma_t(t)
             new_params_list = []
             for i in range(self.n_nodes):
                 Xi, yi = parts[i]
@@ -237,16 +240,15 @@ class DGDTrainerEqx:
                 _, gi, new_state_i = self._local_fullbatch_grad_and_state(
                     models_half[i], self.states[i], Xi, yi, sub
                 )
-                # local GD step
                 updated = jax.tree_util.tree_map(
-                    lambda p, g: p - self.gamma * g, params_half[i], gi
+                    lambda p, g: p - step * g, params_half[i], gi
                 )
                 new_params_list.append(updated)
-                self.states[i] = new_state_i  # keep BN/etc state local to node i
+                self.states[i] = new_state_i
 
             params_list = new_params_list
 
-            # Logging (global loss of node 1; consensus distance)
+            # Logging
             model_node1 = _combine_params(params_list[0], static_list[0])
             model_eval = (
                 eqx.nn.inference_mode(model_node1, value=True)
@@ -268,7 +270,6 @@ class DGDTrainerEqx:
                     flush=True,
                 )
 
-        # Recombine final models
         self.models = [_combine_params(p, s) for p, s in zip(params_list, static_list)]
         self.key = rng
         return {"loss_node1": hist_loss_node1, "consensus_sq": hist_consensus}

@@ -1,3 +1,4 @@
+# quantbayes/stochax/federated/robust_agg.py
 from __future__ import annotations
 from typing import List, Any
 import jax, jax.numpy as jnp, equinox as eqx

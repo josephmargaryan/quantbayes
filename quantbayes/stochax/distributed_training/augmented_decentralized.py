@@ -1,3 +1,4 @@
+# quantbayes/stochax/distributed_training/augmented_decentralized.py
 import jax
 import jax.numpy as jnp
 import jax.random as jr

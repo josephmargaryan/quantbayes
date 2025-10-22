@@ -7,6 +7,7 @@ from .fedavg import FederatedTrainer
 # Decentralized (primal–dual family)
 from .decentralized import DecentralizedTrainer
 from .augmented_decentralized import AugmentedDecentralizedTrainer
+from .mixing_policies import repeat_mix, chebyshev_mix, disagreement_interval_from_L
 
 # DGD (full gradient) — includes plotting helpers
 from .dgd import (
@@ -37,6 +38,8 @@ from .local_gd_server_eqx import (
     make_mixing_with_per_node_alphas,
     plot_server_loss,
     plot_consensus_localgd,
+    make_constant_lr,
+    make_polynomial_decay,
 )
 
 # Asynchronous Parameter Server
@@ -71,4 +74,6 @@ __all__ = [
     "make_mixing_with_per_node_alphas",
     "plot_server_loss",
     "plot_consensus_localgd",
+    "make_constant_lr",
+    "make_polynomial_decay",
 ]

@@ -1,17 +1,17 @@
 # Local GD with a server (coordinator) and periodic communication (topology switching).
 # The server has no data and never performs a local gradient step.
 # At iterations that are multiples of τ, we use topology A (star: server connected to all clients).
-# Otherwise, topology B (no edges) => no mixing (identity mixing matrix).
+# Otherwise, topology B (no edges) => identity mixing.
 #
 # Public API:
 #   - LocalGDServerEqx
 #   - make_star_with_server_edges
-#   - make_mixing_with_per_node_alphas (for optional Q2)
+#   - make_mixing_with_per_node_alphas
 #   - plot_server_loss, plot_consensus_localgd
+#   - make_constant_lr, make_polynomial_decay (simple LR schedules)
 
 from __future__ import annotations
 from typing import List, Tuple, Dict, Optional, Callable, Any
-import math
 import numpy as np
 import jax
 import jax.numpy as jnp
@@ -19,17 +19,25 @@ import jax.random as jr
 import equinox as eqx
 import matplotlib.pyplot as plt
 
-# Reuse helpers from your HA4/HA5 DGD module
+from quantbayes.stochax.trainer.train import eval_step, binary_loss
+from quantbayes.stochax.privacy.dp import DPSGDConfig, DPPrivacyEngine
+
+# Reuse helpers from your DGD module
 from quantbayes.stochax.distributed_training.dgd import (
     mixing_matrix,  # W = I - alpha * L (symmetric, row-stochastic)
     safe_alpha as _safe_alpha_ha4,
     _partition_params,
     _combine_params,
     _tree_mix,
+    laplacian_from_edges,
 )
-from quantbayes.stochax.privacy.dp import DPSGDConfig, DPPrivacyEngine
 
-from quantbayes.stochax.trainer.train import eval_step, binary_loss
+# NEW: spectral star policies
+from quantbayes.stochax.distributed_training.mixing_policies import (
+    repeat_mix,
+    chebyshev_mix,
+    disagreement_interval_from_L,
+)
 
 Array = jnp.ndarray
 PRNG = jax.Array
@@ -38,9 +46,11 @@ __all__ = [
     "LocalGDServerEqx",
     "make_star_with_server_edges",
     "make_mixing_with_per_node_alphas",
-    "safe_alpha",
     "plot_server_loss",
     "plot_consensus_localgd",
+    "safe_alpha",
+    "make_constant_lr",
+    "make_polynomial_decay",
 ]
 
 
@@ -66,7 +76,7 @@ def _tree_weighted_sum(weights: Array, param_list: List[Any]) -> Any:
     return jax.tree_util.tree_map(combine, *param_list)
 
 
-def _tree_mix(W: Array, param_list: List[Any]) -> List[Any]:
+def _tree_mix_local(W: Array, param_list: List[Any]) -> List[Any]:
     n = len(param_list)
     mixed: List[Any] = []
     for i in range(n):
@@ -94,10 +104,10 @@ def make_mixing_with_per_node_alphas(
     alphas: List[float],
 ) -> Array:
     """
-    Optional (for Q2): Build a row-stochastic mixing matrix using *node-specific* rates α_i.
-    For undirected edges (i,j), define for each row i:
+    Optional: Build a row-stochastic mixing matrix using node-specific rates α_i.
+    For undirected edges (i,j), for each row i:
         W_ii = 1 - α_i * deg(i),   W_ij = α_i if j in N(i), else 0.
-    This is row-stochastic by construction. It is *not* generally symmetric.
+    Row-stochastic by construction; not generally symmetric.
     """
     assert len(alphas) == n_nodes
     deg = np.zeros(n_nodes, dtype=np.int32)
@@ -116,39 +126,10 @@ def make_mixing_with_per_node_alphas(
         for j in N[i]:
             W[i, j] = ai
         W[i, i] = 1.0 - ai * deg[i]
-    # sanity: rows sum to 1
     rs = np.sum(W, axis=1)
     if not np.allclose(rs, np.ones_like(rs), atol=1e-6):
         raise ValueError("Row sums of W are not 1; check alphas.")
     return jnp.array(W)
-
-
-def exact_average_broadcast(params_list, server_id, sizes):
-    """
-    Make one exact 'coordinator round':
-      1) θ_server ← weighted average of client parameters (weights ∝ sizes)
-      2) θ_i ← θ_server for all clients i
-    This replaces the W-step at communication rounds.
-    """
-    import jax.numpy as jnp, jax
-    import equinox as eqx
-
-    n_total = len(params_list)
-    client_ids = [i for i in range(n_total) if i != server_id]
-    ws = jnp.array([sizes[i] for i in client_ids], dtype=jnp.float32)
-    ws = ws / (jnp.sum(ws) + 1e-12)
-
-    def wsum(*leaves):
-        return sum(w * leaf for w, leaf in zip(ws, leaves))
-
-    client_params = [params_list[i] for i in client_ids]
-    theta_avg = jax.tree_util.tree_map(wsum, *client_params)
-
-    new_params = list(params_list)
-    new_params[server_id] = theta_avg
-    for i in client_ids:
-        new_params[i] = theta_avg
-    return new_params
 
 
 def plot_server_loss(
@@ -211,14 +192,18 @@ class LocalGDServerEqx:
     After gossip, clients do a *full-batch* local gradient step. The server never
     does a local step: θ_{t+1}^S = θ_{t+1/2}^S.
 
-    You can optionally pass a custom mixing matrix builder for W_A with per-node α
-    (Q2). By default, W_A = I - α * L (symmetric) with α = safe_alpha(edges_A).
+    NEW:
+    - `star_policy`: {"name": "single" | "repeat" | "cheby", "K": int, "lam_interval": (lam_min, lam_max)?}
+       * "repeat" applies W_A K times
+       * "cheby" applies the degree-K Chebyshev polynomial p_K(W_A) s.t. p_K(1)=1
+    - `gamma`: float or Callable[[int], float] (e.g., diminishing)
 
     Returns histories with:
-        - "loss_server": global training loss evaluated at the server each iteration
-        - "consensus_all": squared consensus distance over all nodes (clients + server)
-        - "consensus_clients": same but over clients only
-        - "loss_node1", "loss_node4": optional diagnostics for clients 1 and 4
+        - "loss_server": global training loss at the server each iteration
+        - "consensus_all": squared consensus over all nodes (clients + server)
+        - "consensus_clients": squared consensus over clients only
+        - "loss_node1", "loss_node4": optional diagnostics for two clients
+        - "rho_star": per-star contraction ρ̂ = Γ_after / Γ_before (logged only on star rounds)
     """
 
     def __init__(
@@ -230,16 +215,16 @@ class LocalGDServerEqx:
         *,
         edges_B: Optional[List[Tuple[int, int]]] = None,
         alpha_A: Optional[float] = None,
-        gamma: float = 0.1,
+        gamma: float | Callable[[int], float] = 0.1,  # <--- schedule support
         T: int = 400,
         loss_fn: Callable = binary_loss,
         key: Optional[PRNG] = None,
         eval_inference_mode: bool = True,
         server_id: Optional[int] = None,
         make_W_A_custom: Optional[Callable[[int, List[Tuple[int, int]]], Array]] = None,
-        dp_config: Optional[DPSGDConfig] = None,  # NEW
+        dp_config: Optional[DPSGDConfig] = None,
+        star_policy: Optional[Dict[str, Any]] = None,  # <--- NEW
     ):
-        # ... keep all your original assignments ...
         self.model_init_fn = model_init_fn
         self.n_clients = int(n_clients)
         self.server_id = self.n_clients if server_id is None else int(server_id)
@@ -253,14 +238,15 @@ class LocalGDServerEqx:
         self.alpha_A = (
             float(alpha_A) if alpha_A is not None else safe_alpha(edges_A, self.n_total)
         )
-        self.gamma = float(gamma)
+        self.gamma = gamma  # float or Callable
         self.T = int(T)
         self.loss_fn = loss_fn
         self.key = jr.PRNGKey(0) if key is None else key
         self.eval_inference_mode = bool(eval_inference_mode)
-        self.dp_config = dp_config  # NEW
-        self._dp_engine = DPPrivacyEngine(dp_config) if dp_config else None  # NEW
+        self.dp_config = dp_config
+        self._dp_engine = DPPrivacyEngine(dp_config) if dp_config else None
 
+        # Mixing matrices
         if make_W_A_custom is None:
             self.W_A = mixing_matrix(self.n_total, self.edges_A, self.alpha_A)
             rs = jnp.sum(self.W_A, axis=1)
@@ -269,30 +255,35 @@ class LocalGDServerEqx:
         else:
             self.W_A = make_W_A_custom(self.n_total, self.edges_A)
             rs = jnp.sum(self.W_A, axis=1)
+            # May be non-symmetric row-stochastic; we still require row sums 1
             assert jnp.allclose(rs, jnp.ones_like(rs), atol=1e-6)
 
         self.W_B = jnp.eye(self.n_total, dtype=jnp.float32)
         self.models: List[eqx.Module] = []
         self.states: List[Any] = []
 
+        # Star policy
+        self.star_policy: Dict[str, Any] = star_policy or {"name": "single"}
+        self._star_lam_interval: Optional[Tuple[float, float]] = None  # lazily filled
+
     # ---- helpers ----
+
+    def _gamma_t(self, t: int) -> float:
+        return float(self.gamma(t)) if callable(self.gamma) else float(self.gamma)
+
     def _local_grad_step(
         self, model: eqx.Module, state: Any, X: Array, y: Array, key: PRNG
     ):
+        # returns (grad, new_state)
+        def loss(m, s, xb, yb, k):
+            return self.loss_fn(m, s, xb, yb, k)
+
         if self._dp_engine is None:
-
-            def loss(m, s, xb, yb, k):
-                return self.loss_fn(m, s, xb, yb, k)
-
             (loss_val, new_s), grad = eqx.filter_value_and_grad(loss, has_aux=True)(
                 model, state, X, y, key
             )
             return grad, new_s
         else:
-
-            def loss(m, s, xb, yb, k):
-                return self.loss_fn(m, s, xb, yb, k)
-
             noisy_grad, new_s = self._dp_engine.noisy_grad(
                 loss, model, state, X, y, key=key
             )
@@ -316,17 +307,6 @@ class LocalGDServerEqx:
         mean = jnp.mean(stack, axis=0, keepdims=True)
         sq = jnp.sum((stack - mean) ** 2, axis=1)
         return float(jnp.mean(sq))
-
-    def _local_fullbatch_grad_and_state(
-        self, model: eqx.Module, state: Any, X: Array, y: Array, key: PRNG
-    ):
-        def loss(m: eqx.Module, s: Any, xb: Array, yb: Array, k: PRNG):
-            return self.loss_fn(m, s, xb, yb, k)
-
-        (loss_val, new_s), grad = eqx.filter_value_and_grad(loss, has_aux=True)(
-            model, state, X, y, key
-        )
-        return loss_val, grad, new_s
 
     # ---- main fit ----
 
@@ -356,18 +336,64 @@ class LocalGDServerEqx:
         hist_loss_node4: List[float] = []
         hist_cons_all: List[float] = []
         hist_cons_clients: List[float] = []
+        hist_star_rho: List[float] = []  # NEW
+
+        # Precompute Chebyshev interval lazily for DS star if needed
+        def _ensure_star_interval():
+            if self._star_lam_interval is None:
+                li = self.star_policy.get("lam_interval")
+                if li is not None:
+                    self._star_lam_interval = (float(li[0]), float(li[1]))
+                else:
+                    L_star = laplacian_from_edges(self.n_total, self.edges_A)
+                    self._star_lam_interval = disagreement_interval_from_L(
+                        L_star, self.alpha_A
+                    )
+            return self._star_lam_interval
 
         for t in range(self.T):
-            W = self.W_A if ((t + 1) % self.tau == 0) else self.W_B
+            is_star = (t + 1) % self.tau == 0
 
-            # Gossip
-            params_half = _tree_mix(W, params_list)
+            # Per-star contraction: measure before star
+            if is_star:
+                cons_before = self._consensus_distance(
+                    params_list, list(range(self.n_total))
+                )
+
+            # --- Gossip (with spectral star policy on star rounds) ---
+            if is_star:
+                policy = self.star_policy.get("name", "single")
+                if policy == "single":
+                    params_half = _tree_mix(self.W_A, params_list)
+                elif policy == "repeat":
+                    K = int(self.star_policy.get("K", 2))
+                    params_half = repeat_mix(self.W_A, params_list, K)
+                elif policy == "cheby":
+                    K = int(self.star_policy.get("K", 3))
+                    lam_min, lam_max = _ensure_star_interval()
+                    params_half = chebyshev_mix(
+                        self.W_A, params_list, K, lam_min, lam_max
+                    )
+                else:
+                    raise ValueError(f"Unknown star_policy {policy}")
+            else:
+                params_half = _tree_mix(self.W_B, params_list)  # identity mixing
+
+            # Per-star contraction: measure after star and log ratio
+            if is_star:
+                cons_after = self._consensus_distance(
+                    params_half, list(range(self.n_total))
+                )
+                rho_hat = float(cons_after / cons_before) if cons_before > 0 else 1.0
+                hist_star_rho.append(rho_hat)
+
             models_half = [
                 _combine_params(ph, s) for ph, s in zip(params_half, static_list)
             ]
 
-            # Local full-batch GD at clients; server no local step
+            # --- Local full-batch GD at clients; server: no local step ---
             new_params_list = []
+            gamma_t = self._gamma_t(t)  # schedule support
             for i in range(self.n_total):
                 if i == self.server_id:
                     new_params_list.append(params_half[i])
@@ -379,14 +405,14 @@ class LocalGDServerEqx:
                     models_half[i], self.states[i], Xi, yi, sub
                 )
                 updated = jax.tree_util.tree_map(
-                    lambda p, g: p - self.gamma * g, params_half[i], grad_i
+                    lambda p, g: p - gamma_t * g, params_half[i], grad_i
                 )
                 new_params_list.append(updated)
                 self.states[i] = new_state_i
 
             params_list = new_params_list
 
-            # Logging: server loss, nodes 1&4 losses, consensus
+            # --- Logging: server loss, nodes 1 & 4 losses, consensus ---
             mS = _combine_params(
                 params_list[self.server_id], static_list[self.server_id]
             )
@@ -426,11 +452,15 @@ class LocalGDServerEqx:
             )
 
             if log and (((t + 1) % log_interval == 0) or (t + 1 == self.T)):
-                print(
-                    f"[{t+1}/{self.T}] server loss={lossS:.4f}  cons_all={hist_cons_all[-1]:.3e}  cons_cli={hist_cons_clients[-1]:.3e}",
-                    flush=True,
+                msg = (
+                    f"[{t+1}/{self.T}] server loss={lossS:.4f}  "
+                    f"cons_all={hist_cons_all[-1]:.3e}  cons_cli={hist_cons_clients[-1]:.3e}"
                 )
+                if is_star:
+                    msg += f"  rho_star={hist_star_rho[-1]:.4f}"
+                print(msg, flush=True)
 
+        # finalize
         self.models = [_combine_params(p, s) for p, s in zip(params_list, static_list)]
         self.key = rng
         return {
@@ -439,7 +469,35 @@ class LocalGDServerEqx:
             "loss_node4": hist_loss_node4,
             "consensus_all": hist_cons_all,
             "consensus_clients": hist_cons_clients,
+            "rho_star": hist_star_rho,  # NEW
         }
+
+
+# ---- simple LR schedules you can import right away ----
+
+
+def make_constant_lr(gamma: float) -> Callable[[int], float]:
+    """Return a constant LR schedule γ_t ≡ gamma."""
+    g = float(gamma)
+
+    def sched(t: int) -> float:
+        return g
+
+    return sched
+
+
+def make_polynomial_decay(
+    gamma0: float, power: float = 1.0, t0: float = 1.0
+) -> Callable[[int], float]:
+    """γ_t = gamma0 / (t + t0)^power  (default: 1/t decay)."""
+    g0 = float(gamma0)
+    p = float(power)
+    tt = float(t0)
+
+    def sched(t: int) -> float:
+        return g0 / ((t + tt) ** p)
+
+    return sched
 
 
 if __name__ == "__main__":

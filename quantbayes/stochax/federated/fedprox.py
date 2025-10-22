@@ -1,3 +1,4 @@
+# quantbayes/stochax/federated/fedprox.py
 from __future__ import annotations
 from typing import Any, Callable, Optional, List
 import jax, jax.numpy as jnp, jax.random as jr

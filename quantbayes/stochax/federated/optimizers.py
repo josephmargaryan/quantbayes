@@ -1,3 +1,4 @@
+# quantbayes/stochax/federated/optimizers.py
 from __future__ import annotations
 from typing import List, Tuple, Any
 import jax, jax.numpy as jnp, equinox as eqx

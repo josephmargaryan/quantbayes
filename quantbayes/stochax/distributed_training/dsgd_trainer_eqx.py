@@ -340,7 +340,7 @@ class DGDTrainerSwitchingEqx:
         n_nodes: int,
         edges_odd: List[Tuple[int, int]],
         edges_even: List[Tuple[int, int]],
-        gamma: float,
+        gamma: float | Callable[[int], float],
         T: int,
         *,
         alpha_odd: Optional[float] = None,
@@ -354,7 +354,7 @@ class DGDTrainerSwitchingEqx:
         self.n_nodes = int(n_nodes)
         self.edges_odd = edges_odd
         self.edges_even = edges_even
-        self.gamma = float(gamma)
+        self.gamma = gamma
         self.T = int(T)
         self.loss_fn = loss_fn
         self.key = key if key is not None else jr.PRNGKey(0)
@@ -401,6 +401,9 @@ class DGDTrainerSwitchingEqx:
         sq = jnp.sum((stack - mean) ** 2, axis=1)
         return float(jnp.mean(sq))
 
+    def _gamma_t(self, t: int) -> float:
+        return float(self.gamma(t)) if callable(self.gamma) else float(self.gamma)
+
     def fit(
         self,
         parts: List[Tuple[Array, Array]],
@@ -423,12 +426,12 @@ class DGDTrainerSwitchingEqx:
 
         for t in range(self.T):
             W = self.W_odd if ((t + 1) % 2 == 1) else self.W_even
-
             params_half = _tree_mix(W, params_list)
             models_half = [
                 _combine_params(ph, s) for ph, s in zip(params_half, static_list)
             ]
 
+            step = self._gamma_t(t)
             new_params_list = []
             for i in range(self.n_nodes):
                 Xi, yi = parts[i]
@@ -445,9 +448,8 @@ class DGDTrainerSwitchingEqx:
                     grad_i, new_state_i = self._dp_engine.noisy_grad(
                         loss, models_half[i], self.states[i], Xi, yi, key=sub
                     )
-
                 updated = jax.tree_util.tree_map(
-                    lambda p, g: p - self.gamma * g, params_half[i], grad_i
+                    lambda p, g: p - step * g, params_half[i], grad_i
                 )
                 new_params_list.append(updated)
                 self.states[i] = new_state_i

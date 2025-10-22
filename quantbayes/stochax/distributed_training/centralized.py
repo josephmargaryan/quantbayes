@@ -1,3 +1,4 @@
+# quantbayes/stochax/distributed_training/centralized.py
 from typing import Callable, Optional, List, Tuple
 
 import jax

@@ -1,3 +1,4 @@
+# quantbayes/stochax/distributed_training/fedavg.py
 import copy
 from typing import Callable, Optional, List, Any
 import jax
