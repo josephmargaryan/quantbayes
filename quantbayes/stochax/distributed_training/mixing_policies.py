@@ -1,8 +1,11 @@
 # quantbayes/stochax/distributed_training/mixing_policies.py
 from __future__ import annotations
+from dataclasses import dataclass
 from typing import List, Any, Tuple
+import numpy as np
 import jax
 import jax.numpy as jnp
+import jax.random as jr
 
 # Use your existing helpers
 from .dgd import _tree_mix, laplacian_from_edges  # already in your repo
@@ -91,3 +94,64 @@ def disagreement_interval_from_L(L: jnp.ndarray, alpha: float) -> Tuple[float, f
     lam_min = 1.0 - alpha * lammax
     lam_max = 1.0 - alpha * lam2
     return lam_min, lam_max
+
+
+@dataclass
+class AdaptiveChebyConfig:
+    """Config for adaptive star rounds."""
+
+    p_participation: float = 0.5  # Bernoulli per client
+    rho_target: float = 0.05  # target per-star contraction on disagreement
+    K_max: int = 5  # cap on chebyshev degree
+    ensure_nonempty: bool = True  # always activate >=1 client
+
+
+def min_K_for_target_rho(xi: float, rho_target: float) -> int:
+    """Smallest integer K with 1/T_K(xi)^2 <= rho_target (xi>1)."""
+    xi = float(xi)
+    rho_target = float(rho_target)
+    if not np.isfinite(xi) or xi <= 1.0 or rho_target <= 0.0 or rho_target >= 1.0:
+        return 1
+    num = np.arccosh(1.0 / max(1e-12, np.sqrt(rho_target)))
+    den = np.arccosh(xi)
+    if not np.isfinite(den) or den <= 0.0:
+        return 1
+    return int(np.ceil(num / den))
+
+
+def sample_active_clients(
+    key: jax.Array, n_clients: int, p: float, *, ensure_nonempty: bool = True
+) -> Tuple[List[int], jax.Array]:
+    """Bernoulli(p) per client; optionally force at least one active."""
+    key, sub = jr.split(key)
+    if p >= 1.0:
+        active = list(range(n_clients))
+        return active, key
+    mask = jr.uniform(sub, (n_clients,)) < float(p)
+    active = [i for i in range(n_clients) if bool(mask[i])]
+    if ensure_nonempty and not active:
+        key, sub2 = jr.split(key)
+        fallback = int(jr.randint(sub2, shape=(), minval=0, maxval=n_clients))
+        active = [fallback]
+    return active, key
+
+
+def build_partial_star_W(
+    n_total: int, server_id: int, active_clients_global: List[int], alpha: float
+) -> jnp.ndarray:
+    """
+    Row-stochastic, symmetric W for a star that connects the server only to the
+    *active* clients; all inactive clients are identity rows.
+    """
+    W = jnp.eye(n_total, dtype=jnp.float32)
+    deg = float(len(active_clients_global))
+    if deg <= 0:
+        return W
+    a = float(alpha)
+    # Server row:
+    W = W.at[server_id, server_id].set(1.0 - a * deg)
+    for c in active_clients_global:
+        W = W.at[server_id, c].set(a)
+        W = W.at[c, server_id].set(a)
+        W = W.at[c, c].set(1.0 - a)
+    return W

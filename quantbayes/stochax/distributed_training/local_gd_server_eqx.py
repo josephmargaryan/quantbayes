@@ -37,6 +37,10 @@ from quantbayes.stochax.distributed_training.mixing_policies import (
     repeat_mix,
     chebyshev_mix,
     disagreement_interval_from_L,
+    AdaptiveChebyConfig,  # NEW
+    min_K_for_target_rho,  # NEW
+    sample_active_clients,  # NEW
+    build_partial_star_W,  # NEW
 )
 
 Array = jnp.ndarray
@@ -179,8 +183,6 @@ def plot_consensus_localgd(
 
 
 # ---- main trainer ----
-
-
 class LocalGDServerEqx:
     """
     Local GD with a coordinator (server) and periodic communication.
@@ -192,18 +194,22 @@ class LocalGDServerEqx:
     After gossip, clients do a *full-batch* local gradient step. The server never
     does a local step: θ_{t+1}^S = θ_{t+1/2}^S.
 
-    NEW:
-    - `star_policy`: {"name": "single" | "repeat" | "cheby", "K": int, "lam_interval": (lam_min, lam_max)?}
-       * "repeat" applies W_A K times
-       * "cheby" applies the degree-K Chebyshev polynomial p_K(W_A) s.t. p_K(1)=1
-    - `gamma`: float or Callable[[int], float] (e.g., diminishing)
-
-    Returns histories with:
-        - "loss_server": global training loss at the server each iteration
-        - "consensus_all": squared consensus over all nodes (clients + server)
-        - "consensus_clients": squared consensus over clients only
-        - "loss_node1", "loss_node4": optional diagnostics for two clients
-        - "rho_star": per-star contraction ρ̂ = Γ_after / Γ_before (logged only on star rounds)
+    Star policy options (self.star_policy["name"]):
+      - "single":   apply W_A once
+      - "repeat":   apply W_A K times (self.star_policy["K"])
+      - "cheby":    apply degree-K Chebyshev p_K(W_A) using the full-star spectrum
+      - "adaptive": per-star partial participation:
+                    * sample active clients with probability p_participation
+                    * build partial-star W that mixes only server<->active
+                    * compute disagreement interval on the (1+m)-node star
+                    * choose smallest K s.t. 1/T_K(ξ)^2 <= rho_target (cap at K_max)
+                    * apply Chebyshev p_K(W_partial) to the full system
+    Logged histories:
+      - loss_server, loss_node1, loss_node4
+      - consensus_all, consensus_clients
+      - rho_star (per-star measured Γ_after/Γ_before)
+      - K_hist (used degree per star)
+      - active_hist (# active clients per star)
     """
 
     def __init__(
@@ -215,7 +221,7 @@ class LocalGDServerEqx:
         *,
         edges_B: Optional[List[Tuple[int, int]]] = None,
         alpha_A: Optional[float] = None,
-        gamma: float | Callable[[int], float] = 0.1,  # <--- schedule support
+        gamma: float | Callable[[int], float] = 0.1,  # schedule support
         T: int = 400,
         loss_fn: Callable = binary_loss,
         key: Optional[PRNG] = None,
@@ -223,7 +229,7 @@ class LocalGDServerEqx:
         server_id: Optional[int] = None,
         make_W_A_custom: Optional[Callable[[int, List[Tuple[int, int]]], Array]] = None,
         dp_config: Optional[DPSGDConfig] = None,
-        star_policy: Optional[Dict[str, Any]] = None,  # <--- NEW
+        star_policy: Optional[Dict[str, Any]] = None,
     ):
         self.model_init_fn = model_init_fn
         self.n_clients = int(n_clients)
@@ -255,7 +261,7 @@ class LocalGDServerEqx:
         else:
             self.W_A = make_W_A_custom(self.n_total, self.edges_A)
             rs = jnp.sum(self.W_A, axis=1)
-            # May be non-symmetric row-stochastic; we still require row sums 1
+            # May be non-symmetric row-stochastic; still require row sums 1
             assert jnp.allclose(rs, jnp.ones_like(rs), atol=1e-6)
 
         self.W_B = jnp.eye(self.n_total, dtype=jnp.float32)
@@ -264,7 +270,12 @@ class LocalGDServerEqx:
 
         # Star policy
         self.star_policy: Dict[str, Any] = star_policy or {"name": "single"}
-        self._star_lam_interval: Optional[Tuple[float, float]] = None  # lazily filled
+        if self.star_policy.get("name") == "adaptive":
+            # fill sensible defaults if missing
+            self.star_policy.setdefault("p_participation", 0.5)
+            self.star_policy.setdefault("rho_target", 0.05)
+            self.star_policy.setdefault("K_max", 5)
+            self.star_policy.setdefault("ensure_nonempty", True)
 
     # ---- helpers ----
 
@@ -302,6 +313,11 @@ class LocalGDServerEqx:
         self.states = states
 
     def _consensus_distance(self, params_list: List[Any], idxs: List[int]) -> float:
+        def _flatten_params_l2(pytree: Any) -> Array:
+            leaves = jax.tree_util.tree_leaves(pytree)
+            flat = [jnp.ravel(x) for x in leaves if x is not None]
+            return jnp.concatenate(flat) if flat else jnp.zeros((1,), dtype=jnp.float32)
+
         vecs = [_flatten_params_l2(params_list[i]) for i in idxs]
         stack = jnp.stack(vecs, axis=0)
         mean = jnp.mean(stack, axis=0, keepdims=True)
@@ -336,19 +352,20 @@ class LocalGDServerEqx:
         hist_loss_node4: List[float] = []
         hist_cons_all: List[float] = []
         hist_cons_clients: List[float] = []
-        hist_star_rho: List[float] = []  # NEW
+        hist_star_rho: List[float] = []  # per-star Γ_after / Γ_before
+        hist_K: List[int] = []  # degree used per star (all policies)
+        hist_active: List[int] = (
+            []
+        )  # #active clients per star (adaptive; else = n_clients)
 
-        # Precompute Chebyshev interval lazily for DS star if needed
+        # Precompute Chebyshev interval lazily for full DS star (for "cheby")
         def _ensure_star_interval():
-            if self._star_lam_interval is None:
-                li = self.star_policy.get("lam_interval")
-                if li is not None:
-                    self._star_lam_interval = (float(li[0]), float(li[1]))
-                else:
-                    L_star = laplacian_from_edges(self.n_total, self.edges_A)
-                    self._star_lam_interval = disagreement_interval_from_L(
-                        L_star, self.alpha_A
-                    )
+            li = getattr(self, "_star_lam_interval", None)
+            if li is None:
+                L_star = laplacian_from_edges(self.n_total, self.edges_A)
+                self._star_lam_interval = disagreement_interval_from_L(
+                    L_star, self.alpha_A
+                )
             return self._star_lam_interval
 
         for t in range(self.T):
@@ -360,32 +377,83 @@ class LocalGDServerEqx:
                     params_list, list(range(self.n_total))
                 )
 
-            # --- Gossip (with spectral star policy on star rounds) ---
+            # --- Gossip (with policy on star rounds) ---
             if is_star:
                 policy = self.star_policy.get("name", "single")
                 if policy == "single":
                     params_half = _tree_mix(self.W_A, params_list)
+                    K_used = 1
+                    active_count = len(self.client_ids)
                 elif policy == "repeat":
-                    K = int(self.star_policy.get("K", 2))
-                    params_half = repeat_mix(self.W_A, params_list, K)
+                    K_used = int(self.star_policy.get("K", 2))
+                    params_half = repeat_mix(self.W_A, params_list, K_used)
+                    active_count = len(self.client_ids)
                 elif policy == "cheby":
-                    K = int(self.star_policy.get("K", 3))
+                    K_used = int(self.star_policy.get("K", 3))
                     lam_min, lam_max = _ensure_star_interval()
                     params_half = chebyshev_mix(
-                        self.W_A, params_list, K, lam_min, lam_max
+                        self.W_A, params_list, K_used, lam_min, lam_max
                     )
+                    active_count = len(self.client_ids)
+                elif policy == "adaptive":
+                    # --- Adaptive Chebyshev under partial participation ---
+                    p_part = float(self.star_policy.get("p_participation", 0.5))
+                    ensure_nonempty = bool(
+                        self.star_policy.get("ensure_nonempty", True)
+                    )
+                    # sample actives among client_ids (0..n_clients-1 local idx for counting)
+                    active_local, rng = sample_active_clients(
+                        rng,
+                        len(self.client_ids),
+                        p_part,
+                        ensure_nonempty=ensure_nonempty,
+                    )
+                    active_clients = [self.client_ids[i] for i in active_local]
+                    active_count = len(active_clients)
+
+                    # disagreement interval on (1+m)-node star (server + m actives)
+                    if active_count >= 1:
+                        edges_small = [(0, j + 1) for j in range(active_count)]
+                        L_sub = laplacian_from_edges(1 + active_count, edges_small)
+                        lam_min, lam_max = disagreement_interval_from_L(
+                            L_sub, self.alpha_A
+                        )
+                        denom = float(lam_max - lam_min)
+                    else:
+                        lam_min, lam_max, denom = 1.0, 1.0, 0.0
+
+                    rho_target = float(self.star_policy.get("rho_target", 0.05))
+                    K_cap = int(self.star_policy.get("K_max", 5))
+                    if denom <= 1e-12 or not np.isfinite(denom) or active_count <= 1:
+                        K_used = 1
+                        params_half = params_list  # degenerate: no mixing
+                    else:
+                        xi = (2.0 - (lam_max + lam_min)) / denom
+                        K_used = max(
+                            1, min(K_cap, min_K_for_target_rho(float(xi), rho_target))
+                        )
+                        # Full-size W that mixes only server <-> active clients
+                        W_A_act = build_partial_star_W(
+                            self.n_total, self.server_id, active_clients, self.alpha_A
+                        )
+                        params_half = chebyshev_mix(
+                            W_A_act, params_list, K_used, lam_min, lam_max
+                        )
                 else:
                     raise ValueError(f"Unknown star_policy {policy}")
-            else:
-                params_half = _tree_mix(self.W_B, params_list)  # identity mixing
 
-            # Per-star contraction: measure after star and log ratio
-            if is_star:
+                # Per-star contraction: measure after star and log ratio
                 cons_after = self._consensus_distance(
                     params_half, list(range(self.n_total))
                 )
                 rho_hat = float(cons_after / cons_before) if cons_before > 0 else 1.0
                 hist_star_rho.append(rho_hat)
+                hist_K.append(int(K_used))
+                hist_active.append(int(active_count))
+            else:
+                params_half = _tree_mix(
+                    self.W_B, params_list
+                )  # identity mixing between stars
 
             models_half = [
                 _combine_params(ph, s) for ph, s in zip(params_half, static_list)
@@ -457,7 +525,7 @@ class LocalGDServerEqx:
                     f"cons_all={hist_cons_all[-1]:.3e}  cons_cli={hist_cons_clients[-1]:.3e}"
                 )
                 if is_star:
-                    msg += f"  rho_star={hist_star_rho[-1]:.4f}"
+                    msg += f"  rho_star={hist_star_rho[-1]:.4f}  K={hist_K[-1]}  act={hist_active[-1]}"
                 print(msg, flush=True)
 
         # finalize
@@ -469,7 +537,9 @@ class LocalGDServerEqx:
             "loss_node4": hist_loss_node4,
             "consensus_all": hist_cons_all,
             "consensus_clients": hist_cons_clients,
-            "rho_star": hist_star_rho,  # NEW
+            "rho_star": hist_star_rho,
+            "K_hist": hist_K,
+            "active_hist": hist_active,
         }
 
 
