@@ -23,13 +23,17 @@ from .dgd import (
 # DSGD + Switching DGD — includes plotting helpers
 from .dsgd_trainer_eqx import (
     DSGDTrainerEqx,
-    DGDTrainerSwitchingEqx,
     make_batch_schedule_powerlaw,
     make_batch_schedule_piecewise,
     plot_dsgd_global_losses,
     plot_consensus,
     safe_alpha,  # re-export; name kept as 'safe_alpha'
 )
+
+from .peer_gossip_trainer_eqx import PeerGossipTrainerEqx
+
+# Switching topologies DGD/DSGD
+from .dgd_trainer_switching_eqx import DGDTrainerSwitchingEqx
 
 # Periodic Local-GD + one-step P2P DGD gossip (assignment-style)
 from .local_gd_server_eqx import (
@@ -53,6 +57,7 @@ __all__ = [
     "AugmentedDecentralizedTrainer",
     "DGDTrainerEqx",
     "DSGDTrainerEqx",
+    "PeerGossipTrainerEqx",
     "DGDTrainerSwitchingEqx",
     "LocalGDServerEqx",
     "AsyncParameterServerEqx",

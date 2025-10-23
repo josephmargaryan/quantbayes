@@ -8,6 +8,7 @@ import jax.random as jr
 import equinox as eqx
 
 from quantbayes.stochax.trainer.train import binary_loss, eval_step
+from quantbayes.stochax.distributed_training.dgd import l2_penalty
 from quantbayes.stochax.privacy.dp import DPSGDConfig, DPPrivacyEngine
 
 Array = jnp.ndarray
@@ -21,16 +22,6 @@ __all__ = [
 ]
 
 # ---------- utils ----------
-
-
-def _maybe_l2_penalty(pyparams, lam: Optional[float]) -> Array:
-    if lam is None or lam <= 0:
-        return jnp.asarray(0.0, dtype=jnp.float32)
-    return (
-        0.5
-        * lam
-        * sum(jnp.sum(jnp.square(leaf)) for leaf in jax.tree_util.tree_leaves(pyparams))
-    )
 
 
 def _partition_params(model: eqx.Module):
@@ -143,7 +134,7 @@ class AsyncParameterServerEqx:
             base, new_s = self.loss_fn(m, s, xb, yb, k)
             p = eqx.filter(m, eqx.is_inexact_array)
             if self.lam_l2 is not None and self.lam_l2 > 0:
-                base = base + _maybe_l2_penalty(p, self.lam_l2)
+                base = base + l2_penalty(p, self.lam_l2)
             return base, new_s
 
         (loss_val, _new_state), grads = eqx.filter_value_and_grad(
@@ -246,7 +237,7 @@ class AsyncParameterServerEqx:
                         base, new_s = self.loss_fn(m, s, xb, yb, k)
                         if self.lam_l2 is not None and self.lam_l2 > 0:
                             p = eqx.filter(m, eqx.is_inexact_array)
-                            base = base + _maybe_l2_penalty(p, self.lam_l2)
+                            base = base + l2_penalty(p, self.lam_l2)
                         return base, new_s
 
                     g_i, _ = self._dp_engine.noisy_grad(

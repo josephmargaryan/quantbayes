@@ -25,15 +25,13 @@ __all__ = [
 ]
 
 
-def _maybe_l2_penalty(pyparams, lam: Optional[float]) -> Array:
-    """0.5 * lam * ||params||^2 if lam>0 else 0."""
+def l2_penalty(params_pytree, lam: float, exclude_1d_bias: bool = True) -> jnp.ndarray:
     if lam is None or lam <= 0:
         return jnp.asarray(0.0, dtype=jnp.float32)
-    return (
-        0.5
-        * lam
-        * sum(jnp.sum(jnp.square(leaf)) for leaf in jax.tree_util.tree_leaves(pyparams))
-    )
+    leaves = [x for x in jax.tree_util.tree_leaves(params_pytree) if x is not None]
+    if exclude_1d_bias:
+        leaves = [x for x in leaves if x.ndim > 1]
+    return 0.5 * lam * sum(jnp.sum(jnp.square(x)) for x in leaves)
 
 
 def laplacian_from_edges(n_nodes: int, edges: List[Tuple[int, int]]) -> Array:
@@ -177,7 +175,7 @@ class DGDTrainerEqx:
             base, new_s = self.loss_fn(m, s, xb, yb, k)
             if self.lam is not None:
                 p = eqx.filter(m, eqx.is_inexact_array)
-                base = base + _maybe_l2_penalty(p, self.lam)
+                base = base + l2_penalty(p, self.lam)
             return base, new_s
 
         if self._dp_engine is None:
@@ -295,7 +293,7 @@ def centralized_gd_eqx(
         base, new_s = loss_fn(m, s, xb, yb, k)
         if lam is not None and lam > 0.0:
             p = eqx.filter(m, eqx.is_inexact_array)
-            base = base + _maybe_l2_penalty(p, lam)  # 0.5*lam*||θ||^2
+            base = base + l2_penalty(p, lam)  # 0.5*lam*||θ||^2
         return base, new_s
 
     losses: List[float] = []
