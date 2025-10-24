@@ -229,9 +229,9 @@ def train_lbfgs(
     linesearch: Optional[
         optax.GradientTransformation
     ] = None,  # defaults to Zoom if None
-    max_linesearch_steps: int = 15,  # used only if we construct a default Zoom
-    zoom_c1: float = 1e-4,  # Armijo
-    zoom_c2: float = 0.9,  # strong Wolfe
+    max_linesearch_steps: int = 15,
+    slope_rtol: float = 1e-4,  # Armijo c1
+    curv_rtol: float = 0.9,  # Wolfe c2
     deterministic_objective: bool = True,  # freeze BN/Dropout during f + LS
     # checkpoints + logging
     ckpt_path: Optional[Union[str, pathlib.Path]] = None,
@@ -274,9 +274,11 @@ def train_lbfgs(
 
     # Choose linesearch
     if linesearch is None:
-        # Strong-Wolfe Zoom (Optax default for L-BFGS)
         linesearch = optax.scale_by_zoom_linesearch(
-            max_linesearch_steps=max_linesearch_steps, c1=zoom_c1, c2=zoom_c2
+            max_linesearch_steps=max_linesearch_steps,
+            slope_rtol=slope_rtol,
+            curv_rtol=curv_rtol,
+            initial_guess_strategy="one",  # recommended for quasi-Newton/L-BFGS
         )
 
     solver = optax.lbfgs(memory_size=memory_size, linesearch=linesearch)
@@ -503,8 +505,8 @@ def train_lbfgs_full_data(
     memory_size: int = 10,
     linesearch: Optional[optax.GradientTransformation] = None,
     max_linesearch_steps: int = 15,
-    zoom_c1: float = 1e-4,
-    zoom_c2: float = 0.9,
+    slope_rtol: float = 1e-4,  # Armijo c1
+    curv_rtol: float = 0.9,  # Wolfe c2
     deterministic_objective: bool = True,
     # checkpoints
     ckpt_path: Optional[Union[str, pathlib.Path]] = None,
@@ -577,8 +579,8 @@ def train_lbfgs_full_data(
         memory_size=memory_size,
         linesearch=linesearch,
         max_linesearch_steps=max_linesearch_steps,
-        zoom_c1=zoom_c1,
-        zoom_c2=zoom_c2,
+        slope_rtol=slope_rtol,
+        curv_rtol=curv_rtol,
         deterministic_objective=deterministic_objective,
         # checkpoints + logging
         ckpt_path=ckpt_path,
@@ -592,4 +594,83 @@ def train_lbfgs_full_data(
         bound_fft_shape=bound_fft_shape,
         bound_input_shape=bound_input_shape,
         bound_recorder=bound_recorder,
+    )
+
+
+if __name__ == "__main__":
+    # Minimal synthetic test harness for train_lbfgs using a batched MLP on blob data.
+    # Paste this at the end of quantbayes/stochax/trainer/train_lbfgs.py
+
+    import jax
+    import jax.numpy as jnp
+    import jax.random as jr
+    import equinox as eqx
+
+    from quantbayes.stochax.trainer.train import binary_loss
+
+    # ---- synthetic dataset (blobs) ----
+    def make_blobs(key, n_per_class: int, num_classes: int, d: int, std: float = 0.7):
+        keys = jr.split(key, num_classes + 2)
+        means = jr.normal(keys[0], (num_classes, d)) * 3.0
+
+        Xs, ys = [], []
+        for c in range(num_classes):
+            Xc = means[c] + std * jr.normal(keys[c + 1], (n_per_class, d))
+            yc = jnp.full((n_per_class,), c, dtype=jnp.int32)
+            Xs.append(Xc)
+            ys.append(yc)
+
+        X = jnp.concatenate(Xs, axis=0)
+        y = jnp.concatenate(ys, axis=0)
+        perm = jr.permutation(keys[-1], X.shape[0])
+        return X[perm], y[perm]
+
+    # ---- simple batched model ----
+    class Net(eqx.Module):
+        l: eqx.Module
+
+        def __init__(self, key):
+            self.l = eqx.nn.Linear(4, 1, key=key)
+
+        def __call__(self, x, key, state):
+            return self.l(x).squeeze(), state
+
+    # ---- setup ----
+    master_key = jr.PRNGKey(0)
+    master_key, k_data, k_model, k_train = jr.split(master_key, 4)
+
+    num_classes = 2
+    input_dim = 4
+    n_per_class = 300
+
+    X, y = make_blobs(
+        k_data, n_per_class=n_per_class, num_classes=num_classes, d=input_dim
+    )
+    n_train = int(0.8 * X.shape[0])
+    X_train, y_train = X[:n_train], y[:n_train]
+    X_val, y_val = X[n_train:], y[n_train:]
+
+    model, state = eqx.nn.make_with_state(Net)(key=k_model)
+
+    # ---- train ----
+    final_model, final_state, train_hist, val_hist = train_lbfgs(
+        model=model,
+        state=state,
+        X_train=X_train,
+        y_train=y_train,
+        X_val=X_val,
+        y_val=y_val,
+        batch_size=128,
+        num_epochs=15,
+        patience=4,
+        loss_fn=binary_loss,
+        # keep regularizers off for a minimal smoke test
+        lambda_spec=0.0,
+        lambda_frob=0.0,
+        lambda_specnorm=0.0,
+        lambda_sob_jac=0.0,
+        lambda_sob_kernel=0.0,
+        lambda_liplog=0.0,
+        key=k_train,
+        deterministic_objective=True,
     )

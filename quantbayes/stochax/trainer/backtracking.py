@@ -347,8 +347,7 @@ def train_backtrack(
             )
 
             # reuse (value, grad) via optax cache
-            value_and_grad = optax.value_and_grad_from_state(f)
-            value, grad = value_and_grad(params, state=opt_state)
+            value, grad = jax.value_and_grad(f)(params)
 
             updates, opt_state = solver.update(
                 grad, opt_state, params, value=value, grad=grad, value_fn=f
@@ -577,4 +576,73 @@ def train_backtrack_full_data(
         bound_fft_shape=bound_fft_shape,
         bound_input_shape=bound_input_shape,
         bound_recorder=bound_recorder,
+    )
+
+
+if __name__ == "__main__":
+    # Synthetic binary logistic regression smoke test for Backtracking LS
+
+    import jax
+    import jax.numpy as jnp
+    import jax.random as jr
+    import equinox as eqx
+    from quantbayes.stochax.trainer.train import binary_loss
+
+    # ---- synthetic dataset (blobs) ----
+    def make_blobs(key, n_per_class: int, num_classes: int, d: int, std: float = 0.7):
+        keys = jr.split(key, num_classes + 2)
+        means = jr.normal(keys[0], (num_classes, d)) * 3.0
+        Xs, ys = [], []
+        for c in range(num_classes):
+            Xc = means[c] + std * jr.normal(keys[c + 1], (n_per_class, d))
+            yc = jnp.full((n_per_class,), c, dtype=jnp.int32)
+            Xs.append(Xc)
+            ys.append(yc)
+        X = jnp.concatenate(Xs, axis=0)
+        y = jnp.concatenate(ys, axis=0)
+        perm = jr.permutation(keys[-1], X.shape[0])
+        return X[perm], y[perm]
+
+    # ---- simple logistic reg model ----
+    class Net(eqx.Module):
+        l: eqx.nn.Linear
+
+        def __init__(self, key):
+            self.l = eqx.nn.Linear(4, 1, key=key)
+
+        def __call__(self, x, key, state):
+            logits = self.l(x)  # (B,1)
+            return logits.squeeze(), state  # (B,)
+
+    # ---- setup ----
+    master_key = jr.PRNGKey(0)
+    master_key, k_data, k_model, k_train, k_eval = jr.split(master_key, 5)
+    X, y = make_blobs(k_data, n_per_class=300, num_classes=2, d=4)
+    n_train = int(0.8 * X.shape[0])
+    X_train, y_train = X[:n_train], y[:n_train]
+    X_val, y_val = X[n_train:], y[n_train:]
+
+    model, state = eqx.nn.make_with_state(Net)(key=k_model)
+
+    # ---- train ----
+    final_model, final_state, train_hist, val_hist = train_backtrack(
+        model=model,
+        state=state,
+        X_train=X_train,
+        y_train=y_train,
+        X_val=X_val,
+        y_val=y_val,
+        batch_size=128,
+        num_epochs=15,
+        patience=4,
+        loss_fn=binary_loss,
+        # regularizers off for smoke test
+        lambda_spec=0.0,
+        lambda_frob=0.0,
+        lambda_specnorm=0.0,
+        lambda_sob_jac=0.0,
+        lambda_sob_kernel=0.0,
+        lambda_liplog=0.0,
+        key=k_train,
+        deterministic_objective=True,
     )

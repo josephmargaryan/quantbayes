@@ -42,6 +42,8 @@ from .research_diagnostics import (
     compute_diagnostics,
     pretty_print_diagnostics,
     plot_margin_distribution,
+    compute_and_save_diagnostics,
+    load_diagnostics_npz,
 )
 from .lip_upper import make_lipschitz_upper_fn
 
@@ -85,4 +87,6 @@ __all__ = [
     "pretty_print_diagnostics",
     "plot_margin_distribution",
     "make_lipschitz_upper_fn",
+    "compute_and_save_diagnostics",
+    "load_diagnostics_npz",
 ]
