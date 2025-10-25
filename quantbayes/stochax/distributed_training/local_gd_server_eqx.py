@@ -1,3 +1,4 @@
+# quantbayes/stochax/distributed_training/local_gd_server_eqx.py
 from __future__ import annotations
 from typing import List, Tuple, Dict, Optional, Callable, Any
 import numpy as np
@@ -9,22 +10,34 @@ import equinox as eqx
 from quantbayes.stochax.trainer.train import eval_step, binary_loss
 from quantbayes.stochax.privacy.dp import DPSGDConfig, DPPrivacyEngine
 
-# Reuse helpers from your DGD module
+# === core helpers (do not redefine) ===
 from quantbayes.stochax.distributed_training.helpers import (
-    mixing_matrix,  # W = I - alpha * L (symmetric, row-stochastic)
-    safe_alpha as _safe_alpha_ha4,
+    mixing_matrix,  # W = I - α L
+    safe_alpha as _safe_alpha,  # from helpers: slightly bold 0.95/deg_max
     _partition_params,
-    tree_mix,
     _combine_params,
+    tree_mix,
     laplacian_from_edges,
+    make_star_with_server_edges,
+    load_mnist_38,
+    make_hetero_3v8_parts_with_server,
+    estimate_gamma_logistic,
+    make_polynomial_decay,
+    plot_server_loss,
+    plot_consensus_localgd,
+    summarize_histories,
+    print_publication_summary,
+    latex_table_from_summary,
+    is_weight_array,
+    weights_only_l2_penalty,
 )
 
-# Updated spectral star policies
+# === spectral / adaptive utilities ===
 from quantbayes.stochax.distributed_training.mixing_policies import (
     repeat_mix,
     chebyshev_mix,
     disagreement_interval_from_L,
-    AdaptiveChebyController,  # GLOBAL-aware
+    AdaptiveChebyController,
     min_K_for_target_rho,
     sample_active_clients,
     build_partial_star_W,
@@ -33,13 +46,7 @@ from quantbayes.stochax.distributed_training.mixing_policies import (
 
 Array = jnp.ndarray
 PRNG = jax.Array
-BatchSchedule = Callable[[int, int, int], int]  # B = schedule(t, client_index, n_i)
-
-
-# ---- small utilities ----
-def safe_alpha(edges: List[Tuple[int, int]], n_nodes: int) -> float:
-    """Conservative α ensuring nonnegative W entries, slightly bolder."""
-    return _safe_alpha_ha4(edges, n_nodes)
+BatchSchedule = Callable[[int, int, int], int]
 
 
 def _flatten_params_l2(pytree: Any) -> Array:
@@ -48,64 +55,23 @@ def _flatten_params_l2(pytree: Any) -> Array:
     return jnp.concatenate(flat) if flat else jnp.zeros((1,), dtype=jnp.float32)
 
 
-def _is_weight_array(x):
-    return eqx.is_inexact_array(x) and (getattr(x, "ndim", 0) >= 2)
-
-
-def _weights_only_l2_penalty(params: Any) -> jnp.ndarray:
-    leaves = jax.tree_util.tree_leaves(eqx.filter(params, _is_weight_array))
-    if not leaves:
-        return jnp.asarray(0.0, dtype=jnp.float32)
-    return 0.5 * sum(jnp.sum(jnp.square(p)) for p in leaves)
-
-
-def make_star_with_server_edges(
-    n_clients: int, server_id: int | None = None
-) -> List[Tuple[int, int]]:
-    if server_id is None:
-        server_id = n_clients
-    edges = [(server_id, i) for i in range(n_clients)]
-    return edges
-
-
-def make_mixing_with_per_node_alphas(
-    n_nodes: int,
-    edges: List[Tuple[int, int]],
-    alphas: List[float],
-) -> Array:
-    assert len(alphas) == n_nodes
-    deg = np.zeros(n_nodes, dtype=np.int32)
-    N = [set() for _ in range(n_nodes)]
-    for i, j in edges:
-        if i == j:
-            continue
-        N[i].add(j)
-        N[j].add(i)
-        deg[i] += 1
-        deg[j] += 1
-    W = np.zeros((n_nodes, n_nodes), dtype=np.float32)
-    for i in range(n_nodes):
-        ai = float(alphas[i])
-        for j in N[i]:
-            W[i, j] = ai
-        W[i, i] = 1.0 - ai * deg[i]
-    rs = np.sum(W, axis=1)
-    if not np.allclose(rs, np.ones_like(rs), atol=1e-6):
-        raise ValueError("Row sums of W are not 1; check alphas.")
-    return jnp.array(W)
-
-
-# ---- main trainer ----
 class LocalGDServerEqx:
     """
     Local GD with a coordinator (server) and periodic communication.
 
     Star policy options (self.star_policy["name"]):
       - "single":   apply W_A once
-      - "repeat":   apply W_A K times (self.star_policy["K"])
-      - "cheby":    apply degree-K Chebyshev p_K(W_A) using the full-star spectrum
-      - "adaptive": per-star partial participation + GLOBAL-aware adaptive Chebyshev
-                    (uses AdaptiveChebyController to budget *global* contraction when τ>1)
+      - "repeat":   apply W_A K times
+      - "cheby":    degree-K Chebyshev p_K(W_A)
+      - "adaptive": partial participation + GLOBAL-aware Chebyshev controller
+                    Guardrails:
+                      * min_active clients enforced
+                      * periodic full coverage every 'coverage_stride' stars
+                      * p-participation auto-tuner with cooldown + clamp
+      - "gt":       gradient tracking at star cadence:
+                      {"name":"gt", "kernel":"single"|"cheby", "K":int (if cheby)}
+                    M_t is W_A or p_K(W_A) on star rounds, identity otherwise.
+                    Server's gradient is identically zero.
     """
 
     def __init__(
@@ -141,9 +107,11 @@ class LocalGDServerEqx:
         self.edges_A = edges_A
         self.edges_B = edges_B if edges_B is not None else []
         self.alpha_A = (
-            float(alpha_A) if alpha_A is not None else safe_alpha(edges_A, self.n_total)
+            float(alpha_A)
+            if alpha_A is not None
+            else _safe_alpha(edges_A, self.n_total)
         )
-        self.gamma = gamma  # float or Callable
+        self.gamma = gamma
         self.T = int(T)
         self.loss_fn = loss_fn
         self.key = jr.PRNGKey(0) if key is None else key
@@ -156,7 +124,7 @@ class LocalGDServerEqx:
             self.lam_l2 > 0.0 and self.weight_decay > 0.0
         ), "Choose either lam_l2 (loss-level L2) OR weight_decay (decoupled), not both."
 
-        # Mixing matrices
+        # Mixing matrix for star rounds
         if make_W_A_custom is None:
             self.W_A = mixing_matrix(self.n_total, self.edges_A, self.alpha_A)
             rs = jnp.sum(self.W_A, axis=1)
@@ -165,21 +133,30 @@ class LocalGDServerEqx:
         else:
             self.W_A = make_W_A_custom(self.n_total, self.edges_A)
             rs = jnp.sum(self.W_A, axis=1)
-            # May be non-symmetric row-stochastic; still require row sums 1
             assert jnp.allclose(rs, jnp.ones_like(rs), atol=1e-6)
 
+        # Identity mixing off-star rounds
         self.W_B = jnp.eye(self.n_total, dtype=jnp.float32)
         self.models: List[eqx.Module] = []
         self.states: List[Any] = []
 
-        # Star policy
+        # Star policy + defaults
         self.star_policy: Dict[str, Any] = star_policy or {"name": "single"}
         if self.star_policy.get("name") == "adaptive":
             self.star_policy.setdefault("p_participation", 0.5)
-            self.star_policy.setdefault("rho_target", 0.20)  # GLOBAL target on Γ
+            self.star_policy.setdefault(
+                "rho_target", 0.20
+            )  # GLOBAL target on Γ (sq ratio)
             self.star_policy.setdefault("K_max", 6)
             self.star_policy.setdefault("ensure_nonempty", True)
             self.star_policy.setdefault("adapt_p_on_sat", True)
+            self.star_policy.setdefault("p_cooldown", 3)
+            self.star_policy.setdefault("p_min", 0.2)
+            self.star_policy.setdefault("p_max", 1.0)
+            self.star_policy.setdefault("min_active", 2)
+            self.star_policy.setdefault(
+                "coverage_stride", 3
+            )  # force full coverage every 3rd star
 
         # GLOBAL-aware controller (for τ > 1)
         self._cheby_ctl = None
@@ -189,21 +166,23 @@ class LocalGDServerEqx:
                 K_max=int(self.star_policy.get("K_max", 6)),
             )
 
-        # Minibatch control
-        self.batch_schedule = batch_schedule  # None => GD; else => DSGD
+        # p tuner cooldown
+        self._p_cooldown_star: int = 0
 
-    # ---- helpers ----
+        self.batch_schedule = batch_schedule
+
     def _gamma_t(self, t: int) -> float:
         return float(self.gamma(t)) if callable(self.gamma) else float(self.gamma)
 
     def _local_grad_step(
         self, model: eqx.Module, state: Any, X: Array, y: Array, key: PRNG
     ):
-        # returns (grad, new_state)
         def loss(m, s, xb, yb, k):
             base, new_s = self.loss_fn(m, s, xb, yb, k)
             if self.lam_l2 > 0.0:
-                base = base + self.lam_l2 * _weights_only_l2_penalty(m)
+                base = base + self.lam_l2 * weights_only_l2_penalty(
+                    m, lam=self.lam_l2
+                ) / max(self.lam_l2, 1e-12)
             return base, new_s
 
         if self._dp_engine is None:
@@ -236,7 +215,6 @@ class LocalGDServerEqx:
         sq = jnp.sum((stack - mean) ** 2, axis=1)
         return float(jnp.mean(sq))
 
-    # ---- main fit ----
     def fit(
         self,
         parts: List[Tuple[Array, Array]],
@@ -266,11 +244,9 @@ class LocalGDServerEqx:
         hist_loss_node4: List[float] = []
         hist_cons_all: List[float] = []
         hist_cons_clients: List[float] = []
-        hist_star_rho: List[float] = []  # per-star Γ_after / Γ_before
-        hist_K: List[int] = []  # degree used per star (all policies)
-        hist_active: List[int] = (
-            []
-        )  # #active clients per star (adaptive; else n_clients)
+        hist_star_rho: List[float] = []
+        hist_K: List[int] = []
+        hist_active: List[int] = []
 
         # Precompute Chebyshev interval lazily for full DS star (for "cheby")
         def _ensure_star_interval():
@@ -282,167 +258,358 @@ class LocalGDServerEqx:
                 )
             return self._star_lam_interval
 
+        policy = self.star_policy.get("name", "single")
+        use_gt = policy == "gt"
+
+        # GT state
+        if use_gt:
+            y_list = []
+            g_prev = []
+            # server grad is zero
+            for i in range(self.n_total):
+                if i == self.server_id:
+                    zero = jax.tree_util.tree_map(
+                        lambda x: jnp.zeros_like(x), params_list[i]
+                    )
+                    y_list.append(zero)
+                    g_prev.append(zero)
+                else:
+                    Xi, yi = parts[i]
+                    n_i = sizes[i]
+                    if self.batch_schedule is None:
+                        Xb, yb = Xi, yi
+                    else:
+                        B = int(self.batch_schedule(0, i, n_i))
+                        B = max(1, min(B, n_i))
+                        rng, sub = jr.split(rng)
+                        idx = (
+                            jnp.arange(n_i)
+                            if B == n_i
+                            else jr.choice(sub, n_i, shape=(B,), replace=False)
+                        )
+                        Xb, yb = Xi[idx], yi[idx]
+                        total_samples[i] += int(B)
+                    rng, sub = jr.split(rng)
+                    grad_i0, _ = self._local_grad_step(
+                        _combine_params(params_list[i], static_list[i]),
+                        self.states[i],
+                        Xb,
+                        yb,
+                        sub,
+                    )
+                    y_list.append(grad_i0)
+                    g_prev.append(grad_i0)
+
         for t in range(self.T):
             is_star = (t + 1) % self.tau == 0
-
-            # Per-star contraction: measure before star
             if is_star:
                 cons_before = self._consensus_distance(
                     params_list, list(range(self.n_total))
                 )
 
-            # --- Gossip (with policy on star rounds) ---
-            if is_star:
-                policy = self.star_policy.get("name", "single")
-                if policy == "single":
-                    params_half = tree_mix(self.W_A, params_list)
-                    K_used = 1
-                    active_count = len(self.client_ids)
-                elif policy == "repeat":
-                    K_used = int(self.star_policy.get("K", 2))
-                    params_half = repeat_mix(self.W_A, params_list, K_used)
-                    active_count = len(self.client_ids)
-                elif policy == "cheby":
-                    K_used = int(self.star_policy.get("K", 3))
-                    lam_min, lam_max = _ensure_star_interval()
-                    params_half = chebyshev_mix(
-                        self.W_A, params_list, K_used, lam_min, lam_max
-                    )
-                    active_count = len(self.client_ids)
-                elif policy == "adaptive":
-                    p_part = float(self.star_policy.get("p_participation", 0.5))
-                    ensure_nonempty = bool(
-                        self.star_policy.get("ensure_nonempty", True)
-                    )
-                    active_local, rng = sample_active_clients(
-                        rng,
-                        len(self.client_ids),
-                        p_part,
-                        ensure_nonempty=ensure_nonempty,
-                    )
-                    active_clients = [self.client_ids[i] for i in active_local]
-                    active_count = len(active_clients)
+            if not use_gt:
+                # ---------------- existing non-GT policies ----------------
+                if is_star:
+                    pol = policy
+                    if pol == "single":
+                        params_half = tree_mix(self.W_A, params_list)
+                        K_used = 1
+                        active = len(self.client_ids)
 
-                    if active_count >= 1:  # >=1 client + server => 2 nodes total
-                        # compute star interval cheaply (star of size 1+active_count)
-                        edges_small = [(0, j + 1) for j in range(active_count)]
-                        L_sub = laplacian_from_edges(1 + active_count, edges_small)
-                        lam_min, lam_max = disagreement_interval_from_L(
-                            L_sub, self.alpha_A
-                        )
-                        xi = xi_from_interval(lam_min, lam_max)
-                        W_A_act = build_partial_star_W(
-                            self.n_total, self.server_id, active_clients, self.alpha_A
-                        )
+                    elif pol == "repeat":
+                        K_used = int(self.star_policy.get("K", 2))
+                        params_half = repeat_mix(self.W_A, params_list, K_used)
+                        active = len(self.client_ids)
 
-                        # choose K using GLOBAL-aware controller or fallback
-                        if self._cheby_ctl is not None:
-                            K_req = self._cheby_ctl.choose_K_global(
-                                xi,
-                                gamma_pre=cons_before,
-                                active=active_count + 1,
-                                total=self.n_total,  # include server
+                    elif pol == "cheby":
+                        K_used = int(self.star_policy.get("K", 3))
+                        lam_min, lam_max = _ensure_star_interval()
+                        params_half = chebyshev_mix(
+                            self.W_A, params_list, K_used, lam_min, lam_max
+                        )
+                        active = len(self.client_ids)
+
+                    elif pol == "adaptive":
+                        p_part = float(self.star_policy.get("p_participation", 0.5))
+                        p_min = float(self.star_policy.get("p_min", 0.2))
+                        p_max = float(self.star_policy.get("p_max", 1.0))
+                        p_part = float(np.clip(p_part, p_min, p_max))
+                        ensure_nonempty = bool(
+                            self.star_policy.get("ensure_nonempty", True)
+                        )
+                        min_active = int(self.star_policy.get("min_active", 2))
+                        stride = int(self.star_policy.get("coverage_stride", 3))
+
+                        # sample active
+                        active_local, rng = sample_active_clients(
+                            rng,
+                            len(self.client_ids),
+                            p_part,
+                            ensure_nonempty=ensure_nonempty,
+                        )
+                        active_clients = [self.client_ids[i] for i in active_local]
+                        active = len(active_clients)
+
+                        # enforce min_active
+                        if active < min_active:
+                            # promote deterministically (first k clients)
+                            need = min_active - active
+                            promote = [
+                                c for c in self.client_ids if c not in active_clients
+                            ][:need]
+                            active_clients.extend(promote)
+                            active = len(active_clients)
+
+                        # periodic full coverage
+                        star_idx = (t + 1) // self.tau
+                        if stride > 0 and (star_idx % stride == 0):
+                            active_clients = self.client_ids[:]
+                            active = len(active_clients)
+
+                        if active >= 1:
+                            # small star spectrum
+                            edges_small = [(0, j + 1) for j in range(active)]
+                            L_sub = laplacian_from_edges(1 + active, edges_small)
+                            lam_min, lam_max = disagreement_interval_from_L(
+                                L_sub, self.alpha_A
+                            )
+                            xi = xi_from_interval(lam_min, lam_max)
+                            W_A_act = build_partial_star_W(
+                                self.n_total,
+                                self.server_id,
+                                active_clients,
+                                self.alpha_A,
+                            )
+                            if self._cheby_ctl is not None:
+                                K_req = self._cheby_ctl.choose_K_global(
+                                    xi,
+                                    gamma_pre=cons_before,
+                                    active=active + 1,
+                                    total=self.n_total,
+                                )
+                            else:
+                                K_req = min_K_for_target_rho(
+                                    xi, float(self.star_policy.get("rho_target", 0.20))
+                                )
+                            K_cap = int(self.star_policy.get("K_max", 6))
+                            K_used = int(max(1, min(K_cap, K_req)))
+                            params_half = chebyshev_mix(
+                                W_A_act, params_list, K_used, lam_min, lam_max
                             )
                         else:
-                            K_req = min_K_for_target_rho(
-                                xi, float(self.star_policy.get("rho_target", 0.20))
-                            )
-                        K_cap = int(self.star_policy.get("K_max", 6))
-                        K_used = int(max(1, min(K_cap, K_req)))
-                        params_half = chebyshev_mix(
-                            W_A_act, params_list, K_used, lam_min, lam_max
+                            K_used = 0
+                            params_half = params_list
+                    else:
+                        raise ValueError(f"Unknown star_policy {pol}")
+
+                    cons_after = self._consensus_distance(
+                        params_half, list(range(self.n_total))
+                    )
+                    rho_hat = float(cons_after / (cons_before + 1e-12))
+                    hist_star_rho.append(rho_hat)
+                    hist_K.append(int(K_used))
+                    hist_active.append(int(active))
+
+                    # p tuner (cooldown + clamp)
+                    if (
+                        (pol == "adaptive")
+                        and (self._cheby_ctl is not None)
+                        and bool(self.star_policy.get("adapt_p_on_sat", True))
+                    ):
+                        target = float(self._cheby_ctl.rho_target_sq_global)
+                        p_cool = int(self.star_policy.get("p_cooldown", 3))
+                        if self._p_cooldown_star > 0:
+                            self._p_cooldown_star -= 1
+                        else:
+                            if (rho_hat > 1.5 * target) and (
+                                K_used >= self._cheby_ctl.K_max
+                            ):
+                                self.star_policy["p_participation"] = float(
+                                    np.clip(1.25 * p_part, p_min, p_max)
+                                )
+                                self._p_cooldown_star = p_cool
+                            elif (rho_hat < 0.4 * target) and (K_used >= 1):
+                                self.star_policy["p_participation"] = float(
+                                    np.clip(0.8 * p_part, p_min, p_max)
+                                )
+                                self._p_cooldown_star = p_cool
+
+                    if self._cheby_ctl is not None and pol == "adaptive":
+                        self._cheby_ctl.update_after_mix(rho_hat, K_used, cons_after)
+
+                else:
+                    params_half = tree_mix(
+                        self.W_B, params_list
+                    )  # identity mixing off-star
+
+                # --- Local client updates (server: no local step) ---
+                new_params_list = []
+                gamma_t = self._gamma_t(t)
+                rng_loop = rng
+                for i in range(self.n_total):
+                    if i == self.server_id:
+                        new_params_list.append(params_half[i])
+                        continue
+
+                    Xi, yi = parts[i]
+                    if self.batch_schedule is None:
+                        Xb, yb = Xi, yi
+                    else:
+                        n_i = sizes[i]
+                        B = int(self.batch_schedule(t, i, n_i))
+                        B = max(1, min(B, n_i))
+                        rng_loop, sub = jr.split(rng_loop)
+                        idx = (
+                            jnp.arange(n_i)
+                            if B == n_i
+                            else jr.choice(sub, n_i, shape=(B,), replace=False)
+                        )
+                        Xb, yb = Xi[idx], yi[idx]
+                        total_samples[i] += int(B)
+
+                    rng_loop, sub = jr.split(rng_loop)
+                    grad_i, new_state_i = self._local_grad_step(
+                        _combine_params(params_half[i], static_list[i]),
+                        self.states[i],
+                        Xb,
+                        yb,
+                        sub,
+                    )
+
+                    if self.weight_decay > 0.0:
+                        decay = 1.0 - gamma_t * self.weight_decay
+                        params_half_i = jax.tree_util.tree_map(
+                            lambda p: p * decay if is_weight_array(p) else p,
+                            params_half[i],
                         )
                     else:
-                        K_used = 1
-                        params_half = params_list
-                else:
-                    raise ValueError(f"Unknown star_policy {policy}")
+                        params_half_i = params_half[i]
 
-                # Per-star contraction: measure after star and log ratio
-                cons_after = self._consensus_distance(
-                    params_half, list(range(self.n_total))
-                )
-                rho_hat = float(cons_after / (cons_before + 1e-12))
-                hist_star_rho.append(rho_hat)
-                hist_K.append(int(K_used))
-                hist_active.append(int(active_count))
-
-                # optional: adapt p if saturated and missing target by a lot
-                if (
-                    policy == "adaptive"
-                    and self._cheby_ctl is not None
-                    and bool(self.star_policy.get("adapt_p_on_sat", True))
-                ):
-                    target = float(self._cheby_ctl.rho_target_sq_global)
-                    if (rho_hat > 1.5 * target) and (K_used >= self._cheby_ctl.K_max):
-                        self.star_policy["p_participation"] = min(
-                            1.0,
-                            1.25 * float(self.star_policy.get("p_participation", 0.5)),
-                        )
-                    elif rho_hat < 0.4 * target:
-                        self.star_policy["p_participation"] = max(
-                            0.1,
-                            0.8 * float(self.star_policy.get("p_participation", 0.5)),
-                        )
-                if self._cheby_ctl is not None:
-                    self._cheby_ctl.update_after_mix(rho_hat, K_used, cons_after)
-            else:
-                params_half = tree_mix(self.W_B, params_list)  # identity mixing
-
-            models_half = [
-                _combine_params(ph, s) for ph, s in zip(params_half, static_list)
-            ]
-
-            # --- Local update at clients (GD or SGD); server: no local step ---
-            new_params_list = []
-            gamma_t = self._gamma_t(t)
-            for i in range(self.n_total):
-                if i == self.server_id:
-                    new_params_list.append(params_half[i])
-                    continue
-
-                Xi, yi = parts[i]
-                # batch select
-                if self.batch_schedule is None:
-                    Xb, yb = Xi, yi
-                else:
-                    n_i = sizes[i]
-                    B = int(self.batch_schedule(t, i, n_i))
-                    B = max(1, min(B, n_i))
-                    rng, sub = jr.split(rng)
-                    idx = (
-                        jnp.arange(n_i)
-                        if B == n_i
-                        else jr.choice(sub, n_i, shape=(B,), replace=False)
+                    updated = jax.tree_util.tree_map(
+                        lambda p, g: p - gamma_t * g, params_half_i, grad_i
                     )
-                    Xb, yb = Xi[idx], yi[idx]
-                    total_samples[i] += int(B)
+                    new_params_list.append(updated)
+                    self.states[i] = new_state_i
 
-                rng, sub = jr.split(rng)
-                grad_i, new_state_i = self._local_grad_step(
-                    models_half[i], self.states[i], Xb, yb, sub
-                )
+                rng = rng_loop
+                params_list = new_params_list
 
-                # Optional decoupled WD for clients only (exclude server)
-                if self.weight_decay > 0.0:
-                    decay = 1.0 - gamma_t * self.weight_decay
+            else:
+                # ---------------- GT policy at star cadence ----------------
+                kernel = str(self.star_policy.get("kernel", "single")).lower()
+                K_fixed = int(self.star_policy.get("K", 3)) if kernel == "cheby" else 1
 
-                    def _shrink(p):
-                        return p * decay if _is_weight_array(p) else p
-
-                    params_half_i = jax.tree_util.tree_map(_shrink, params_half[i])
+                if is_star:
+                    if kernel == "single":
+                        x_half = tree_mix(self.W_A, params_list)
+                        K_used = 1
+                    elif kernel == "cheby":
+                        lam_min, lam_max = _ensure_star_interval()
+                        x_half = chebyshev_mix(
+                            self.W_A, params_list, K_fixed, lam_min, lam_max
+                        )
+                        K_used = K_fixed
+                    else:
+                        raise ValueError(f"Unknown GT kernel '{kernel}'")
+                    cons_after = self._consensus_distance(
+                        x_half, list(range(self.n_total))
+                    )
+                    rho_hat = float(cons_after / (cons_before + 1e-12))
+                    hist_star_rho.append(rho_hat)
+                    hist_K.append(int(K_used))
+                    hist_active.append(len(self.client_ids))
                 else:
-                    params_half_i = params_half[i]
+                    x_half = params_list
+                    K_used = 0
 
-                updated = jax.tree_util.tree_map(
-                    lambda p, g: p - gamma_t * g, params_half_i, grad_i
-                )
-                new_params_list.append(updated)
-                self.states[i] = new_state_i
+                # one batch per client for both g_t and g_{t+1}
+                rng_loop = rng
+                batches = {}
+                for i in self.client_ids:
+                    Xi, yi = parts[i]
+                    n_i = sizes[i]
+                    if self.batch_schedule is None:
+                        Xb, yb = Xi, yi
+                    else:
+                        B = int(self.batch_schedule(t, i, n_i))
+                        B = max(1, min(B, n_i))
+                        rng_loop, sub = jr.split(rng_loop)
+                        idx = (
+                            jnp.arange(n_i)
+                            if B == n_i
+                            else jr.choice(sub, n_i, shape=(B,), replace=False)
+                        )
+                        Xb, yb = Xi[idx], yi[idx]
+                        total_samples[i] += int(B)
+                    batches[i] = (Xb, yb)
 
-            params_list = new_params_list
+                # x_{t+1} = M_t x_t - γ y_t (server excluded)
+                gamma_t = self._gamma_t(t)
+                x_new = []
+                for i in range(self.n_total):
+                    if self.weight_decay > 0.0:
+                        decay = 1.0 - gamma_t * self.weight_decay
+                        x_half_i = jax.tree_util.tree_map(
+                            lambda p: p * decay if is_weight_array(p) else p, x_half[i]
+                        )
+                    else:
+                        x_half_i = x_half[i]
+                    x_new_i = jax.tree_util.tree_map(
+                        lambda p, y: p - gamma_t * y, x_half_i, y_list[i]
+                    )
+                    x_new.append(x_new_i)
 
-            # --- Logging: server loss, nodes 1 & 4 losses, consensus ---
+                # g_{t+1}
+                g_next = []
+                for i in range(self.n_total):
+                    if i == self.server_id:
+                        g_next.append(
+                            jax.tree_util.tree_map(
+                                lambda x: jnp.zeros_like(x), x_new[i]
+                            )
+                        )
+                        continue
+                    Xb, yb = batches[i]
+                    rng_loop, sub = jr.split(rng_loop)
+                    grad_i_next, new_state_i = self._local_grad_step(
+                        _combine_params(x_new[i], static_list[i]),
+                        self.states[i],
+                        Xb,
+                        yb,
+                        sub,
+                    )
+                    g_next.append(grad_i_next)
+                    self.states[i] = new_state_i
+
+                # mix y on star rounds
+                if is_star:
+                    if kernel == "single":
+                        y_mix = tree_mix(self.W_A, y_list)
+                    else:
+                        lam_min, lam_max = _ensure_star_interval()
+                        y_mix = chebyshev_mix(
+                            self.W_A, y_list, K_fixed, lam_min, lam_max
+                        )
+                else:
+                    y_mix = y_list
+
+                # y_{t+1} = y_mix + g_{t+1} - g_t
+                y_new = []
+                for i in range(self.n_total):
+                    y_new_i = jax.tree_util.tree_map(
+                        lambda ym, gn, gp: ym + (gn - gp),
+                        y_mix[i],
+                        g_next[i],
+                        g_prev[i],
+                    )
+                    y_new.append(y_new_i)
+
+                params_list = x_new
+                y_list = y_new
+                g_prev = g_next
+                rng = rng_loop
+
+            # --- Logging: server + sample clients
             mS = _combine_params(
                 params_list[self.server_id], static_list[self.server_id]
             )
@@ -486,8 +653,12 @@ class LocalGDServerEqx:
                     f"[{t+1}/{self.T}] server loss={lossS:.4f}  "
                     f"cons_all={hist_cons_all[-1]:.3e}  cons_cli={hist_cons_clients[-1]:.3e}"
                 )
-                if is_star:
-                    msg += f"  rho_star={hist_star_rho[-1]:.4f}  K={hist_K[-1]}  act={hist_active[-1]}"
+                if (
+                    is_star
+                    and (policy in ("single", "repeat", "cheby", "adaptive", "gt"))
+                    and hist_star_rho
+                ):
+                    msg += f"  rho_star={hist_star_rho[-1]:.4f}  K={hist_K[-1]}  act={ (len(self.client_ids) if policy!='adaptive' else hist_active[-1]) }"
                 print(msg, flush=True)
 
         # finalize
@@ -509,26 +680,11 @@ class LocalGDServerEqx:
         return out
 
 
+# -------------------------------------------------------------------------
+# Publication-ready demo
+# -------------------------------------------------------------------------
 if __name__ == "__main__":
     import os
-    import numpy as np
-    import jax.numpy as jnp
-    import jax.random as jr
-    import equinox as eqx
-
-    from quantbayes.stochax.distributed_training.helpers import (
-        load_mnist_38,
-        make_hetero_3v8_parts_with_server,
-        make_star_with_server_edges,
-        safe_alpha,
-        estimate_gamma_logistic,
-        make_polynomial_decay,
-        plot_server_loss,
-        plot_consensus_localgd,
-        summarize_histories,
-        print_publication_summary,
-        latex_table_from_summary,
-    )
 
     DEFAULT_PLOT_STYLE = "accessible"
 
@@ -552,7 +708,7 @@ if __name__ == "__main__":
     d = int(X.shape[1])
     server_id = n_clients
     edges_A = make_star_with_server_edges(n_clients, server_id=server_id)
-    alpha_A = safe_alpha(edges_A, n_clients + 1)
+    alpha_A = _safe_alpha(edges_A, n_clients + 1)
 
     class LR(eqx.Module):
         lin: eqx.nn.Linear
@@ -568,8 +724,9 @@ if __name__ == "__main__":
     lr_sched = make_polynomial_decay(gamma0, power=0.0, t0=1.0)
 
     T = 300
-    histories = {}
+    histories: Dict[str, Dict[str, List[float]]] = {}
 
+    # A) tau=1 single
     trainer_A = LocalGDServerEqx(
         model_init_fn=model_init,
         n_clients=n_clients,
@@ -589,6 +746,7 @@ if __name__ == "__main__":
     hA = trainer_A.fit(parts, X, y, eval_key=jr.PRNGKey(301), log=False)
     histories["tau1-single"] = hA
 
+    # B) tau=10, Chebyshev K=3
     trainer_B = LocalGDServerEqx(
         model_init_fn=model_init,
         n_clients=n_clients,
@@ -608,6 +766,7 @@ if __name__ == "__main__":
     hB = trainer_B.fit(parts, X, y, eval_key=jr.PRNGKey(302), log=False)
     histories["tau10-cheby3"] = hB
 
+    # C) tau=10, adaptive (GLOBAL-aware) + guardrails
     trainer_C = LocalGDServerEqx(
         model_init_fn=model_init,
         n_clients=n_clients,
@@ -628,11 +787,36 @@ if __name__ == "__main__":
             "K_max": 6,
             "ensure_nonempty": True,
             "adapt_p_on_sat": True,
+            "p_cooldown": 3,
+            "p_min": 0.2,
+            "p_max": 1.0,
+            "min_active": 2,
+            "coverage_stride": 3,
         },
         batch_schedule=None,
     )
     hC = trainer_C.fit(parts, X, y, eval_key=jr.PRNGKey(303), log=False)
     histories["tau10-adaptive-global"] = hC
+
+    # D) tau=10, GT @ star cadence, Chebyshev K=3
+    trainer_D = LocalGDServerEqx(
+        model_init_fn=model_init,
+        n_clients=n_clients,
+        tau=10,
+        edges_A=edges_A,
+        alpha_A=alpha_A,
+        gamma=lr_sched,
+        T=T,
+        lam_l2=1e-3,
+        weight_decay=0.0,
+        key=jr.PRNGKey(4),
+        eval_inference_mode=True,
+        server_id=server_id,
+        star_policy={"name": "gt", "kernel": "cheby", "K": 3},
+        batch_schedule=None,
+    )
+    hD = trainer_D.fit(parts, X, y, eval_key=jr.PRNGKey(304), log=False)
+    histories["tau10-gt-cheby3"] = hD
 
     # ---- plots ----
     os.makedirs("figs_local_server", exist_ok=True)
@@ -658,23 +842,20 @@ if __name__ == "__main__":
     latex = latex_table_from_summary(
         summary,
         decimals=3,
-        caption="Server star rounds: single, Chebyshev, and adaptive (GLOBAL-aware).",
+        caption="Server stars: single, Chebyshev, adaptive (GLOBAL-aware), and GT.",
         label="tab:server",
     )
     with open("tables/local_server_summary.tex", "w") as f:
         f.write(latex)
     print("Wrote tables/local_server_summary.tex")
 
-    # ---- communication budget (simple print) ----
-    def comm_units(
-        h: Dict[str, List[float]], include_server: bool = True
-    ) -> Dict[str, float]:
+    # ---- simple comm budget print (approx.) ----
+    def comm_units(h: Dict[str, List[float]]) -> Dict[str, float]:
         K = np.asarray(h.get("K_hist", []), dtype=float)
         A = np.asarray(h.get("active_hist", []), dtype=float)  # active clients
         if K.size == 0 or A.size == 0:
             return {"sum_K": float(np.sum(K)), "sum_edge_ops": 0.0, "avg_active": 0.0}
-        # For star: edges used per K-step ≈ active clients (server is the hub)
-        edges_used = A
+        edges_used = np.where(A > 0, A, 0.0)  # star hub degree
         sum_edge_ops = float(np.sum(K * edges_used))
         return {
             "sum_K": float(np.sum(K)),
@@ -686,5 +867,5 @@ if __name__ == "__main__":
     for name, h in histories.items():
         c = comm_units(h)
         print(
-            f"{name:>18s} | sum_K={c['sum_K']:.1f}  edge_ops≈{c['sum_edge_ops']:.1f}  avg_active={c['avg_active']:.2f}"
+            f"{name:>22s} | sum_K={c['sum_K']:.1f}  edge_ops≈{c['sum_edge_ops']:.1f}  avg_active={c['avg_active']:.2f}"
         )
