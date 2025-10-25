@@ -1,44 +1,51 @@
-# quantbayes/stochax/distributed_training/fedavg.py
-import copy
-from typing import Callable, Optional, List, Any
+# quantbayes/stochax/federated/fedavg.py
+from __future__ import annotations
+from typing import Callable, Optional, List, Any, Dict
+import numpy as np
 import jax
 import jax.numpy as jnp
 import jax.random as jr
 import equinox as eqx
 import optax
-import numpy as np
 
 from quantbayes.stochax.trainer.train import (
     train as eqx_train,
     binary_loss,
     eval_step,
-    predict,
 )
 from quantbayes.stochax.privacy.dp import DPSGDConfig
 from quantbayes.stochax.privacy.dp_train import dp_eqx_train
 
-__all__ = ["FederatedTrainer"]
 
+# ---------- FedOpt server (Adam/Yogi/Adagrad/Momentum) ----------
+class FedOptServer:
+    """
+    FedOpt family on server deltas Δ = (avg_local_params - global_params).
+    name ∈ {"adam","yogi","adagrad","momentum"}.
+    """
 
-def _tree_zeros_like(a):
-    return jax.tree_util.tree_map(jnp.zeros_like, a)
-
-
-def _tree_scale(a, s: float):
-    return jax.tree_util.tree_map(lambda x: s * x, a)
-
-
-class FedAdamServer:
-    def __init__(self, lr=1e-2, beta1=0.9, beta2=0.999, eps=1e-8):
-        self.lr, self.b1, self.b2, self.eps = (
+    def __init__(
+        self, name="adam", lr=1e-2, beta1=0.9, beta2=0.999, eps=1e-8, momentum=0.9
+    ):
+        self.name = str(name).lower()
+        self.lr, self.b1, self.b2, self.eps, self.mu = (
             float(lr),
             float(beta1),
             float(beta2),
             float(eps),
+            float(momentum),
         )
-        self.m = None
-        self.v = None
+        self.m = None  # first moment / momentum
+        self.v = None  # second moment
         self.t = 0
+
+    @staticmethod
+    def _zeros_like(a):
+        return jax.tree_util.tree_map(jnp.zeros_like, a)
+
+    @staticmethod
+    def _scale(a, s):
+        return jax.tree_util.tree_map(lambda x: s * x, a)
 
     def apply(
         self, theta_g: eqx.Module, local_models: List[eqx.Module], weights: List[float]
@@ -50,27 +57,56 @@ class FedAdamServer:
             return sum(w * leaf for w, leaf in zip(weights, leaves))
 
         avg_params = jax.tree_util.tree_map(wsum, *p_loc)
-        delta = jax.tree_util.tree_map(lambda a, b: a - b, avg_params, p_g)
+        delta = jax.tree_util.tree_map(
+            lambda a, b: a - b, avg_params, p_g
+        )  # Δ = avg - global
 
-        if self.m is None:
-            self.m, self.v = _tree_zeros_like(delta), _tree_zeros_like(delta)
-        self.t += 1
-        self.m = jax.tree_util.tree_map(
-            lambda m, d: self.b1 * m + (1 - self.b1) * d, self.m, delta
-        )
-        self.v = jax.tree_util.tree_map(
-            lambda v, d: self.b2 * v + (1 - self.b2) * (d * d), self.v, delta
-        )
-        mhat = _tree_scale(self.m, 1.0 / (1 - self.b1**self.t))
-        vhat = _tree_scale(self.v, 1.0 / (1 - self.b2**self.t))
-        update = jax.tree_util.tree_map(
-            lambda m, v: self.lr * m / (jnp.sqrt(v) + self.eps), mhat, vhat
-        )
+        if self.name == "momentum":
+            if self.m is None:
+                self.m = self._zeros_like(delta)
+            self.m = jax.tree_util.tree_map(lambda m, d: self.mu * m + d, self.m, delta)
+            update = self._scale(self.m, self.lr)
+        else:
+            if self.m is None:
+                self.m = self._zeros_like(delta)
+            if self.v is None:
+                self.v = self._zeros_like(delta)
+            self.t += 1
+            self.m = jax.tree_util.tree_map(
+                lambda m, d: self.b1 * m + (1 - self.b1) * d, self.m, delta
+            )
+            if self.name == "adam":
+                self.v = jax.tree_util.tree_map(
+                    lambda v, d: self.b2 * v + (1 - self.b2) * (d * d), self.v, delta
+                )
+            elif self.name == "yogi":
+                self.v = jax.tree_util.tree_map(
+                    lambda v, d: v - (1 - self.b2) * jnp.sign(v - d * d) * (d * d),
+                    self.v,
+                    delta,
+                )
+            elif self.name == "adagrad":
+                self.v = jax.tree_util.tree_map(lambda v, d: v + d * d, self.v, delta)
+            else:
+                raise ValueError(f"Unknown FedOpt name '{self.name}'")
+
+            if self.name in {"adam", "yogi"}:
+                mhat = self._scale(self.m, 1.0 / (1 - self.b1**self.t))
+                vhat = self._scale(self.v, 1.0 / (1 - self.b2**self.t))
+                update = jax.tree_util.tree_map(
+                    lambda m, v: self.lr * m / (jnp.sqrt(v) + self.eps), mhat, vhat
+                )
+            else:  # Adagrad
+                update = jax.tree_util.tree_map(
+                    lambda m, v: self.lr * m / (jnp.sqrt(v) + self.eps), self.m, self.v
+                )
+
         new_params = jax.tree_util.tree_map(lambda a, u: a + u, p_g, update)
         _, static = eqx.partition(theta_g, eqx.is_inexact_array)
         return eqx.combine(new_params, static)
 
 
+# ---------- robust aggregators ----------
 def coord_median(models: List[eqx.Module]) -> eqx.Module:
     params = [eqx.filter(m, eqx.is_inexact_array) for m in models]
 
@@ -98,10 +134,45 @@ def trimmed_mean(models: List[eqx.Module], trim_ratio: float = 0.1) -> eqx.Modul
     return eqx.combine(tm_params, static)
 
 
+def _tree_norm(a):
+    leaves = jax.tree_util.tree_leaves(a)
+    return jnp.sqrt(sum(jnp.sum(x * x) for x in leaves))
+
+
+def _sub(a, b):
+    return jax.tree_util.tree_map(lambda x, y: x - y, a, b)
+
+
+def _scale(a, s):
+    return jax.tree_util.tree_map(lambda x: s * x, a)
+
+
+def geometric_median(
+    models: List[eqx.Module], max_iter: int = 80, eps: float = 1e-6
+) -> eqx.Module:
+    params = [eqx.filter(m, eqx.is_inexact_array) for m in models]
+    x = params[0]
+    for _ in range(max_iter):
+        dists = [float(_tree_norm(_sub(x, p))) + 1e-12 for p in params]
+        inv = [1.0 / d for d in dists]
+        s = sum(inv)
+        w = [v / s for v in inv]
+        x_new = jax.tree_util.tree_map(
+            lambda *leaves: sum(wi * leaf for wi, leaf in zip(w, leaves)), *params
+        )
+        if float(_tree_norm(_sub(x_new, x))) < eps:
+            x = x_new
+            break
+        x = x_new
+    _, static = eqx.partition(models[0], eqx.is_inexact_array)
+    return eqx.combine(x, static)
+
+
+# ---------- Federated Trainer (FedAvg/FedBN/DP + FedOpt, robust, q-FedAvg) ----------
 class FederatedTrainer:
     """
-    FedAvg + (optional) DP local updates, FedProx, robust aggregation, FedAdam, FedBN.
-    Defaults reproduce old behavior.
+    FedAvg + (optional) DP local updates, FedProx (μ=0 here), robust aggregation (coord-median/trimmed/geomed),
+    FedOpt server (Adam/Yogi/Adagrad/Momentum), FedBN, and q-FedAvg fairness weighting.
     """
 
     def __init__(
@@ -113,38 +184,33 @@ class FederatedTrainer:
         batch_size: Optional[int] = None,
         learning_rate: float = 1e-3,
         weight_decay: float = 1e-4,
-        lambda_spec: float = 0.0,
         patience: int = 5,
         key: Optional[jax.Array] = None,
         loss_fn=binary_loss,
-        # NEW toggles (all default to legacy behavior):
-        mu: float = 0.0,  # FedProx prox strength (0 => off)
         dp_config: Optional[DPSGDConfig] = None,  # DP-SGD local training
         aggregator: Optional[
             dict
-        ] = None,  # {"name":"mean"|"median"|"trimmed","trim_ratio":0.1}
+        ] = None,  # {"name":"mean"|"median"|"trimmed"|"geom_median", "trim_ratio":0.1, "q":0.0}
         server_opt: Optional[
             dict
-        ] = None,  # {"name":"none"|"fedadam", "lr":..., "beta1":..., "beta2":..., "eps":...}
+        ] = None,  # {"name":"none"|"adam"|"yogi"|"adagrad"|"momentum", ...}
         keep_bn_local: bool = True,  # FedBN (True => do not aggregate BN buffers)
     ):
         self.model_init_fn = model_init_fn
-        self.n_nodes = n_nodes
-        self.outer_rounds = outer_rounds
-        self.inner_epochs = inner_epochs
+        self.n_nodes = int(n_nodes)
+        self.R = int(outer_rounds)
+        self.E = int(inner_epochs)
         self.batch_size = batch_size
-        self.learning_rate = learning_rate
-        self.weight_decay = weight_decay
-        self.lambda_spec = lambda_spec
-        self.patience = patience
-        self.key = key if key is not None else jr.PRNGKey(0)
+        self.lr_local = float(learning_rate)
+        self.weight_decay = float(weight_decay)
+        self.patience = int(patience)
+        self.key = jr.PRNGKey(0) if key is None else key
         self.loss_fn = loss_fn
 
-        self.mu = float(mu)
         self.dp_config = dp_config
-        self.aggregator = aggregator or {"name": "mean", "trim_ratio": 0.1}
+        self.aggregator = aggregator or {"name": "mean", "trim_ratio": 0.1, "q": 0.0}
         self.server_opt = server_opt or {
-            "name": "none",
+            "name": "adam",
             "lr": 1e-2,
             "beta1": 0.9,
             "beta2": 0.999,
@@ -152,12 +218,9 @@ class FederatedTrainer:
         }
         self.keep_bn_local = bool(keep_bn_local)
 
-        self.train_histories: List[List[List[float]]] = []
-        self.val_histories: List[List[List[float]]] = []
         self.test_losses: List[float] = []
         self.global_model: Optional[eqx.Module] = None
         self.global_state: Optional[Any] = None
-        self.client_states: Optional[List[Any]] = None
 
     @staticmethod
     def shard_data(X: jnp.ndarray, y: jnp.ndarray, n_nodes: int):
@@ -174,47 +237,40 @@ class FederatedTrainer:
         return shards_x, shards_y, sizes
 
     @staticmethod
-    def _weighted_avg(models: List[eqx.Module], sizes: List[int]) -> eqx.Module:
-        ws = jnp.array(sizes, dtype=jnp.float32)
-        ws = ws / (jnp.sum(ws) + 1e-12)
+    def _weighted_avg(models: List[eqx.Module], weights: np.ndarray) -> eqx.Module:
         param_trees = [eqx.filter(m, eqx.is_inexact_array) for m in models]
+        w = jnp.asarray(weights, dtype=jnp.float32)
 
         def wsum(*leaves):
-            return sum(w * leaf for w, leaf in zip(ws, leaves))
+            return sum(wi * leaf for wi, leaf in zip(w, leaves))
 
         avg_params = jax.tree_util.tree_map(wsum, *param_trees)
         _, static = eqx.partition(models[0], eqx.is_inexact_array)
         return eqx.combine(avg_params, static)
 
-    def _fedprox_loss(self, model, state, xb, yb, k, theta_g_params):
-        base, new_state = self.loss_fn(model, state, xb, yb, k)
-        if self.mu > 0.0:
-            p = eqx.filter(model, eqx.is_inexact_array)
-            prox = (
-                0.5
-                * self.mu
-                * sum(
-                    jnp.sum((a - b) ** 2)
-                    for a, b in zip(
-                        jax.tree_util.tree_leaves(p),
-                        jax.tree_util.tree_leaves(theta_g_params),
-                    )
-                )
-            )
-            base = base + prox
-        return base, new_state
-
-    def _aggregate(
-        self, local_models: List[eqx.Module], sizes: List[int]
+    def _aggregate_models(
+        self,
+        local_models: List[eqx.Module],
+        sizes: List[int],
+        local_losses: Optional[List[float]],
     ) -> eqx.Module:
-        name = self.aggregator.get("name", "mean")
+        name = self.aggregator.get("name", "mean").lower()
         if name == "mean":
-            return self._weighted_avg(local_models, sizes)
+            # q-FedAvg weighting (q=0 => size-weighted mean)
+            q = float(self.aggregator.get("q", 0.0))
+            if q > 0.0 and local_losses is not None:
+                arr = np.asarray([(li + 1e-8) ** q for li in local_losses], dtype=float)
+                w = arr / (arr.sum() + 1e-12)
+            else:
+                w = np.asarray([s / (sum(sizes) + 1e-12) for s in sizes], dtype=float)
+            return self._weighted_avg(local_models, w)
         elif name == "median":
             return coord_median(local_models)
         elif name == "trimmed":
             r = float(self.aggregator.get("trim_ratio", 0.1))
             return trimmed_mean(local_models, r)
+        elif name == "geom_median":
+            return geometric_median(local_models)
         else:
             raise ValueError(f"Unknown aggregator {name}")
 
@@ -224,262 +280,287 @@ class FederatedTrainer:
         y_train: jnp.ndarray,
         X_test: jnp.ndarray,
         y_test: jnp.ndarray,
-    ):
+    ) -> tuple[eqx.Module, List[float]]:
         """
-        FedAvg/FedProx training with optional DP, robust aggregators, FedAdam, and FedBN.
-
-        FedBN semantics (when keep_bn_local=True):
-        - BN running stats are NOT aggregated; we keep per-client BN buffers.
-        - evaluation uses a weighted average of per-client losses, each with its own BN state.
-
-        Returns
-        -------
-        (global_model, test_losses)
+        FedAvg/FedBN/DP with robust aggregators, FedOpt server (for mean aggregation),
+        and optional q-FedAvg fairness weighting.
         """
-        # Local import to keep copy-paste friction low
         from quantbayes.stochax.utils.equinox_helpers import clone_module
 
-        # Shard data
-        X_shards, y_shards, sizes = self.shard_data(X_train, y_train, self.n_nodes)
+        Xs, ys, sizes = self.shard_data(X_train, y_train, self.n_nodes)
 
-        # Init global model/state
         self.key, init_key = jr.split(self.key)
         self.global_model, self.global_state = eqx.nn.make_with_state(
             self.model_init_fn
         )(init_key)
 
-        # Optimizer for local client training
+        # local optimizer
         optimizer = optax.chain(
             optax.clip_by_global_norm(1.0),
-            optax.adamw(
-                learning_rate=self.learning_rate, weight_decay=self.weight_decay
-            ),
+            optax.adamw(learning_rate=self.lr_local, weight_decay=self.weight_decay),
         )
 
-        # Optional FedAdam server
+        # optional FedOpt server (only meaningful with mean aggregation)
         server = None
-        if self.server_opt.get("name", "none") == "fedadam":
-            server = FedAdamServer(
-                lr=self.server_opt.get("lr", 1e-2),
-                beta1=self.server_opt.get("beta1", 0.9),
-                beta2=self.server_opt.get("beta2", 0.999),
-                eps=self.server_opt.get("eps", 1e-8),
-            )
+        if self.server_opt.get("name", "none").lower() in {
+            "adam",
+            "yogi",
+            "adagrad",
+            "momentum",
+        }:
+            server = FedOptServer(**self.server_opt)
 
-        # Bookkeeping
-        self.train_histories = []
-        self.val_histories = []
         self.test_losses = []
-        self.client_states = None  # for FedBN
 
-        for rnd in range(1, self.outer_rounds + 1):
-            # Split RNG for this round
+        for rnd in range(1, self.R + 1):
+            # snapshot RNG & global
             self.key, *subkeys = jr.split(self.key, self.n_nodes + 1)
-
-            # Snapshot global params for FedProx proximal term
-            theta_g_params = eqx.filter(self.global_model, eqx.is_inexact_array)
-
-            round_tr, round_va = [], []
             local_models, local_states = [], []
+            client_losses_for_q: List[float] = []
 
-            # ----- Local client training -----
             for i in range(self.n_nodes):
-                # structural clone of the global model/state (best-practice in Equinox)
+                # clone global
                 lm = clone_module(self.global_model)
                 ls = clone_module(self.global_state)
-
                 opt_state = optimizer.init(eqx.filter(lm, eqx.is_inexact_array))
 
-                def prox_loss(m, s, xb, yb, k):
-                    # L_i(θ) + (μ/2)||θ - θ_g||^2   if self.mu>0
-                    base, new_state = self._fedprox_loss(
-                        m, s, xb, yb, k, theta_g_params
-                    )
-                    return base, new_state
-
                 if self.dp_config is None:
-                    lm_trained, ls_trained, tr_hist, va_hist = eqx_train(
+                    lm_trained, ls_trained, *_ = eqx_train(
                         lm,
                         ls,
                         opt_state,
                         optimizer,
-                        prox_loss,
-                        X_shards[i],
-                        y_shards[i],
-                        X_shards[i],
-                        y_shards[i],
-                        batch_size=self.batch_size or X_shards[i].shape[0],
-                        num_epochs=self.inner_epochs,
+                        self.loss_fn,
+                        Xs[i],
+                        ys[i],
+                        Xs[i],
+                        ys[i],
+                        batch_size=self.batch_size or Xs[i].shape[0],
+                        num_epochs=self.E,
                         patience=self.patience,
                         key=subkeys[i],
-                        lambda_spec=self.lambda_spec,
                     )
                 else:
-                    lm_trained, ls_trained, tr_hist, va_hist = dp_eqx_train(
+                    lm_trained, ls_trained, *_ = dp_eqx_train(
                         lm,
                         ls,
                         opt_state,
                         optimizer,
-                        prox_loss,
-                        X_shards[i],
-                        y_shards[i],
-                        X_shards[i],
-                        y_shards[i],
+                        self.loss_fn,
+                        Xs[i],
+                        ys[i],
+                        Xs[i],
+                        ys[i],
                         dp_config=self.dp_config,
-                        batch_size=self.batch_size or X_shards[i].shape[0],
-                        num_epochs=self.inner_epochs,
+                        batch_size=self.batch_size or Xs[i].shape[0],
+                        num_epochs=self.E,
                         patience=self.patience,
                         key=subkeys[i],
                     )
+
+                # local shard loss (for q-FedAvg if used)
+                self.key, lkey = jr.split(self.key)
+                li = float(
+                    eval_step(lm_trained, ls_trained, Xs[i], ys[i], lkey, self.loss_fn)
+                )
+                client_losses_for_q.append(li)
 
                 local_models.append(lm_trained)
                 local_states.append(ls_trained)
-                round_tr.append(tr_hist)
-                round_va.append(va_hist)
 
-            # ----- Server aggregation of weights -----
-            if server is None:
-                self.global_model = self._aggregate(local_models, sizes)
+            name = self.aggregator.get("name", "mean").lower()
+            if server is not None and name == "mean":
+                # server FedOpt via deltas with (possibly) fairness weights
+                q = float(self.aggregator.get("q", 0.0))
+                if q > 0.0 and client_losses_for_q:
+                    arr = np.asarray(
+                        [(li + 1e-8) ** q for li in client_losses_for_q], dtype=float
+                    )
+                    weights = (arr / (arr.sum() + 1e-12)).tolist()
+                else:
+                    weights = [s / (sum(sizes) + 1e-12) for s in sizes]
+                self.global_model = server.apply(
+                    self.global_model, local_models, weights
+                )
+                # FedBN: keep BN buffers per-client
+                self.global_state = local_states[0]  # nominal state
+                client_states = local_states
             else:
-                ws = [s / (sum(sizes) + 1e-12) for s in sizes]
-                self.global_model = server.apply(self.global_model, local_models, ws)
-
-            # ----- State/Buffers (FedBN by default) -----
-            if self.keep_bn_local:
-                # Do NOT aggregate BN buffers; keep each client's buffers.
-                self.client_states = local_states
-                # Keep a nominal global_state for APIs that expect one.
+                # robust aggregation or mean without FedOpt
+                self.global_model = self._aggregate_models(
+                    local_models, sizes, client_losses_for_q
+                )
                 self.global_state = local_states[0]
-            else:
-                # (Optional) implement BN aggregation here if desired.
-                self.global_state = local_states[0]
+                client_states = local_states
 
-            # ----- Evaluation -----
-            self.key, eval_key = jr.split(self.key)
-            if self.keep_bn_local and self.client_states is not None:
-                # Weighted average of per-client eval losses (each with its BN buffers)
-                total = float(sum(sizes))
+            # evaluation (FedBN: weighted avg of per-client losses using their BN states)
+            total = float(sum(sizes))
+            if self.keep_bn_local and client_states is not None:
                 loss = 0.0
-                for s_i, n_i in zip(self.client_states, sizes):
+                for s_i, n_i in zip(client_states, sizes):
+                    self.key, evk = jr.split(self.key)
                     loss_i = float(
                         eval_step(
-                            self.global_model,
-                            s_i,
-                            X_test,
-                            y_test,
-                            eval_key,
-                            self.loss_fn,
+                            self.global_model, s_i, X_test, y_test, evk, self.loss_fn
                         )
                     )
                     loss += (n_i / (total + 1e-12)) * loss_i
             else:
-                # Standard eval with single (global) state
+                self.key, evk = jr.split(self.key)
                 loss = float(
                     eval_step(
                         self.global_model,
                         self.global_state,
                         X_test,
                         y_test,
-                        eval_key,
+                        evk,
                         self.loss_fn,
                     )
                 )
 
-            # ----- Logging -----
             self.test_losses.append(loss)
-            self.train_histories.append(round_tr)
-            self.val_histories.append(round_va)
-            print(f"[Fed] round {rnd}/{self.outer_rounds} | test loss={loss:.4f}")
+            print(f"[FedAvg+] round {rnd}/{self.R} | test loss={loss:.4f}")
 
         return self.global_model, self.test_losses
 
 
+# ------------------------------- MAIN ---------------------------------
 if __name__ == "__main__":
+    import os
     import numpy as np
-    import matplotlib.pyplot as plt
-    import jax
     import jax.numpy as jnp
     import jax.random as jr
     import equinox as eqx
+    from quantbayes.stochax.distributed_training.helpers import (
+        load_mnist_38,
+        estimate_gamma_logistic,
+        make_polynomial_decay,  # unused here, but available if you want LR schedules
+        plot_global_loss_q3,
+        summarize_histories,
+        print_publication_summary,
+        latex_table_from_summary,
+    )
 
-    # -------- synthetic binary logistic data --------
-    rng = np.random.RandomState(0)
-    n_total, d = 4000, 25
-    X = rng.randn(n_total, d).astype(np.float32)
-    w_true = (rng.randn(d) / np.sqrt(d)).astype(np.float32)
-    logits = X @ w_true
-    p = 1.0 / (1.0 + np.exp(-logits))
-    y = (rng.rand(n_total) < p).astype(np.float32)
+    # ----- data -----
+    try:
+        X, y = load_mnist_38(seed=0, flatten=True, standardize=True)
+    except Exception:
+        rng = np.random.RandomState(0)
+        n, d = 6000, 50
+        X = rng.randn(n, d).astype(np.float32)
+        w = (rng.randn(d) / np.sqrt(d)).astype(np.float32)
+        logits = X @ w
+        p = 1.0 / (1.0 + np.exp(-logits))
+        y = (rng.rand(n) < p).astype(np.float32)
+        mu, sd = X.mean(0, keepdims=True), X.std(0, keepdims=True) + 1e-8
+        X = (X - mu) / sd
+        X, y = jnp.asarray(X), jnp.asarray(y)
 
-    idx = rng.permutation(n_total)
-    X, y = X[idx], y[idx]
-    n_train = int(0.8 * n_total)
-    X_tr_np, X_te_np = X[:n_train], X[n_train:]
-    y_tr_np, y_te_np = y[:n_train], y[n_train:]
+    # train/test split
+    n = int(X.shape[0])
+    ntr = int(0.8 * n)
+    Xtr, Xte = X[:ntr], X[ntr:]
+    ytr, yte = y[:ntr], y[ntr:]
 
-    mu = X_tr_np.mean(axis=0, keepdims=True)
-    sd = X_tr_np.std(axis=0, keepdims=True) + 1e-8
-    X_tr_np = (X_tr_np - mu) / sd
-    X_te_np = (X_te_np - mu) / sd
+    # model
+    d = int(X.shape[1])
 
-    X_train = jnp.array(X_tr_np)
-    y_train = jnp.array(y_tr_np)
-    X_test = jnp.array(X_te_np)
-    y_test = jnp.array(y_te_np)
+    class LR(eqx.Module):
+        lin: eqx.nn.Linear
 
-    # -------- simple MLP --------
-    class SimpleMLP(eqx.Module):
-        fc1: eqx.nn.Linear
-        fc2: eqx.nn.Linear
-
-        def __init__(self, key):
-            k1, k2 = jr.split(key)
-            self.fc1 = eqx.nn.Linear(d, 64, key=k1)
-            self.fc2 = eqx.nn.Linear(64, 1, key=k2)
+        def __init__(self, d: int, key):
+            self.lin = eqx.nn.Linear(d, 1, key=key)
 
         def __call__(self, x, key=None, state=None):
-            x = jax.nn.relu(self.fc1(x))
-            return self.fc2(x), state
+            return self.lin(x).squeeze(-1), state
 
-    # -------- try a couple aggregators --------
-    agg_cfgs = [
-        {"name": "mean", "kwargs": {}},
-        {"name": "median", "kwargs": {}},
-        {"name": "trimmed", "kwargs": {"trim_ratio": 0.2}},
-    ]
-    curves = {}
+    model_init = lambda k: LR(d, k)
 
-    for i, cfg in enumerate(agg_cfgs):
-        trainer = FederatedTrainer(
-            model_init_fn=SimpleMLP,
-            n_nodes=6,
-            outer_rounds=10,
-            inner_epochs=3,
-            batch_size=128,
-            learning_rate=5e-3,
-            weight_decay=1e-4,
-            lambda_spec=0.0,
-            patience=3,
-            key=jr.PRNGKey(100 + i),
-            aggregator={"name": cfg["name"], **cfg["kwargs"]},
-            keep_bn_local=True,  # FedBN semantics (no BN in this toy model)
-        )
-        _, test_losses = trainer.train(X_train, y_train, X_test, y_test)
-        curves[cfg["name"]] = test_losses
+    histories: Dict[str, Dict[str, List[float]]] = {}
 
-    # -------- plot global loss vs round --------
-    rounds = np.arange(1, max(len(v) for v in curves.values()) + 1)
-    plt.figure(figsize=(7.6, 4.4))
-    for name, loss in curves.items():
-        plt.plot(rounds[: len(loss)], loss, label=name, linewidth=2)
-    plt.yscale("log")
-    plt.xlabel("Round")
-    plt.ylabel("Global test loss")
-    plt.title("FedAvg — Aggregator comparison (synthetic)")
-    plt.legend()
-    plt.tight_layout()
-    plt.show()
+    # A) FedAvg + FedOpt(Adam) mean aggregation (baseline modern)
+    trainer_A = FederatedTrainer(
+        model_init_fn=model_init,
+        n_nodes=8,
+        outer_rounds=25,
+        inner_epochs=1,
+        batch_size=256,
+        learning_rate=1e-3,
+        weight_decay=1e-4,
+        aggregator={"name": "mean", "q": 0.0},
+        server_opt={
+            "name": "adam",
+            "lr": 5e-3,
+            "beta1": 0.9,
+            "beta2": 0.999,
+            "eps": 1e-8,
+        },
+        keep_bn_local=True,
+        key=jr.PRNGKey(0),
+    )
+    _, losses_A = trainer_A.train(Xtr, ytr, Xte, yte)
+    histories["FedOpt-Adam-mean"] = {"loss_node1": losses_A}
 
-    # -------- print finals --------
-    for name, loss in curves.items():
-        print(f"[{name:7s}] final test loss = {loss[-1]:.4f}")
+    # B) Robust geometric median (Byzantine-robust aggregation)
+    trainer_B = FederatedTrainer(
+        model_init_fn=model_init,
+        n_nodes=8,
+        outer_rounds=25,
+        inner_epochs=1,
+        batch_size=256,
+        learning_rate=1e-3,
+        weight_decay=1e-4,
+        aggregator={"name": "geom_median"},
+        server_opt={"name": "none"},
+        keep_bn_local=True,
+        key=jr.PRNGKey(1),
+    )
+    _, losses_B = trainer_B.train(Xtr, ytr, Xte, yte)
+    histories["GeomMedian"] = {"loss_node1": losses_B}
+
+    # C) q-FedAvg fairness (q=0.5) + FedOpt(Adam)
+    trainer_C = FederatedTrainer(
+        model_init_fn=model_init,
+        n_nodes=8,
+        outer_rounds=25,
+        inner_epochs=1,
+        batch_size=256,
+        learning_rate=1e-3,
+        weight_decay=1e-4,
+        aggregator={"name": "mean", "q": 0.5},
+        server_opt={
+            "name": "adam",
+            "lr": 5e-3,
+            "beta1": 0.9,
+            "beta2": 0.999,
+            "eps": 1e-8,
+        },
+        keep_bn_local=True,
+        key=jr.PRNGKey(2),
+    )
+    _, losses_C = trainer_C.train(Xtr, ytr, Xte, yte)
+    histories["qFedAvg(q=0.5)+Adam"] = {"loss_node1": losses_C}
+
+    # ---- plots + summary ----
+    os.makedirs("figs_fedavg", exist_ok=True)
+    plot_global_loss_q3(
+        histories,
+        title="FedAvg+ variants",
+        save="figs_fedavg/loss.png",
+        style="accessible",
+    )
+    print("Saved figs_fedavg/loss.png")
+
+    os.makedirs("tables", exist_ok=True)
+    summary = summarize_histories(histories)
+    print("\nNumeric summary (FedAvg+):")
+    print_publication_summary(summary, decimals=4)
+    latex = latex_table_from_summary(
+        summary,
+        decimals=3,
+        caption="FedAvg+ with FedOpt/robust/q-FedAvg.",
+        label="tab:fedavg_plus",
+    )
+    with open("tables/fedavg_plus_summary.tex", "w") as f:
+        f.write(latex)
+    print("Wrote tables/fedavg_plus_summary.tex")

@@ -1,9 +1,11 @@
 # quantbayes/stochax/privacy/dp_train.py
 from __future__ import annotations
 from typing import Any, Callable, List, Tuple
+
 import jax, jax.numpy as jnp, jax.random as jr
 import equinox as eqx
 import optax
+
 from .dp import DPPrivacyEngine, DPSGDConfig
 
 Array = jnp.ndarray
@@ -34,6 +36,14 @@ def dp_eqx_train(
     key: jax.Array,
     shuffle: bool = True,
 ):
+    """
+    DP training loop (per-example clipping + Gaussian noise).
+
+    Notes:
+    - Validation loss is computed with eqx.nn.inference_mode(model, True).
+    - If you need extra regularization (e.g., L2), wrap `loss_fn` before calling this
+      function (the CentralizedTrainer does this when lambda_spec > 0).
+    """
     engine = DPPrivacyEngine(dp_config)
     train_hist: List[float] = []
     val_hist: List[float] = []
@@ -52,6 +62,7 @@ def dp_eqx_train(
 
         epoch_loss = 0.0
         nb = 0
+
         for xb, yb in _iter_batches(X_train, y_train, batch_size):
             rng, sub = jr.split(rng)
             noisy_grad, new_state = engine.noisy_grad(
@@ -63,6 +74,7 @@ def dp_eqx_train(
             model = eqx.apply_updates(model, updates)
             state = new_state
 
+            # Log training loss on the current mini-batch (training mode)
             rng, esub = jr.split(rng)
             loss_val, _ = loss_fn(model, state, xb, yb, esub)
             epoch_loss += float(loss_val)
@@ -71,8 +83,10 @@ def dp_eqx_train(
         epoch_loss = epoch_loss / max(1, nb)
         train_hist.append(epoch_loss)
 
+        # Validation: use inference mode for stable eval
         rng, vsub = jr.split(rng)
-        val_loss, _ = loss_fn(model, state, X_val, y_val, vsub)
+        m_eval = eqx.nn.inference_mode(model, True)
+        val_loss, _ = loss_fn(m_eval, state, X_val, y_val, vsub)
         val_loss = float(val_loss)
         val_hist.append(val_loss)
 

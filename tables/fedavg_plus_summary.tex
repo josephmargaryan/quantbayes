@@ -1,0 +1,14 @@
+\begin{table}[t]
+\centering
+\begin{tabular}{lccc}
+\toprule
+Policy & Final loss & Min loss & $t^*_{\text{loss}}$ \\
+\midrule
+FedOpt-Adam-mean & 0.643 & 0.643 & 25.000 \\
+GeomMedian & 0.693 & 0.693 & 25.000 \\
+qFedAvg(q=0.5)+Adam & 0.634 & 0.634 & 25.000 \\
+\bottomrule
+\end{tabular}
+\caption{FedAvg+ with FedOpt/robust/q-FedAvg.}
+\label{tab:fedavg_plus}
+\end{table}

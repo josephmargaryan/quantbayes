@@ -1,4 +1,4 @@
-# peer_gossip_trainer_eqx.py
+# quantbayes/stochax/distributed_training/peer_gossip_trainer_eqx.py
 from __future__ import annotations
 from typing import List, Tuple, Dict, Optional, Callable, Any
 import numpy as np
@@ -10,9 +10,12 @@ import equinox as eqx
 
 from quantbayes.stochax.trainer.train import binary_loss, eval_step
 from quantbayes.stochax.privacy.dp import DPSGDConfig, DPPrivacyEngine
+
+# NEW: import safe Chebyshev + controller + interval helper
 from quantbayes.stochax.distributed_training.mixing_policies import (
     chebyshev_mix,
     disagreement_interval_from_L,
+    AdaptiveChebyController,
     min_K_for_target_rho,
 )
 
@@ -21,7 +24,19 @@ PRNG = jax.Array
 BatchSchedule = Callable[[int, int, int], int]  # B = schedule(t, node, n_i)
 
 
-# ---------------- graph helpers ----------------
+def _is_weight_array(x):
+    # Float/complex arrays AND rank >= 2 (Linear/Conv weights have ndim >= 2; biases/norm params are 1D)
+    return eqx.is_inexact_array(x) and (getattr(x, "ndim", 0) >= 2)
+
+
+def _weights_only_l2_penalty(params: Any) -> jnp.ndarray:
+    leaves = jax.tree_util.tree_leaves(eqx.filter(params, _is_weight_array))
+    if not leaves:
+        return jnp.asarray(0.0, dtype=jnp.float32)
+    return 0.5 * sum(jnp.sum(jnp.square(p)) for p in leaves)
+
+
+# ---------------- graph helpers (local copies) ----------------
 def laplacian_from_edges(n_nodes: int, edges: List[Tuple[int, int]]) -> Array:
     A = np.zeros((n_nodes, n_nodes), dtype=np.float32)
     for i, j in edges:
@@ -102,16 +117,15 @@ class PeerGossipTrainerEqx:
         → per-step partial participation, K_t chosen from active subgraph spectrum,
           embedded as block-diagonal mixing (active block W_small, identity on inactive).
 
-    GD vs SGD:
-      - batch_schedule is None → full-batch GD
-      - batch_schedule is callable → mini-batch DSGD
+    mix_every: communicate every `mix_every` steps. The adaptive controller budgets the
+               per-mix contraction using observed Γ growth between mixes.
 
     Logs:
-      - "loss_node1": global loss evaluated at node 0 each iteration
+      - "loss_node1": global loss at node 0 each iteration
       - "consensus_sq": 1/n ∑ ||θ_i - θ̄||² each iteration
-      - "rho_hist": consensus ratio after/before mixing each iteration
-      - "K_hist": degree used (1 for single, K for others)
-      - "active_hist": #active nodes (adaptive_cheby); else n_nodes
+      - "rho_hist": consensus ratio after/before mixing each mixing iteration
+      - "K_hist": degree used (1 for single, 0 for “no mix step”)
+      - "active_hist": #active nodes (adaptive_cheby); else n_nodes (or 0 on non-mix steps)
       - "total_samples_per_node": for DSGD
     """
 
@@ -134,6 +148,9 @@ class PeerGossipTrainerEqx:
         key: Optional[PRNG] = None,
         eval_inference_mode: bool = True,
         dp_config: Optional[DPSGDConfig] = None,
+        lam_l2: Optional[float] = None,
+        weight_decay: float = 0.0,
+        mix_every: int = 1,
     ):
         self.model_init_fn = model_init_fn
         self.n_nodes = int(n_nodes)
@@ -144,6 +161,12 @@ class PeerGossipTrainerEqx:
         self.key = jr.PRNGKey(0) if key is None else key
         self.eval_inference_mode = bool(eval_inference_mode)
         self.mix_policy = mix_policy or {"name": "single"}
+        self.lam_l2 = float(lam_l2) if lam_l2 is not None else 0.0
+        self.weight_decay = float(weight_decay)
+        self.mix_every = int(max(1, mix_every))
+        assert not (
+            self.lam_l2 > 0.0 and self.weight_decay > 0.0
+        ), "Choose either lam_l2 (loss-level L2) OR weight_decay (decoupled), not both."
 
         # Graph mode
         self.graph_mode = "fixed" if edges_fixed is not None else "odd_even"
@@ -192,6 +215,14 @@ class PeerGossipTrainerEqx:
         self.models: List[eqx.Module] = []
         self.states: List[Any] = []
 
+        # NEW: phase-aware controller for adaptive_cheby
+        self._cheby_ctl = None
+        if self.mix_policy.get("name") == "adaptive_cheby":
+            self._cheby_ctl = AdaptiveChebyController(
+                rho_target_sq=float(self.mix_policy.get("rho_target", 0.05)),
+                K_max=int(self.mix_policy.get("K_max", 5)),
+            )
+
     # -------- utilities --------
     def _init_models(self):
         models, states = [], []
@@ -207,6 +238,12 @@ class PeerGossipTrainerEqx:
 
     def _gamma_t(self, t: int) -> float:
         return float(self.gamma(t)) if callable(self.gamma) else float(self.gamma)
+
+    def _loss_with_reg(self, m, s, xb, yb, k):
+        base, new_s = self.loss_fn(m, s, xb, yb, k)
+        if self.lam_l2 > 0.0:
+            base = base + self.lam_l2 * _weights_only_l2_penalty(m)
+        return base, new_s
 
     def _consensus_distance(self, params_list: List[Any]) -> float:
         def flatten(pytree: Any) -> Array:
@@ -245,33 +282,23 @@ class PeerGossipTrainerEqx:
         and identity elsewhere. Also return the disagreement interval for W_small.
         """
         n = self.n_nodes
-        # Map active nodes to 0..m-1
         idx_map = {u: i for i, u in enumerate(active_idx)}
-        # Induced edge list on active nodes (undirected, no self loops)
         edges_sub = [
             (idx_map[i], idx_map[j])
             for (i, j) in base_edges
             if i in idx_map and j in idx_map and i != j
         ]
-
         m = len(active_idx)
         if m <= 1 or len(edges_sub) == 0:
-            # Degenerate: no mixing possible
             W_full = jnp.eye(n, dtype=jnp.float32)
-            # Choose any valid interval; we will force K=1 upstream in this case
             return W_full, (1.0, 1.0)
-
-        # Small Laplacian and mixing
         L_small = laplacian_from_edges(m, edges_sub)
         lam_min, lam_max = disagreement_interval_from_L(L_small, alpha)
         W_small = jnp.eye(m, dtype=jnp.float32) - float(alpha) * L_small
-
-        # Embed into full W
         W_full = jnp.eye(n, dtype=jnp.float32)
         for i, u in enumerate(active_idx):
             for j, v in enumerate(active_idx):
                 W_full = W_full.at[u, v].set(W_small[i, j])
-
         return W_full, (lam_min, lam_max)
 
     # -------- training loop --------
@@ -320,62 +347,78 @@ class PeerGossipTrainerEqx:
                     edges_t = self.edges_even
                     alpha_t = self.alpha_even
 
-            # consensus before mixing (for rho)
+            # do we communicate this step?
+            do_mix = (t + 1) % self.mix_every == 0
+
+            # consensus before mixing (for rho + controller budget)
             cons_before = self._consensus_distance(params_list)
 
-            # mixing policy
-            policy = self.mix_policy.get("name", "single")
-            if policy == "single":
-                params_half = _tree_mix(W_base, params_list)
-                K_used = 1
-                active_count = self.n_nodes
-            elif policy == "powerK":
-                K_used = int(max(1, self.mix_policy.get("K", 2)))
-                params_half = _powerK_mix(W_base, params_list, K_used)
-                active_count = self.n_nodes
-            elif policy == "cheby":
-                K_used = int(max(1, self.mix_policy.get("K", 2)))
-                lam_min, lam_max = L_interval
-                params_half = chebyshev_mix(
-                    W_base, params_list, K_used, lam_min, lam_max
-                )
-                active_count = self.n_nodes
-            elif policy == "adaptive_cheby":
-                p_part = float(self.mix_policy.get("p_participation", 0.5))
-                ensure_nonempty = bool(self.mix_policy.get("ensure_nonempty", True))
-                active_idx, rng = self._sample_active_nodes(
-                    rng, self.n_nodes, p_part, ensure_nonempty
-                )
-                active_count = len(active_idx)
-
-                # build partial W and spectrum for the active induced subgraph
-                W_partial, (lam_min, lam_max) = self._build_partial_W_and_interval(
-                    edges_t, alpha_t, active_idx
-                )
-                denom = float(lam_max - lam_min)
-                rho_target = float(self.mix_policy.get("rho_target", 0.05))
-                K_cap = int(self.mix_policy.get("K_max", 5))
-
-                if active_count <= 1 or not np.isfinite(denom) or denom <= 1e-12:
+            if do_mix:
+                # mixing policy
+                policy = self.mix_policy.get("name", "single")
+                if policy == "single":
+                    params_half = _tree_mix(W_base, params_list)
                     K_used = 1
-                    params_half = params_list  # no mixing possible
-                else:
-                    xi = (2.0 - (lam_max + lam_min)) / denom
-                    K_used = max(
-                        1, min(K_cap, min_K_for_target_rho(float(xi), rho_target))
-                    )
+                    active_count = self.n_nodes
+                elif policy == "powerK":
+                    K_used = int(max(1, self.mix_policy.get("K", 2)))
+                    params_half = _powerK_mix(W_base, params_list, K_used)
+                    active_count = self.n_nodes
+                elif policy == "cheby":
+                    K_used = int(max(1, self.mix_policy.get("K", 2)))
+                    lam_min, lam_max = L_interval
                     params_half = chebyshev_mix(
-                        W_partial, params_list, K_used, lam_min, lam_max
+                        W_base, params_list, K_used, lam_min, lam_max
                     )
-            else:
-                raise ValueError(f"Unknown mix_policy '{policy}'")
+                    active_count = self.n_nodes
+                elif policy == "adaptive_cheby":
+                    p_part = float(self.mix_policy.get("p_participation", 0.5))
+                    ensure_nonempty = bool(self.mix_policy.get("ensure_nonempty", True))
+                    active_idx, rng = self._sample_active_nodes(
+                        rng, self.n_nodes, p_part, ensure_nonempty
+                    )
+                    active_count = len(active_idx)
 
-            # consensus after mixing & ratio
-            cons_after = self._consensus_distance(params_half)
-            rho_hat = float(cons_after / (cons_before + 1e-12))
-            rho_hist.append(rho_hat)
-            K_hist.append(int(K_used))
-            active_hist.append(int(active_count))
+                    W_partial, (lam_min, lam_max) = self._build_partial_W_and_interval(
+                        edges_t, alpha_t, active_idx
+                    )
+                    denom = float(lam_max - lam_min)
+                    if active_count <= 1 or not np.isfinite(denom) or denom <= 1e-12:
+                        K_used = 1
+                        params_half = params_list  # no mixing possible
+                    else:
+                        xi = (2.0 - (lam_max + lam_min)) / denom
+                        if self._cheby_ctl is not None:
+                            K_req = self._cheby_ctl.choose_K(
+                                float(xi), gamma_pre=cons_before
+                            )
+                        else:
+                            K_req = min_K_for_target_rho(
+                                float(xi),
+                                float(self.mix_policy.get("rho_target", 0.05)),
+                            )
+                        K_cap = int(self.mix_policy.get("K_max", 5))
+                        K_used = int(max(1, min(K_cap, K_req)))
+                        params_half = chebyshev_mix(
+                            W_partial, params_list, K_used, lam_min, lam_max
+                        )
+                else:
+                    raise ValueError(f"Unknown mix_policy '{policy}'")
+
+                # consensus after mixing & ratio
+                cons_after = self._consensus_distance(params_half)
+                rho_hat = float(cons_after / (cons_before + 1e-12))
+                rho_hist.append(rho_hat)
+                K_hist.append(int(K_used))
+                active_hist.append(int(active_count))
+                if self._cheby_ctl is not None:
+                    self._cheby_ctl.update_after_mix(rho_hat, K_used, cons_after)
+            else:
+                # no communication this step
+                params_half = params_list
+                rho_hist.append(1.0)  # identity mixing ⇒ no contraction
+                K_hist.append(0)
+                active_hist.append(0)
 
             # local updates
             step = self._gamma_t(t)
@@ -399,7 +442,7 @@ class PeerGossipTrainerEqx:
                     total_samples[i] += int(B)
 
                 def loss_local(m, s, xb, yb, k):
-                    return self.loss_fn(m, s, xb, yb, k)
+                    return self._loss_with_reg(m, s, xb, yb, k)
 
                 rng, sub = jr.split(rng)
                 if self._dp_engine is None:
@@ -422,10 +465,21 @@ class PeerGossipTrainerEqx:
                         key=sub,
                     )
 
-                upd = jax.tree_util.tree_map(
-                    lambda p, g: p - step * g, params_half[i], grad_i
+                # optional decoupled WD
+                if self.weight_decay > 0.0:
+                    decay = 1.0 - step * self.weight_decay
+
+                    def _shrink(p):
+                        return p * decay if _is_weight_array(p) else p
+
+                    params_half_i = jax.tree_util.tree_map(_shrink, params_half[i])
+                else:
+                    params_half_i = params_half[i]
+
+                updated = jax.tree_util.tree_map(
+                    lambda p, g: p - step * g, params_half_i, grad_i
                 )
-                new_params.append(upd)
+                new_params.append(updated)
                 self.states[i] = new_state_i
 
             params_list = new_params
@@ -457,99 +511,112 @@ class PeerGossipTrainerEqx:
         return out
 
 
-# ------------------- demo -------------------
 if __name__ == "__main__":
-    """
-    Demo for PeerGossipTrainerEqx:
-      • fixed ring vs odd/even switching
-      • GD (full-batch) vs SGD (minibatch)
-      • mix policy 'single' vs 'powerK' vs 'cheby' vs 'adaptive_cheby'
-    """
-    import matplotlib.pyplot as plt
+    import os
+    import numpy as np
+    import jax.numpy as jnp
+    import jax.random as jr
+    import equinox as eqx
 
-    # --- synthetic logistic data ---
-    def make_synth_logistic(n=5000, d=32, seed=0):
-        rng = np.random.RandomState(seed)
+    from quantbayes.stochax.distributed_training.helpers import (
+        load_mnist_38,
+        make_hetero_3v8_parts_no_server,
+        ring_edges,
+        estimate_gamma_logistic,
+        make_polynomial_decay,
+        plot_global_loss_q3,
+        plot_consensus,
+        summarize_histories,
+        print_publication_summary,
+        latex_table_from_summary,
+    )
+    from quantbayes.stochax.distributed_training.peer_gossip_trainer_eqx import (
+        PeerGossipTrainerEqx,
+    )
+
+    DEFAULT_PLOT_STYLE = "accessible"
+
+    # ----- data -----
+    try:
+        X, y = load_mnist_38(seed=0, flatten=True, standardize=True)
+    except Exception:
+        rng = np.random.RandomState(0)
+        n, d = 6000, 50
         X = rng.randn(n, d).astype(np.float32)
-        w_true = (rng.randn(d) / np.sqrt(d)).astype(np.float32)
-        logits = X @ w_true
+        w = (rng.randn(d) / np.sqrt(d)).astype(np.float32)
+        logits = X @ w
         p = 1.0 / (1.0 + np.exp(-logits))
         y = (rng.rand(n) < p).astype(np.float32)
         mu, sd = X.mean(0, keepdims=True), X.std(0, keepdims=True) + 1e-8
         X = (X - mu) / sd
-        return jnp.asarray(X), jnp.asarray(y)
+        X, y = jnp.asarray(X), jnp.asarray(y)
 
-    def uniform_partition(X, y, n_nodes=4):
-        N = int(X.shape[0])
-        base, rem = divmod(N, n_nodes)
-        parts, start = [], 0
-        for i in range(n_nodes):
-            sz = base + (1 if i < rem else 0)
-            parts.append((X[start : start + sz], y[start : start + sz]))
-            start += sz
-        return parts
+    N_NODES = 4
+    parts = make_hetero_3v8_parts_no_server(X, y, n_nodes=N_NODES)
 
     class LR(eqx.Module):
         lin: eqx.nn.Linear
 
-        def __init__(self, d: int, key: jax.Array):
+        def __init__(self, d: int, key):
             self.lin = eqx.nn.Linear(d, 1, key=key)
 
         def __call__(self, x, key=None, state=None):
             return self.lin(x).squeeze(-1), state
 
-    # --- graphs ---
-    edges_fixed = [(0, 1), (1, 2), (2, 3), (3, 0)]  # ring
-    edges_odd = edges_fixed
-    edges_even = [(0, 1), (2, 3)]  # two disjoint edges
+    d = int(X.shape[1])
+    model_init = lambda k: LR(d, k)
+    gamma0 = estimate_gamma_logistic(X, lam_l2=1e-3)
+    lr_sched = make_polynomial_decay(gamma0, power=0.0, t0=1.0)
 
-    # --- data ---
-    X, y = make_synth_logistic(n=5000, d=32, seed=0)
-    parts = uniform_partition(X, y, n_nodes=4)
+    edges = ring_edges(N_NODES)
+    T = 250
+    histories = {}
 
-    T = 200
-
-    # Fixed graph, GD, single vs powerK vs cheby vs adaptive_cheby
-    trainer_single = PeerGossipTrainerEqx(
-        model_init_fn=lambda k: LR(32, k),
-        n_nodes=4,
-        edges_fixed=edges_fixed,
+    # A) mix every step, single
+    trainer_A = PeerGossipTrainerEqx(
+        model_init_fn=model_init,
+        n_nodes=N_NODES,
+        edges_fixed=edges,
         mix_policy={"name": "single"},
-        gamma=0.1,
+        mix_every=1,
+        gamma=lr_sched,
         T=T,
-        batch_schedule=None,  # GD
+        lam_l2=1e-3,
+        weight_decay=0.0,
         key=jr.PRNGKey(0),
+        eval_inference_mode=True,
     )
-    out_single = trainer_single.fit(parts, X, y)
+    hA = trainer_A.fit(parts, X, y, eval_key=jr.PRNGKey(101))
+    histories["mix1-single"] = {
+        "loss_node1": hA["loss_node1"],
+        "consensus_sq": hA["consensus_sq"],
+    }
 
-    trainer_power = PeerGossipTrainerEqx(
-        model_init_fn=lambda k: LR(32, k),
-        n_nodes=4,
-        edges_fixed=edges_fixed,
-        mix_policy={"name": "powerK", "K": 2},
-        gamma=0.1,
-        T=T,
-        batch_schedule=None,
-        key=jr.PRNGKey(1),
-    )
-    out_power = trainer_power.fit(parts, X, y)
-
-    trainer_cheby = PeerGossipTrainerEqx(
-        model_init_fn=lambda k: LR(32, k),
-        n_nodes=4,
-        edges_fixed=edges_fixed,
+    # B) mix every 10 steps, Chebyshev K=2
+    trainer_B = PeerGossipTrainerEqx(
+        model_init_fn=model_init,
+        n_nodes=N_NODES,
+        edges_fixed=edges,
         mix_policy={"name": "cheby", "K": 2},
-        gamma=0.1,
+        mix_every=10,
+        gamma=lr_sched,
         T=T,
-        batch_schedule=None,
-        key=jr.PRNGKey(2),
+        lam_l2=1e-3,
+        weight_decay=0.0,
+        key=jr.PRNGKey(1),
+        eval_inference_mode=True,
     )
-    out_cheby = trainer_cheby.fit(parts, X, y)
+    hB = trainer_B.fit(parts, X, y, eval_key=jr.PRNGKey(102))
+    histories["mix10-chebyK2"] = {
+        "loss_node1": hB["loss_node1"],
+        "consensus_sq": hB["consensus_sq"],
+    }
 
-    trainer_adapt = PeerGossipTrainerEqx(
-        model_init_fn=lambda k: LR(32, k),
-        n_nodes=4,
-        edges_fixed=edges_fixed,
+    # C) mix every 10 steps, adaptive Chebyshev (partial participation)
+    trainer_C = PeerGossipTrainerEqx(
+        model_init_fn=model_init,
+        n_nodes=N_NODES,
+        edges_fixed=edges,
         mix_policy={
             "name": "adaptive_cheby",
             "p_participation": 0.5,
@@ -557,23 +624,47 @@ if __name__ == "__main__":
             "K_max": 5,
             "ensure_nonempty": True,
         },
-        gamma=0.1,
+        mix_every=10,
+        gamma=lr_sched,
         T=T,
-        batch_schedule=None,
-        key=jr.PRNGKey(3),
+        lam_l2=1e-3,
+        weight_decay=0.0,
+        key=jr.PRNGKey(2),
+        eval_inference_mode=True,
     )
-    out_adapt = trainer_adapt.fit(parts, X, y)
+    hC = trainer_C.fit(parts, X, y, eval_key=jr.PRNGKey(103))
+    histories["mix10-adaptive"] = {
+        "loss_node1": hC["loss_node1"],
+        "consensus_sq": hC["consensus_sq"],
+    }
 
-    # --- plots ---
-    plt.figure(figsize=(7.6, 4.4))
-    plt.plot(out_single["loss_node1"], label="single")
-    plt.plot(out_power["loss_node1"], label="powerK=2")
-    plt.plot(out_cheby["loss_node1"], label="cheby K=2")
-    plt.plot(out_adapt["loss_node1"], label="adaptive_cheby")
-    plt.yscale("log")
-    plt.xlabel("iteration t")
-    plt.ylabel("global loss @ node 0")
-    plt.title("PeerGossipTrainerEqx (fixed ring)")
-    plt.legend()
-    plt.tight_layout()
-    plt.show()
+    # ---- plots ----
+    os.makedirs("figs_peer_gossip", exist_ok=True)
+    plot_global_loss_q3(
+        histories,
+        title="Peer2Peer — mix_every & Chebyshev",
+        save="figs_peer_gossip/loss.png",
+        style=DEFAULT_PLOT_STYLE,
+    )
+    plot_consensus(
+        histories,
+        title="Peer2Peer — consensus (mix_every)",
+        save="figs_peer_gossip/consensus.png",
+        style=DEFAULT_PLOT_STYLE,
+    )
+    print("Saved figs_peer_gossip/{loss,consensus}.png")
+
+    # ---- numeric summary + LaTeX ----
+    os.makedirs("tables", exist_ok=True)
+    summary = summarize_histories(histories)
+    print("\nNumeric summary (peer-to-peer):")
+    print_publication_summary(summary, decimals=4)
+    latex = latex_table_from_summary(
+        summary,
+        decimals=3,
+        caption="Peer-to-peer: single vs Chebyshev vs adaptive (partial participation).",
+        label="tab:peer",
+    )
+    with open("tables/peer_gossip_summary.tex", "w") as f:
+        f.write(latex)
+    print("Wrote tables/peer_gossip_summary.tex")

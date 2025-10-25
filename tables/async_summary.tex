@@ -1,0 +1,15 @@
+\begin{table}[t]
+\centering
+\begin{tabular}{lccc}
+\toprule
+Policy & Final loss & Min loss & $t^*_{\text{loss}}$ \\
+\midrule
+baseline & 0.752 & 0.752 & 50.000 \\
+staleness & 0.760 & 0.760 & 50.000 \\
+adam+staleness & 0.597 & 0.594 & 40.000 \\
+adam+staleness+signEF & 0.600 & 0.599 & 49.000 \\
+\bottomrule
+\end{tabular}
+\caption{Async PS variants (loss vs time).}
+\label{tab:async}
+\end{table}

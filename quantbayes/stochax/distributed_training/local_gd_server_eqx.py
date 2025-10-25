@@ -1,15 +1,4 @@
-# Local GD with a server (coordinator) and periodic communication (topology switching).
-# The server has no data and never performs a local gradient step.
-# At iterations that are multiples of τ, we use topology A (star: server connected to all clients).
-# Otherwise, topology B (no edges) => identity mixing.
-#
-# Public API:
-#   - LocalGDServerEqx
-#   - make_star_with_server_edges
-#   - make_mixing_with_per_node_alphas
-#   - plot_server_loss, plot_consensus_localgd
-#   - make_constant_lr, make_polynomial_decay (simple LR schedules)
-
+# quantbayes/stochax/distributed_training/local_gd_server_eqx.py
 from __future__ import annotations
 from typing import List, Tuple, Dict, Optional, Callable, Any
 import numpy as np
@@ -17,51 +6,38 @@ import jax
 import jax.numpy as jnp
 import jax.random as jr
 import equinox as eqx
-import matplotlib.pyplot as plt
 
 from quantbayes.stochax.trainer.train import eval_step, binary_loss
 from quantbayes.stochax.privacy.dp import DPSGDConfig, DPPrivacyEngine
 
 # Reuse helpers from your DGD module
-from quantbayes.stochax.distributed_training.dgd import (
+from quantbayes.stochax.distributed_training.helpers import (
     mixing_matrix,  # W = I - alpha * L (symmetric, row-stochastic)
     safe_alpha as _safe_alpha_ha4,
     _partition_params,
+    tree_mix,
     _combine_params,
-    _tree_mix,
     laplacian_from_edges,
 )
 
-# NEW: spectral star policies
+# NEW: spectral star policies (safe Chebyshev + controller)
 from quantbayes.stochax.distributed_training.mixing_policies import (
     repeat_mix,
-    chebyshev_mix,
+    chebyshev_mix,  # SAFE wrapper (symmetry/DS + interval checks)
     disagreement_interval_from_L,
-    AdaptiveChebyConfig,  # NEW
-    min_K_for_target_rho,  # NEW
-    sample_active_clients,  # NEW
-    build_partial_star_W,  # NEW
+    AdaptiveChebyController,  # NEW
+    min_K_for_target_rho,
+    sample_active_clients,
+    build_partial_star_W,
+    xi_from_interval,  # NEW (optional)
 )
 
 Array = jnp.ndarray
 PRNG = jax.Array
 BatchSchedule = Callable[[int, int, int], int]  # B = schedule(t, client_index, n_i)
 
-__all__ = [
-    "LocalGDServerEqx",
-    "make_star_with_server_edges",
-    "make_mixing_with_per_node_alphas",
-    "plot_server_loss",
-    "plot_consensus_localgd",
-    "safe_alpha",
-    "make_constant_lr",
-    "make_polynomial_decay",
-]
-
 
 # ---- small utilities ----
-
-
 def safe_alpha(edges: List[Tuple[int, int]], n_nodes: int) -> float:
     """Conservative α < 1/deg_max, re-exported from HA4."""
     return _safe_alpha_ha4(edges, n_nodes)
@@ -73,30 +49,20 @@ def _flatten_params_l2(pytree: Any) -> Array:
     return jnp.concatenate(flat) if flat else jnp.zeros((1,), dtype=jnp.float32)
 
 
-def _tree_weighted_sum(weights: Array, param_list: List[Any]) -> Any:
-    def combine(*leaves):
-        stacked = jnp.stack(leaves, axis=0)  # (n_nodes, ...)
-        return jnp.tensordot(weights, stacked, axes=(0, 0))
-
-    return jax.tree_util.tree_map(combine, *param_list)
+def _is_weight_array(x):
+    return eqx.is_inexact_array(x) and (getattr(x, "ndim", 0) >= 2)
 
 
-def _tree_mix_local(W: Array, param_list: List[Any]) -> List[Any]:
-    n = len(param_list)
-    mixed: List[Any] = []
-    for i in range(n):
-        mixed_i = _tree_weighted_sum(W[i], param_list)
-        mixed.append(mixed_i)
-    return mixed
+def _weights_only_l2_penalty(params: Any) -> jnp.ndarray:
+    leaves = jax.tree_util.tree_leaves(eqx.filter(params, _is_weight_array))
+    if not leaves:
+        return jnp.asarray(0.0, dtype=jnp.float32)
+    return 0.5 * sum(jnp.sum(jnp.square(p)) for p in leaves)
 
 
 def make_star_with_server_edges(
     n_clients: int, server_id: int | None = None
 ) -> List[Tuple[int, int]]:
-    """
-    Build star edges for n_clients + 1 total nodes. Server is by default the last index.
-    Returns undirected edge list: [(server, 0), (server, 1), ...].
-    """
     if server_id is None:
         server_id = n_clients
     edges = [(server_id, i) for i in range(n_clients)]
@@ -108,12 +74,6 @@ def make_mixing_with_per_node_alphas(
     edges: List[Tuple[int, int]],
     alphas: List[float],
 ) -> Array:
-    """
-    Optional: Build a row-stochastic mixing matrix using node-specific rates α_i.
-    For undirected edges (i,j), for each row i:
-        W_ii = 1 - α_i * deg(i),   W_ij = α_i if j in N(i), else 0.
-    Row-stochastic by construction; not generally symmetric.
-    """
     assert len(alphas) == n_nodes
     deg = np.zeros(n_nodes, dtype=np.int32)
     N = [set() for _ in range(n_nodes)]
@@ -124,7 +84,6 @@ def make_mixing_with_per_node_alphas(
         N[j].add(i)
         deg[i] += 1
         deg[j] += 1
-
     W = np.zeros((n_nodes, n_nodes), dtype=np.float32)
     for i in range(n_nodes):
         ai = float(alphas[i])
@@ -137,73 +96,17 @@ def make_mixing_with_per_node_alphas(
     return jnp.array(W)
 
 
-def plot_server_loss(
-    histories: Dict[str, Dict[str, List[float]]],
-    title: str = "Server global training loss",
-    save: Optional[str] = None,
-):
-    plt.figure(figsize=(7.6, 4.4))
-    for name, h in histories.items():
-        plt.plot(h["loss_server"], label=name, linewidth=2)
-    plt.yscale("log")
-    plt.xlabel("iteration t")
-    plt.ylabel("global training loss (server model)")
-    plt.title(title)
-    plt.legend()
-    plt.tight_layout()
-    if save:
-        plt.savefig(save, dpi=180)
-    plt.show()
-
-
-def plot_consensus_localgd(
-    histories: Dict[str, Dict[str, List[float]]],
-    title: str = "Consensus distance",
-    save: Optional[str] = None,
-):
-    plt.figure(figsize=(7.2, 4.2))
-    for name, h in histories.items():
-        if "consensus_all" in h:
-            plt.plot(h["consensus_all"], label=f"{name} — all (incl. S)", linewidth=2)
-        if "consensus_clients" in h:
-            plt.plot(
-                h["consensus_clients"],
-                label=f"{name} — clients only",
-                linestyle="--",
-                linewidth=2,
-            )
-    plt.yscale("log")
-    plt.xlabel("iteration t")
-    plt.ylabel("squared consensus distance")
-    plt.title(title)
-    plt.legend()
-    plt.tight_layout()
-    if save:
-        plt.savefig(save, dpi=180)
-    plt.show()
-
-
 # ---- main trainer ----
 class LocalGDServerEqx:
     """
     Local GD with a coordinator (server) and periodic communication.
 
-    Nodes: n_clients clients + 1 server (index = server_id).
-    At iterations t = τ, 2τ, 3τ, ... we use topology A (e.g., star with server),
-    so a gossip step with W_A is applied. At all the other iterations we use topology B
-    (no edges) → W_B = I (no mixing).
-    After gossip, clients do a local gradient step (GD or SGD). The server never
-    does a local step: θ_{t+1}^S = θ_{t+1/2}^S.
-
     Star policy options (self.star_policy["name"]):
       - "single":   apply W_A once
       - "repeat":   apply W_A K times (self.star_policy["K"])
       - "cheby":    apply degree-K Chebyshev p_K(W_A) using the full-star spectrum
-      - "adaptive": per-star partial participation + adaptive Chebyshev
-    Logged histories:
-      - loss_server, loss_node1, loss_node4
-      - consensus_all, consensus_clients
-      - rho_star, K_hist, active_hist (when applicable)
+      - "adaptive": per-star partial participation + phase-aware adaptive Chebyshev
+                    (uses AdaptiveChebyController to budget contraction when τ>1)
     """
 
     def __init__(
@@ -224,7 +127,9 @@ class LocalGDServerEqx:
         make_W_A_custom: Optional[Callable[[int, List[Tuple[int, int]]], Array]] = None,
         dp_config: Optional[DPSGDConfig] = None,
         star_policy: Optional[Dict[str, Any]] = None,
-        batch_schedule: BatchSchedule | None = None,  # NEW: None => GD; else => SGD
+        batch_schedule: BatchSchedule | None = None,
+        lam_l2: Optional[float] = None,
+        weight_decay: float = 0.0,
     ):
         self.model_init_fn = model_init_fn
         self.n_clients = int(n_clients)
@@ -233,7 +138,7 @@ class LocalGDServerEqx:
         assert 0 <= self.server_id < self.n_total
         self.client_ids = [i for i in range(self.n_total) if i != self.server_id]
 
-        self.tau = int(tau)
+        self.tau = int(max(1, tau))
         self.edges_A = edges_A
         self.edges_B = edges_B if edges_B is not None else []
         self.alpha_A = (
@@ -246,6 +151,11 @@ class LocalGDServerEqx:
         self.eval_inference_mode = bool(eval_inference_mode)
         self.dp_config = dp_config
         self._dp_engine = DPPrivacyEngine(dp_config) if dp_config else None
+        self.lam_l2 = float(lam_l2) if lam_l2 is not None else 0.0
+        self.weight_decay = float(weight_decay)
+        assert not (
+            self.lam_l2 > 0.0 and self.weight_decay > 0.0
+        ), "Choose either lam_l2 (loss-level L2) OR weight_decay (decoupled), not both."
 
         # Mixing matrices
         if make_W_A_custom is None:
@@ -271,11 +181,18 @@ class LocalGDServerEqx:
             self.star_policy.setdefault("K_max", 5)
             self.star_policy.setdefault("ensure_nonempty", True)
 
+        # NEW: phase-aware controller (for τ > 1)
+        self._cheby_ctl = None
+        if self.star_policy.get("name") == "adaptive":
+            self._cheby_ctl = AdaptiveChebyController(
+                rho_target_sq=float(self.star_policy.get("rho_target", 0.05)),
+                K_max=int(self.star_policy.get("K_max", 5)),
+            )
+
         # NEW: minibatch control
         self.batch_schedule = batch_schedule  # None => GD; else => DSGD
 
     # ---- helpers ----
-
     def _gamma_t(self, t: int) -> float:
         return float(self.gamma(t)) if callable(self.gamma) else float(self.gamma)
 
@@ -284,7 +201,10 @@ class LocalGDServerEqx:
     ):
         # returns (grad, new_state)
         def loss(m, s, xb, yb, k):
-            return self.loss_fn(m, s, xb, yb, k)
+            base, new_s = self.loss_fn(m, s, xb, yb, k)
+            if self.lam_l2 > 0.0:
+                base = base + self.lam_l2 * _weights_only_l2_penalty(m)
+            return base, new_s
 
         if self._dp_engine is None:
             (_, new_s), grad = eqx.filter_value_and_grad(loss, has_aux=True)(
@@ -322,7 +242,6 @@ class LocalGDServerEqx:
         return float(jnp.mean(sq))
 
     # ---- main fit ----
-
     def fit(
         self,
         parts: List[Tuple[Array, Array]],
@@ -344,7 +263,6 @@ class LocalGDServerEqx:
         rng = self.key if eval_key is None else eval_key
         log_interval = max(1, self.T // 10)
 
-        # NEW: client dataset sizes + sample accounting (if SGD)
         sizes = {i: int(parts[i][0].shape[0]) for i in self.client_ids}
         total_samples = {i: 0 for i in self.client_ids} if self.batch_schedule else None
 
@@ -357,7 +275,7 @@ class LocalGDServerEqx:
         hist_K: List[int] = []  # degree used per star (all policies)
         hist_active: List[int] = (
             []
-        )  # #active clients per star (adaptive; else = n_clients)
+        )  # #active clients per star (adaptive; else n_clients)
 
         # Precompute Chebyshev interval lazily for full DS star (for "cheby")
         def _ensure_star_interval():
@@ -382,7 +300,7 @@ class LocalGDServerEqx:
             if is_star:
                 policy = self.star_policy.get("name", "single")
                 if policy == "single":
-                    params_half = _tree_mix(self.W_A, params_list)
+                    params_half = tree_mix(self.W_A, params_list)
                     K_used = 1
                     active_count = len(self.client_ids)
                 elif policy == "repeat":
@@ -410,32 +328,33 @@ class LocalGDServerEqx:
                     active_clients = [self.client_ids[i] for i in active_local]
                     active_count = len(active_clients)
 
-                    if active_count >= 1:
+                    if active_count >= 2:
+                        # compute star interval cheaply (star of size 1+active_count)
                         edges_small = [(0, j + 1) for j in range(active_count)]
                         L_sub = laplacian_from_edges(1 + active_count, edges_small)
                         lam_min, lam_max = disagreement_interval_from_L(
                             L_sub, self.alpha_A
                         )
-                        denom = float(lam_max - lam_min)
-                    else:
-                        lam_min, lam_max, denom = 1.0, 1.0, 0.0
-
-                    rho_target = float(self.star_policy.get("rho_target", 0.05))
-                    K_cap = int(self.star_policy.get("K_max", 5))
-                    if denom <= 1e-12 or not np.isfinite(denom) or active_count <= 1:
-                        K_used = 1
-                        params_half = params_list
-                    else:
-                        xi = (2.0 - (lam_max + lam_min)) / denom
-                        K_used = max(
-                            1, min(K_cap, min_K_for_target_rho(float(xi), rho_target))
-                        )
+                        xi = xi_from_interval(lam_min, lam_max)
                         W_A_act = build_partial_star_W(
                             self.n_total, self.server_id, active_clients, self.alpha_A
                         )
+
+                        # choose K using controller (phase-aware) or fallback
+                        if self._cheby_ctl is not None:
+                            K_req = self._cheby_ctl.choose_K(xi, gamma_pre=cons_before)
+                        else:
+                            K_req = min_K_for_target_rho(
+                                xi, float(self.star_policy.get("rho_target", 0.05))
+                            )
+                        K_cap = int(self.star_policy.get("K_max", 5))
+                        K_used = int(max(1, min(K_cap, K_req)))
                         params_half = chebyshev_mix(
                             W_A_act, params_list, K_used, lam_min, lam_max
                         )
+                    else:
+                        K_used = 1
+                        params_half = params_list
                 else:
                     raise ValueError(f"Unknown star_policy {policy}")
 
@@ -443,12 +362,14 @@ class LocalGDServerEqx:
                 cons_after = self._consensus_distance(
                     params_half, list(range(self.n_total))
                 )
-                rho_hat = float(cons_after / cons_before) if cons_before > 0 else 1.0
+                rho_hat = float(cons_after / (cons_before + 1e-12))
                 hist_star_rho.append(rho_hat)
                 hist_K.append(int(K_used))
                 hist_active.append(int(active_count))
+                if self._cheby_ctl is not None:
+                    self._cheby_ctl.update_after_mix(rho_hat, K_used, cons_after)
             else:
-                params_half = _tree_mix(self.W_B, params_list)  # identity mixing
+                params_half = tree_mix(self.W_B, params_list)  # identity mixing
 
             models_half = [
                 _combine_params(ph, s) for ph, s in zip(params_half, static_list)
@@ -483,8 +404,20 @@ class LocalGDServerEqx:
                 grad_i, new_state_i = self._local_grad_step(
                     models_half[i], self.states[i], Xb, yb, sub
                 )
+
+                # Optional decoupled WD for clients only (exclude server)
+                if self.weight_decay > 0.0:
+                    decay = 1.0 - gamma_t * self.weight_decay
+
+                    def _shrink(p):
+                        return p * decay if _is_weight_array(p) else p
+
+                    params_half_i = jax.tree_util.tree_map(_shrink, params_half[i])
+                else:
+                    params_half_i = params_half[i]
+
                 updated = jax.tree_util.tree_map(
-                    lambda p, g: p - gamma_t * g, params_half[i], grad_i
+                    lambda p, g: p - gamma_t * g, params_half_i, grad_i
                 )
                 new_params_list.append(updated)
                 self.states[i] = new_state_i
@@ -558,161 +491,160 @@ class LocalGDServerEqx:
         return out
 
 
-# ---- simple LR schedules you can import right away ----
-
-
-def make_constant_lr(gamma: float) -> Callable[[int], float]:
-    """Return a constant LR schedule γ_t ≡ gamma."""
-    g = float(gamma)
-
-    def sched(t: int) -> float:
-        return g
-
-    return sched
-
-
-def make_polynomial_decay(
-    gamma0: float, power: float = 1.0, t0: float = 1.0
-) -> Callable[[int], float]:
-    """γ_t = gamma0 / (t + t0)^power  (default: 1/t decay)."""
-    g0 = float(gamma0)
-    p = float(power)
-    tt = float(t0)
-
-    def sched(t: int) -> float:
-        return g0 / ((t + tt) ** p)
-
-    return sched
-
-
 if __name__ == "__main__":
-    """
-    Demo: synthetic logistic regression, n_clients=4 + 1 server.
-    Compares GD vs SGD under periodic star mixing (τ=10).
-    """
+    import os
     import numpy as np
-    import matplotlib.pyplot as plt
-    import jax
     import jax.numpy as jnp
     import jax.random as jr
     import equinox as eqx
 
-    # ---- synthetic data ----
-    def make_synth_logistic(n=8000, d=30, seed=0):
-        rng = np.random.RandomState(seed)
+    from quantbayes.stochax.distributed_training.helpers import (
+        load_mnist_38,
+        make_hetero_3v8_parts_with_server,
+        make_star_with_server_edges,
+        safe_alpha,
+        estimate_gamma_logistic,
+        make_polynomial_decay,
+        plot_server_loss,
+        plot_consensus_localgd,
+        summarize_histories,
+        print_publication_summary,
+        latex_table_from_summary,
+    )
+    from quantbayes.stochax.distributed_training.local_gd_server_eqx import (
+        LocalGDServerEqx,
+    )
+
+    DEFAULT_PLOT_STYLE = "accessible"
+
+    # ----- data -----
+    try:
+        X, y = load_mnist_38(seed=0, flatten=True, standardize=True)
+    except Exception:
+        rng = np.random.RandomState(0)
+        n, d = 8000, 30
         X = rng.randn(n, d).astype(np.float32)
-        w_true = (rng.randn(d) / np.sqrt(d)).astype(np.float32)
-        logits = X @ w_true
+        w = (rng.randn(d) / np.sqrt(d)).astype(np.float32)
+        logits = X @ w
         p = 1.0 / (1.0 + np.exp(-logits))
         y = (rng.rand(n) < p).astype(np.float32)
         mu, sd = X.mean(0, keepdims=True), X.std(0, keepdims=True) + 1e-8
         X = (X - mu) / sd
-        return jnp.asarray(X), jnp.asarray(y)
+        X, y = jnp.asarray(X), jnp.asarray(y)
 
-    def shard_clients_uniform(X, y, n_clients):
-        N = int(X.shape[0])
-        base, rem = divmod(N, n_clients)
-        parts, start = [], 0
-        for i in range(n_clients):
-            sz = base + (1 if i < rem else 0)
-            parts.append((X[start : start + sz], y[start : start + sz]))
-            start += sz
-        return parts
+    n_clients = 4
+    parts = make_hetero_3v8_parts_with_server(X, y, n_clients=n_clients)
+    d = int(X.shape[1])
+    server_id = n_clients
+    edges_A = make_star_with_server_edges(n_clients, server_id=server_id)
+    alpha_A = safe_alpha(edges_A, n_clients + 1)
 
     class LR(eqx.Module):
         lin: eqx.nn.Linear
 
-        def __init__(self, d: int, key: jax.Array):
+        def __init__(self, d: int, key):
             self.lin = eqx.nn.Linear(d, 1, key=key)
 
-        def __call__(self, x, key, state):
+        def __call__(self, x, key=None, state=None):
             return self.lin(x).squeeze(-1), state
 
-    def model_init_fn(key: jax.Array) -> eqx.Module:
-        return LR(30, key)  # d=30 as above
+    model_init = lambda k: LR(d, k)
+    gamma0 = estimate_gamma_logistic(X, lam_l2=1e-3)
+    lr_sched = make_polynomial_decay(gamma0, power=0.0, t0=1.0)
 
-    # --- star topology ---
-    n_clients = 4
-    server_id = n_clients
-    edges_A = make_star_with_server_edges(n_clients, server_id=server_id)
-    n_total = n_clients + 1
-    alpha_A = safe_alpha(edges_A, n_total)
+    T = 300
+    histories = {}
 
-    # --- data & parts (server has empty set) ---
-    X, y = make_synth_logistic(n=8000, d=30, seed=0)
-    client_parts = shard_clients_uniform(X, y, n_clients)
-    server_part = (
-        jnp.zeros((0, X.shape[1]), dtype=X.dtype),
-        jnp.zeros((0,), dtype=y.dtype),
-    )
-    parts = client_parts + [server_part]
-
-    # --- batch schedules ---
-    def powerlaw(b0=16, p=0.7, bmax=256):
-        b0 = int(max(1, b0))
-        bmax = int(max(b0, bmax))
-        p = float(p)
-
-        def sched(t, i, n_i):
-            import math
-
-            b = int(math.ceil(b0 * ((t + 1) ** p)))
-            return min(b, bmax, n_i)
-
-        return sched
-
-    # --- run GD (batch_schedule=None) ---
-    T = 250
-    trainer_gd = LocalGDServerEqx(
-        model_init_fn=model_init_fn,
+    trainer_A = LocalGDServerEqx(
+        model_init_fn=model_init,
         n_clients=n_clients,
-        tau=10,
+        tau=1,
         edges_A=edges_A,
         alpha_A=alpha_A,
-        gamma=0.1,
+        gamma=lr_sched,
         T=T,
-        loss_fn=binary_loss,
+        lam_l2=1e-3,
+        weight_decay=0.0,
         key=jr.PRNGKey(0),
         eval_inference_mode=True,
         server_id=server_id,
         star_policy={"name": "single"},
-        batch_schedule=None,  # GD
+        batch_schedule=None,
     )
-    hist_gd = trainer_gd.fit(parts, X, y, eval_key=jr.PRNGKey(123), log=False)
-    print(f"[LocalGDServer GD] last server loss={hist_gd['loss_server'][-1]:.4f}")
+    hA = trainer_A.fit(parts, X, y, eval_key=jr.PRNGKey(301), log=False)
+    histories["tau1-single"] = hA
 
-    # --- run SGD (minibatch) ---
-    trainer_sgd = LocalGDServerEqx(
-        model_init_fn=model_init_fn,
+    trainer_B = LocalGDServerEqx(
+        model_init_fn=model_init,
         n_clients=n_clients,
         tau=10,
         edges_A=edges_A,
         alpha_A=alpha_A,
-        gamma=lambda t: 0.05,
+        gamma=lr_sched,
         T=T,
-        loss_fn=binary_loss,
+        lam_l2=1e-3,
+        weight_decay=0.0,
         key=jr.PRNGKey(1),
         eval_inference_mode=True,
         server_id=server_id,
-        star_policy={"name": "repeat", "K": 2},  # example: repeat star mixing
-        batch_schedule=powerlaw(b0=32, p=0.6, bmax=256),  # SGD
+        star_policy={"name": "cheby", "K": 3},
+        batch_schedule=None,
     )
-    hist_sgd = trainer_sgd.fit(parts, X, y, eval_key=jr.PRNGKey(456), log=False)
-    print(f"[LocalGDServer SGD] last server loss={hist_sgd['loss_server'][-1]:.4f}")
-    if "total_samples_per_client" in hist_sgd:
-        print(
-            "[LocalGDServer SGD] total samples per client:",
-            hist_sgd["total_samples_per_client"],
-        )
+    hB = trainer_B.fit(parts, X, y, eval_key=jr.PRNGKey(302), log=False)
+    histories["tau10-cheby3"] = hB
 
-    # --- plots ---
-    plt.figure(figsize=(7, 4))
-    plt.plot(hist_gd["loss_server"], label="GD")
-    plt.plot(hist_sgd["loss_server"], label="SGD")
-    plt.yscale("log")
-    plt.xlabel("iteration t")
-    plt.ylabel("server global loss")
-    plt.title("LocalGDServerEqx: GD vs SGD (τ=10)")
-    plt.legend()
-    plt.tight_layout()
-    plt.show()
+    trainer_C = LocalGDServerEqx(
+        model_init_fn=model_init,
+        n_clients=n_clients,
+        tau=10,
+        edges_A=edges_A,
+        alpha_A=alpha_A,
+        gamma=lr_sched,
+        T=T,
+        lam_l2=1e-3,
+        weight_decay=0.0,
+        key=jr.PRNGKey(2),
+        eval_inference_mode=True,
+        server_id=server_id,
+        star_policy={
+            "name": "adaptive",
+            "p_participation": 0.5,
+            "rho_target": 0.05,
+            "K_max": 5,
+            "ensure_nonempty": True,
+        },
+        batch_schedule=None,
+    )
+    hC = trainer_C.fit(parts, X, y, eval_key=jr.PRNGKey(303), log=False)
+    histories["tau10-adaptive"] = hC
+
+    # ---- plots ----
+    os.makedirs("figs_local_server", exist_ok=True)
+    plot_server_loss(
+        histories,
+        title="LocalGDServer — server loss",
+        save="figs_local_server/server_loss.png",
+        style=DEFAULT_PLOT_STYLE,
+    )
+    plot_consensus_localgd(
+        histories,
+        title="LocalGDServer — consensus",
+        save="figs_local_server/consensus.png",
+        style=DEFAULT_PLOT_STYLE,
+    )
+    print("Saved figs_local_server/{server_loss,consensus}.png")
+
+    # ---- numeric summary + LaTeX ----
+    os.makedirs("tables", exist_ok=True)
+    summary = summarize_histories(histories)
+    print("\nNumeric summary (server stars):")
+    print_publication_summary(summary, decimals=4)
+    latex = latex_table_from_summary(
+        summary,
+        decimals=3,
+        caption="Server star rounds: single, Chebyshev, and adaptive.",
+        label="tab:server",
+    )
+    with open("tables/local_server_summary.tex", "w") as f:
+        f.write(latex)
+    print("Wrote tables/local_server_summary.tex")
