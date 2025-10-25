@@ -21,9 +21,8 @@ __all__ = [
     "poisson_delay_sampler",
 ]
 
+
 # ---------- utils ----------
-
-
 def _partition_params(model: eqx.Module):
     return eqx.partition(model, eqx.is_inexact_array)  # (params, static)
 
@@ -70,11 +69,15 @@ def poisson_delay_sampler(
 
 
 # ---------- server optimizer (FedOpt) ----------
-
-
 class _ServerOpt:
+    """
+    Stateless interface:
+      apply(params, update) performs: params <- params - lr * OPT(update)
+    where OPT is identity/momentum/Adam transformation of 'update'.
+    """
+
     def __init__(
-        self, name="none", lr=1e-3, beta1=0.9, beta2=0.999, eps=1e-8, momentum=0.9
+        self, name="sgd", lr=1e-3, beta1=0.9, beta2=0.999, eps=1e-8, momentum=0.9
     ):
         self.name = str(name).lower()
         self.lr = float(lr)
@@ -95,34 +98,34 @@ class _ServerOpt:
         return jax.tree_util.tree_map(lambda x, y: x + y, a, b)
 
     @staticmethod
-    def _sub(a, b):
-        return jax.tree_util.tree_map(lambda x, y: x - y, a, b)
-
-    @staticmethod
     def _scale(a, s):
         return jax.tree_util.tree_map(lambda x: s * x, a)
 
-    def apply(self, params, grad):
-        if self.name == "none":
-            return self._sub(params, self._scale(grad, self.lr))
+    @staticmethod
+    def _sub(a, b):
+        return jax.tree_util.tree_map(lambda x, y: x - y, a, b)
+
+    def apply(self, params, update):
+        if self.name in {"sgd", "none"}:
+            return self._sub(params, self._scale(update, self.lr))
 
         if self.name == "momentum":
             if self.m is None:
-                self.m = self._zeros_like(grad)
-            self.m = self._add(self._scale(self.m, self.mu), grad)
+                self.m = self._zeros_like(update)
+            self.m = self._add(self._scale(self.m, self.mu), update)
             return self._sub(params, self._scale(self.m, self.lr))
 
-        if self.name in {"adam"}:
+        if self.name in {"adam", "adamw"}:
             if self.m is None:
-                self.m = self._zeros_like(grad)
+                self.m = self._zeros_like(update)
             if self.v is None:
-                self.v = self._zeros_like(grad)
+                self.v = self._zeros_like(update)
             self.t += 1
             self.m = jax.tree_util.tree_map(
-                lambda m, g: self.b1 * m + (1 - self.b1) * g, self.m, grad
+                lambda m, g: self.b1 * m + (1 - self.b1) * g, self.m, update
             )
             self.v = jax.tree_util.tree_map(
-                lambda v, g: self.b2 * v + (1 - self.b2) * (g * g), self.v, grad
+                lambda v, g: self.b2 * v + (1 - self.b2) * (g * g), self.v, update
             )
             mhat = self._scale(self.m, 1.0 / (1 - self.b1**self.t))
             vhat = self._scale(self.v, 1.0 / (1 - self.b2**self.t))
@@ -135,72 +138,76 @@ class _ServerOpt:
 
 
 # ---------- main trainer ----------
-
-
 class AsyncParameterServerEqx:
     """
-    Event-driven Asynchronous Parameter Server (SOTA-ready).
+    Event-driven Asynchronous Parameter Server (production-grade):
 
-    Additions vs baseline:
-      • staleness-aware decay ϕ(s) (power or exp)
-      • server FedOpt (none | momentum | adam)
-      • gradient clipping (global norm)
-      • optional compression 'sign' with error-feedback per worker
-      • optional DP on worker gradients (as before)
+    • Aggregation mode:
+        - 'grad': one minibatch gradient from the worker snapshot (FedSGD)
+        - 'delta': S local steps with client LR (FedAvg-style); send δ = θ_loc - θ_snap
+    • Staleness-aware scaling ϕ(s): 'none' | 'power' (alpha) | 'exp' (lambda)
+    • Server optimizer (FedOpt): 'sgd' | 'momentum' | 'adam' | 'adamw'
+    • Optional global-norm clipping, DP on worker gradients, EF-Sign compression.
 
-    Update rule on arrivals:
-        θ ← θ - γ_t * w_i * ϕ(staleness) * C( g_i + r_i ) ;   r_i ← (g_i + r_i) - C(...)
-    where C is compressor (identity or sign), and r_i residuals (error feedback).
+    Update on arrival with scale s_i = w_i * ϕ(staleness):
+        params <- OPT.apply(params,  s_i * u_i )           if aggregation='grad'
+        params <- OPT.apply(params, -s_i * δ_i )           if aggregation='delta'
+    (Minus sign on δ_i because OPT.apply subtracts its argument times lr.)
     """
 
     def __init__(
         self,
         model_init_fn: Callable[[PRNG], eqx.Module],
-        gamma: float | Callable[[int], float],
         *,
+        aggregation: str = "grad",  # 'grad' or 'delta'
+        server_opt: Optional[Dict[str, float | str]] = None,  # {"name":"adam","lr":...}
+        delay_sampler: Callable[[int, int], int] = poisson_delay_sampler(2.0, cap=10),
         loss_fn: Callable = binary_loss,
-        lam_l2: Optional[float] = None,
-        delay_sampler: Callable[[int, int], int] = uniform_delay_sampler(1, 5),
-        batch_size_per_worker: Optional[List[int]] = None,
+        lam_l2: Optional[float] = None,  # loss-level L2 on worker objective
+        dp_config: Optional[
+            DPSGDConfig
+        ] = None,  # DP on worker gradients (in 'grad' mode and inside local steps)
+        weight_by_data: bool = True,  # scale by worker's data fraction
+        staleness: Optional[
+            Dict[str, float | str]
+        ] = None,  # {"mode":"power|exp|none","alpha":0.6,"lambda":0.1}
+        clip_norm: Optional[float] = None,  # global norm clipping on worker update
+        compress: Optional[
+            Dict[str, Any]
+        ] = None,  # {"name":"none|sign","error_feedback":True}
+        # client local training (used in 'delta' mode; optional in 'grad' mode to form larger minibatch)
+        client: Optional[
+            Dict[str, Any]
+        ] = None,  # {"local_epochs":S, "lr":η_c, "batch":B}
         key: Optional[PRNG] = None,
         eval_inference_mode: bool = True,
         log_every: int = 20,
-        dp_config: Optional[DPSGDConfig] = None,  # optional DP on worker gradients
-        # NEW knobs:
-        server_opt: Optional[
-            Dict[str, float | str]
-        ] = None,  # {"name":"none|momentum|adam", "lr":..., "beta1":..., "beta2":..., "eps":..., "momentum":...}
-        staleness: Optional[
-            Dict[str, float | str]
-        ] = None,  # {"mode":"power|exp|none", "alpha":0.6, "lambda":0.1}
-        clip_norm: Optional[
-            float
-        ] = None,  # global norm clipping on worker gradients (before compression)
-        compress: Optional[
-            Dict[str, Any]
-        ] = None,  # {"name":"none|sign", "error_feedback":True}
     ):
         self.model_init_fn = model_init_fn
-        self.gamma = gamma
+        self.aggregation = str(aggregation).lower()
+        assert self.aggregation in {"grad", "delta"}
+
         self.loss_fn = loss_fn
         self.lam_l2 = lam_l2
         self.delay_sampler = delay_sampler
-        self.batch_size_per_worker = batch_size_per_worker
-        self.key = key if key is not None else jr.PRNGKey(0)
+        self.weight_by_data = bool(weight_by_data)
         self.eval_inference_mode = bool(eval_inference_mode)
         self.log_every = int(max(1, log_every))
+        self.key = key if key is not None else jr.PRNGKey(0)
 
-        # DP engine (shared). If you want per-worker ε accounting, instantiate one per worker.
+        # DP engine
         self.dp_config = dp_config
         self._dp_engine = DPPrivacyEngine(dp_config) if dp_config else None
 
-        # server optimizer & knobs
-        self.server_opt = server_opt or {
-            "name": "momentum",
-            "lr": 1e-3,
-            "momentum": 0.9,
+        # server optimizer
+        so = server_opt or {
+            "name": "adam",
+            "lr": 3e-3,
+            "beta1": 0.9,
+            "beta2": 0.999,
+            "eps": 1e-8,
         }
-        self._opt = _ServerOpt(**self.server_opt)
+        self._opt = _ServerOpt(**so)
 
         # staleness decay
         st = staleness or {"mode": "power", "alpha": 0.6}
@@ -208,37 +215,26 @@ class AsyncParameterServerEqx:
         self.st_alpha = float(st.get("alpha", 0.6))
         self.st_lambda = float(st.get("lambda", 0.1))
 
-        # grad clipping & compression
+        # clipping & compression
         self.clip_norm = None if clip_norm is None else float(clip_norm)
         c = compress or {"name": "none", "error_feedback": True}
         self.compress_name = str(c.get("name", "none")).lower()
         self.error_feedback = bool(c.get("error_feedback", True))
 
-        # server state
+        # client local training defaults
+        cli = client or {}
+        self.local_epochs = int(cli.get("local_epochs", 1))
+        self.client_lr = float(cli.get("lr", 1e-1))
+        self.client_batch = (
+            None if cli.get("batch", None) is None else int(cli["batch"])
+        )
+
+        # server state & residuals
         self.model: Optional[eqx.Module] = None
         self.state: Optional[Any] = None
+        self._residuals: Optional[List[Any]] = None  # for EF-Sign
 
-        # error feedback residuals per worker (initialized in fit)
-        self._residuals: Optional[List[Any]] = None
-
-    def _gamma_t(self, t: int) -> float:
-        return float(self.gamma(t)) if callable(self.gamma) else float(self.gamma)
-
-    def _grad_at(self, model: eqx.Module, state: Any, X: Array, y: Array, key: PRNG):
-        """Return gradient wrt model params (state is passed-through aux)."""
-
-        def loss_with_reg(m, s, xb, yb, k):
-            base, new_s = self.loss_fn(m, s, xb, yb, k)
-            p = eqx.filter(m, eqx.is_inexact_array)
-            if self.lam_l2 is not None and self.lam_l2 > 0:
-                base = base + l2_penalty(p, self.lam_l2)
-            return base, new_s
-
-        (loss_val, _new_state), grads = eqx.filter_value_and_grad(
-            loss_with_reg, has_aux=True
-        )(model, state, X, y, key)
-        return grads
-
+    # ---- helpers ----
     def _phi(self, staleness: int) -> float:
         s = float(max(0, int(staleness)))
         if self.st_mode == "power":
@@ -252,33 +248,64 @@ class AsyncParameterServerEqx:
         leaves = jax.tree_util.tree_leaves(pytree)
         return jnp.sqrt(sum(jnp.sum(jnp.square(x)) for x in leaves))
 
-    def _clip_by_global_norm(self, grads):
+    def _clip_by_global_norm(self, tree):
         if self.clip_norm is None or self.clip_norm <= 0:
-            return grads
-        gnorm = self._global_norm(grads)
+            return tree
+        gnorm = self._global_norm(tree)
         scale = jnp.minimum(1.0, self.clip_norm / (gnorm + 1e-12))
-        return jax.tree_util.tree_map(lambda g: g * scale, grads)
+        return jax.tree_util.tree_map(lambda g: g * scale, tree)
 
-    def _compress(self, i: int, grads):
-        """Return compressed gradients and update residuals if EF is on."""
+    def _compress_with_residual(self, i: int, payload):
         if self.compress_name == "none":
-            return grads
-        # error feedback: g_eff = g + r_i
+            return payload
+        # error feedback residuals
         if self.error_feedback:
             r = self._residuals[i]
-            g_eff = jax.tree_util.tree_map(lambda g, ri: g + ri, grads, r)
-        else:
-            g_eff = grads
+            payload = jax.tree_util.tree_map(lambda g, ri: g + ri, payload, r)
         if self.compress_name == "sign":
-            comp = jax.tree_util.tree_map(jnp.sign, g_eff)
+            comp = jax.tree_util.tree_map(jnp.sign, payload)
         else:
             raise ValueError(f"Unknown compressor '{self.compress_name}'")
         if self.error_feedback:
             self._residuals[i] = jax.tree_util.tree_map(
-                lambda ge, c: ge - c, g_eff, comp
+                lambda ge, c: ge - c, payload, comp
             )
         return comp
 
+    def _worker_grad(
+        self, model: eqx.Module, state: Any, X: Array, y: Array, key: PRNG
+    ):
+        # Loss with optional L2 on weights
+        def loss_with_reg(m, s, xb, yb, k):
+            base, new_s = self.loss_fn(m, s, xb, yb, k)
+            p = eqx.filter(m, eqx.is_inexact_array)
+            if self.lam_l2 is not None and self.lam_l2 > 0.0:
+                base = base + l2_penalty(p, self.lam_l2)
+            return base, new_s
+
+        if self._dp_engine is None:
+            (_, _), grads = eqx.filter_value_and_grad(loss_with_reg, has_aux=True)(
+                model, state, X, y, key
+            )
+            return grads
+        else:
+            # If DP is enabled, the engine performs clipping+noise as configured
+            grads, _ = self._dp_engine.noisy_grad(
+                loss_with_reg, model, state, X, y, key=key
+            )
+            return grads
+
+    def _sample_batch(
+        self, rng: PRNG, X: Array, y: Array, B: Optional[int]
+    ) -> Tuple[PRNG, Array, Array]:
+        n = int(X.shape[0])
+        if B is None or B >= n:
+            return rng, X, y
+        rng, sub = jr.split(rng)
+        idx = jr.choice(sub, n, shape=(int(B),), replace=False)
+        return rng, X[idx], y[idx]
+
+    # ---- main ----
     def fit(
         self,
         parts: List[Tuple[Array, Array]],  # per-worker (X_i, y_i)
@@ -291,29 +318,23 @@ class AsyncParameterServerEqx:
         n_workers = len(parts)
         sizes = [int(parts[i][0].shape[0]) for i in range(n_workers)]
         total = float(sum(sizes))
-        weights = [s / (total + 1e-12) for s in sizes]
+        weights = (
+            [s / (total + 1e-12) for s in sizes]
+            if self.weight_by_data
+            else [1.0 / n_workers] * n_workers
+        )
 
         # init model & state
         model, state = eqx.nn.make_with_state(self.model_init_fn)(self.key)
         self.model, self.state = model, state
         params, static = _partition_params(model)
 
-        # per-worker batch sizes
-        if self.batch_size_per_worker is None:
-            B = [sizes[i] for i in range(n_workers)]
-        else:
-            assert len(self.batch_size_per_worker) == n_workers
-            B = [
-                min(sizes[i], int(self.batch_size_per_worker[i]))
-                for i in range(n_workers)
-            ]
-
-        # error-feedback residuals
+        # EF residuals
         self._residuals = [
             jax.tree_util.tree_map(jnp.zeros_like, params) for _ in range(n_workers)
         ]
 
-        # inflight jobs: None or dict with {params_snapshot, state_snapshot, due_time, wid, t_launch}
+        # inflight jobs per worker: snapshot params/state, due time, etc.
         inflight: List[Optional[dict]] = [None] * n_workers
 
         rng = jr.PRNGKey(seed)
@@ -323,10 +344,10 @@ class AsyncParameterServerEqx:
         num_updates = 0
 
         def maybe_launch(worker_id: int, tnow: int):
-            nonlocal inflight, params, static, state, rng
+            nonlocal inflight, params, static, state
             if inflight[worker_id] is not None:
                 return
-            theta_snap = params
+            theta_snap = params  # snapshot at launch
             state_snap = state
             delay = int(self.delay_sampler(worker_id, tnow))
             due = tnow + max(1, delay)
@@ -343,7 +364,7 @@ class AsyncParameterServerEqx:
             for i in range(n_workers):
                 maybe_launch(i, t)
 
-            # apply all completions at time t
+            # complete arrivals
             completed_idxs = [
                 i
                 for i, job in enumerate(inflight)
@@ -355,45 +376,53 @@ class AsyncParameterServerEqx:
                 t_launch = job["t_launch"]
                 staleness = t - t_launch
                 hist_staleness.append(int(staleness))
-
                 model_snap = _combine_params(job["params_snapshot"], static)
                 state_snap = job["state_snapshot"]
-
                 Xi, yi = parts[wid]
-                n_i = Xi.shape[0]
-                rng, sub = jr.split(rng)
-                if B[wid] >= n_i:
-                    idx = jnp.arange(n_i)
-                else:
-                    idx = jr.choice(sub, n_i, shape=(B[wid],), replace=False)
-                Xb, yb = Xi[idx], yi[idx]
 
                 rng, sub = jr.split(rng)
-                # gradient (DP optional)
-                if self._dp_engine is None:
-                    g_i = self._grad_at(model_snap, state_snap, Xb, yb, sub)
-                else:
 
-                    def loss_with_reg(m, s, xb, yb, k):
-                        base, new_s = self.loss_fn(m, s, xb, yb, k)
-                        if self.lam_l2 is not None and self.lam_l2 > 0:
-                            p = eqx.filter(m, eqx.is_inexact_array)
-                            base = base + l2_penalty(p, self.lam_l2)
-                        return base, new_s
+                if self.aggregation == "grad":
+                    # one minibatch gradient from snapshot
+                    rng, Xb, yb = self._sample_batch(sub, Xi, yi, self.client_batch)
+                    grads = self._worker_grad(model_snap, state_snap, Xb, yb, sub)
 
-                    g_i, _ = self._dp_engine.noisy_grad(
-                        loss_with_reg, model_snap, state_snap, Xb, yb, key=sub
+                    # optional post-DP global clipping
+                    grads = self._clip_by_global_norm(grads)
+
+                    # compression with EF
+                    payload = self._compress_with_residual(
+                        wid, grads
+                    )  # still a gradient-like payload
+                    scale = float(weights[wid]) * float(self._phi(staleness))
+                    scaled = jax.tree_util.tree_map(lambda g: scale * g, payload)
+                    params = self._opt.apply(params, scaled)
+
+                else:  # aggregation == "delta" (local steps, send delta)
+                    theta_loc = job["params_snapshot"]
+                    # S local steps of SGD starting from snapshot (on the *snapshot* model)
+                    for s in range(max(1, self.local_epochs)):
+                        rng, sub = jr.split(rng)
+                        rng, Xb, yb = self._sample_batch(sub, Xi, yi, self.client_batch)
+                        model_tmp = _combine_params(theta_loc, static)
+                        grads = self._worker_grad(model_tmp, state_snap, Xb, yb, sub)
+                        # (optional) clip local grad; note DP engine already clips if configured
+                        grads = self._clip_by_global_norm(grads)
+                        theta_loc = jax.tree_util.tree_map(
+                            lambda p, g: p - self.client_lr * g, theta_loc, grads
+                        )
+
+                    delta = jax.tree_util.tree_map(
+                        lambda p_new, p_old: p_new - p_old,
+                        theta_loc,
+                        job["params_snapshot"],
                     )
-
-                # optional clip and compression
-                g_i = self._clip_by_global_norm(g_i)
-                g_i = self._compress(wid, g_i)
-
-                # apply update with weight, staleness decay, and server optimizer
-                phi = self._phi(staleness)
-                step = self._gamma_t(t) * float(weights[wid]) * float(phi)
-                scaled_grad = jax.tree_util.tree_map(lambda g: step * g, g_i)
-                params = self._opt.apply(params, scaled_grad)
+                    delta = self._clip_by_global_norm(delta)
+                    payload = self._compress_with_residual(wid, delta)
+                    scale = float(weights[wid]) * float(self._phi(staleness))
+                    # OPT.apply subtracts; to *add* delta, pass negative payload
+                    scaled = jax.tree_util.tree_map(lambda d: -scale * d, payload)
+                    params = self._opt.apply(params, scaled)
 
                 inflight[i] = None
                 num_updates += 1
@@ -416,13 +445,7 @@ class AsyncParameterServerEqx:
         # finalize
         self.model = _combine_params(params, static)
         self.key = rng
-
-        out: Dict[str, List[float] | List[int]] = {
-            "loss": hist_loss,
-            "updates": hist_updates,
-            "staleness": hist_staleness,
-        }
-        return out
+        return {"loss": hist_loss, "updates": hist_updates, "staleness": hist_staleness}
 
 
 # ------------------------------- MAIN ---------------------------------
@@ -489,7 +512,6 @@ if __name__ == "__main__":
     # A) baseline async (no staleness, no server opt, no compression)
     trainer_A = AsyncParameterServerEqx(
         model_init_fn=model_init,
-        gamma=1e-3,
         delay_sampler=poisson_delay_sampler(2.0, cap=10),
         server_opt={"name": "none", "lr": 1e-3},
         staleness={"mode": "none"},
@@ -509,7 +531,6 @@ if __name__ == "__main__":
     # B) staleness-aware (power alpha=0.6)
     trainer_B = AsyncParameterServerEqx(
         model_init_fn=model_init,
-        gamma=1e-3,
         delay_sampler=poisson_delay_sampler(2.0, cap=10),
         server_opt={"name": "none", "lr": 1e-3},
         staleness={"mode": "power", "alpha": 0.6},
@@ -529,7 +550,6 @@ if __name__ == "__main__":
     # C) server Adam + staleness
     trainer_C = AsyncParameterServerEqx(
         model_init_fn=model_init,
-        gamma=1e-3,
         delay_sampler=poisson_delay_sampler(2.0, cap=10),
         server_opt={
             "name": "adam",
@@ -555,7 +575,6 @@ if __name__ == "__main__":
     # D) server Adam + staleness + sign compression (error-feedback)
     trainer_D = AsyncParameterServerEqx(
         model_init_fn=model_init,
-        gamma=1e-3,
         delay_sampler=poisson_delay_sampler(2.0, cap=10),
         server_opt={
             "name": "adam",
@@ -624,6 +643,177 @@ if __name__ == "__main__":
         caption="Async PS variants (loss vs time).",
         label="tab:async",
     )
+    with open("tables/async_summary.tex", "w") as f:
+        f.write(latex)
+    print("Wrote tables/async_summary.tex")
+
+# ------------------------------- MAIN ---------------------------------
+# ------------------------------- MAIN ---------------------------------
+if __name__ == "__main__":
+    """
+    Demo: Asynchronous Parameter Server with multiple production knobs.
+      • Aggregation='grad'  (FedSGD-like, one minibatch per arrival)
+      • Aggregation='delta' (FedAvg-style local training, sends parameter delta)
+      • Staleness decay ϕ(s), server Adam (FedOpt), optional EF-Sign compression
+    Outputs: figs_async/{loss_vs_time,loss_vs_updates,staleness_hist}.png
+    """
+    import os
+    import numpy as np
+    import jax.numpy as jnp
+    import jax.random as jr
+    import equinox as eqx
+
+    from quantbayes.stochax.distributed_training.helpers import (
+        load_mnist_38,
+        plot_global_loss_q3,
+        plot_async_loss_vs_updates,
+        plot_staleness_hist,
+        summarize_histories,
+        print_publication_summary,
+        latex_table_from_summary,
+    )
+
+    # ----- data -----
+    try:
+        X, y = load_mnist_38(seed=0, flatten=True, standardize=True)
+    except Exception:
+        rng = np.random.default_rng(0)
+        n, d = 6000, 50
+        X = rng.standard_normal((n, d)).astype(np.float32)
+        w = (rng.standard_normal(d) / np.sqrt(d)).astype(np.float32)
+        p = 1.0 / (1.0 + np.exp(-(X @ w)))
+        y = (rng.random(n) < p).astype(np.float32)
+        mu, sd = X.mean(0, keepdims=True), X.std(0, keepdims=True) + 1e-8
+        X = (X - mu) / sd
+        X, y = jnp.asarray(X), jnp.asarray(y)
+
+    # split
+    n = int(X.shape[0])
+    ntr = int(0.8 * n)
+    Xtr, Xte = X[:ntr], X[ntr:]
+    ytr, yte = y[:ntr], y[ntr:]
+
+    # model
+    d = int(X.shape[1])
+
+    class LR(eqx.Module):
+        lin: eqx.nn.Linear
+
+        def __init__(self, d: int, key):
+            self.lin = eqx.nn.Linear(d, 1, key=key)
+
+        def __call__(self, x, key=None, state=None):
+            return self.lin(x).squeeze(-1), state
+
+    model_init = lambda k: LR(d, k)
+
+    # partition across workers
+    N_WORKERS = 8
+    parts = uniform_partition(Xtr, ytr, N_WORKERS)
+
+    # runs to collect
+    os.makedirs("figs_async", exist_ok=True)
+    histories_loss = {}
+    runs = {}
+
+    # A) FedSGD-style (aggregation='grad'), server SGD, no staleness/comp
+    trainer_A = AsyncParameterServerEqx(
+        model_init_fn=model_init,
+        aggregation="grad",
+        server_opt={"name": "sgd", "lr": 1e-3},
+        delay_sampler=poisson_delay_sampler(2.0, cap=10),
+        staleness={"mode": "none"},
+        compress={"name": "none"},
+        clip_norm=None,
+        key=jr.PRNGKey(0),
+        log_every=20,
+    )
+    hA = trainer_A.fit(parts, Xte, yte, max_time=1000, seed=0)
+    histories_loss["FedSGD+SGD"] = {"loss_node1": hA["loss"]}
+    runs["FedSGD+SGD"] = hA
+
+    # B) FedSGD + server Adam + staleness decay
+    trainer_B = AsyncParameterServerEqx(
+        model_init_fn=model_init,
+        aggregation="grad",
+        server_opt={
+            "name": "adam",
+            "lr": 3e-3,
+            "beta1": 0.9,
+            "beta2": 0.999,
+            "eps": 1e-8,
+        },
+        delay_sampler=poisson_delay_sampler(2.0, cap=10),
+        staleness={"mode": "power", "alpha": 0.6},
+        compress={"name": "none"},
+        clip_norm=1.0,
+        key=jr.PRNGKey(1),
+        log_every=20,
+    )
+    hB = trainer_B.fit(parts, Xte, yte, max_time=1000, seed=1)
+    histories_loss["FedSGD+Adam+ϕ(s)"] = {"loss_node1": hB["loss"]}
+    runs["FedSGD+Adam+ϕ(s)"] = hB
+
+    # C) FedAvg-style (aggregation='delta'), local S=3 steps, server Adam + ϕ(s)
+    trainer_C = AsyncParameterServerEqx(
+        model_init_fn=model_init,
+        aggregation="delta",
+        client={"local_epochs": 3, "lr": 1e-1, "batch": 128},
+        server_opt={"name": "adam", "lr": 3e-3},
+        delay_sampler=poisson_delay_sampler(2.0, cap=10),
+        staleness={"mode": "power", "alpha": 0.6},
+        compress={"name": "none"},
+        clip_norm=1.0,
+        key=jr.PRNGKey(2),
+        log_every=20,
+    )
+    hC = trainer_C.fit(parts, Xte, yte, max_time=1000, seed=2)
+    histories_loss["FedAvg(S=3)+Adam+ϕ(s)"] = {"loss_node1": hC["loss"]}
+    runs["FedAvg(S=3)+Adam+ϕ(s)"] = hC
+
+    # D) FedAvg + Adam + ϕ(s) + EF-Sign compression
+    trainer_D = AsyncParameterServerEqx(
+        model_init_fn=model_init,
+        aggregation="delta",
+        client={"local_epochs": 3, "lr": 1e-1, "batch": 128},
+        server_opt={"name": "adam", "lr": 3e-3},
+        delay_sampler=poisson_delay_sampler(2.0, cap=10),
+        staleness={"mode": "power", "alpha": 0.6},
+        compress={"name": "sign", "error_feedback": True},
+        clip_norm=1.0,
+        key=jr.PRNGKey(3),
+        log_every=20,
+    )
+    hD = trainer_D.fit(parts, Xte, yte, max_time=1000, seed=3)
+    histories_loss["FedAvg+Adam+ϕ(s)+SignEF"] = {"loss_node1": hD["loss"]}
+    runs["FedAvg+Adam+ϕ(s)+SignEF"] = hD
+
+    # plots
+    plot_global_loss_q3(
+        histories_loss,
+        title="Async PS — loss vs time",
+        save="figs_async/loss_vs_time.png",
+    )
+    plot_async_loss_vs_updates(
+        runs, title="Async PS — loss vs updates", save="figs_async/loss_vs_updates.png"
+    )
+    plot_staleness_hist(
+        {k: v["staleness"] for k, v in runs.items()},
+        save="figs_async/staleness_hist.png",
+    )
+    print("Saved figs_async/{loss_vs_time,loss_vs_updates,staleness_hist}.png")
+
+    # numeric summary
+    summary = summarize_histories(histories_loss)
+    print("\nNumeric summary (Async PS):")
+    print_publication_summary(summary, decimals=4)
+    latex = latex_table_from_summary(
+        summary,
+        decimals=3,
+        caption="Async PS variants (loss vs time).",
+        label="tab:async",
+    )
+    os.makedirs("tables", exist_ok=True)
     with open("tables/async_summary.tex", "w") as f:
         f.write(latex)
     print("Wrote tables/async_summary.tex")
