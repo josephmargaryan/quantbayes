@@ -1,4 +1,3 @@
-# quantbayes/stochax/distributed_training/mixing_policies.py
 from __future__ import annotations
 import math
 from dataclasses import dataclass
@@ -6,7 +5,6 @@ from typing import List, Any, Tuple
 import numpy as np
 import jax
 import jax.numpy as jnp
-import jax.random as jr
 
 from quantbayes.stochax.distributed_training.helpers import tree_mean, tree_mix
 
@@ -14,7 +12,7 @@ Pytree = Any
 Array = jnp.ndarray
 
 
-# ---------- small list-of-pytrees algebra ----------
+# ---------- small list-of-pytrees algebra (kept for back-compat) ----------
 def _plist_add(A: List[Pytree], B: List[Pytree]) -> List[Pytree]:
     return [jax.tree_util.tree_map(lambda x, y: x + y, a, b) for a, b in zip(A, B)]
 
@@ -59,7 +57,7 @@ def xi_from_interval(lam_min: float, lam_max: float) -> float:
 
 
 def _assert_symmetric_ds(W: Array, atol: float = 1e-6) -> None:
-    """Chebyshev guarantees require symmetric, row-stochastic W."""
+    """Guarantees used here require symmetric, row-stochastic W."""
     if not jnp.allclose(W, W.T, atol=atol):
         raise ValueError("Chebyshev requires symmetric W (W == W.T).")
     rs = jnp.sum(W, axis=1)
@@ -80,6 +78,10 @@ def chebyshev_mix(
     Degree-K Chebyshev mixing on the disagreement component with average preserved.
     Implements p_K(W) = T_K(Z) / T_K(ξ) on deviations, where Z is W normalized
     from [lam_min, lam_max] to [-1,1]; then adds the mean back.
+
+    Note: if Γ_t = (1/n) Σ ||θ_i - θ̄||^2, then a single linear mixing step obeys
+      Γ_{t+1/2} / Γ_t ≤ μ^2, where μ = max_{i≥2} |λ_i(W)| (SLEM). For Chebyshev, the
+      worst-case K-step ratio satisfies Γ_after / Γ_before ≤ 1 / T_K(ξ)^2.
     """
     K = int(max(1, K))
     width = float(lam_max - lam_min)
@@ -138,8 +140,8 @@ def disagreement_interval_from_L(L: jnp.ndarray, alpha: float) -> Tuple[float, f
       [1 - α λ_max(L), 1 - α λ_2(L)].
     """
     eigs = jnp.linalg.eigvalsh(L)  # sorted ascending
-    lam2 = float(eigs[1])
-    lammax = float(eigs[-1])
+    lam2 = float(eigs[1]) if eigs.shape[0] >= 2 else 0.0
+    lammax = float(eigs[-1]) if eigs.shape[0] >= 1 else 0.0
     lam_min = 1.0 - float(alpha) * lammax
     lam_max = 1.0 - float(alpha) * lam2
     return lam_min, lam_max
@@ -166,21 +168,63 @@ def K_from_rho_target_sq(xi: float, rho_target_sq: float) -> int:
 @dataclass
 class AdaptiveChebyController:
     """
-    Budgets Chebyshev contraction per communication phase (when mix_every or τ > 1).
-    Tracks the growth of Γ between mix events and picks the minimal K_t to meet the
-    target squared contraction over the *phase*.
+    Global-aware Chebyshev controller.
+
+    Targets a GLOBAL contraction on Γ at mix events, accounting for partial
+    participation via the heuristic decomposition:
+        E[ rho_global ] ≈ (1 - p) + p * rho_local,  with  p = active / total
+    where rho denotes the squared ratio Γ_after / Γ_before.
     """
 
-    rho_target_sq: float = 0.05  # desired Γ_after / Γ_before at mix events
+    rho_target_sq_global: float = (
+        0.20  # desired GLOBAL Γ_after / Γ_before at mix events
+    )
     K_max: int = 5
     last_post_gamma: float = 1.0  # Γ right after previous mix
     last_K: int = 1
 
-    def choose_K(self, xi: float, gamma_pre: float) -> int:
+    # ---- New: global-aware chooser
+    def choose_K_global(
+        self, xi: float, gamma_pre: float, active: int, total: int
+    ) -> int:
+        """
+        Choose K to meet a GLOBAL target on Γ, given only 'active' of 'total' nodes participate.
+        Uses E[rho_global] ≈ (1-p) + p * rho_local and budgets observed growth since last mix.
+        """
+        p = float(max(1, active)) / float(max(1, total))
+
+        # Growth since last mix (≥ 1.0)
         growth = float(gamma_pre / max(1e-20, self.last_post_gamma))
-        growth = float(np.clip(growth, 1.0, 1e6))  # at least 1
-        rho_budget = float(np.clip(self.rho_target_sq / growth, 1e-6, 0.99))
-        K_req = K_from_rho_target_sq(float(xi), rho_budget)
+        growth = float(np.clip(growth, 1.0, 1e9))
+
+        # Per-mix global budget, after accounting for growth
+        rho_goal_sq_global = float(
+            np.clip(self.rho_target_sq_global / growth, 1e-6, 0.999)
+        )
+
+        # Inactivity floor (cannot beat 1-p globally in a single event)
+        floor = 1.0 - p
+        if rho_goal_sq_global <= floor + 1e-12:
+            rho_local_req_sq = 1e-6  # saturate locally
+        else:
+            rho_local_req_sq = (rho_goal_sq_global - floor) / max(1e-6, p)
+            rho_local_req_sq = float(np.clip(rho_local_req_sq, 1e-6, 0.999))
+
+        K_req = K_from_rho_target_sq(float(xi), float(rho_local_req_sq))
+        return int(max(1, min(self.K_max, K_req)))
+
+    # ---- Legacy: per-mix local target (kept for back-compat)
+    def choose_K(self, xi: float, gamma_pre: float) -> int:
+        """
+        Legacy local-only budgeter: ignores participation; preserved for back-compat.
+        """
+        growth = float(gamma_pre / max(1e-20, self.last_post_gamma))
+        growth = float(np.clip(growth, 1.0, 1e6))
+        # Interpret stored target as "local" for legacy call-sites
+        rho_target_sq_local = float(
+            np.clip(self.rho_target_sq_global / growth, 1e-6, 0.999)
+        )
+        K_req = K_from_rho_target_sq(float(xi), rho_target_sq_local)
         return int(max(1, min(self.K_max, K_req)))
 
     def update_after_mix(self, hat_rho_sq: float, K_used: int, gamma_post: float):
@@ -207,6 +251,8 @@ def sample_active_clients(
     key: jax.Array, n_clients: int, p: float, *, ensure_nonempty: bool = True
 ) -> Tuple[List[int], jax.Array]:
     """Bernoulli(p) per client; optionally force at least one active."""
+    import jax.random as jr
+
     key, sub = jr.split(key)
     if p >= 1.0:
         return list(range(n_clients)), key

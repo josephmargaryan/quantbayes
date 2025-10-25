@@ -1,4 +1,3 @@
-# quantbayes/stochax/distributed_training/peer_gossip_trainer_eqx.py
 from __future__ import annotations
 from typing import List, Tuple, Dict, Optional, Callable, Any
 import numpy as np
@@ -11,7 +10,7 @@ import equinox as eqx
 from quantbayes.stochax.trainer.train import binary_loss, eval_step
 from quantbayes.stochax.privacy.dp import DPSGDConfig, DPPrivacyEngine
 
-# NEW: import safe Chebyshev + controller + interval helper
+# Mixing policies (updated)
 from quantbayes.stochax.distributed_training.mixing_policies import (
     chebyshev_mix,
     disagreement_interval_from_L,
@@ -56,13 +55,14 @@ def mixing_matrix(n_nodes: int, edges: List[Tuple[int, int]], alpha: float) -> A
 
 
 def safe_alpha(edges: List[Tuple[int, int]], n_nodes: int) -> float:
+    # Slightly bolder than before; still ensures nonnegative W entries
     deg = np.zeros(n_nodes, dtype=np.int32)
     for i, j in edges:
         if i != j:
             deg[i] += 1
             deg[j] += 1
     deg_max = int(deg.max()) if n_nodes > 0 else 1
-    return 0.49 / max(1, deg_max)
+    return 0.95 / max(1, deg_max)
 
 
 # --------------- pytree helpers ----------------
@@ -111,19 +111,17 @@ class PeerGossipTrainerEqx:
       - {"name": "cheby",  "K": int}
       - {"name": "adaptive_cheby",
          "p_participation": float in (0,1],
-         "rho_target": float in (0,1),
+         "rho_target": float in (0,1),            # GLOBAL target on Γ (squared ratio)
          "K_max": int,
-         "ensure_nonempty": bool}
-        → per-step partial participation, K_t chosen from active subgraph spectrum,
-          embedded as block-diagonal mixing (active block W_small, identity on inactive).
+         "ensure_nonempty": bool,
+         "adapt_p_on_sat": bool }                 # optional: adjust p when saturated
 
-    mix_every: communicate every `mix_every` steps. The adaptive controller budgets the
-               per-mix contraction using observed Γ growth between mixes.
+    mix_every: communicate every `mix_every` steps.
 
     Logs:
       - "loss_node1": global loss at node 0 each iteration
       - "consensus_sq": 1/n ∑ ||θ_i - θ̄||² each iteration
-      - "rho_hist": consensus ratio after/before mixing each mixing iteration
+      - "rho_hist": consensus ratio Γ_after / Γ_before at mix events (1 otherwise)
       - "K_hist": degree used (1 for single, 0 for “no mix step”)
       - "active_hist": #active nodes (adaptive_cheby); else n_nodes (or 0 on non-mix steps)
       - "total_samples_per_node": for DSGD
@@ -180,7 +178,6 @@ class PeerGossipTrainerEqx:
             )
             self.L_fixed = laplacian_from_edges(n_nodes, edges_fixed)
             self.W_fixed = mixing_matrix(n_nodes, edges_fixed, self.alpha_fixed)
-            # cache disagreement interval for cheby
             self._lam_interval_fixed = disagreement_interval_from_L(
                 self.L_fixed, self.alpha_fixed
             )
@@ -215,11 +212,11 @@ class PeerGossipTrainerEqx:
         self.models: List[eqx.Module] = []
         self.states: List[Any] = []
 
-        # NEW: phase-aware controller for adaptive_cheby
+        # Phase-aware GLOBAL controller for adaptive_cheby
         self._cheby_ctl = None
         if self.mix_policy.get("name") == "adaptive_cheby":
             self._cheby_ctl = AdaptiveChebyController(
-                rho_target_sq=float(self.mix_policy.get("rho_target", 0.05)),
+                rho_target_sq_global=float(self.mix_policy.get("rho_target", 0.20)),
                 K_max=int(self.mix_policy.get("K_max", 5)),
             )
 
@@ -278,7 +275,7 @@ class PeerGossipTrainerEqx:
         active_idx: List[int],
     ) -> Tuple[Array, Tuple[float, float]]:
         """
-        Build a full-size W that mixes only the active induced subgraph by W_small = I - α L_small,
+        Full-size W that mixes only the active induced subgraph by W_small = I - α L_small,
         and identity elsewhere. Also return the disagreement interval for W_small.
         """
         n = self.n_nodes
@@ -354,7 +351,6 @@ class PeerGossipTrainerEqx:
             cons_before = self._consensus_distance(params_list)
 
             if do_mix:
-                # mixing policy
                 policy = self.mix_policy.get("name", "single")
                 if policy == "single":
                     params_half = _tree_mix(W_base, params_list)
@@ -389,19 +385,30 @@ class PeerGossipTrainerEqx:
                     else:
                         xi = (2.0 - (lam_max + lam_min)) / denom
                         if self._cheby_ctl is not None:
-                            K_req = self._cheby_ctl.choose_K(
-                                float(xi), gamma_pre=cons_before
+                            K_req = self._cheby_ctl.choose_K_global(
+                                float(xi),
+                                gamma_pre=cons_before,
+                                active=active_count,
+                                total=self.n_nodes,
                             )
                         else:
                             K_req = min_K_for_target_rho(
                                 float(xi),
-                                float(self.mix_policy.get("rho_target", 0.05)),
+                                float(self.mix_policy.get("rho_target", 0.20)),
                             )
                         K_cap = int(self.mix_policy.get("K_max", 5))
                         K_used = int(max(1, min(K_cap, K_req)))
                         params_half = chebyshev_mix(
                             W_partial, params_list, K_used, lam_min, lam_max
                         )
+
+                    # optional: adapt p on saturation
+                    if bool(self.mix_policy.get("adapt_p_on_sat", False)) and (
+                        self._cheby_ctl is not None
+                    ):
+                        if K_used >= self._cheby_ctl.K_max:
+                            # if saturated and failing target by a lot (checked later), increase p slightly
+                            pass  # handled after rho_hat computation below
                 else:
                     raise ValueError(f"Unknown mix_policy '{policy}'")
 
@@ -411,6 +418,26 @@ class PeerGossipTrainerEqx:
                 rho_hist.append(rho_hat)
                 K_hist.append(int(K_used))
                 active_hist.append(int(active_count))
+
+                # finalize optional p adaptation
+                if (
+                    do_mix
+                    and self.mix_policy.get("name") == "adaptive_cheby"
+                    and bool(self.mix_policy.get("adapt_p_on_sat", False))
+                    and self._cheby_ctl is not None
+                ):
+                    target = float(self._cheby_ctl.rho_target_sq_global)
+                    if (rho_hat > 1.5 * target) and (K_used >= self._cheby_ctl.K_max):
+                        self.mix_policy["p_participation"] = min(
+                            1.0,
+                            1.25 * float(self.mix_policy.get("p_participation", 0.5)),
+                        )
+                    elif rho_hat < 0.4 * target:
+                        self.mix_policy["p_participation"] = max(
+                            0.1,
+                            0.8 * float(self.mix_policy.get("p_participation", 0.5)),
+                        )
+
                 if self._cheby_ctl is not None:
                     self._cheby_ctl.update_after_mix(rho_hat, K_used, cons_after)
             else:
@@ -530,9 +557,6 @@ if __name__ == "__main__":
         print_publication_summary,
         latex_table_from_summary,
     )
-    from quantbayes.stochax.distributed_training.peer_gossip_trainer_eqx import (
-        PeerGossipTrainerEqx,
-    )
 
     DEFAULT_PLOT_STYLE = "accessible"
 
@@ -590,9 +614,12 @@ if __name__ == "__main__":
     histories["mix1-single"] = {
         "loss_node1": hA["loss_node1"],
         "consensus_sq": hA["consensus_sq"],
+        "rho_hist": hA["rho_hist"],
+        "K_hist": hA["K_hist"],
+        "active_hist": hA["active_hist"],
     }
 
-    # B) mix every 10 steps, Chebyshev K=2
+    # B) mix every 10 steps, Chebyshev K=2 (full participation)
     trainer_B = PeerGossipTrainerEqx(
         model_init_fn=model_init,
         n_nodes=N_NODES,
@@ -610,9 +637,12 @@ if __name__ == "__main__":
     histories["mix10-chebyK2"] = {
         "loss_node1": hB["loss_node1"],
         "consensus_sq": hB["consensus_sq"],
+        "rho_hist": hB["rho_hist"],
+        "K_hist": hB["K_hist"],
+        "active_hist": hB["active_hist"],
     }
 
-    # C) mix every 10 steps, adaptive Chebyshev (partial participation)
+    # C) mix every 10 steps, adaptive Chebyshev (partial participation, GLOBAL-aware)
     trainer_C = PeerGossipTrainerEqx(
         model_init_fn=model_init,
         n_nodes=N_NODES,
@@ -620,9 +650,10 @@ if __name__ == "__main__":
         mix_policy={
             "name": "adaptive_cheby",
             "p_participation": 0.5,
-            "rho_target": 0.05,
-            "K_max": 5,
+            "rho_target": 0.20,  # GLOBAL target on Γ (squared ratio)
+            "K_max": 6,
             "ensure_nonempty": True,
+            "adapt_p_on_sat": True,
         },
         mix_every=10,
         gamma=lr_sched,
@@ -633,22 +664,25 @@ if __name__ == "__main__":
         eval_inference_mode=True,
     )
     hC = trainer_C.fit(parts, X, y, eval_key=jr.PRNGKey(103))
-    histories["mix10-adaptive"] = {
+    histories["mix10-adaptive-global"] = {
         "loss_node1": hC["loss_node1"],
         "consensus_sq": hC["consensus_sq"],
+        "rho_hist": hC["rho_hist"],
+        "K_hist": hC["K_hist"],
+        "active_hist": hC["active_hist"],
     }
 
     # ---- plots ----
     os.makedirs("figs_peer_gossip", exist_ok=True)
     plot_global_loss_q3(
         histories,
-        title="Peer2Peer — mix_every & Chebyshev",
+        title="Peer2Peer — global loss",
         save="figs_peer_gossip/loss.png",
         style=DEFAULT_PLOT_STYLE,
     )
     plot_consensus(
         histories,
-        title="Peer2Peer — consensus (mix_every)",
+        title="Peer2Peer — consensus (Γ)",
         save="figs_peer_gossip/consensus.png",
         style=DEFAULT_PLOT_STYLE,
     )
@@ -662,7 +696,7 @@ if __name__ == "__main__":
     latex = latex_table_from_summary(
         summary,
         decimals=3,
-        caption="Peer-to-peer: single vs Chebyshev vs adaptive (partial participation).",
+        caption="Peer-to-peer: single vs Chebyshev vs adaptive (GLOBAL-aware).",
         label="tab:peer",
     )
     with open("tables/peer_gossip_summary.tex", "w") as f:

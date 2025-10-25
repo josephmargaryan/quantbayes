@@ -1,4 +1,3 @@
-# quantbayes/stochax/distributed_training/local_gd_server_eqx.py
 from __future__ import annotations
 from typing import List, Tuple, Dict, Optional, Callable, Any
 import numpy as np
@@ -20,16 +19,16 @@ from quantbayes.stochax.distributed_training.helpers import (
     laplacian_from_edges,
 )
 
-# NEW: spectral star policies (safe Chebyshev + controller)
+# Updated spectral star policies
 from quantbayes.stochax.distributed_training.mixing_policies import (
     repeat_mix,
-    chebyshev_mix,  # SAFE wrapper (symmetry/DS + interval checks)
+    chebyshev_mix,
     disagreement_interval_from_L,
-    AdaptiveChebyController,  # NEW
+    AdaptiveChebyController,  # GLOBAL-aware
     min_K_for_target_rho,
     sample_active_clients,
     build_partial_star_W,
-    xi_from_interval,  # NEW (optional)
+    xi_from_interval,
 )
 
 Array = jnp.ndarray
@@ -39,7 +38,7 @@ BatchSchedule = Callable[[int, int, int], int]  # B = schedule(t, client_index, 
 
 # ---- small utilities ----
 def safe_alpha(edges: List[Tuple[int, int]], n_nodes: int) -> float:
-    """Conservative α < 1/deg_max, re-exported from HA4."""
+    """Conservative α ensuring nonnegative W entries, slightly bolder."""
     return _safe_alpha_ha4(edges, n_nodes)
 
 
@@ -105,8 +104,8 @@ class LocalGDServerEqx:
       - "single":   apply W_A once
       - "repeat":   apply W_A K times (self.star_policy["K"])
       - "cheby":    apply degree-K Chebyshev p_K(W_A) using the full-star spectrum
-      - "adaptive": per-star partial participation + phase-aware adaptive Chebyshev
-                    (uses AdaptiveChebyController to budget contraction when τ>1)
+      - "adaptive": per-star partial participation + GLOBAL-aware adaptive Chebyshev
+                    (uses AdaptiveChebyController to budget *global* contraction when τ>1)
     """
 
     def __init__(
@@ -177,19 +176,20 @@ class LocalGDServerEqx:
         self.star_policy: Dict[str, Any] = star_policy or {"name": "single"}
         if self.star_policy.get("name") == "adaptive":
             self.star_policy.setdefault("p_participation", 0.5)
-            self.star_policy.setdefault("rho_target", 0.05)
-            self.star_policy.setdefault("K_max", 5)
+            self.star_policy.setdefault("rho_target", 0.20)  # GLOBAL target on Γ
+            self.star_policy.setdefault("K_max", 6)
             self.star_policy.setdefault("ensure_nonempty", True)
+            self.star_policy.setdefault("adapt_p_on_sat", True)
 
-        # NEW: phase-aware controller (for τ > 1)
+        # GLOBAL-aware controller (for τ > 1)
         self._cheby_ctl = None
         if self.star_policy.get("name") == "adaptive":
             self._cheby_ctl = AdaptiveChebyController(
-                rho_target_sq=float(self.star_policy.get("rho_target", 0.05)),
-                K_max=int(self.star_policy.get("K_max", 5)),
+                rho_target_sq_global=float(self.star_policy.get("rho_target", 0.20)),
+                K_max=int(self.star_policy.get("K_max", 6)),
             )
 
-        # NEW: minibatch control
+        # Minibatch control
         self.batch_schedule = batch_schedule  # None => GD; else => DSGD
 
     # ---- helpers ----
@@ -230,11 +230,6 @@ class LocalGDServerEqx:
         self.states = states
 
     def _consensus_distance(self, params_list: List[Any], idxs: List[int]) -> float:
-        def _flatten_params_l2(pytree: Any) -> Array:
-            leaves = jax.tree_util.tree_leaves(pytree)
-            flat = [jnp.ravel(x) for x in leaves if x is not None]
-            return jnp.concatenate(flat) if flat else jnp.zeros((1,), dtype=jnp.float32)
-
         vecs = [_flatten_params_l2(params_list[i]) for i in idxs]
         stack = jnp.stack(vecs, axis=0)
         mean = jnp.mean(stack, axis=0, keepdims=True)
@@ -328,7 +323,7 @@ class LocalGDServerEqx:
                     active_clients = [self.client_ids[i] for i in active_local]
                     active_count = len(active_clients)
 
-                    if active_count >= 2:
+                    if active_count >= 1:  # >=1 client + server => 2 nodes total
                         # compute star interval cheaply (star of size 1+active_count)
                         edges_small = [(0, j + 1) for j in range(active_count)]
                         L_sub = laplacian_from_edges(1 + active_count, edges_small)
@@ -340,14 +335,19 @@ class LocalGDServerEqx:
                             self.n_total, self.server_id, active_clients, self.alpha_A
                         )
 
-                        # choose K using controller (phase-aware) or fallback
+                        # choose K using GLOBAL-aware controller or fallback
                         if self._cheby_ctl is not None:
-                            K_req = self._cheby_ctl.choose_K(xi, gamma_pre=cons_before)
+                            K_req = self._cheby_ctl.choose_K_global(
+                                xi,
+                                gamma_pre=cons_before,
+                                active=active_count + 1,
+                                total=self.n_total,  # include server
+                            )
                         else:
                             K_req = min_K_for_target_rho(
-                                xi, float(self.star_policy.get("rho_target", 0.05))
+                                xi, float(self.star_policy.get("rho_target", 0.20))
                             )
-                        K_cap = int(self.star_policy.get("K_max", 5))
+                        K_cap = int(self.star_policy.get("K_max", 6))
                         K_used = int(max(1, min(K_cap, K_req)))
                         params_half = chebyshev_mix(
                             W_A_act, params_list, K_used, lam_min, lam_max
@@ -366,6 +366,24 @@ class LocalGDServerEqx:
                 hist_star_rho.append(rho_hat)
                 hist_K.append(int(K_used))
                 hist_active.append(int(active_count))
+
+                # optional: adapt p if saturated and missing target by a lot
+                if (
+                    policy == "adaptive"
+                    and self._cheby_ctl is not None
+                    and bool(self.star_policy.get("adapt_p_on_sat", True))
+                ):
+                    target = float(self._cheby_ctl.rho_target_sq_global)
+                    if (rho_hat > 1.5 * target) and (K_used >= self._cheby_ctl.K_max):
+                        self.star_policy["p_participation"] = min(
+                            1.0,
+                            1.25 * float(self.star_policy.get("p_participation", 0.5)),
+                        )
+                    elif rho_hat < 0.4 * target:
+                        self.star_policy["p_participation"] = max(
+                            0.1,
+                            0.8 * float(self.star_policy.get("p_participation", 0.5)),
+                        )
                 if self._cheby_ctl is not None:
                     self._cheby_ctl.update_after_mix(rho_hat, K_used, cons_after)
             else:
@@ -511,9 +529,6 @@ if __name__ == "__main__":
         print_publication_summary,
         latex_table_from_summary,
     )
-    from quantbayes.stochax.distributed_training.local_gd_server_eqx import (
-        LocalGDServerEqx,
-    )
 
     DEFAULT_PLOT_STYLE = "accessible"
 
@@ -609,14 +624,15 @@ if __name__ == "__main__":
         star_policy={
             "name": "adaptive",
             "p_participation": 0.5,
-            "rho_target": 0.05,
-            "K_max": 5,
+            "rho_target": 0.20,  # GLOBAL target on Γ (squared ratio)
+            "K_max": 6,
             "ensure_nonempty": True,
+            "adapt_p_on_sat": True,
         },
         batch_schedule=None,
     )
     hC = trainer_C.fit(parts, X, y, eval_key=jr.PRNGKey(303), log=False)
-    histories["tau10-adaptive"] = hC
+    histories["tau10-adaptive-global"] = hC
 
     # ---- plots ----
     os.makedirs("figs_local_server", exist_ok=True)
@@ -642,9 +658,33 @@ if __name__ == "__main__":
     latex = latex_table_from_summary(
         summary,
         decimals=3,
-        caption="Server star rounds: single, Chebyshev, and adaptive.",
+        caption="Server star rounds: single, Chebyshev, and adaptive (GLOBAL-aware).",
         label="tab:server",
     )
     with open("tables/local_server_summary.tex", "w") as f:
         f.write(latex)
     print("Wrote tables/local_server_summary.tex")
+
+    # ---- communication budget (simple print) ----
+    def comm_units(
+        h: Dict[str, List[float]], include_server: bool = True
+    ) -> Dict[str, float]:
+        K = np.asarray(h.get("K_hist", []), dtype=float)
+        A = np.asarray(h.get("active_hist", []), dtype=float)  # active clients
+        if K.size == 0 or A.size == 0:
+            return {"sum_K": float(np.sum(K)), "sum_edge_ops": 0.0, "avg_active": 0.0}
+        # For star: edges used per K-step ≈ active clients (server is the hub)
+        edges_used = A
+        sum_edge_ops = float(np.sum(K * edges_used))
+        return {
+            "sum_K": float(np.sum(K)),
+            "sum_edge_ops": sum_edge_ops,
+            "avg_active": float(np.mean(A)),
+        }
+
+    print("\nCommunication budget (approx.):")
+    for name, h in histories.items():
+        c = comm_units(h)
+        print(
+            f"{name:>18s} | sum_K={c['sum_K']:.1f}  edge_ops≈{c['sum_edge_ops']:.1f}  avg_active={c['avg_active']:.2f}"
+        )

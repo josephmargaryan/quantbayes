@@ -278,14 +278,14 @@ def mixing_matrix(n_nodes: int, edges: List[Tuple[int, int]], alpha: float) -> A
 
 
 def safe_alpha(edges: List[Tuple[int, int]], n_nodes: int) -> float:
-    """Conservative α < 1/deg_max."""
+    """Conservative α < 1/deg_max (slightly bolder for faster mixing while keeping W ≥ 0)."""
     deg = np.zeros(n_nodes, dtype=np.int32)
     for i, j in edges:
         if i != j:
             deg[i] += 1
             deg[j] += 1
     deg_max = int(deg.max()) if n_nodes > 0 else 1
-    return 0.49 / max(1, deg_max)
+    return 0.95 / max(1, deg_max)
 
 
 def ring_edges(n: int) -> List[Tuple[int, int]]:
