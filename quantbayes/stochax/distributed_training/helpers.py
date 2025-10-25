@@ -51,6 +51,7 @@ __all__ = [
     "plot_link_replacement",
     "plot_async_loss_vs_updates",
     "plot_staleness_hist",
+    "plot_rho_vs_bound",
     "summarize_histories",
     "print_publication_summary",
     "_partition_params",
@@ -270,11 +271,26 @@ def laplacian_from_edges(n_nodes: int, edges: List[Tuple[int, int]]) -> Array:
     return jnp.array(L)
 
 
-def mixing_matrix(n_nodes: int, edges: List[Tuple[int, int]], alpha: float) -> Array:
-    """Distributed gossip matrix W = I - α L. Row-stochastic when α < 1/deg_max."""
+def mixing_matrix(
+    n_nodes: int,
+    edges: List[Tuple[int, int]],
+    alpha: float,
+    *,
+    lazy: bool = False,
+) -> Array:
+    """
+    Row-stochastic, symmetric DS gossip matrix W = I - αL (undirected).
+    If lazy=True, returns 0.5*(I+W) which keeps DS and pushes spectrum into [0,1].
+    """
     L = laplacian_from_edges(n_nodes, edges)
     I = jnp.eye(n_nodes, dtype=jnp.float32)
-    return I - float(alpha) * L
+    W = I - float(alpha) * L
+    if lazy:
+        W = 0.5 * (I + W)
+    rs = jnp.sum(W, axis=1)
+    assert jnp.allclose(W, W.T, atol=1e-6), "W must be symmetric (undirected)."
+    assert jnp.allclose(rs, jnp.ones_like(rs), atol=1e-6), "W must be row-stochastic."
+    return W
 
 
 def safe_alpha(edges: List[Tuple[int, int]], n_nodes: int) -> float:
@@ -697,6 +713,34 @@ def plot_staleness_hist(
     ax.legend()
     ax.grid(True, linestyle=":", linewidth=0.7, alpha=0.6)
     plt.tight_layout()
+    if save:
+        plt.savefig(save, dpi=240)
+    plt.show()
+
+
+def plot_rho_vs_bound(
+    rho_hist, xi: float, K: int, *, title="Per-mix contraction", save=None
+):
+    import matplotlib.pyplot as plt, math
+
+    def T(K, x):
+        if x > 1.0:
+            return math.cosh(K * math.acosh(x))
+        t0, t1 = 1.0, x
+        for _ in range(2, K + 1):
+            t0, t1 = t1, 2 * x * t1 - t0
+        return t1
+
+    bound = 1.0 / max(1e-20, T(K, float(xi))) ** 2
+    fig, ax = plt.subplots(figsize=(7.2, 4.0))
+    ax.plot(rho_hist, label=r"$\hat\rho_t$", linewidth=2)
+    ax.axhline(bound, linestyle="--", label=rf"bound $1/T_K(\xi)^2$ (K={K})")
+    ax.set_yscale("log")
+    ax.set_xlabel("mix events")
+    ax.set_ylabel(r"contraction $\Gamma_{t+1/2}/\Gamma_t$")
+    ax.set_title(title)
+    ax.grid(True, which="both", linestyle=":", linewidth=0.7, alpha=0.6)
+    ax.legend()
     if save:
         plt.savefig(save, dpi=240)
     plt.show()

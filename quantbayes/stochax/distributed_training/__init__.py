@@ -7,17 +7,12 @@ from .fedavg import FederatedTrainer
 # Decentralized (primal–dual family)
 from .decentralized import DecentralizedTrainer
 from .augmented_decentralized import AugmentedDecentralizedTrainer
-from .mixing_policies import repeat_mix, chebyshev_mix, disagreement_interval_from_L
-
-from .peer_gossip_trainer_eqx import PeerGossipTrainerEqx
 
 # Switching topologies DGD/DSGD
 from .dgd_trainer_switching_eqx import DGDTrainerSwitchingEqx
 
-# Periodic Local-GD + one-step P2P DGD gossip (assignment-style)
-from .local_gd_server_eqx import (
-    LocalGDServerEqx,
-)
+from .p2p_theory_trainer_eqx import P2PTheoryTrainerEqx
+from .star_theory_trainer_eqx import StarTheoryTrainerEqx
 
 # Asynchronous Parameter Server
 from .async_ps_trainer_eqx import AsyncParameterServerEqx
@@ -28,30 +23,8 @@ __all__ = [
     "FederatedTrainer",
     "DecentralizedTrainer",
     "AugmentedDecentralizedTrainer",
-    "DGDTrainerEqx",
-    "DSGDTrainerEqx",
-    "PeerGossipTrainerEqx",
     "DGDTrainerSwitchingEqx",
-    "LocalGDServerEqx",
     "AsyncParameterServerEqx",
-    # DGD helpers + plots
-    "centralized_gd_eqx",
-    "plot_global_loss_q3",
-    "plot_consensus_q3",
-    "plot_q4_cases",
-    "plot_link_replacement",
-    "dgd_safe_alpha",
-    # DSGD helpers + plots
-    "make_batch_schedule_powerlaw",
-    "make_batch_schedule_piecewise",
-    "plot_dsgd_global_losses",
-    "plot_consensus",
-    "safe_alpha",
-    # Local-GD helpers + plots
-    "make_star_with_server_edges",
-    "make_mixing_with_per_node_alphas",
-    "plot_server_loss",
-    "plot_consensus_localgd",
-    "make_constant_lr",
-    "make_polynomial_decay",
+    "P2PTheoryTrainerEqx",
+    "StarTheoryTrainerEqx",
 ]
