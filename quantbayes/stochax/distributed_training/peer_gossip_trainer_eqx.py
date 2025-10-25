@@ -234,11 +234,7 @@ class PeerGossipTrainerEqx:
     def _loss_with_reg(self, m, s, xb, yb, k):
         base, new_s = self.loss_fn(m, s, xb, yb, k)
         if self.lam_l2 > 0.0:
-            base = base + self.lam_l2 * weights_only_l2_penalty(
-                m, lam=self.lam_l2
-            ) / max(
-                self.lam_l2, 1e-12
-            )  # reuse helper signature
+            base = base + weights_only_l2_penalty(m, lam=self.lam_l2)
         return base, new_s
 
     def _sample_active_nodes(
@@ -695,9 +691,7 @@ class PeerGossipTrainerEqx:
         def loss(m, s, xb, yb, k):
             base, new_s = self.loss_fn(m, s, xb, yb, k)
             if self.lam_l2 > 0.0:
-                base = base + self.lam_l2 * weights_only_l2_penalty(
-                    m, lam=self.lam_l2
-                ) / max(self.lam_l2, 1e-12)
+                base = base + weights_only_l2_penalty(m, lam=self.lam_l2)
             return base, new_s
 
         if self._dp_engine is None:
