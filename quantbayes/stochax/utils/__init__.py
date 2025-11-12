@@ -1,0 +1,92 @@
+from .bayesianize import bayesianize, prior_fn
+from .viz import (
+    analyze_pre_activations,
+    get_block_fft_full_for_given_params,
+    get_fft_full_for_given_params,
+    visualize_block_circulant_layer,
+    visualize_circulant_layer,
+    visualize_deterministic_block_fft,
+    visualize_deterministic_fft,
+)
+from .w_init import (
+    apply_custom_initialization,
+    he_init,
+    orthogonal_init,
+    uniform_init,
+    xavier_init,
+)
+from .vision_utils import (
+    EMA,
+    init_ema,
+    update_ema,
+    swap_ema_params,
+    topk_accuracy,
+    classification_confusion_matrix,
+    classification_report_from_cm,
+    segmentation_confusion_matrix,
+    iou_from_cm,
+    dice_from_cm,
+    boundary_f1,
+    expected_calibration_error,
+    brier_score,
+)
+from .optim_util import OptimizerConfig, DecayMaskConfig, LabelConfig, build_optimizer
+
+from .spectral_penalty_tx import (
+    add_spectral_penalty_transform,
+    make_lambda_spec_schedule,
+    make_soft_barrier,
+    SpecPenRecorder,
+)
+from .research_diagnostics import (
+    compute_diagnostics,
+    pretty_print_diagnostics,
+    plot_margin_distribution,
+    compute_and_save_diagnostics,
+    load_diagnostics_npz,
+)
+from .lip_upper import make_lipschitz_upper_fn
+
+__all__ = [
+    "bayesianize",
+    "prior_fn",
+    "xavier_init",
+    "he_init",
+    "uniform_init",
+    "orthogonal_init",
+    "apply_custom_initialization",
+    "get_fft_full_for_given_params",
+    "get_block_fft_full_for_given_params",
+    "visualize_circulant_layer",
+    "visualize_block_circulant_layer",
+    "analyze_pre_activations",
+    "visualize_deterministic_fft",
+    "visualize_deterministic_block_fft",
+    "topk_accuracy",
+    "classification_confusion_matrix",
+    "classification_report_from_cm",
+    "segmentation_confusion_matrix",
+    "iou_from_cm",
+    "dice_from_cm",
+    "boundary_f1",
+    "EMA",
+    "init_ema",
+    "update_ema",
+    "swap_ema_params",
+    "OptimizerConfig",
+    "DecayMaskConfig",
+    "LabelConfig",
+    "build_optimizer",
+    "expected_calibration_error",
+    "brier_score",
+    "add_spectral_penalty_transform",
+    "make_lambda_spec_schedule",
+    "make_soft_barrier",
+    "SpecPenRecorder",
+    "compute_diagnostics",
+    "pretty_print_diagnostics",
+    "plot_margin_distribution",
+    "make_lipschitz_upper_fn",
+    "compute_and_save_diagnostics",
+    "load_diagnostics_npz",
+]
