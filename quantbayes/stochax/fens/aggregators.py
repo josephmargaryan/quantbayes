@@ -79,8 +79,12 @@ class MLPConcatAgg_SN(eqx.Module):
         self.n_classes = int(n_classes)
         self.target = target
         self.hidden = int(hidden)
-        self.l1 = eqx.nn.Linear(
-            self.n_clients * self.n_classes, self.hidden, key=k1, use_bias=bias
+        self.l1 = SpectralNorm(
+            eqx.nn.Linear(
+                self.n_clients * self.n_classes, self.hidden, key=k1, use_bias=bias
+            ),
+            target=self.target,
+            mode="force",
         )
         self.l2 = SpectralNorm(
             eqx.nn.Linear(self.hidden, self.n_classes, key=k2, use_bias=bias),

@@ -91,6 +91,8 @@ class Config:
 
     # aggregator
     agg_name: str = "mlp"  # "mlp" | "per_client_class" | "linear" | "deepset"
+    # "mlp_sn"
+    target: float = 1.0
     agg_hidden: int = 128
 
     # FENS phase-2 (FL)
@@ -337,6 +339,7 @@ def main(cfg: Config):
             n_classes=K,
             key=k,
             hidden=cfg.agg_hidden,
+            target=cfg.target,
         )
 
     dp_cfg = (

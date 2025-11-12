@@ -117,7 +117,9 @@ class Config:
     # Aggregator
     aggregator: str = (
         "deepset_tm"  # "mean"|"cwtm"|"cwmed"|"linear"|"deepset"|"deepset_tm"
+        # "deepset_tm_sp"|"deepset_sn"
     )
+    target: float = 1.0
     deepset_hidden: int = 128
 
     # Aggregator training budget
@@ -333,11 +335,17 @@ def main(cfg: Config):
 
     # 7) Build aggregator
     k_model = jr.PRNGKey(42)
-    if cfg.aggregator == "deepset_tm":
-        base = make_aggregator(
-            "deepset", n_clients=n_clients, K=K, key=k_model, hidden=cfg.deepset_hidden
+    if cfg.aggregator in ("deepset_tm", "deepset_tm_sn"):
+        base_name = "deepset_sn" if cfg.aggregator.endswith("_sn") else "deepset"
+        agg_for_training = make_aggregator(
+            base_name,
+            n_clients=n_clients,
+            K=K,
+            key=k_model,
+            hidden=cfg.deepset_hidden,
+            target=cfg.target,  # used only for *_sn
+            f=f_eff,  # harmless for non-CWTM variants
         )
-        agg_for_training = base
         wrap_cwtm = True
     else:
         agg_for_training = make_aggregator(
@@ -347,6 +355,7 @@ def main(cfg: Config):
             key=k_model,
             hidden=cfg.deepset_hidden,
             f=f_eff,
+            target=cfg.target,  # harmless unless *_sn
         )
         wrap_cwtm = False
 
@@ -355,10 +364,12 @@ def main(cfg: Config):
     if TRAIN_MODE.lower() == "robust" and cfg.aggregator in {
         "deepset",
         "deepset_tm",
+        "deepset_sn",
+        "deepset_tm_sn",
         "linear",
     }:
         print("[train] robust (adversarial) aggregator training (RERM)")
-        best_agg, hist = train_aggregator_robust(
+        best_agg, hist = train_aggregator_robust(  # unchanged args...
             Ps_tr,
             y_srv_tr,
             Ps_val,
@@ -413,7 +424,6 @@ def main(cfg: Config):
             bound_recorder=agg_logger if BOUND_LOG_EVERY else None,
             ckpt_dir=AGG_CKPT_DIR,
         )
-
     agg_eval = DeepSetTM(best_agg, f=f_eff) if wrap_cwtm else best_agg
 
     # 9) Eval (subset option)
