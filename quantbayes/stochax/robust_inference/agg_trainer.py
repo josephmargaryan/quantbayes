@@ -116,18 +116,9 @@ def make_adv_probit_loss(
         V0 = jr.normal(k_v, shape=(B, slots, K))
 
         # loss definitions
-        if use_lmt_logits:
-
-            def loss_on_P(Pi: Array, yi: jnp.ndarray) -> Array:
-                z, _ = model(Pi, None, None)
-                z = _maybe_lmt_adjust(model, None, z, yi)
-                return -jnp.log(jax.nn.softmax(z)[yi] + 1e-12)
-
-        else:
-
-            def loss_on_P(Pi: Array, yi: jnp.ndarray) -> Array:
-                z, _ = model(Pi, None, None)
-                return -jnp.log(jax.nn.softmax(z)[yi] + 1e-12)
+        def loss_on_P(Pi: Array, yi: jnp.ndarray) -> Array:
+            z, _ = model(Pi, None, None)
+            return -jnp.log(jax.nn.softmax(z)[yi] + 1e-12)
 
         def loss_fn_batch(P_batch: Array) -> Array:
             return jnp.mean(jax.vmap(loss_on_P)(P_batch, y.astype(jnp.int32)))

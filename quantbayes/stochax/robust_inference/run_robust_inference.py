@@ -116,8 +116,8 @@ class Config:
 
     # Aggregator
     aggregator: str = (
-        "deepset_sn"  # "mean"|"cwtm"|"cwmed"|"linear"|"deepset"|"deepset_cwtm"
-        # "deepset_cwtm_sn"|"deepset_sn"
+        "deepset_tm"  # "mean"|"cwtm"|"cwmed"|"linear"|"deepset"|"deepset_cwtm"
+        # "deepset_cwtm_sn"|"deepset_sn"|"deepset_tm"|"deepset_tm_sn"
     )
     target: float = 1.0
     deepset_hidden: int = 128
@@ -140,7 +140,7 @@ class Config:
     eval_seed: int = 1
 
     # Viz
-    viz_sample_for_cert: int = 4000
+    # viz_sample_for_cert: int = 4000
 
 
 # ---------------------------- Plot helpers ---------------------------- #
