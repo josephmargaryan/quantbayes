@@ -90,7 +90,9 @@ class Config:
     dataset: str = "synthetic"  # "synthetic" | "mnist" | "cifar-10" | "cifar-100"
 
     # aggregator
-    agg_name: str = "mlp"  # "mlp" | "per_client_class" | "linear" | "deepset"
+    agg_name: str = (
+        "mlp"  # "mlp" | "per_client_class" | "linear" | "deepset" | "mlp_sn"
+    )
     # "mlp_sn"
     target: float = 1.0
     agg_hidden: int = 128

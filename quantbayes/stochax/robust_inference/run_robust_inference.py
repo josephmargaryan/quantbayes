@@ -116,8 +116,8 @@ class Config:
 
     # Aggregator
     aggregator: str = (
-        "deepset_tm"  # "mean"|"cwtm"|"cwmed"|"linear"|"deepset"|"deepset_tm"
-        # "deepset_tm_sp"|"deepset_sn"
+        "deepset_sn"  # "mean"|"cwtm"|"cwmed"|"linear"|"deepset"|"deepset_cwtm"
+        # "deepset_cwtm_sn"|"deepset_sn"
     )
     target: float = 1.0
     deepset_hidden: int = 128

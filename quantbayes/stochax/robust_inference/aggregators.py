@@ -151,6 +151,8 @@ class DeepSetAgg_SN(eqx.Module):
       ρ: K→d→d applied per client, mean pool over clients, then μ: d→d→K.
     """
 
+    # You can leave these type hints as eqx.nn.Linear if you like;
+    # at runtime they will actually hold SpectralNorm-wrapped linears.
     rho1: eqx.nn.Linear
     rho2: eqx.nn.Linear
     mu1: eqx.nn.Linear
@@ -188,17 +190,26 @@ class DeepSetAgg_SN(eqx.Module):
         self.d = int(hidden)
 
     # ---- pieces exposed for inference-time CWTM composition ----
+    # Keep the signature EXACTLY like the non-SN version so DeepSetTM can vmap it.
+    # Internally, we still call the SpectralNorm-wrapped layers with a dummy state.
     def encode_rows(self, p_row: Array) -> Array:
-        h = jax.nn.relu(self.rho1(p_row))
-        h = jax.nn.relu(self.rho2(h))
+        # SpectralNorm.__call__(x, *, state) -> (y, state)
+        h, _ = self.rho1(p_row, state=None)
+        h = jax.nn.relu(h)
+        h, _ = self.rho2(h, state=None)
+        h = jax.nn.relu(h)
         return h  # (d,)
 
     def decode_pool(self, hbar: Array) -> Array:
-        t = jax.nn.relu(self.mu1(hbar))
-        return self.mu2(t)  # (K,)
+        t, _ = self.mu1(hbar, state=None)
+        t = jax.nn.relu(t)
+        logits, _ = self.mu2(t, state=None)
+        return logits  # (K,)
 
     # ---- standard forward (DeepSet with mean pooling) ----
     def __call__(self, x: Array, key: Optional[PRNG], state: Any):
+        # This still matches the non-SN version structurally:
+        # same arguments, same return type (logits, state).
         H = jax.vmap(self.encode_rows, in_axes=0)(x)  # (n, d)
         hbar = jnp.mean(H, axis=0)  # (d,)
         logits = self.decode_pool(hbar)  # (K,)
@@ -294,9 +305,12 @@ class DeepSetCWTMAgg_SN(eqx.Module):
         self.d = int(hidden)
         self.f = int(f)
 
+    # Stateless helper, like the non-SN version; used with vmap.
     def _enc_one(self, p_row: Array) -> Array:
-        h = jax.nn.relu(self.rho1(p_row))
-        h = jax.nn.relu(self.rho2(h))
+        h, _ = self.rho1(p_row, state=None)
+        h = jax.nn.relu(h)
+        h, _ = self.rho2(h, state=None)
+        h = jax.nn.relu(h)
         return h
 
     def __call__(self, x: Array, key: Optional[PRNG], state: Any):
@@ -304,8 +318,11 @@ class DeepSetCWTMAgg_SN(eqx.Module):
         assert 2 * self.f < n, f"CWTM requires 2f < n; got f={self.f}, n={n}"
         H = jax.vmap(self._enc_one, in_axes=0)(x)  # (n, d)
         hbar = _cwtm_axis0(H, self.f)  # (d,)
-        t = jax.nn.relu(self.mu1(hbar))
-        logits = self.mu2(t)  # (K,)
+
+        t, _ = self.mu1(hbar, state=None)
+        t = jax.nn.relu(t)
+        logits, _ = self.mu2(t, state=None)  # (K,)
+
         return logits, state
 
 

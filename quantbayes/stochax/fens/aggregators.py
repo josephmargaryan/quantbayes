@@ -94,8 +94,9 @@ class MLPConcatAgg_SN(eqx.Module):
 
     def __call__(self, x: Array, key: Optional[PRNG], state: None):
         v = jnp.reshape(x, (self.n_clients * self.n_classes,))
-        h = jax.nn.relu(self.l1(v))
-        logits = self.l2(h)
+        h, state = self.l1(v, state=state)
+        h = jax.nn.relu(h)
+        logits, state = self.l2(h, state=state)
         return logits, state
 
 
