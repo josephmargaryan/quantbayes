@@ -412,6 +412,279 @@ def make_lmt_binary_loss(
     return loss_fn
 
 
+def _project_linf_ball(
+    x_adv: Array,
+    x_orig: Array,
+    eps: float,
+    clip_min: float,
+    clip_max: float,
+) -> Array:
+    """
+    Project x_adv back to the intersection of:
+      • L∞ ball B_eps(x_orig)
+      • box [clip_min, clip_max]
+    """
+    x_dtype = x_orig.dtype
+    eps_arr = jnp.asarray(eps, dtype=x_dtype)
+    clip_min_arr = jnp.asarray(clip_min, dtype=x_dtype)
+    clip_max_arr = jnp.asarray(clip_max, dtype=x_dtype)
+
+    # First clamp to valid data range
+    x_adv = jnp.clip(x_adv, clip_min_arr, clip_max_arr)
+
+    # Then clamp the perturbation in L∞
+    lower = jnp.maximum(x_orig - eps_arr, clip_min_arr)
+    upper = jnp.minimum(x_orig + eps_arr, clip_max_arr)
+    x_adv = jnp.clip(x_adv, lower, upper)
+    return x_adv
+
+
+def make_adversarial_loss(
+    base_loss_fn: Callable[
+        [Any, Any, Array, Array, PRNGKeyArray],
+        Tuple[jnp.ndarray, Any],
+    ],
+    *,
+    attack: Literal["fgsm", "pgd"] = "pgd",
+    eps: float = 8.0 / 255.0,
+    step_size: Optional[float] = None,
+    num_steps: int = 7,
+    random_start: bool = True,
+    clean_weight: float = 0.0,
+    adv_weight: float = 1.0,
+    clip_min: float = 0.0,
+    clip_max: float = 1.0,
+    detach_adv: bool = True,
+    freeze_bn_for_attack: bool = True,
+) -> Callable[
+    [Any, Any, Array, Array, PRNGKeyArray],
+    Tuple[jnp.ndarray, Any],
+]:
+    """
+    Wrap an existing loss_fn(model, state, x, y, key) with FGSM/PGD adversarial training.
+
+    Parameters
+    ----------
+    base_loss_fn
+        Your existing loss function, e.g. `multiclass_loss` or `binary_loss`.
+        Signature: (model, state, x, y, key) -> (loss_scalar, new_state)
+
+    attack
+        "fgsm" : single-step L∞ attack (Fast Gradient Sign Method).
+        "pgd"  : multi-step L∞ PGD with projection and optional random start.
+
+    eps
+        Radius of the L∞ ball (in data units, e.g. ~8/255 for 0–1 images).
+
+    step_size
+        Step-size for PGD. If None, defaults to eps / max(num_steps, 1).
+
+    num_steps
+        Number of PGD steps. If attack=="fgsm", this is ignored.
+
+    random_start
+        If True (PGD only), start from x + U(-eps, eps) before iterating.
+
+    clean_weight, adv_weight
+        Weights for natural vs adversarial loss.
+        Internally normalized, so (0.0, 1.0) = adv-only, (1.0, 1.0) = 50/50.
+
+    clip_min, clip_max
+        Data range used to clamp adversarial examples.
+
+    detach_adv
+        If True, stop_gradient on x_adv before computing the outer loss.
+        This avoids double backprop (no grad through the attack itself).
+
+    freeze_bn_for_attack
+        If True, attack is computed with `eqx.nn.inference_mode(model)`, so BN
+        and dropout are “frozen” during PGD/FGSM. BN stats are updated only
+        from the clean forward.
+
+    Returns
+    -------
+    adv_loss_fn
+        A new loss_fn with the same signature, suitable for passing into `train`.
+    """
+    if step_size is None:
+        step_size = eps / max(num_steps, 1)
+
+    if num_steps < 1 and attack == "pgd":
+        raise ValueError("PGD requires num_steps >= 1")
+
+    cw = float(clean_weight)
+    aw = float(adv_weight)
+    if cw < 0.0 or aw < 0.0:
+        raise ValueError("clean_weight and adv_weight must be non-negative")
+    if cw + aw == 0.0:
+        raise ValueError("clean_weight + adv_weight must be > 0")
+    norm = cw + aw
+    cw /= norm
+    aw /= norm
+
+    step_size_f = float(step_size)
+    eps_f = float(eps)
+
+    def adv_loss_fn(
+        model: Any,
+        state: Any,
+        x: Array,
+        y: Array,
+        key: PRNGKeyArray,
+    ) -> Tuple[jnp.ndarray, Any]:
+        """
+        # PGD-7 with 8/255 radius, 2/255 step, 50% clean / 50% adv loss
+        adv_loss = make_adversarial_loss(
+            multiclass_loss,
+            attack="pgd",
+            eps=8.0 / 255.0,
+            step_size=2.0 / 255.0,
+            num_steps=7,
+            random_start=True,
+            clean_weight=1.0,
+            adv_weight=1.0,   # 50/50 once normalized
+            clip_min=0.0,
+            clip_max=1.0,
+            detach_adv=True,
+            freeze_bn_for_attack=True,
+        )
+
+        best_model, best_state, tr_loss, va_loss = train(
+            model,
+            state,
+            opt_state,
+            optimizer,
+            adv_loss,              # <<< just swap this in
+            X_train,
+            y_train,
+            X_val,
+            y_val,
+            batch_size=batch_size,
+            num_epochs=num_epochs,
+            patience=patience,
+            key=train_key,
+            augment_fn=augment_fn,
+            # all your usual penalties and Lipschitz logging still work
+            lambda_spec=lambda_spec,
+            lambda_frob=lambda_frob,
+            lambda_specnorm=lambda_specnorm,
+            lambda_sob_jac=lambda_sob_jac,
+            lambda_sob_kernel=lambda_sob_kernel,
+            lambda_liplog=lambda_liplog,
+            sob_jac_apply=sob_jac_apply,
+            sob_jac_samples=sob_jac_samples,
+            log_global_bound_every=log_global_bound_every,
+            bound_conv_mode="min_tn_circ_embed",
+            bound_tn_iters=8,
+            bound_input_shape=(H, W),
+            bound_recorder=brec,
+            ckpt_path=CKPT,
+            checkpoint_interval=1,
+        )
+
+        #FGSM training (fast adversarial)
+        adv_loss_fgsm = make_adversarial_loss(
+            multiclass_loss,
+            attack="fgsm",
+            eps=8.0 / 255.0,
+            clean_weight=1.0,
+            adv_weight=1.0,
+        )
+        # then call train(...) with loss_fn=adv_loss_fgsm
+        """
+        # 1) Model to use inside the attack (optionally in inference mode)
+        attack_model = (
+            eqx.nn.inference_mode(model, value=True) if freeze_bn_for_attack else model
+        )
+
+        # Split RNG: attack, clean, adversarial
+        key_attack, key_clean, key_adv = jr.split(key, 3)
+
+        # Helper: loss as a function of x, for gradient wrt input
+        def loss_wrt_x(x_in: Array, k: PRNGKeyArray) -> jnp.ndarray:
+            loss, _ = base_loss_fn(attack_model, state, x_in, y, k)
+            return loss
+
+        # 2) Build adversarial examples (L∞-FGSM or L∞-PGD)
+        if eps_f <= 0.0:
+            # No perturbation requested → pure clean loss
+            x_adv = x
+        else:
+            if attack == "fgsm":
+                # Single-step FGSM
+                grad_x = jax.grad(lambda z: loss_wrt_x(z, key_attack))(x)
+                step = eps_f * jnp.sign(grad_x)
+                x_adv = _project_linf_ball(
+                    x + step,
+                    x_orig=x,
+                    eps=eps_f,
+                    clip_min=clip_min,
+                    clip_max=clip_max,
+                )
+            elif attack == "pgd":
+                # Random start in L∞ ball (optional)
+                if random_start:
+                    noise = jr.uniform(
+                        key_attack,
+                        shape=x.shape,
+                        minval=-eps_f,
+                        maxval=eps_f,
+                        dtype=x.dtype,
+                    )
+                    x_adv0 = _project_linf_ball(
+                        x + noise,
+                        x_orig=x,
+                        eps=eps_f,
+                        clip_min=clip_min,
+                        clip_max=clip_max,
+                    )
+                else:
+                    x_adv0 = x
+
+                step_size_arr = jnp.asarray(step_size_f, dtype=x.dtype)
+
+                def pgd_body(i, x_adv_curr):
+                    # Fold in i so each step gets a different RNG without
+                    # threading the key through the loop state.
+                    step_key = jr.fold_in(key_attack, int(i))
+
+                    grad_x = jax.grad(lambda z: loss_wrt_x(z, step_key))(x_adv_curr)
+                    x_adv_next = x_adv_curr + step_size_arr * jnp.sign(grad_x)
+                    x_adv_next = _project_linf_ball(
+                        x_adv_next,
+                        x_orig=x,
+                        eps=eps_f,
+                        clip_min=clip_min,
+                        clip_max=clip_max,
+                    )
+                    return x_adv_next
+
+                x_adv = jax.lax.fori_loop(0, num_steps, pgd_body, x_adv0)
+            else:
+                raise ValueError(
+                    f"Unknown attack kind '{attack}' (expected 'fgsm' or 'pgd')."
+                )
+
+            if detach_adv:
+                # Critical: prevent gradients w.r.t. params from flowing
+                # through the PGD/FGSM construction graph.
+                x_adv = jax.lax.stop_gradient(x_adv)
+
+        # 3) Compute clean + adversarial loss using the *training* model
+        #    (BN stats updated on clean data only; adv_loss uses same state).
+        clean_loss, new_state = base_loss_fn(model, state, x, y, key_clean)
+
+        if eps_f <= 0.0 or aw == 0.0:
+            total_loss = clean_loss
+        else:
+            adv_loss, _ = base_loss_fn(model, state, x_adv, y, key_adv)
+            total_loss = cw * clean_loss + aw * adv_loss
+
+        return total_loss, new_state
+
+    return adv_loss_fn
+
+
 _NORM_TYPES: Tuple[type, ...] = tuple(
     t
     for t in (

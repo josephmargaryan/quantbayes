@@ -45,22 +45,34 @@ class Linear:
         self.name = name
         self.weight_prior_fn = weight_prior_fn
         self.bias_prior_fn = bias_prior_fn
+        self._last_w = None
 
     def __call__(self, X: jnp.ndarray) -> jnp.ndarray:
-        """
-        Performs the linear transformation on the input.
-
-        :param X: jnp.ndarray
-            Input array of shape `(batch_size, in_features)`.
-        :returns: jnp.ndarray
-            Output array of shape `(batch_size, out_features)`.
-        """
         w = numpyro.sample(
             f"{self.name}_w",
             self.weight_prior_fn([self.in_features, self.out_features]),
         )
         b = numpyro.sample(f"{self.name}_b", self.bias_prior_fn([self.out_features]))
+
+        # cache for Lipschitz inspection (no grad through cache)
+        self._last_w = jax.lax.stop_gradient(w)
+
         return jnp.dot(X, w) + b
+
+    def get_weight_matrix(self) -> jnp.ndarray:
+        if self._last_w is None:
+            raise RuntimeError("Call the layer once to build its weight matrix.")
+        return self._last_w
+
+    def __operator_norm_hint__(self) -> jnp.ndarray:
+        if self._last_w is None:
+            raise RuntimeError(
+                "Linear: call the layer once before querying __operator_norm_hint__()."
+            )
+        W = self._last_w
+        W2 = W.reshape(W.shape[0], -1)
+        s = jnp.linalg.svd(W2, compute_uv=False)[0]
+        return s.astype(W.dtype)
 
 
 # --- Unified Gaussian Process Layer ---

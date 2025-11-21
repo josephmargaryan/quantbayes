@@ -1,66 +1,11 @@
-# numpyro_sklearn.py
-# -----------------------------------------------------------------------------
-# A scikit-learn compatible wrapper around arbitrary NumPyro models.
-#
-# Features
-# --------
-# - Works with three inference backends:
-#       * MCMC (NUTS)
-#       * SVI (AutoGuide or custom guides)
-#       * SteinVI (with MixtureGuidePredictive, if available)
-# - sklearn API: __init__, fit, predict, predict_proba, get_params, set_params,
-#   __sklearn_is_fitted__, _more_tags, score (via mixins), plus posterior utilities.
-# - Regression and Classification frontends that pick sensible defaults.
-#
-# Usage (regression)
-# ------------------
-# def model(X, y=None):
-#     # build your NumPyro model; typically sample y with obs=y
-#     ...
-#
-# est = NumpyroRegressor(
-#     model=model,
-#     method="svi",
-#     guide=my_guide,                    # or None -> AutoNormal
-#     learning_rate=1e-2,
-#     num_steps=2000,
-#     n_posterior_samples=200,
-#     random_state=0,
-# )
-# est.fit(X_train, y_train)
-# y_pred = est.predict(X_test)          # posterior predictive mean of site='y'
-# post = est.predict_posterior(X_test)  # dict of predictive samples (default sites)
-#
-# Usage (classification)
-# ----------------------
-# def model(X, y=None):
-#     # produce either 'proba' site (probabilities) OR 'logits' site (pre-softmax)
-#     ...
-#
-# clf = NumpyroClassifier(
-#     model=model,
-#     method="nuts",
-#     logits_site="logits",              # or set proba_site="proba"
-#     n_posterior_samples=200,
-#     random_state=0,
-# )
-# clf.fit(X_train, y_train)
-# y_proba = clf.predict_proba(X_test)   # averaged posterior probabilities
-# y_hat = clf.predict(X_test)           # argmax over averaged probabilities
-#
-# Notes
-# -----
-# - Your `model` must accept (X, y=None) and may emit any named sites.
-# - For regression, we default to predictive site "y".
-# - For classification, set either `proba_site` or `logits_site`.
-#   If neither is set, we try to use "proba" or "logits" automatically.
-# - For SteinVI, numpyro.contrib.einstein must be available.
-# -----------------------------------------------------------------------------
+# quantbayes/bnn/wrapper/base.py
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Callable, Dict, Optional, Sequence, Tuple, Union
+
+import warnings
 
 import numpy as np
 import jax
@@ -74,15 +19,6 @@ from numpyro.optim import Adam, Adagrad
 from sklearn.base import BaseEstimator, ClassifierMixin, RegressorMixin
 from sklearn.preprocessing import LabelEncoder
 from sklearn.exceptions import NotFittedError
-
-# Optional imports for SteinVI & mixture predictive
-_HAS_EINSTEIN = False
-try:
-    from numpyro.contrib.einstein import RBFKernel, SteinVI, MixtureGuidePredictive
-
-    _HAS_EINSTEIN = True
-except Exception:
-    pass
 
 
 # ------------------------------ helpers -------------------------------------
@@ -139,7 +75,30 @@ class TrainConfig:
 
 
 class _NumpyroBase(BaseEstimator):
-    """Shared machinery for sklearn-compatible NumPyro estimators."""
+    """Shared machinery for sklearn-compatible NumPyro estimators.
+
+    New (Lipschitz logging) options:
+        log_lipschitz: bool
+            If True, estimate Lipschitz-related deterministic sites during SVI
+            training and store a per-step history in `lip_history_`.
+            Requires your model to define deterministic sites with those names
+            (e.g. 'Lip_network').
+
+        lip_sites: sequence of str
+            Names of deterministic sites to log. Defaults to ('Lip_network',).
+
+        lip_num_samples: int
+            Number of Predictive samples used when estimating per-step
+            Lipschitz statistics. Typically 1–5 is enough since this is just
+            a diagnostic during training.
+
+        lip_log_interval: int
+            How often (in SVI steps) to log Lipschitz metrics.
+
+        lip_batch_size: int
+            How many examples from X to pass when evaluating Lipschitz sites.
+            Since Lipschitz deterministics depend only on weights, 1 is fine.
+    """
 
     def __init__(
         self,
@@ -163,6 +122,12 @@ class _NumpyroBase(BaseEstimator):
         predict_site: Optional[str] = None,  # default depends on subclass
         logits_site: Optional[str] = None,
         proba_site: Optional[str] = None,
+        # ---- NEW: Lipschitz logging options --------------------------------
+        log_lipschitz: bool = False,
+        lip_sites: Optional[Sequence[str]] = None,
+        lip_num_samples: int = 1,
+        lip_log_interval: int = 10,
+        lip_batch_size: int = 1,
     ):
         self.model = model
         self.method = method
@@ -183,6 +148,16 @@ class _NumpyroBase(BaseEstimator):
         self.predict_site = predict_site
         self.logits_site = logits_site
         self.proba_site = proba_site
+
+        # Lipschitz logging config
+        self.log_lipschitz = bool(log_lipschitz)
+        self.lip_sites = tuple(lip_sites) if lip_sites is not None else ("Lip_network",)
+        self.lip_num_samples = int(lip_num_samples)
+        self.lip_log_interval = int(lip_log_interval)
+        self.lip_batch_size = int(lip_batch_size)
+
+        # Will be populated during fit() if logging is enabled
+        self.lip_history_: Optional[Dict[str, object]] = None
 
     # sklearn plumbing --------------------------------------------------------
 
@@ -246,10 +221,12 @@ class _NumpyroBase(BaseEstimator):
             )
             self._backend_ = "svi"
         elif m == "steinvi":
-            if not _HAS_EINSTEIN:
+            try:
+                from numpyro.contrib.einstein import RBFKernel, SteinVI
+            except Exception as e:
                 raise ImportError(
                     "SteinVI requested but numpyro.contrib.einstein is not available."
-                )
+                ) from e
             guide = self.guide or AutoNormal(self.model)
             kernel_fn = (
                 RBFKernel(self.rbf_lengthscale)
@@ -273,6 +250,99 @@ class _NumpyroBase(BaseEstimator):
         key = _as_prng_key(self.random_state)
         self._rng_, self._rng_pred_ = _split_key(key)
 
+    # --- Lipschitz utilities -------------------------------------------------
+
+    def _estimate_lipschitz_stats(self, X, params) -> Dict[str, Dict[str, float]]:
+        """
+        Estimate Lipschitz-related deterministic sites for the current params.
+
+        Requirements:
+          * Only used for SVI/SteinVI (guide-based).
+          * The model must define deterministic sites with names in self.lip_sites.
+
+        Returns:
+          { site_name: {"mean": float, "std": float}, ... }
+        """
+        if not self.log_lipschitz or not self.lip_sites:
+            return {}
+
+        if self._backend_ not in ("svi", "steinvi"):
+            # Only guide-based methods support simple Predictive-based logging
+            return {}
+
+        # Small batch just to trigger the model; Lipschitz depends only on weights.
+        X = _to_device_array(X)
+        if X.ndim >= 1 and X.shape[0] > self.lip_batch_size:
+            X_lip = X[: self.lip_batch_size]
+        else:
+            X_lip = X
+
+        # Predictive with current params and guide
+        key = self._rng_pred_
+        self._rng_pred_, key = _split_key(key)
+
+        pred = Predictive(
+            self.model,
+            guide=self._inference_.guide,
+            params=params,
+            num_samples=self.lip_num_samples,
+        )
+        samples = pred(key, X_lip, y=None)
+
+        stats: Dict[str, Dict[str, float]] = {}
+        for site in self.lip_sites:
+            if site not in samples:
+                continue
+            s = samples[site]
+            # shape (S, ...) -> flatten spatial dims
+            s_flat = jnp.reshape(s, (s.shape[0], -1))
+            mean = jnp.mean(s_flat, axis=0)
+            std = jnp.std(s_flat, axis=0)
+            stats[site] = {
+                "mean": float(jnp.mean(mean)),
+                "std": float(jnp.mean(std)),
+            }
+        return stats
+
+    def _record_lip_stats(
+        self, step: int, loss_val: float, stats: Dict[str, Dict[str, float]]
+    ) -> None:
+        if self.lip_history_ is None:
+            self.lip_history_ = {
+                "step": [],
+                "loss": [],
+                "sites": {s: {"mean": [], "std": []} for s in self.lip_sites},
+            }
+        self.lip_history_["step"].append(int(step))
+        self.lip_history_["loss"].append(float(loss_val))
+        for s in self.lip_sites:
+            if s not in self.lip_history_["sites"]:
+                self.lip_history_["sites"][s] = {"mean": [], "std": []}
+            if s in stats:
+                self.lip_history_["sites"][s]["mean"].append(stats[s]["mean"])
+                self.lip_history_["sites"][s]["std"].append(stats[s]["std"])
+            else:
+                self.lip_history_["sites"][s]["mean"].append(float("nan"))
+                self.lip_history_["sites"][s]["std"].append(float("nan"))
+
+    def get_lipschitz_history(self) -> Optional[Dict[str, object]]:
+        """
+        Return the Lipschitz logging history:
+
+            {
+              "step": [int, ...],
+              "loss": [float, ...],
+              "sites": {
+                "Lip_network": {"mean": [...], "std": [...]},
+                "Lip_spec1":   {"mean": [...], "std": [...]},
+                ...
+              }
+            }
+
+        or None if logging was disabled.
+        """
+        return self.lip_history_
+
     # public API --------------------------------------------------------------
 
     def fit(self, X, y=None):
@@ -284,26 +354,54 @@ class _NumpyroBase(BaseEstimator):
         self._init_rng()
 
         if self._backend_ == "mcmc":
+            if self.log_lipschitz:
+                warnings.warn(
+                    "log_lipschitz=True but backend='mcmc'; per-step "
+                    "Lipschitz logging is only supported for SVI/SteinVI.",
+                    stacklevel=2,
+                )
             self._inference_.run(self._rng_, X, y)
             self.posterior_samples_ = self._inference_.get_samples()
             self.params_ = None
+
         elif self._backend_ == "svi":
             svi_state = self._inference_.init(self._rng_, X, y)
             self.losses = []
+            self.lip_history_ = None if not self.log_lipschitz else None
+
             for i in range(int(self.num_steps)):
                 svi_state, loss = self._inference_.update(svi_state, X, y)
+                loss_val = float(loss)
                 self.losses.append(loss)
-                print(f"\rSVI step {i+1}/{self.num_steps}", end="", flush=True)
-            print()
+
+                if self.progress_bar:
+                    print(f"\rSVI step {i+1}/{self.num_steps}", end="", flush=True)
+
+                if self.log_lipschitz and ((i + 1) % self.lip_log_interval == 0):
+                    params_i = self._inference_.get_params(svi_state)
+                    stats = self._estimate_lipschitz_stats(X, params_i)
+                    self._record_lip_stats(i + 1, loss_val, stats)
+
+            if self.progress_bar:
+                print()
             self.params_ = self._inference_.get_params(svi_state)
             self.posterior_samples_ = None
+
         elif self._backend_ == "steinvi":
+            if self.log_lipschitz:
+                warnings.warn(
+                    "log_lipschitz=True with SteinVI: per-step logging is "
+                    "not wired into SteinVI.run yet; only final posterior "
+                    "Lipschitz can be sampled via sample_lipschitz().",
+                    stacklevel=2,
+                )
             result = self._inference_.run(
                 self._rng_, int(self.num_steps), X, y, progress_bar=self.progress_bar
             )
             self._stein_result_ = result
             self.params_ = self._inference_.get_params(result.state)
             self.posterior_samples_ = None
+
         else:
             raise RuntimeError("Unexpected backend.")
 
@@ -316,20 +414,12 @@ class _NumpyroBase(BaseEstimator):
         n = int(n_samples or self.n_posterior_samples)
         if self._backend_ == "mcmc":
             return Predictive(self.model, posterior_samples=self.posterior_samples_)
-        elif self._backend_ == "svi":
+        elif self._backend_ in ("svi", "steinvi"):
             return Predictive(
                 self.model,
                 guide=self._inference_.guide,
                 params=self.params_,
                 num_samples=n,
-            )
-        elif self._backend_ == "steinvi":
-            return MixtureGuidePredictive(
-                model=self.model,
-                guide=self._inference_.guide,
-                params=self.params_,
-                num_samples=n,
-                guide_sites=self._inference_.guide_sites,
             )
         else:
             raise RuntimeError("Unexpected backend.")
@@ -357,6 +447,31 @@ class _NumpyroBase(BaseEstimator):
         if sites is None:
             return samples
         return {k: samples[k] for k in sites if k in samples}
+
+    def sample_lipschitz(
+        self,
+        X,
+        *,
+        sites: Optional[Sequence[str]] = None,
+        num_samples: Optional[int] = None,
+        random_state: Optional[Union[int, np.random.RandomState]] = None,
+    ) -> Dict[str, jnp.ndarray]:
+        """
+        Convenience wrapper to sample Lipschitz-related deterministic sites.
+
+        Requires that your model defines deterministic sites with those names
+        (e.g. 'Lip_network', 'Lip_spec1', 'Lip_head').
+
+        Returns:
+            {site: samples} with shape (S, ...) for S=num_samples.
+        """
+        sites = tuple(sites) if sites is not None else tuple(self.lip_sites)
+        return self.predict_posterior(
+            X,
+            sites=sites,
+            num_samples=num_samples,
+            random_state=random_state,
+        )
 
 
 # ----------------------- Regressor and Classifier ----------------------------
@@ -389,6 +504,12 @@ class NumpyroRegressor(_NumpyroBase, RegressorMixin):
         progress_bar: bool = True,
         logits_site: Optional[str] = None,  # unused for regressor
         proba_site: Optional[str] = None,  # unused for regressor
+        # Lipschitz logging
+        log_lipschitz: bool = False,
+        lip_sites: Optional[Sequence[str]] = None,
+        lip_num_samples: int = 1,
+        lip_log_interval: int = 10,
+        lip_batch_size: int = 1,
     ):
         super().__init__(
             model=model,
@@ -410,6 +531,11 @@ class NumpyroRegressor(_NumpyroBase, RegressorMixin):
             predict_site=predict_site,
             logits_site=logits_site,
             proba_site=proba_site,
+            log_lipschitz=log_lipschitz,
+            lip_sites=lip_sites,
+            lip_num_samples=lip_num_samples,
+            lip_log_interval=lip_log_interval,
+            lip_batch_size=lip_batch_size,
         )
 
     def predict(self, X):
@@ -423,6 +549,10 @@ class NumpyroRegressor(_NumpyroBase, RegressorMixin):
 class NumpyroClassifier(_NumpyroBase, ClassifierMixin):
     """
     sklearn-style classifier that wraps a NumPyro model.
+
+    Expectation: your model defines a logits or probability site, which you
+    point to via `logits_site` or `proba_site`. A common pattern is to
+    define `numpyro.deterministic("out", logits)` and pass `logits_site="out"`.
     """
 
     def __init__(
@@ -447,6 +577,12 @@ class NumpyroClassifier(_NumpyroBase, ClassifierMixin):
         random_state: Optional[Union[int, np.random.RandomState]] = None,
         progress_bar: bool = True,
         predict_site: Optional[str] = None,  # unused for classifier
+        # Lipschitz logging
+        log_lipschitz: bool = False,
+        lip_sites: Optional[Sequence[str]] = None,
+        lip_num_samples: int = 1,
+        lip_log_interval: int = 10,
+        lip_batch_size: int = 1,
     ):
         super().__init__(
             model=model,
@@ -468,6 +604,11 @@ class NumpyroClassifier(_NumpyroBase, ClassifierMixin):
             predict_site=predict_site,
             logits_site=logits_site,
             proba_site=proba_site,
+            log_lipschitz=log_lipschitz,
+            lip_sites=lip_sites,
+            lip_num_samples=lip_num_samples,
+            lip_log_interval=lip_log_interval,
+            lip_batch_size=lip_batch_size,
         )
 
     def fit(self, X, y):
@@ -576,3 +717,250 @@ class NumpyroClassifier(_NumpyroBase, ClassifierMixin):
             return np.array(logit)
         else:
             return np.array(jnp.log(probs))
+
+    def _adv_loss_on_inputs(
+        self,
+        X: jnp.ndarray,
+        y: jnp.ndarray,
+        *,
+        num_draws: int = 1,
+        random_state: Optional[Union[int, np.random.RandomState]] = None,
+    ) -> jnp.ndarray:
+        """
+        Expected cross-entropy loss E_q[CE(f_θ(X), y)] under the current posterior,
+        approximated with `num_draws` posterior samples.
+
+        This is the scalar loss we maximize w.r.t. X for FGSM/PGD.
+        """
+        self._ensure_fitted(attributes=["_inference_"])
+        X = _to_device_array(X)
+        y = jnp.asarray(y)
+
+        pred = Predictive(
+            self.model,
+            guide=self._inference_.guide,
+            params=self.params_,
+            num_samples=int(num_draws),
+        )
+
+        key = (
+            _as_prng_key(random_state) if random_state is not None else self._rng_pred_
+        )
+
+        samples = pred(key, X, y=None)
+
+        # Prefer logits if available
+        if self.proba_site is None:
+            site = self.logits_site or "logits"
+            if site not in samples:
+                raise KeyError(
+                    f"Adversarial loss: logits site '{site}' not found in samples."
+                )
+            draws = samples[site]  # (S, N) or (S, N, C/1)
+            logits = jnp.mean(draws, axis=0)  # (N,) or (N,C) or (N,1)
+            return _cross_entropy_from_logits(logits, y).mean()
+        else:
+            site = self.proba_site
+            if site not in samples:
+                raise KeyError(
+                    f"Adversarial loss: proba site '{site}' not found in samples."
+                )
+            draws = samples[site]  # (S, N, ...) probabilities
+            probs = jnp.mean(draws, axis=0)  # (N,) or (N,C) or (N,1)
+            if probs.ndim == 1:
+                probs = jnp.stack([1.0 - probs, probs], axis=-1)
+            elif probs.shape[-1] == 1:
+                p1 = probs[..., 0]
+                probs = jnp.stack([1.0 - p1, p1], axis=-1)
+
+            # y encoded as integers 0..C-1
+            log_probs = jnp.log(jnp.clip(probs, 1e-8, 1.0))  # (N,C)
+            ce = -log_probs[jnp.arange(y.shape[0]), y]
+            return ce.mean()
+
+    def fgsm_attack(
+        self,
+        X: jnp.ndarray,
+        y: jnp.ndarray,
+        *,
+        epsilon: float,
+        num_draws: int = 1,
+        random_state: Optional[Union[int, np.random.RandomState]] = None,
+    ) -> jnp.ndarray:
+        """
+        Untargeted L∞ FGSM attack on posterior predictive mean loss.
+
+        Args:
+            X: inputs (N, D...)
+            y: labels (N,), integer-encoded (same as for fit()).
+            epsilon: L∞ radius.
+            num_draws: # posterior samples to approximate expectation in the loss.
+        Returns:
+            X_adv: adversarially perturbed inputs of same shape as X.
+        """
+        self._ensure_fitted()
+        X = _to_device_array(X)
+        y = jnp.asarray(y)
+
+        def loss_fn(x):
+            return self._adv_loss_on_inputs(
+                x, y, num_draws=num_draws, random_state=random_state
+            )
+
+        grad_x = jax.grad(loss_fn)(X)
+        x_adv = X + float(epsilon) * jnp.sign(grad_x)
+        return x_adv
+
+    def pgd_attack(
+        self,
+        X: jnp.ndarray,
+        y: jnp.ndarray,
+        *,
+        epsilon: float,
+        step_size: float,
+        num_steps: int = 10,
+        num_draws: int = 1,
+        random_start: bool = True,
+        random_state: Optional[Union[int, np.random.RandomState]] = None,
+        clip_min: Optional[float] = None,
+        clip_max: Optional[float] = None,
+    ) -> jnp.ndarray:
+        """
+        Untargeted L∞ PGD attack on posterior predictive mean loss.
+
+        Args:
+            X: inputs (N, D...).
+            y: labels (N,).
+            epsilon: L∞ radius.
+            step_size: PGD step size α.
+            num_steps: number of PGD iterations.
+            num_draws: # posterior samples in loss.
+            random_start: if True, start from a random point in the ε-ball.
+            clip_min/clip_max: optional global clipping bounds (e.g. 0,1).
+        Returns:
+            X_adv: adversarially perturbed inputs.
+        """
+        self._ensure_fitted()
+        X = _to_device_array(X)
+        y = jnp.asarray(y)
+
+        eps = float(epsilon)
+        alpha = float(step_size)
+
+        key = (
+            _as_prng_key(random_state) if random_state is not None else self._rng_pred_
+        )
+
+        if random_start:
+            key, sub = _split_key(key)
+            noise = jax.random.uniform(sub, X.shape, minval=-eps, maxval=eps)
+            x_adv = X + noise
+        else:
+            x_adv = X
+
+        def projected(x):
+            x = jnp.clip(x, X - eps, X + eps)
+            if (clip_min is not None) or (clip_max is not None):
+                lo = -jnp.inf if clip_min is None else float(clip_min)
+                hi = jnp.inf if clip_max is None else float(clip_max)
+                x = jnp.clip(x, lo, hi)
+            return x
+
+        x_adv = projected(x_adv)
+
+        def step(x, _):
+            def loss_fn(z):
+                return self._adv_loss_on_inputs(
+                    z, y, num_draws=num_draws, random_state=random_state
+                )
+
+            grad = jax.grad(loss_fn)(x)
+            x_next = x + alpha * jnp.sign(grad)
+            x_next = projected(x_next)
+            return x_next, None
+
+        x_adv, _ = jax.lax.scan(step, x_adv, None, length=int(num_steps))
+        return x_adv
+
+    def evaluate_adversarial_accuracy(
+        self,
+        X,
+        y,
+        *,
+        attack: str = "fgsm",
+        epsilon: float = 0.1,
+        step_size: float = 0.02,
+        num_steps: int = 10,
+        num_draws: int = 1,
+        random_state: Optional[Union[int, np.random.RandomState]] = None,
+        clip_min: Optional[float] = None,
+        clip_max: Optional[float] = None,
+    ) -> float:
+        """
+        Convenience method: run an attack (FGSM/PGD) and compute accuracy on the
+        adversarial examples.
+
+        Args:
+            attack: 'fgsm' or 'pgd'.
+            epsilon, step_size, num_steps, num_draws: attack params.
+        Returns:
+            adversarial accuracy in [0,1].
+        """
+        X_jnp = _to_device_array(X)
+        y_np = np.asarray(y)
+
+        if attack.lower() == "fgsm":
+            X_adv = self.fgsm_attack(
+                X_jnp,
+                jnp.asarray(y_np),
+                epsilon=epsilon,
+                num_draws=num_draws,
+                random_state=random_state,
+            )
+        elif attack.lower() == "pgd":
+            X_adv = self.pgd_attack(
+                X_jnp,
+                jnp.asarray(y_np),
+                epsilon=epsilon,
+                step_size=step_size,
+                num_steps=num_steps,
+                num_draws=num_draws,
+                random_start=True,
+                random_state=random_state,
+                clip_min=clip_min,
+                clip_max=clip_max,
+            )
+        else:
+            raise ValueError(f"Unknown attack type: {attack}")
+
+        # Use standard classifier predict() on adversarial inputs
+        y_pred = self.predict(np.array(X_adv))
+        acc = float((y_pred == y_np).mean())
+        return acc
+
+
+def _cross_entropy_from_logits(
+    logits: jnp.ndarray,
+    y: jnp.ndarray,
+) -> jnp.ndarray:
+    """
+    CE(logits, y) per-example.
+
+    - Binary: logits (N,) or (N,1).
+    - Multiclass: logits (N,C) with y in {0..C-1}.
+    """
+    logits = jnp.asarray(logits)
+    y = jnp.asarray(y)
+
+    # Binary cases
+    if logits.ndim == 1 or (logits.ndim == 2 and logits.shape[-1] == 1):
+        z = logits if logits.ndim == 1 else logits[..., 0]
+        # log σ(z) and log(1-σ(z))
+        logp1 = -jax.nn.softplus(-z)
+        logp0 = -jax.nn.softplus(z)
+        y_f = y.astype(z.dtype)
+        return -(y_f * logp1 + (1.0 - y_f) * logp0)
+
+    # Multiclass
+    log_probs = logits - jax.scipy.special.logsumexp(logits, axis=-1, keepdims=True)
+    return -log_probs[jnp.arange(y.shape[0]), y]

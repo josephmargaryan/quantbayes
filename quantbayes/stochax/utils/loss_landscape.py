@@ -556,3 +556,73 @@ def estimate_top_gn_eigenvalue(
     )
     print(f"Estimated top Gauss–Newton eigenvalue (final model): {lam:.6g}")
     return lam
+
+
+if __name__ == "__main__":
+    plot_2d_landscape_fast(
+        model=model,
+        state=state,
+        Xv=X_val,
+        yv=y_val,
+        analysis_mode="avgconv",  # "avgconv" recommended for conv nets
+        grid_halfwidth=0.4,  # how far you move in each direction
+        grid_n=41,  # resolution of the grid
+        seed=0,  # for the random directions
+        log_scale=True,  # log10 on the loss for nicer plots
+        batch_for_loss=256,  # subset of validation batch used for loss eval
+        verbose=True,  # prints pooling replacements etc.
+    )
+    plot_3d_landscape_surface(
+        model=model,
+        state=state,
+        Xv=X_val,
+        yv=y_val,
+        analysis_mode="avgconv",
+        grid_halfwidth=0.4,
+        grid_n=41,
+        seed=0,
+        log_scale=True,
+        batch_for_loss=256,
+        verbose=True,
+    )
+    lam_h = estimate_top_hessian_eigenvalue(
+        model=model,
+        state=state,
+        Xv=X_val,
+        yv=y_val,
+        iters=20,  # number of power iterations
+        batch_for_loss=256,
+        analysis_mode="avgconv",
+        progress=True,  # uses tqdm if available
+    )
+
+    print("Top Hessian eigenvalue:", lam_h)
+    lam_gn = estimate_top_gn_eigenvalue(
+        model=model,
+        state=state,
+        Xv=X_val,
+        yv=y_val,
+        iters=20,
+        batch_for_loss=256,
+        analysis_mode="avgconv",
+        progress=True,
+    )
+
+    print("Top Gauss–Newton eigenvalue:", lam_gn)
+    # Example: assume your model has an attribute `head`
+    head_getter = lambda m: m.head
+
+    plot_2d_landscape_fast(
+        model=model,
+        state=state,
+        Xv=X_val,
+        yv=y_val,
+        restrict_getters=[head_getter],  # directions only in head params
+        analysis_mode="avgconv",
+        grid_halfwidth=0.4,
+        grid_n=41,
+        seed=0,
+        log_scale=True,
+        batch_for_loss=256,
+        verbose=True,
+    )

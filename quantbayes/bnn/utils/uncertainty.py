@@ -1,10 +1,13 @@
 import numpy as np
+import jax
 import numpy as np
+import jax.numpy as jnp
 from scipy.stats import gaussian_kde
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import matplotlib.pyplot as plt
 from sklearn.metrics import roc_auc_score
+from numpyro.infer import Predictive
 
 __all__ = [
     "one_hot",
@@ -18,6 +21,8 @@ __all__ = [
     "plot_id_vs_ood_entropy_kde",
     "plot_id_vs_ood_entropy_kde_full_and_zoom",
     "save_entropy_kde_pair",
+    "_get_spectral_latents",
+    "save_spectral_posterior_1d",
 ]
 
 
@@ -420,3 +425,115 @@ def save_entropy_kde_pair(
     plt.close(fig)
 
     print(f"[saved] {out_full}\n[saved] {out_zoom}")
+
+
+def _get_spectral_latents(
+    clf, D: int, *, prefix: str = "rfft1d", n_samples: int = 256, rng_seed: int = 0
+):
+    """
+    Pull posterior samples for spectral latents from a *fitted* clf.
+    Works for SVI (guide+params) or MCMC (posterior_samples).
+    """
+    X_dummy = jnp.zeros((1, D), dtype=jnp.float32)
+    key = jax.random.PRNGKey(int(rng_seed))
+    sites = [f"{prefix}_real", f"{prefix}_imag"]
+
+    backend = getattr(clf, "_backend_", None)
+    if backend == "svi":
+        pred = Predictive(
+            clf.model,
+            guide=clf._inference_.guide,
+            params=clf.params_,
+            num_samples=int(n_samples),
+            return_sites=sites,  # set here (constructor), not in __call__
+        )
+    elif backend == "mcmc":
+        pred = Predictive(
+            clf.model,
+            posterior_samples=clf.posterior_samples_,
+            num_samples=int(n_samples),
+            return_sites=sites,
+        )
+    else:
+        raise ValueError("Classifier not fitted or unsupported backend.")
+
+    samples = pred(key, X_dummy, y=None)
+    missing = [s for s in sites if s not in samples]
+    if missing:
+        raise KeyError(
+            f"Requested sites {missing} not returned. "
+            f"Check the layer name (prefix='{prefix}') and that the guide samples those sites."
+        )
+
+    re = np.asarray(samples[f"{prefix}_real"])
+    im = np.asarray(samples[f"{prefix}_imag"])
+    if re.ndim == 3:
+        re = re[:, 0, :]
+    if im.ndim == 3:
+        im = im[:, 0, :]
+    return re, im  # (S, K)
+
+
+def save_spectral_posterior_1d(
+    clf,
+    *,
+    D: int,
+    padded_dim: int | None,
+    out_path: str,
+    prefix: str = "rfft1d",
+    n_samples: int = 256,
+    ci=(0.05, 0.95),
+    normalize_freq: bool = True,
+    logy: bool = False,
+    title: str | None = None,
+    rng_seed: int = 0,
+):
+    """
+    Same API as before, but:
+      - pads to full half-band (k_half) so x spans [0,1] when normalize_freq=True
+      - draws a dashed vertical line at the active K cutoff
+    """
+    re, im = _get_spectral_latents(
+        clf, D, prefix=prefix, n_samples=n_samples, rng_seed=rng_seed
+    )
+    amp = np.sqrt(re**2 + im**2)  # (S, K)
+    m = amp.mean(axis=0)  # (K,)
+    lo, hi = np.quantile(amp, q=ci, axis=0)  # (K,)
+
+    Hpad = int(padded_dim or D)
+    k_half = Hpad // 2 + 1
+    K = m.shape[0]
+
+    # pad to full half-band so normalization is consistent
+    if K < k_half:
+        pad = k_half - K
+        m = np.pad(m, (0, pad))
+        lo = np.pad(lo, (0, pad))
+        hi = np.pad(hi, (0, pad))
+    elif K > k_half:
+        m, lo, hi = m[:k_half], lo[:k_half], hi[:k_half]  # safety
+
+    if normalize_freq:
+        x = np.linspace(0.0, 1.0, k_half)
+        cutoff = (min(K, k_half) - 1) / max(1, (k_half - 1))
+    else:
+        x = np.arange(k_half)
+        cutoff = min(K, k_half) - 1
+
+    fig, ax = plt.subplots(figsize=(7, 4))
+    ax.plot(x, m, lw=2, label="posterior mean amplitude")
+    ax.fill_between(x, lo, hi, alpha=0.25, label=f"{int((ci[1]-ci[0])*100)}% CI")
+    # show active-band cutoff
+    ax.axvline(cutoff, ls="--", c="gray", lw=1, label="K cutoff")
+
+    ax.set_xlabel("normalized frequency" if normalize_freq else "frequency bin")
+    ax.set_ylabel("amplitude")
+    if logy:
+        ax.set_yscale("log")
+    if title:
+        ax.set_title(title)
+    ax.grid(True, alpha=0.25)
+    ax.legend()
+    fig.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"[saved] {out_path}")

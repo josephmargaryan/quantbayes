@@ -689,6 +689,21 @@ class RFFTCirculant1D:
             raise RuntimeError("Call the layer once to build its half spectrum.")
         return self._last_half
 
+    def __operator_norm_hint__(self) -> jnp.ndarray:
+        """
+        Per-sample ℓ₂ operator norm of this circulant layer.
+
+        Requires that the layer has been called at least once
+        so that self._last_half is populated.
+        """
+        if self._last_half is None:
+            raise RuntimeError(
+                "RFFTCirculant1D: call the layer once before "
+                "querying __operator_norm_hint__()."
+            )
+        H = self._last_half
+        return jnp.max(jnp.abs(H)).astype(self.dtype)
+
 
 class RFFTCirculant2D:
     """
@@ -813,6 +828,30 @@ class RFFTCirculant2D:
         if self._K_half is None:
             raise RuntimeError("Call the layer once to build its half-plane kernel.")
         return self._K_half
+
+    def __operator_norm_hint__(self) -> jnp.ndarray:
+        """
+        Per-sample ℓ₂ operator norm of this 2D spectral-circulant conv.
+
+        With unitary FFTs, this is max over frequencies of the spectral
+        norm of the (C_out x C_in) frequency blocks.
+        """
+        if self._K_half is None:
+            raise RuntimeError(
+                "RFFTCirculant2D: call the layer once before "
+                "querying __operator_norm_hint__()."
+            )
+        K = self._K_half  # (C_out, C_in, H_pad, W_half)
+        Co, Ci, H, W_half = K.shape
+        mats = jnp.transpose(K, (2, 3, 0, 1)).reshape(-1, Co, Ci)  # (H*W_half, Co, Ci)
+
+        # top singular value for each frequency block
+        def top_sigma(M):
+            # JAX's svd supports complex matrices
+            return jnp.linalg.svd(M, compute_uv=False)[0].real
+
+        smax = jax.vmap(top_sigma)(mats)  # (H*W_half,)
+        return jnp.max(smax).astype(self.dtype)
 
 
 class RFFTCirculant2D_Sparse(RFFTCirculant2D):

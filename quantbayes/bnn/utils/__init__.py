@@ -38,6 +38,8 @@ from .uncertainty import (
     plot_id_vs_ood_entropy_kde_full_and_zoom,
     save_entropy_kde_pair,
     save_pred_entropy_from_arrays_trained_minimal,
+    _get_spectral_latents,
+    save_spectral_posterior_1d,
 )
 
 __all__ = [
@@ -73,4 +75,6 @@ __all__ = [
     "plot_id_vs_ood_entropy_kde",
     "plot_id_vs_ood_entropy_kde_full_and_zoom",
     "save_entropy_kde_pair",
+    "_get_spectral_latents",
+    "save_spectral_posterior_1d",
 ]
