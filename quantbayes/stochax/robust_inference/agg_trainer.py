@@ -13,6 +13,7 @@ from quantbayes.stochax.trainer.train import (
     train,  # generic trainer with bound_recorder + checkpoints
     multiclass_loss,
     make_lmt_multiclass_loss,
+    make_adversarial_loss,
 )
 from quantbayes.stochax.robust_inference.simplex import project_rows_to_simplex
 from quantbayes.stochax.robust_inference.masks import choose_m_probs  # p(m) ∝ C(n,m)
@@ -420,3 +421,67 @@ def train_aggregator_robust(
         checkpoint_interval=ckpt_interval,
     )
     return best_model, {"train_loss": tr, "val_loss": va, "ckpt_dir": ckpt_dir}
+
+
+def train_aggregator_pgd_linf(
+    Ps_tr,
+    y_tr,
+    Ps_val,
+    y_val,
+    agg,
+    *,
+    eps: float = 0.1,
+    step_size: float = 0.02,
+    num_steps: int = 7,
+    clean_weight: float = 1.0,
+    adv_weight: float = 1.0,
+    batch_size: int = 128,
+    epochs: int = 10,
+    patience: int = 3,
+    lr: float = 1e-3,
+    weight_decay: float = 0.0,
+    key=None,
+):
+    """
+    Simple L∞ PGD adversarial training in probit space:
+      Ps ∈ [0,1]^{n×K}, treat them as generic inputs, no m≤f structure.
+    """
+    # 1) Base loss: just multiclass CE over agg(Ps)
+    base_loss_fn = multiclass_loss
+
+    # 2) Adversarial wrapper: L∞ on probit entries in [0,1]
+    adv_loss_fn = make_adversarial_loss(
+        base_loss_fn=base_loss_fn,
+        attack="pgd",
+        eps=eps,  # e.g. 0.1 perturbation in prob space
+        step_size=step_size,
+        num_steps=num_steps,
+        random_start=True,
+        clean_weight=clean_weight,
+        adv_weight=adv_weight,
+        clip_min=0.0,
+        clip_max=1.0,
+        detach_adv=True,
+        freeze_bn_for_attack=True,  # agg probably has no BN anyway
+    )
+
+    optimizer = optax.adamw(lr, weight_decay=weight_decay)
+    opt_state = optimizer.init(eqx.filter(agg, eqx.is_inexact_array))
+    k = jr.PRNGKey(0) if key is None else key
+
+    best_model, _, tr, va = train(
+        model=agg,
+        state=None,
+        opt_state=opt_state,
+        optimizer=optimizer,
+        loss_fn=adv_loss_fn,
+        X_train=Ps_tr,
+        y_train=y_tr.astype(jnp.int32),
+        X_val=Ps_val,
+        y_val=y_val.astype(jnp.int32),
+        batch_size=batch_size,
+        num_epochs=epochs,
+        patience=patience,
+        key=k,
+    )
+    return best_model, {"train_loss": tr, "val_loss": va}

@@ -938,6 +938,145 @@ class NumpyroClassifier(_NumpyroBase, ClassifierMixin):
         acc = float((y_pred == y_np).mean())
         return acc
 
+    def margins_posterior(
+        self,
+        X,
+        y,
+        *,
+        num_samples: int = 200,
+        random_state: Optional[Union[int, np.random.RandomState]] = None,
+    ) -> np.ndarray:
+        """
+        Compute (S, N) array of posterior margins:
+
+            m_{s,i} = f_{θ^{(s)}}(x_i)_y - max_{k≠y} f_{θ^{(s)}}(x_i)_k
+
+        where θ^{(s)} ~ q(θ) are num_samples draws from the variational posterior, and
+        y is integer-encoded labels in {0, ..., C-1}.
+
+        Args:
+            X: inputs of shape (N, D...).
+            y: labels (N,) integer-encoded.
+            num_samples: number of posterior samples S.
+            random_state: optional PRNG seed for reproducibility.
+
+        Returns:
+            margins: np.ndarray of shape (S, N).
+        """
+        self._ensure_fitted()
+        X = _to_device_array(X)
+        y = np.asarray(y, dtype=np.int64)
+        N = y.shape[0]
+
+        # sample logits from the posterior
+        site = self.logits_site or "logits"
+        samples = self.predict_posterior(
+            X,
+            sites=[site],
+            num_samples=num_samples,
+            random_state=random_state,
+        )
+        if site not in samples:
+            raise KeyError(
+                f"margins_posterior: logits site '{site}' not found in posterior samples."
+            )
+
+        logits = np.array(samples[site])  # (S, N, C) or (S, N)
+        if logits.ndim == 2:  # (S, N) -> binary logits, shape to (S,N,2)-like
+            # interpret as binary logits for class 1; class 0 gets -logit
+            logit1 = logits
+            logit0 = -logit1
+            logits = np.stack([logit0, logit1], axis=-1)
+
+        S, N_s, C = logits.shape
+        if N_s != N:
+            raise ValueError(
+                f"margins_posterior: got {N_s} points from posterior, but y has length {N}."
+            )
+
+        margins = np.empty((S, N), dtype=np.float32)
+        np_y = y  # alias
+
+        for s in range(S):
+            logits_s = logits[s]  # (N, C)
+            correct = logits_s[np.arange(N), np_y]  # (N,)
+            # mask out the correct class to get max over others
+            mask = np.ones_like(logits_s, dtype=bool)
+            mask[np.arange(N), np_y] = False
+            other = np.where(mask, logits_s, -np.inf)
+            max_other = np.max(other, axis=1)
+            margins[s] = correct - max_other
+
+        return margins
+
+    def certified_radii_posterior(
+        self,
+        X,
+        y,
+        *,
+        num_samples: int = 200,
+        norm: str = "l2",
+        random_state: Optional[Union[int, np.random.RandomState]] = None,
+        eps: float = 1e-12,
+    ) -> np.ndarray:
+        """
+        Compute (S, N) array of global-Lipschitz certified radii:
+
+            r_{s,i} = m_{s,i} / (2 * L_s)
+
+        where m_{s,i} are posterior margins from `margins_posterior` and
+        L_s are posterior draws of the global Lipschitz constant from the
+        'Lip_network' deterministic site.
+
+        This is a crude ℓ2 certificate; it assumes the model exposes a
+        deterministic site 'Lip_network' giving an ℓ2 global Lipschitz
+        bound for each θ^{(s)}.
+
+        Args:
+            X: inputs (N, D...).
+            y: labels (N,) integer-encoded.
+            num_samples: posterior samples S.
+            norm: currently only 'l2' is supported; kept for API symmetry.
+            random_state: optional PRNG seed.
+            eps: numerical epsilon to avoid division by zero.
+
+        Returns:
+            radii: np.ndarray of shape (S, N).
+        """
+        if norm.lower() != "l2":
+            raise NotImplementedError("Only ℓ2 certified radii are supported for now.")
+
+        self._ensure_fitted()
+        X = _to_device_array(X)
+        y = np.asarray(y, dtype=np.int64)
+
+        # 1) margins: (S, N)
+        margins = self.margins_posterior(
+            X, y, num_samples=num_samples, random_state=random_state
+        )  # (S,N)
+        margins_pos = np.clip(margins, a_min=0.0, a_max=None)
+
+        # 2) Lipschitz samples: (S,) or (S,1,...)
+        lip_samples = self.sample_lipschitz(
+            X[:1],
+            sites=("Lip_network",),
+            num_samples=num_samples,
+            random_state=random_state,
+        )
+        if "Lip_network" not in lip_samples:
+            raise KeyError(
+                "certified_radii_posterior: 'Lip_network' site not found in posterior samples. "
+                "Ensure your model defines numpyro.deterministic('Lip_network', ...)."
+            )
+        L = np.array(lip_samples["Lip_network"]).reshape(num_samples)  # (S,)
+
+        # Broadcast L over N points
+        L_mat = L[:, None] + eps  # (S,1)
+
+        # 3) radii
+        radii = margins_pos / (2.0 * L_mat)  # (S,N)
+        return radii
+
 
 def _cross_entropy_from_logits(
     logits: jnp.ndarray,

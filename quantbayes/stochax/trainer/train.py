@@ -685,6 +685,269 @@ def make_adversarial_loss(
     return adv_loss_fn
 
 
+def _generate_adversarial_batch(
+    model: Any,
+    state: Any,
+    x: Array,
+    y: Array,
+    key: PRNGKeyArray,
+    base_loss_fn: Callable[
+        [Any, Any, Array, Array, PRNGKeyArray], Tuple[jnp.ndarray, Any]
+    ],
+    *,
+    attack: Literal["fgsm", "pgd"] = "pgd",
+    eps: float = 8.0 / 255.0,
+    step_size: Optional[float] = None,
+    num_steps: int = 7,
+    random_start: bool = True,
+    clip_min: float = 0.0,
+    clip_max: float = 1.0,
+) -> Array:
+    """
+    Build adversarial examples for evaluation only.
+
+    - model should already be in inference_mode if you want BN/Dropout frozen.
+    - state is passed into base_loss_fn but we *ignore* any returned new_state.
+    """
+    eps_f = float(eps)
+    if eps_f <= 0.0:
+        return x
+
+    if attack == "pgd" and num_steps < 1:
+        raise ValueError("PGD requires num_steps >= 1.")
+
+    if step_size is None:
+        step_size = eps_f / max(num_steps, 1)
+    step_size_f = float(step_size)
+
+    def loss_wrt_x(x_in: Array, k: PRNGKeyArray) -> jnp.ndarray:
+        # BN/Dropout behaviour is controlled by model's mode.
+        loss, _ = base_loss_fn(model, state, x_in, y, k)
+        return loss
+
+    if attack == "fgsm":
+        # Single-step FGSM: x_adv = x + eps * sign(∂_x L)
+        grad_x = jax.grad(lambda z: loss_wrt_x(z, key))(x)
+        step = eps_f * jnp.sign(grad_x)
+        x_adv = _project_linf_ball(
+            x + step,
+            x_orig=x,
+            eps=eps_f,
+            clip_min=clip_min,
+            clip_max=clip_max,
+        )
+        return x_adv
+
+    elif attack == "pgd":
+        # Random start in L∞ ball (optional)
+        if random_start:
+            noise = jr.uniform(
+                key,
+                shape=x.shape,
+                minval=-eps_f,
+                maxval=eps_f,
+                dtype=x.dtype,
+            )
+            x_adv0 = _project_linf_ball(
+                x + noise,
+                x_orig=x,
+                eps=eps_f,
+                clip_min=clip_min,
+                clip_max=clip_max,
+            )
+        else:
+            x_adv0 = x
+
+        step_size_arr = jnp.asarray(step_size_f, dtype=x.dtype)
+
+        def pgd_body(i, x_adv_curr):
+            step_key = jr.fold_in(key, int(i))
+            grad_x = jax.grad(lambda z: loss_wrt_x(z, step_key))(x_adv_curr)
+            x_adv_next = x_adv_curr + step_size_arr * jnp.sign(grad_x)
+            x_adv_next = _project_linf_ball(
+                x_adv_next,
+                x_orig=x,
+                eps=eps_f,
+                clip_min=clip_min,
+                clip_max=clip_max,
+            )
+            return x_adv_next
+
+        x_adv = jax.lax.fori_loop(0, num_steps, pgd_body, x_adv0)
+        return x_adv
+
+    else:
+        raise ValueError(f"Unknown attack kind '{attack}' (expected 'fgsm' or 'pgd').")
+
+
+def evaluate_clean_loss(
+    model: Any,
+    state: Any,
+    X: Array,
+    y: Array,
+    batch_size: int,
+    key: PRNGKeyArray,
+    loss_fn: Callable[[Any, Any, Array, Array, PRNGKeyArray], Tuple[jnp.ndarray, Any]],
+) -> float:
+    """
+    Compute mean loss on clean data (no adversary), with BN/Dropout frozen.
+    """
+    model_eval = eqx.nn.inference_mode(model, value=True)
+    rng = key
+    total_loss = 0.0
+    n_total = 0
+
+    for xb, yb in data_loader(
+        X, y, batch_size=batch_size, shuffle=False, key=rng, augment_fn=None
+    ):
+        rng, subkey = jr.split(rng)
+        loss, _ = loss_fn(model_eval, state, xb, yb, subkey)
+        total_loss += float(loss) * xb.shape[0]
+        n_total += xb.shape[0]
+
+    return total_loss / max(1, n_total)
+
+
+def evaluate_adversarial_loss(
+    model: Any,
+    state: Any,
+    X: Array,
+    y: Array,
+    batch_size: int,
+    key: PRNGKeyArray,
+    base_loss_fn: Callable[
+        [Any, Any, Array, Array, PRNGKeyArray], Tuple[jnp.ndarray, Any]
+    ],
+    *,
+    attack: Literal["fgsm", "pgd"] = "pgd",
+    eps: float = 8.0 / 255.0,
+    step_size: Optional[float] = None,
+    num_steps: int = 7,
+    random_start: bool = True,
+    clip_min: float = 0.0,
+    clip_max: float = 1.0,
+    freeze_bn_for_attack: bool = True,
+) -> float:
+    """
+    Robust evaluation:
+      - craft adversarial examples with FGSM/PGD
+      - compute mean loss on these adversarial inputs.
+
+    No BN state updates; model is kept in inference_mode if freeze_bn_for_attack=True.
+    """
+    rng = key
+    total_loss = 0.0
+    n_total = 0
+
+    for xb, yb in data_loader(
+        X, y, batch_size=batch_size, shuffle=False, key=rng, augment_fn=None
+    ):
+        rng, attack_key, eval_key = jr.split(rng, 3)
+
+        attack_model = (
+            eqx.nn.inference_mode(model, value=True) if freeze_bn_for_attack else model
+        )
+
+        x_adv = _generate_adversarial_batch(
+            model=attack_model,
+            state=state,
+            x=xb,
+            y=yb,
+            key=attack_key,
+            base_loss_fn=base_loss_fn,
+            attack=attack,
+            eps=eps,
+            step_size=step_size,
+            num_steps=num_steps,
+            random_start=random_start,
+            clip_min=clip_min,
+            clip_max=clip_max,
+        )
+
+        # Evaluate loss on adversarial inputs (again with frozen semantics).
+        loss_adv, _ = base_loss_fn(attack_model, state, x_adv, yb, eval_key)
+        total_loss += float(loss_adv) * xb.shape[0]
+        n_total += xb.shape[0]
+
+    return total_loss / max(1, n_total)
+
+
+def evaluate_adversarial_binary_acc(
+    model: Any,
+    state: Any,
+    X: Array,
+    y: Array,
+    batch_size: int,
+    key: PRNGKeyArray,
+    base_loss_fn: Callable[
+        [Any, Any, Array, Array, PRNGKeyArray], Tuple[jnp.ndarray, Any]
+    ],
+    *,
+    attack: Literal["fgsm", "pgd"] = "pgd",
+    eps: float = 8.0 / 255.0,
+    step_size: Optional[float] = None,
+    num_steps: int = 7,
+    random_start: bool = True,
+    clip_min: float = 0.0,
+    clip_max: float = 1.0,
+) -> Tuple[float, float]:
+    """
+    Robust evaluation for binary classification (1-logit head):
+
+    Returns:
+        (robust_loss, robust_accuracy)
+    """
+    rng = key
+    total_loss = 0.0
+    total_correct = 0
+    n_total = 0
+
+    for xb, yb in data_loader(
+        X, y, batch_size=batch_size, shuffle=False, key=rng, augment_fn=None
+    ):
+        rng, attack_key, eval_key, pred_key = jr.split(rng, 4)
+
+        # Freeze semantics for attack and loss/accuracy
+        model_eval = eqx.nn.inference_mode(model, value=True)
+
+        x_adv = _generate_adversarial_batch(
+            model=model_eval,
+            state=state,
+            x=xb,
+            y=yb,
+            key=attack_key,
+            base_loss_fn=base_loss_fn,
+            attack=attack,
+            eps=eps,
+            step_size=step_size,
+            num_steps=num_steps,
+            random_start=random_start,
+            clip_min=clip_min,
+            clip_max=clip_max,
+        )
+
+        # Robust loss
+        loss_adv, _ = base_loss_fn(model_eval, state, x_adv, yb, eval_key)
+        total_loss += float(loss_adv) * xb.shape[0]
+
+        # Robust predictions via your existing predict()
+        logits_adv = predict(model, state, x_adv, pred_key)  # raw logits
+        # Assume shape [B] or [B,1] for binary
+        if logits_adv.ndim == 2 and logits_adv.shape[-1] == 1:
+            logits_flat = logits_adv.squeeze(-1)
+        else:
+            logits_flat = logits_adv
+
+        preds = (logits_flat > 0.0).astype(yb.dtype)
+        correct = jnp.sum(preds == yb)
+        total_correct += int(correct)
+        n_total += xb.shape[0]
+
+    robust_loss = total_loss / max(1, n_total)
+    robust_acc = total_correct / max(1, n_total)
+    return robust_loss, robust_acc
+
+
 _NORM_TYPES: Tuple[type, ...] = tuple(
     t
     for t in (
