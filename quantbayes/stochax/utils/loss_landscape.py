@@ -495,7 +495,7 @@ def hessian_top_eig(
 
     def dot(a, b):
         return sum(
-            jnp.vdot(x, y).real for x, y in zip(jax.tree_leaves(a), jax.tree_leaves(b))
+            jnp.vdot(x, y).real for x, y in zip(jax.tree.leaves(a), jax.tree.leaves(b))
         )
 
     def norm(a):
@@ -556,7 +556,7 @@ def gauss_newton_top_eig_for_ce(
 
     def dot(a, b):
         return sum(
-            jnp.vdot(x, y).real for x, y in zip(jax.tree_leaves(a), jax.tree_leaves(b))
+            jnp.vdot(x, y).real for x, y in zip(jax.tree.leaves(a), jax.tree.leaves(b))
         )
 
     def norm(a):
