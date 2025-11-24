@@ -11,6 +11,7 @@ from jaxtyping import Array, Float, PRNGKeyArray
 
 from quantbayes.stochax.layers import RFFTCirculant1D
 
+
 def make_linear_or_spectral(
     in_features: int,
     out_features: int,
@@ -38,9 +39,10 @@ def make_linear_or_spectral(
 #          only in that square Linear layers can be spectralized           #
 # ------------------------------------------------------------------------- #
 
+
 # --------------------------- Patch Embedding --------------------------- #
 class PatchEmbedding(eqx.Module):
-    linear: eqx.Module          # may be Linear or RFFTCirculant1D
+    linear: eqx.Module  # may be Linear or RFFTCirculant1D
     patch_size: int
     in_ch: int = eqx.field(static=True)
     out_dim: int = eqx.field(static=True)
@@ -188,7 +190,7 @@ class AttentionBlock(eqx.Module):
     def __call__(self, x: jnp.ndarray, key: PRNGKeyArray) -> jnp.ndarray:
         # Self-attn branch
         x_norm = jax.vmap(self.layer_norm1)(x)  # [N, D]
-        attn_out = self.attention(x_norm)       # [N, D]
+        attn_out = self.attention(x_norm)  # [N, D]
         x = x + attn_out
 
         # MLP branch
@@ -209,7 +211,7 @@ class AttentionBlock(eqx.Module):
 class VisionTransformer(eqx.Module):
     patch_embedding: PatchEmbedding
     positional_embedding: jnp.ndarray  # [1+N, D]
-    cls_token: jnp.ndarray             # [1, D]
+    cls_token: jnp.ndarray  # [1, D]
     attention_blocks: Tuple[AttentionBlock, ...]
     dropout: eqx.nn.Dropout
     norm: eqx.nn.LayerNorm
@@ -290,7 +292,7 @@ class VisionTransformer(eqx.Module):
 
         # Prepend CLS and add pos
         x = jnp.concatenate((self.cls_token, x), axis=0)  # [1+N, D]
-        pos = self.positional_embedding[: x.shape[0]]      # safe slice
+        pos = self.positional_embedding[: x.shape[0]]  # safe slice
         x = x + pos
 
         # Transformer
