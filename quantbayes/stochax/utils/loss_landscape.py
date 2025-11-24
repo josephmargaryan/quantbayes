@@ -466,22 +466,36 @@ def _maybe_tqdm(it, progress: bool):
 
 
 def hessian_top_eig(
-    loss_fn, params0, static, iters=20, key=jr.PRNGKey(0), progress: bool = False
+    loss_fn,
+    params0,
+    static,
+    iters=20,
+    key=jr.PRNGKey(0),
+    progress: bool = False,
+    restrict_getters: Optional[Sequence[Callable]] = None,
 ):
-    """Power iteration on the Hessian of loss_fn(params, static)."""
-    leaves, treedef = jtu.tree_flatten(params0)
+    """Power iteration on Hessian(loss_fn(params, static)).
 
-    # Need 2 keys per leaf in worst case (for complex), so oversample.
+    If restrict_getters is not None, the iteration is restricted to the
+    parameter subspace selected by those getters (same semantics as for
+    restrict_getters in the loss-landscape code).
+    """
+    leaves, treedef = jtu.tree_flatten(params0)
     ks = jr.split(key, len(leaves) * 2)
+
+    # Initialise v with correct dtype (handles complex leaves)…
     v_leaves = []
     for i, x in enumerate(leaves):
-        k = ks[2 * i]  # _rand_like will split again if needed
-        v_leaves.append(_rand_like(k, x))
+        k_i = ks[2 * i]
+        v_leaves.append(_rand_like(k_i, x))
     v = jtu.tree_unflatten(treedef, v_leaves)
+
+    # Restrict initial vector to chosen subspace (attention etc.)
+    v = _restrict_dirs_like(params0, v, restrict_getters)
 
     def dot(a, b):
         return sum(
-            jnp.vdot(x, y).real for x, y in zip(jax.tree.leaves(a), jax.tree.leaves(b))
+            jnp.vdot(x, y).real for x, y in zip(jax.tree_leaves(a), jax.tree_leaves(b))
         )
 
     def norm(a):
@@ -492,10 +506,19 @@ def hessian_top_eig(
 
     lam = jnp.array(0.0)
     for _ in _maybe_tqdm(range(iters), progress):
-        v = jax.tree.map(lambda x: x / norm(v), v)
+        # Normalize v in the restricted subspace
+        n = norm(v)
+        v = jax.tree.map(lambda x: x / n, v)
+
+        # Hessian-vector product
         Hv = jax.jvp(grad_wrt_params, (params0,), (v,))[1]
+
+        # Project Hv back into the same subspace
+        Hv = _restrict_dirs_like(params0, Hv, restrict_getters)
+
         lam = dot(v, Hv) / jnp.maximum(dot(v, v), 1e-30)
         v = Hv
+
     return float(lam)
 
 
@@ -507,24 +530,33 @@ def _ce_hessian_logits_vec(logits, v):
 
 
 def gauss_newton_top_eig_for_ce(
-    f_logits, params0, static, iters=20, key=jr.PRNGKey(0), progress: bool = False
+    f_logits,
+    params0,
+    static,
+    iters=20,
+    key=jr.PRNGKey(0),
+    progress: bool = False,
+    restrict_getters: Optional[Sequence[Callable]] = None,
 ):
     """
-    Power iteration on J^T H_z J where f_logits(params, static)->logits.
-    CE Hessian wrt logits is (diag(p)-pp^T).
+    Power iteration on J^T H_z J (Gauss–Newton for CE), optionally restricted
+    to a parameter subspace.
     """
     leaves, treedef = jtu.tree_flatten(params0)
-
     ks = jr.split(key, len(leaves) * 2)
+
     v_leaves = []
     for i, x in enumerate(leaves):
-        k = ks[2 * i]
-        v_leaves.append(_rand_like(k, x))
+        k_i = ks[2 * i]
+        v_leaves.append(_rand_like(k_i, x))
     v = jtu.tree_unflatten(treedef, v_leaves)
+
+    # Restrict initial vector to chosen subspace
+    v = _restrict_dirs_like(params0, v, restrict_getters)
 
     def dot(a, b):
         return sum(
-            jnp.vdot(x, y).real for x, y in zip(jax.tree.leaves(a), jax.tree.leaves(b))
+            jnp.vdot(x, y).real for x, y in zip(jax.tree_leaves(a), jax.tree_leaves(b))
         )
 
     def norm(a):
@@ -532,7 +564,8 @@ def gauss_newton_top_eig_for_ce(
 
     lam = jnp.array(0.0)
     for _ in _maybe_tqdm(range(iters), progress):
-        v = jax.tree.map(lambda x: x / norm(v), v)
+        n = norm(v)
+        v = jax.tree.map(lambda x: x / n, v)
 
         # JVP: δz = J v
         z0, pullback = jax.vjp(lambda p: f_logits(p, static), params0)
@@ -544,8 +577,12 @@ def gauss_newton_top_eig_for_ce(
         # VJP: J^T ybar
         Hv = pullback(ybar)[0]
 
+        # Project Hv back to subspace
+        Hv = _restrict_dirs_like(params0, Hv, restrict_getters)
+
         lam = dot(v, Hv) / jnp.maximum(dot(v, v), 1e-30)
         v = Hv
+
     return float(lam)
 
 
@@ -559,13 +596,20 @@ def estimate_top_hessian_eigenvalue(
     batch_for_loss=128,
     analysis_mode="avgconv",
     progress: bool = False,
+    restrict_getters: Optional[Sequence[Callable]] = None,
 ):
-    """Convenience wrapper: CE loss on a small batch, then power iteration (true Hessian)."""
+    """CE loss on a small batch, then power iteration (true Hessian)."""
     params0, static, base_loss = _prepare_analysis_loss(
         model, state, Xv, yv, analysis_mode, batch_for_loss, seed=321, verbose=False
     )
     lam = hessian_top_eig(
-        base_loss, params0, static, iters=iters, key=jr.PRNGKey(9), progress=progress
+        base_loss,
+        params0,
+        static,
+        iters=iters,
+        key=jr.PRNGKey(9),
+        progress=progress,
+        restrict_getters=restrict_getters,
     )
     print(f"Estimated top Hessian eigenvalue (final model): {lam:.6g}")
     return lam
@@ -581,17 +625,13 @@ def estimate_top_gn_eigenvalue(
     batch_for_loss=128,
     analysis_mode="avgconv",
     progress: bool = False,
+    restrict_getters: Optional[Sequence[Callable]] = None,
 ):
-    """
-    Convenience wrapper: top eigenvalue of Gauss–Newton (CE) using f_logits JVP/VJP.
-    Typically faster/more stable around pooling layers.
-    """
-    # Build logits function on a small batch
+    """Top eigenvalue of Gauss–Newton (CE) restricted if desired."""
     m_eval = make_analysis_copy(model, analysis_mode=analysis_mode, verbose=False)
     params0, static = eqx.partition(m_eval, eqx.is_array)
 
     x_small = jnp.asarray(Xv[:batch_for_loss])
-    y_small = jnp.asarray(yv[:batch_for_loss])  # not used; CE Hessian uses logits only
     B = x_small.shape[0]
 
     def f_logits(p, s):
@@ -608,7 +648,13 @@ def estimate_top_gn_eigenvalue(
         return logits  # (B, K)
 
     lam = gauss_newton_top_eig_for_ce(
-        f_logits, params0, static, iters=iters, key=jr.PRNGKey(8), progress=progress
+        f_logits,
+        params0,
+        static,
+        iters=iters,
+        key=jr.PRNGKey(8),
+        progress=progress,
+        restrict_getters=restrict_getters,
     )
     print(f"Estimated top Gauss–Newton eigenvalue (final model): {lam:.6g}")
     return lam
@@ -878,10 +924,16 @@ if __name__ == "__main__":
         progress=True,
     )
 
-    lam_H_dense = estimate_top_hessian_eigenvalue(best_model, best_state, **cfg)
+    lam_H_dense = estimate_top_hessian_eigenvalue(
+        best_model, best_state, **cfg, restrict_getters=restrict_attn
+    )
     lam_H_rfft = estimate_top_hessian_eigenvalue(
-        best_model_rfft, best_state_rfft, **cfg
+        best_model_rfft, best_state_rfft, **cfg, restrict_getters=restrict_attn
     )
 
-    lam_GN_dense = estimate_top_gn_eigenvalue(best_model, best_state, **cfg)
-    lam_GN_rfft = estimate_top_gn_eigenvalue(best_model_rfft, best_state_rfft, **cfg)
+    lam_GN_dense = estimate_top_gn_eigenvalue(
+        best_model, best_state, **cfg, restrict_getters=restrict_attn
+    )
+    lam_GN_rfft = estimate_top_gn_eigenvalue(
+        best_model_rfft, best_state_rfft, **cfg, restrict_getters=restrict_attn
+    )
