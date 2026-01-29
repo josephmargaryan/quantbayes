@@ -44,19 +44,6 @@ def _rng(shape, scale=0.05):
     return scale * jax.random.normal(numpyro.prng_key(), shape)
 
 
-def _enforce_hermitian_2d(fft2d: jnp.ndarray) -> jnp.ndarray:
-    """Project complex (..., H, W) to Hermitian so IFFT2 is real."""
-    H, W = fft2d.shape[-2:]
-    conj_flip = jnp.flip(jnp.conj(fft2d), axis=(-2, -1))
-    herm = 0.5 * (fft2d + conj_flip)
-    herm = herm.at[..., 0, 0].set(jnp.real(herm[..., 0, 0]))
-    if H % 2 == 0:
-        herm = herm.at[..., H // 2, :].set(jnp.real(herm[..., H // 2, :]))
-    if W % 2 == 0:
-        herm = herm.at[..., :, W // 2].set(jnp.real(herm[..., :, W // 2]))
-    return herm
-
-
 def halfplane_to_full_multi(
     real_hp: jnp.ndarray, imag_hp: jnp.ndarray, H_pad: int, W_pad: int
 ):

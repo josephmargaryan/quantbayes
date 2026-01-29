@@ -74,13 +74,50 @@ def attacker_exact_within_r(
     attacker,
     targets: np.ndarray,
 ) -> Tuple[float, float]:
+    """
+    Evaluate exact-ID and within-r success over many targets.
+
+    IMPORTANT:
+    If the API is stateful (no_repeat / sticky caching / router-level no-repeat),
+    reusing the same session IDs across different targets will contaminate results.
+
+    This helper isolates each target by cloning the attacker with:
+      - a target-specific session_id (if the attacker has session_id)
+      - a fresh RNG seeded by target (if the attacker has rng)
+
+    This makes results comparable and prevents session carry-over across targets.
+    """
+    from dataclasses import is_dataclass, replace, fields
+
+    def _clone_attacker_for_target(att, t: int):
+        if not is_dataclass(att):
+            return att
+        fset = {f.name for f in fields(att)}
+        kwargs = {}
+
+        # isolate session namespace per target
+        if "session_id" in fset:
+            sid = getattr(att, "session_id", None)
+            if sid is not None:
+                kwargs["session_id"] = f"{sid}::target{t}"
+
+        # make randomness per-target deterministic (and independent across targets)
+        if "rng" in fset:
+            kwargs["rng"] = np.random.default_rng(10_000_000 + int(t))
+
+        return replace(att, **kwargs) if kwargs else att
+
     exact = 0
     within = 0
     for t in targets:
         t = int(t)
-        pred = int(attacker.attack(api, X_db, t))
+        att_t = _clone_attacker_for_target(attacker, t)
+
+        pred = int(att_t.attack(api, X_db, t))
         exact += int(pred == t)
+
         dist = metric.pairwise(X_db[t].reshape(1, -1), X_db[pred].reshape(1, -1))[0, 0]
         within += int(dist <= r_global)
+
     n = float(len(targets))
     return exact / n, within / n

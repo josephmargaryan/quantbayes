@@ -80,7 +80,10 @@ def attacker_metrics_router(
     session_pool_size: int,
     seed: int,
 ) -> Dict[str, float]:
-    rng = np.random.default_rng(seed)
+    """
+    Router attacker metrics with per-target session isolation.
+    Without this, router/output no-repeat state leaks across targets and biases results.
+    """
     exact = 0
     within_r = 0
     hospital_hit = 0
@@ -90,16 +93,20 @@ def attacker_metrics_router(
         x_t = X_train[t]
         true_h = int(h_train[t])
 
+        # Per-target RNG for reproducibility + comparability
+        rng_t = np.random.default_rng(int(seed) + 10_000_000 + t)
+
         counts: Dict[int, int] = {}
         for q in range(int(Q)):
-            z = x_t + rng.normal(loc=0.0, scale=0.05, size=x_t.shape[0])
+            z = x_t + rng_t.normal(loc=0.0, scale=0.05, size=x_t.shape[0])
 
+            # IMPORTANT: make session IDs unique per target
             if attacker_mode == "same_session":
-                sid = "attacker"
+                sid = f"attacker::t{t}"
             elif attacker_mode == "rotating_sessions":
-                sid = f"attacker_{q}"
+                sid = f"attacker::t{t}::q{q}"
             elif attacker_mode == "pool_sessions":
-                sid = f"attacker_{q % max(1, session_pool_size)}"
+                sid = f"attacker::t{t}::p{q % max(1, session_pool_size)}"
             else:
                 raise ValueError("unknown attacker_mode")
 

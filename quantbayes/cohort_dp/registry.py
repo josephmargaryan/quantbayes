@@ -1,5 +1,6 @@
 # cohort_dp/registry.py
 from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import Optional
 import hashlib
@@ -16,6 +17,7 @@ from .novel_mechanisms import (
     AdaptiveBallUniformRetriever,
     AdaptiveBallExponentialRetriever,
     AdaptiveBallMixedRetriever,
+    AdaptiveBallOptimalSkewRetriever,
 )
 
 
@@ -28,7 +30,12 @@ def _stable_int(s: str, mod: int = 10_000_000) -> int:
 class MechanismSpec:
     """
     kind:
-      NONPRIVATE | EM | NOISY_TOPK | LAPLACE_TOPK | ABU | ABE | ABM
+      NONPRIVATE | EM | NOISY_TOPK | LAPLACE_TOPK | ABU | ABE | ABM | ABO
+
+    Notes:
+      - eps_total is used for DP baselines (EM/NOISY/LAPLACE) and also as a sweep knob for ABM/ABE if gamma is None.
+      - eps_ball is used by ABO (AB-Optimal). If eps_ball is None, we fall back to eps_total.
+      - gamma is optional for ABE/ABM (draft-style sharpness knob).
     """
 
     kind: str
@@ -36,6 +43,10 @@ class MechanismSpec:
     eps_total: float = 0.0
     k0: int = 20
     mix_uniform: float = 0.7
+
+    gamma: Optional[float] = None
+    eps_ball: Optional[float] = None
+
     name: Optional[str] = None
 
     def label(self) -> str:
@@ -53,17 +64,26 @@ class MechanismSpec:
         if k == "ABU":
             return f"AB-Uniform k0={self.k0}"
         if k == "ABE":
+            if self.gamma is not None:
+                return f"AB-Exp k0={self.k0} gamma={self.gamma:g}"
             return f"AB-Exp k0={self.k0} eps={self.eps_total:g}"
         if k == "ABM":
+            if self.gamma is not None:
+                return (
+                    f"AB-Mix k0={self.k0} mix={self.mix_uniform:g} gamma={self.gamma:g}"
+                )
             return (
-                f"AB-Mix k0={self.k0} eps={self.eps_total:g} mix={self.mix_uniform:g}"
+                f"AB-Mix k0={self.k0} mix={self.mix_uniform:g} eps={self.eps_total:g}"
             )
+        if k == "ABO":
+            eb = self.eps_ball if self.eps_ball is not None else self.eps_total
+            return f"AB-Optimal k0={self.k0} eps_ball={eb:g}"
         return f"{self.kind}"
 
     def fingerprint(self) -> str:
         return (
             f"kind={self.kind.upper()}|k={self.k_service}|eps={self.eps_total}|"
-            f"k0={self.k0}|mix={self.mix_uniform}|name={self.name}"
+            f"k0={self.k0}|mix={self.mix_uniform}|gamma={self.gamma}|eps_ball={self.eps_ball}|name={self.name}"
         )
 
 
@@ -148,7 +168,12 @@ def build_retriever(
 
     if kind == "ABE":
         return AdaptiveBallExponentialRetriever(
-            X=X, metric=metric, k0=spec.k0, eps_total=spec.eps_total, rng=rng
+            X=X,
+            metric=metric,
+            k0=spec.k0,
+            eps_total=spec.eps_total,
+            rng=rng,
+            gamma=spec.gamma,
         )
 
     if kind == "ABM":
@@ -158,6 +183,17 @@ def build_retriever(
             k0=spec.k0,
             eps_total=spec.eps_total,
             mix_uniform=spec.mix_uniform,
+            rng=rng,
+            gamma=spec.gamma,
+        )
+
+    if kind == "ABO":
+        eb = spec.eps_ball if spec.eps_ball is not None else spec.eps_total
+        return AdaptiveBallOptimalSkewRetriever(
+            X=X,
+            metric=metric,
+            k0=spec.k0,
+            eps_ball=float(eb),
             rng=rng,
         )
 
