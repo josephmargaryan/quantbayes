@@ -23,4 +23,11 @@ python -m quantbayes.ball_dp.experiments.exp_cifar10_logreg \
   --out_dir ./runs/cifar10_logreg_ball_dp \
   --l2_normalize
 
+!python -m quantbayes.ball_dp.experiments.exp_privacy_profile \
+  --out_dir ./runs/cifar10_privacy_profile \
+  --l2_normalize \
+  --r_percentiles 10,25,50,75,90 \
+  --nn_sample_per_class 400
+
+
 """
