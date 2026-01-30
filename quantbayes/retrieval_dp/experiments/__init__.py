@@ -1,12 +1,20 @@
 """
 How to run:
 
-python -m quantbayes.retrieval_dp.experiments.exp_cifar10_private_retrieval \
-  --out_dir ./runs/cifar10_retrieval_ball_dp \
+# ANALYTIC
+!python -m quantbayes.retrieval_dp.experiments.exp_cifar10_private_retrieval \
+  --out_dir ./runs/analytic/cifar10_retrieval_ball_dp \
   --l2_normalize \
-  --mechanism gaussian \ # or laplace
-  --sigma_method analytic \ # or classic,
-  --delta 1e-5 \
-  --n_per_class_list 100,2000,5000 \
-  --eps_list 0.05,0.1,0.2,0.5,1,2,5,10
+  --mechanism gaussian \
+  --sigma_method analytic \
+  --n_per_class_list 100,2000,5000
+
+# CLASSIC
+!python -m quantbayes.retrieval_dp.experiments.exp_cifar10_private_retrieval \
+  --out_dir ./runs/classic/cifar10_retrieval_ball_dp \
+  --l2_normalize \
+  --mechanism gaussian \
+  --sigma_method classic \
+  --n_per_class_list 100,2000,5000
+
 """
