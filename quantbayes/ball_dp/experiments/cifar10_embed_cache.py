@@ -162,7 +162,7 @@ def get_or_compute_cifar10_embeddings(
     Ztr, ytr = _extract_embeddings(train_loader, enc, device, cfg.l2_normalize)
     Zte, yte = _extract_embeddings(test_loader, enc, device, cfg.l2_normalize)
 
-    meta_json = np.array(json.dumps(expected), dtype=np.unicode_)
+    meta_json = np.array(json.dumps(expected), dtype=np.str_)
     np.savez_compressed(
         cache_path, Ztr=Ztr, ytr=ytr, Zte=Zte, yte=yte, meta_json=meta_json
     )
