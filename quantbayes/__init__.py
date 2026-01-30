@@ -15,6 +15,8 @@ from . import (
     var,
     spectral,
     dp,
+    ball_dp,
+    retrieval_dp,
 )
 
 __all__ = [
@@ -34,4 +36,6 @@ __all__ = [
     "hyperparameter_tune",
     "spectral",
     "dp",
+    "ball_dp",
+    "retrieval_dp",
 ]

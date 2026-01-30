@@ -70,6 +70,13 @@ def main() -> None:
 
     ap.add_argument("--k", type=int, default=10)
     ap.add_argument("--delta", type=float, default=1e-5)  # only for gaussian
+    ap.add_argument(
+        "--sigma_method",
+        type=str,
+        default="classic",
+        choices=["classic", "analytic"],
+        help="Gaussian calibration method (only used when --mechanism gaussian).",
+    )
     ap.add_argument("--trials", type=int, default=5)
     ap.add_argument("--seed", type=int, default=0)
 
@@ -154,6 +161,7 @@ def main() -> None:
             "r_values": r_vals,
             "q_norm_bound": float(q_norm_bound),
             "n_test_eval": int(Zte_eval.shape[0]),
+            "sigma_method": str(args.sigma_method),
         },
     )
 
@@ -204,6 +212,7 @@ def main() -> None:
                         delta=float(args.delta),
                         rng=rng,
                         q_norm_bound=float(q_norm_bound),
+                        sigma_method=str(args.sigma_method),  # NEW
                     )
 
             return _factory

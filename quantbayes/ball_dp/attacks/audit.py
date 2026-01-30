@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Dict, Optional, Tuple
+from typing import Callable, Tuple
 
+import math
 import numpy as np
 
 
@@ -24,7 +25,7 @@ def gaussian_llr(
     Positive => favor D0.
     """
     sig2 = float(sigma) ** 2
-    if sig2 <= 0:
+    if sig2 <= 0.0:
         raise ValueError("sigma must be > 0")
     y = np.asarray(y)
     mu0 = np.asarray(mu0)
@@ -35,19 +36,39 @@ def gaussian_llr(
 def llr_attack_predict(
     y: np.ndarray, mu0: np.ndarray, mu1: np.ndarray, sigma: float
 ) -> int:
-    """
-    Return 0 if attacker predicts dataset D0, else 1.
-    """
+    """Return 0 if attacker predicts dataset D0, else 1."""
     return 0 if gaussian_llr(y, mu0, mu1, sigma) >= 0.0 else 1
 
 
 @dataclass(frozen=True)
 class LLRAuditResult:
+    # attack metric (optimal LRT under equal priors)
     attack_acc: float
-    llr_mean: float
-    llr_std: float
-    frac_llr_gt_eps: float
+
+    # LLR stats, conditioned on which dataset generated y
+    llr_mean_under_D: float
+    llr_std_under_D: float
+    llr_mean_under_Dprime: float
+    llr_std_under_Dprime: float
+
+    # directional tail probabilities for the privacy-loss RV L = log p(y|D)/p(y|D')
+    p_L_gt_eps_under_D: float
+    p_L_gt_eps_under_Dprime: float
+
+    # estimated DP slack:  max(0, P_D[L>eps] - e^eps P_{D'}[L>eps])
+    delta_hat_D_to_Dprime: float
+
+    # reverse-direction tails for L_rev = log p(y|D')/p(y|D) = -L
+    # i.e. tails of (L < -eps) under D and D'
+    p_L_lt_minus_eps_under_D: float
+    p_L_lt_minus_eps_under_Dprime: float
+
+    # estimated reverse DP slack: max(0, P_{D'}[L<-eps] - e^eps P_D[L<-eps])
+    delta_hat_Dprime_to_D: float
+
     n_trials: int
+    n_D: int
+    n_Dprime: int
 
 
 def run_llr_audit_trials(
@@ -66,40 +87,45 @@ def run_llr_audit_trials(
     """
     Threat-model-aligned auditing for a deterministic query f(D) + N(0, sigma^2 I).
 
-    Inputs
-    ------
-    f:
-        Deterministic function on datasets (e.g., prototypes, ERM params).
-    make_neighbor:
-        Function that, given D and RNG, returns:
-          (D_prime, bit, mu0, mu1)
-        where:
-          - bit in {0,1} is the ground truth: 0 => mechanism run on D, 1 => on D'
-          - mu0 = f(D), mu1 = f(D')
-    D:
-        Dataset in the representation space used by f (e.g., embeddings per class aggregated).
-    sigma:
-        Noise std.
-    eps:
-        The DP epsilon to test exceedance rates for the privacy loss random variable.
-    n_trials:
-        Monte Carlo trials.
+    make_neighbor should return (D_prime, bit, mu0, mu1) where:
+      - bit in {0,1} indicates ground truth mechanism run: 0 => D, 1 => D'
+      - mu0 = f(D), mu1 = f(D')
     """
-    rng = np.random.default_rng(seed)
-    llrs = []
+    if float(sigma) <= 0.0:
+        raise ValueError("sigma must be > 0")
+    if float(eps) <= 0.0:
+        raise ValueError("eps must be > 0")
+    if int(n_trials) <= 0:
+        raise ValueError("n_trials must be >= 1")
+
+    rng = np.random.default_rng(int(seed))
+    eps = float(eps)
+    exp_eps = math.exp(eps)
+
     correct = 0
 
-    muD = f(D)
+    # counts by generating dataset
+    n_D = 0
+    n_Dp = 0
+
+    # store LLRs by generating dataset (for conditional stats)
+    llrs_D: list[float] = []
+    llrs_Dp: list[float] = []
+
+    # tails for event {L > eps} (same L definition always: log p(y|D)/p(y|D'))
+    cnt_D_L_gt = 0
+    cnt_Dp_L_gt = 0
+
+    # tails for event {L < -eps} (equivalently, L_rev > eps)
+    cnt_D_L_lt = 0
+    cnt_Dp_L_lt = 0
 
     for _ in range(int(n_trials)):
-        Dp, bit, mu0, mu1 = make_neighbor(D, rng)
-        assert bit in (0, 1)
+        _Dp, bit, mu0, mu1 = make_neighbor(D, rng)
+        if bit not in (0, 1):
+            raise ValueError("make_neighbor must return bit in {0,1}")
 
-        if bit == 0:
-            mu = mu0
-        else:
-            mu = mu1
-
+        mu = mu0 if bit == 0 else mu1
         y = mu + rng.normal(0.0, float(sigma), size=mu.shape).astype(
             mu.dtype, copy=False
         )
@@ -107,14 +133,52 @@ def run_llr_audit_trials(
         pred = llr_attack_predict(y, mu0, mu1, sigma)
         correct += int(pred == bit)
 
-        llr = gaussian_llr(y, mu0, mu1, sigma)  # log p(y|D) - log p(y|D')
-        llrs.append(llr)
+        L = gaussian_llr(y, mu0, mu1, sigma)  # L = log p(y|D)/p(y|D')
 
-    llrs = np.asarray(llrs, dtype=np.float64)
+        if bit == 0:
+            n_D += 1
+            llrs_D.append(L)
+            if L > eps:
+                cnt_D_L_gt += 1
+            if L < -eps:
+                cnt_D_L_lt += 1
+        else:
+            n_Dp += 1
+            llrs_Dp.append(L)
+            if L > eps:
+                cnt_Dp_L_gt += 1
+            if L < -eps:
+                cnt_Dp_L_lt += 1
+
+    # probabilities (guard against pathological n_D or n_Dp = 0)
+    p_D_L_gt = float(cnt_D_L_gt) / float(max(1, n_D))
+    p_Dp_L_gt = float(cnt_Dp_L_gt) / float(max(1, n_Dp))
+    p_D_L_lt = float(cnt_D_L_lt) / float(max(1, n_D))
+    p_Dp_L_lt = float(cnt_Dp_L_lt) / float(max(1, n_Dp))
+
+    # DP slack estimators
+    delta_hat = max(0.0, p_D_L_gt - exp_eps * p_Dp_L_gt)
+    delta_hat_rev = max(0.0, p_Dp_L_lt - exp_eps * p_D_L_lt)
+
+    # conditional stats
+    llrs_D_arr = np.asarray(llrs_D, dtype=np.float64) if llrs_D else np.asarray([0.0])
+    llrs_Dp_arr = (
+        np.asarray(llrs_Dp, dtype=np.float64) if llrs_Dp else np.asarray([0.0])
+    )
+
     return LLRAuditResult(
         attack_acc=float(correct) / float(n_trials),
-        llr_mean=float(llrs.mean()),
-        llr_std=float(llrs.std()),
-        frac_llr_gt_eps=float((llrs > float(eps)).mean()),
+        llr_mean_under_D=float(llrs_D_arr.mean()),
+        llr_std_under_D=float(llrs_D_arr.std()),
+        llr_mean_under_Dprime=float(llrs_Dp_arr.mean()),
+        llr_std_under_Dprime=float(llrs_Dp_arr.std()),
+        p_L_gt_eps_under_D=p_D_L_gt,
+        p_L_gt_eps_under_Dprime=p_Dp_L_gt,
+        delta_hat_D_to_Dprime=float(delta_hat),
+        p_L_lt_minus_eps_under_D=p_D_L_lt,
+        p_L_lt_minus_eps_under_Dprime=p_Dp_L_lt,
+        delta_hat_Dprime_to_D=float(delta_hat_rev),
         n_trials=int(n_trials),
+        n_D=int(n_D),
+        n_Dprime=int(n_Dp),
     )

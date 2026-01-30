@@ -15,46 +15,61 @@ def lz_prototypes_exact() -> float:
     return 2.0
 
 
-def lz_logistic_binary_bound(*, B: float, lam: float) -> float:
+def lz_logistic_binary_bound(
+    *, B: float, lam: float, include_bias: bool = True
+) -> float:
     """
-    A clean bound derived in your notes:
+    Conservative bound for binary logistic regression gradient Lipschitz-in-data constant L_z.
 
-      L_z <= 1 + (B^2)/(4*lam)
-
-    where:
-      - ||z|| <= B (enforced e.g. via L2 normalization or clipping),
-      - lam is L2 regularization coefficient in (lam/2)||theta||^2.
-
-    This uses the fact ||theta_hat|| <= B/lam at the optimum (standard for logistic + L2 reg).
+    Without bias (w only):   L_z <= 1 + B^2/(4 lam)
+    With bias via augmentation \tilde e=(e,1): replace B^2 by (B^2+1).
     """
+    B = float(B)
+    lam = float(lam)
     if B <= 0:
-        raise ValueError("B must be > 0")
+        raise ValueError("B must be > 0.")
     if lam <= 0:
-        raise ValueError("lam must be > 0")
-    return 1.0 + (float(B) * float(B)) / (4.0 * float(lam))
+        raise ValueError("lam must be > 0.")
+    Btilde_sq = B * B + (1.0 if include_bias else 0.0)
+    return 1.0 + Btilde_sq / (4.0 * lam)
 
 
-def lz_softmax_linear_bound(*, B: float, lam: float) -> float:
+def lz_softmax_linear_bound(
+    *, B: float, lam: float, include_bias: bool = True
+) -> float:
     """
-    Conservative bound for K-class softmax linear classifier W in R^{Kxd} with CE loss.
+    Conservative L_z bound for K-class softmax linear head (optionally with bias).
 
-    A usable (conservative) form:
-      L_z <= sqrt(2) + (B * ||W||_2)/2
+    Model: logits = W e + b, p = softmax(logits), loss = -log p_y.
+    If we include a bias b, we can write this as an augmented linear map:
+        \tilde e = (e, 1),   \tilde W = [W  b]
+    and regularize \tilde W with (lam/2)||\tilde W||_F^2 (i.e., bias is regularized too).
 
-    and at the L2-regularized optimum:
-      ||W||_F <= (sqrt(2)*B)/lam  =>  ||W||_2 <= ||W||_F <= (sqrt(2)*B)/lam
+    Assumptions:
+      - ||e||_2 <= B.
+      - If include_bias=True, then ||\tilde e||_2 <= sqrt(B^2 + 1) =: \tilde B.
 
-    giving:
-      L_z <= sqrt(2) + B * (sqrt(2)*B/lam)/2
-           = sqrt(2) * (1 + B^2/(2*lam))
+    Derivation sketch (matches your LaTeX):
+      ||a(e)||_2 = ||softmax(\tilde W \tilde e) - onehot(y)||_2 <= sqrt(2)
+      ||J_softmax||_op <= 1/2
+      => ||∇_W ℓ(e) - ∇_W ℓ(e')||_F <= (sqrt(2) + (||\tilde W||_2 * \tilde B)/2) ||e - e'||_2
 
-    This is intentionally conservative but clean and monotone in (B, lam).
+    For the L2-regularized ERM minimizer \tilde W*:
+      ||\tilde W*||_2 <= ||\tilde W*||_F <= sqrt(2) * \tilde B / lam
+
+    Plugging in yields:
+      L_z <= sqrt(2) * (1 + \tilde B^2 / (2 lam))
+          = sqrt(2) * (1 + (B^2 + 1)/(2 lam))  if include_bias=True.
     """
+    B = float(B)
+    lam = float(lam)
     if B <= 0:
-        raise ValueError("B must be > 0")
+        raise ValueError("B must be > 0.")
     if lam <= 0:
-        raise ValueError("lam must be > 0")
-    return math.sqrt(2.0) * (1.0 + (float(B) * float(B)) / (2.0 * float(lam)))
+        raise ValueError("lam must be > 0.")
+
+    Btilde_sq = B * B + (1.0 if include_bias else 0.0)
+    return math.sqrt(2.0) * (1.0 + Btilde_sq / (2.0 * lam))
 
 
 def estimate_lz_empirical_torch(

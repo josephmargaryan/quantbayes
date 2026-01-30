@@ -20,7 +20,6 @@ from .lz import (
     lz_prototypes_exact,
     lz_logistic_binary_bound,
     lz_softmax_linear_bound,
-    estimate_lz_empirical_torch,
 )
 from .radius import (
     within_class_nn_distances,
@@ -28,6 +27,16 @@ from .radius import (
     coverage_curve,
     dp_quantile_exponential_mechanism,
 )
+from .api import (
+    EmbeddingBundle,
+    RadiusPolicy,
+    embed_torch_dataloaders,
+    save_embeddings_npz,
+    load_embeddings_npz,
+    compute_radius_policy,
+    dp_release_erm_params_gaussian,
+)
+
 
 __all__ = [
     "BallAdjacency",
@@ -37,9 +46,15 @@ __all__ = [
     "lz_prototypes_exact",
     "lz_logistic_binary_bound",
     "lz_softmax_linear_bound",
-    "estimate_lz_empirical_torch",
     "within_class_nn_distances",
     "radii_from_percentiles",
     "coverage_curve",
     "dp_quantile_exponential_mechanism",
+    "EmbeddingBundle",
+    "RadiusPolicy",
+    "embed_torch_dataloaders",
+    "save_embeddings_npz",
+    "load_embeddings_npz",
+    "compute_radius_policy",
+    "dp_release_erm_params_gaussian",
 ]

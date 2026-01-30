@@ -41,6 +41,48 @@ def gaussian_sigma_classic(delta_u: float, eps: float, delta: float) -> float:
     return (Delta / float(eps)) * np.sqrt(2.0 * np.log(1.25 / float(delta)))
 
 
+def gaussian_sigma(
+    delta_u: float,
+    eps: float,
+    delta: float,
+    *,
+    method: Literal["classic", "analytic"] = "classic",
+    tol: float = 1e-12,
+) -> float:
+    """
+    Calibrate sigma for Gaussian noisy-score release with L2 sensitivity `delta_u`.
+
+    - "classic": sigma >= (Δ/ε) * sqrt(2 log(1.25/δ))
+    - "analytic": Balle & Wang (2018) analytic calibration (minimal sigma), using
+      quantbayes.ball_dp.analytical_gaussian_mechanism.calibrate_analytic_gaussian
+    """
+    if eps <= 0:
+        raise ValueError("eps must be > 0.")
+    if not (0.0 < delta < 1.0):
+        raise ValueError("delta must be in (0,1).")
+    if tol <= 0.0:
+        raise ValueError("tol must be > 0.")
+    if float(delta_u) < 0.0:
+        raise ValueError("delta_u must be >= 0.")
+
+    if method == "classic":
+        return gaussian_sigma_classic(float(delta_u), float(eps), float(delta))
+
+    if method == "analytic":
+        from quantbayes.ball_dp.analytical_gaussian_mechanism import (
+            calibrate_analytic_gaussian,
+        )
+
+        return calibrate_analytic_gaussian(
+            epsilon=float(eps),
+            delta=float(delta),
+            GS=float(delta_u),
+            tol=float(tol),
+        )
+
+    raise ValueError(f"Unknown method: {method!r}. Use 'classic' or 'analytic'.")
+
+
 @dataclass
 class NonPrivateTopKRetriever:
     """
@@ -166,6 +208,10 @@ class NoisyScoresTopKGaussianRetriever:
     rng: np.random.Generator
     q_norm_bound: float = 1.0  # used only when score="dot"
 
+    # NEW:
+    sigma_method: Literal["classic", "analytic"] = "classic"
+    sigma_tol: float = 1e-12
+
     def __post_init__(self) -> None:
         self.V = np.asarray(self.V, dtype=np.float32)
         if self.eps <= 0:
@@ -176,6 +222,10 @@ class NoisyScoresTopKGaussianRetriever:
             raise ValueError("r must be >= 0.")
         if self.q_norm_bound <= 0:
             raise ValueError("q_norm_bound must be > 0.")
+        if self.sigma_tol <= 0:
+            raise ValueError("sigma_tol must be > 0.")
+        if self.sigma_method not in ("classic", "analytic"):
+            raise ValueError("sigma_method must be 'classic' or 'analytic'.")
 
     def query_many(
         self, Q: np.ndarray, k: int, *, candidates: Optional[np.ndarray] = None
@@ -202,8 +252,12 @@ class NoisyScoresTopKGaussianRetriever:
         Delta_u = score_sensitivity(
             self.score, r=float(self.r), q_norm_bound=float(self.q_norm_bound)
         )
-        sigma = gaussian_sigma_classic(
-            float(Delta_u), float(self.eps), float(self.delta)
+        sigma = gaussian_sigma(
+            float(Delta_u),
+            float(self.eps),
+            float(self.delta),
+            method=self.sigma_method,
+            tol=float(self.sigma_tol),
         )
 
         noise = self.rng.normal(loc=0.0, scale=float(sigma), size=scores.shape).astype(

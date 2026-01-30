@@ -1,3 +1,4 @@
+# quantbayes/retrieval_dp/__init__.py
 from .metrics import ScoreType
 from .sensitivity import (
     bounded_replacement_radius,
@@ -9,6 +10,7 @@ from .mechanisms import (
     NoisyScoresTopKGaussianRetriever,
     ExponentialMechanismTopKRetriever,
 )
+from .api import make_topk_retriever
 
 __all__ = [
     "ScoreType",
@@ -18,4 +20,5 @@ __all__ = [
     "NoisyScoresTopKLaplaceRetriever",
     "NoisyScoresTopKGaussianRetriever",
     "ExponentialMechanismTopKRetriever",
+    "make_topk_retriever",
 ]
