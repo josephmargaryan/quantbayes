@@ -1,3 +1,4 @@
+# quantbayes/pkdiffusion/demos/demo_gaussian_kl_identity.py
 from __future__ import annotations
 
 from pathlib import Path

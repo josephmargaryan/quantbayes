@@ -1,3 +1,4 @@
+# quantbayes/pkdiffusion/guidance.py
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -17,36 +18,58 @@ Array = jax.Array
 @dataclass(frozen=True)
 class VRWRadialRRGuidanceConfig:
     """
-    Guidance for VRW endpoint diffusion:
-      log L(r) = log q(r) - log pi_ref(r)
+    Guidance for VRW endpoint diffusion with RR/PK radial evidence:
+
+        log L(r) = log q(r) - log pi_ref(r)
 
     where q is ScaledBeta on r in (0,N) and pi_ref is Stephens approx.
+
+    Key numerical issue:
+      For VP SDE with large t1 (e.g. 10), alpha(t) can be extremely small at large t.
+      Any Tweedie-based x0_hat uses division by alpha(t). So we *gate* guidance:
+        - if alpha(t) < min_alpha: return 0 guidance.
+
+    We also:
+      - compute the radial direction using r_raw (not clipped r),
+      - clip r only for logpdf evaluation,
+      - optionally clip the final guidance norm.
     """
 
     N: int = 5
     kappa: float = 10.0
     alpha: float = 10.0
     beta: float = 10.0
+
     guidance_scale: float = 1.0
+
+    # Numerical stability
     eps: float = 1e-6
+    min_alpha: float = 0.05  # <-- IMPORTANT: guidance off when alpha(t) too small
+    max_guidance_norm: float = 25.0  # norm clip on extra score term
+
+    # Soft ramp-in based on SNR; bounded in [0,1]
+    snr_gamma: float = 1.0
 
 
 def make_vrw_radial_rr_guidance(cfg: VRWRadialRRGuidanceConfig) -> Callable:
     """
-    Returns a function:
-      extra_score = g(t, x_t, score_t, *, int_beta_fn) -> R^2
+    Returns:
+        guidance(t, x_t, score_t, *, int_beta_fn) -> extra_score (same shape as x_t)
 
-    This implements a DPS-style "denoise-then-guide" approximation:
-      x0_hat = (x_t + sigma(t)^2 * score_t) / alpha(t)
-      ∇_{x0} log L(||x0||) is radial
-      ∇_{x_t} log L(x0_hat) ≈ (1/alpha(t)) * ∇_{x0} log L
+    Uses a DPS-style approximation:
+        x0_hat = (x_t + sigma(t)^2 * score_t) / alpha(t)    (Tweedie)
+        grad_x0 log L(||x0||) is radial
+        grad_xt approx = (1/alpha(t)) * grad_x0  (ignoring d(score)/dx)
 
-    and we add it directly to the score.
+    Then applies:
+        - alpha gate (turn off when alpha < min_alpha),
+        - SNR ramp-in in [0,1],
+        - norm clip.
     """
     steph_cfg = StephensConfig(kappa=float(cfg.kappa), N=int(cfg.N))
 
     def log_ratio_r(r: Array) -> Array:
-        # r is scalar
+        # scalar r
         return log_scaled_beta_pdf(r, cfg.alpha, cfg.beta, cfg.N) - stephens_logpdf_r(
             r, cfg=steph_cfg
         )
@@ -58,27 +81,45 @@ def make_vrw_radial_rr_guidance(cfg: VRWRadialRRGuidanceConfig) -> Callable:
         x_t: Array,  # (2,)
         score_t: Array,  # (2,)
         *,
-        int_beta_fn,  # callable int_beta(t)
+        int_beta_fn,
     ) -> Array:
         # VP scalars
         a, s = vp_alpha_sigma(int_beta_fn, t)
-        a = jnp.maximum(a, cfg.eps)
+        a = jnp.asarray(a)
+        s = jnp.asarray(s)
+
+        # Gate: if alpha is too small, Tweedie x0_hat is numerically explosive.
+        gate = (a >= cfg.min_alpha).astype(x_t.dtype)
+
+        # Tweedie estimate for x0
+        a_safe = jnp.maximum(a, cfg.eps)
         s2 = s * s
+        x0_hat = (x_t + s2 * score_t) / a_safe  # (2,)
 
-        # Tweedie denoiser for VP:
-        x0_hat = (x_t + s2 * score_t) / a  # (2,)
+        # Use RAW norm for direction (stable)
+        r_raw = jnp.linalg.norm(x0_hat)
+        direction = x0_hat / (r_raw + cfg.eps)  # unit-ish vector
 
-        r = jnp.linalg.norm(x0_hat)
-        # Keep r in (0,N) for logpdf stability; this is a demo, not a theorem.
-        r = jnp.clip(r, cfg.eps, float(cfg.N) - cfg.eps)
+        # Clip r only for evaluating log densities / derivatives
+        r_eval = jnp.clip(r_raw, cfg.eps, float(cfg.N) - cfg.eps)
+        dldr = dlog_ratio_dr(r_eval)  # scalar
 
-        dldr = dlog_ratio_dr(r)  # scalar
+        # grad in x0 space
+        grad_x0 = direction * dldr  # (2,)
 
-        # radial gradient in x0 space
-        grad_x0 = (x0_hat / (r + cfg.eps)) * dldr
+        # chain approx to xt
+        grad_xt = grad_x0 / a_safe  # (2,)
 
-        # approximate chain to x_t
-        grad_xt = grad_x0 / a
-        return float(cfg.guidance_scale) * grad_xt
+        # bounded SNR-based ramp-in: snr/(1+snr) in [0,1]
+        snr = (a_safe * a_safe) / (s2 + cfg.eps)
+        w = (snr / (1.0 + snr)) ** cfg.snr_gamma
+
+        extra = cfg.guidance_scale * gate * w * grad_xt  # (2,)
+
+        # Norm clip for safety
+        nrm = jnp.linalg.norm(extra)
+        maxn = jnp.asarray(cfg.max_guidance_norm, dtype=extra.dtype)
+        extra = extra * jnp.minimum(1.0, maxn / (nrm + cfg.eps))
+        return extra
 
     return guidance

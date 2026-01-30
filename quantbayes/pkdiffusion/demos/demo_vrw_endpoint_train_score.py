@@ -1,3 +1,4 @@
+# quantbayes/pkdiffusion/demos/demo_vrw_endpoint_train_score.py
 from __future__ import annotations
 
 from pathlib import Path

@@ -10,4 +10,7 @@ python -m quantbayes.pkdiffusion.demos.demo_vrw_endpoint_train_score
 
 # 4) Guided sampling on endpoints + plots/metrics
 python -m quantbayes.pkdiffusion.demos.demo_vrw_endpoint_guided_sampling
+
+# 5) Evaluate trained score model (plots + metrics)
+python -m quantbayes.pkdiffusion.demos.demo_vrw_endpoint_eval_score
 """

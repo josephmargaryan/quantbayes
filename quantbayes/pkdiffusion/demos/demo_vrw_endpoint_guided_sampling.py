@@ -1,3 +1,4 @@
+# quantbayes/pkdiffusion/demos/demo_vrw_endpoint_guided_sampling.py
 from __future__ import annotations
 
 from pathlib import Path
@@ -32,7 +33,11 @@ from quantbayes.pkdiffusion.guidance import (
     VRWRadialRRGuidanceConfig,
     make_vrw_radial_rr_guidance,
 )
-from quantbayes.pkdiffusion.metrics import w2_empirical_1d, w2_empirical_2d_hungarian
+from quantbayes.pkdiffusion.metrics import (
+    w2_empirical_1d,
+    sliced_w2_empirical,
+    w2_empirical_2d_hungarian,
+)
 
 
 OUT_DIR = Path("reports/pkdiffusion/vrw_endpoint_guided")
@@ -151,8 +156,11 @@ def main():
         kappa=KAPPA,
         alpha=ALPHA,
         beta=BETA,
-        guidance_scale=2.0,  # tune if needed
-        eps=1e-5,
+        guidance_scale=1.0,  # start safer; increase to 2.0 after it’s stable
+        eps=1e-6,
+        min_alpha=0.05,  # IMPORTANT for t1=10.0
+        max_guidance_norm=25.0,  # safety
+        snr_gamma=1.0,
     )
     guidance_fn = make_vrw_radial_rr_guidance(gcfg)
 
@@ -202,6 +210,19 @@ def main():
         seed=123,
     )
 
+    def _finite(X):
+        X = np.asarray(X)
+        m = np.isfinite(X).all(axis=1)
+        return X[m], float(np.mean(m))
+
+    X_uncond_np, frac_u = _finite(X_uncond_np)
+    X_guided_np, frac_g = _finite(X_guided_np)
+    X_is, frac_is = _finite(X_is)
+
+    print(
+        f"Finite fraction: uncond={frac_u:.4f}, guided={frac_g:.4f}, IS={frac_is:.4f}"
+    )
+
     # -------------------------
     # Metrics on r
     # -------------------------
@@ -216,8 +237,12 @@ def main():
 
     # Wasserstein distances vs IS baseline
     w2_r_g_is = w2_empirical_1d(r_g, r_is)
-    w2_x_g_is = w2_empirical_2d_hungarian(X_guided_np[:600], X_is[:600])  # keep n small
-
+    w2_x_g_is = sliced_w2_empirical(
+        X_guided_np,
+        X_is,
+        num_projections=256,
+        seed=0,
+    )
     # -------------------------
     # Plots
     # -------------------------

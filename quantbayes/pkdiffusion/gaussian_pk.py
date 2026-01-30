@@ -1,3 +1,4 @@
+# quantbayes/pkdiffusion/gaussian_pk.py
 from __future__ import annotations
 
 from dataclasses import dataclass

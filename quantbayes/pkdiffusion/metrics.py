@@ -1,3 +1,4 @@
+# quantbayes/pkdiffusion/metrics.py
 from __future__ import annotations
 
 import numpy as np
@@ -22,9 +23,7 @@ def kl_gaussian_nd(
     C1 = np.asarray(C1, dtype=float)
     d = m0.shape[0]
 
-    # Solve C1^{-1} * C0 and C1^{-1}*(m1-m0) stably via solves
     L = np.linalg.cholesky(C1)
-    # inv(C1)C0 = solve(L.T, solve(L, C0))
     X = np.linalg.solve(L, C0)
     invC1_C0 = np.linalg.solve(L.T, X)
     tr_term = float(np.trace(invC1_C0))
@@ -39,7 +38,6 @@ def kl_gaussian_nd(
 
 
 def _spd_sqrt(C: np.ndarray) -> np.ndarray:
-    """Matrix square-root for SPD matrices via eigendecomposition."""
     w, V = np.linalg.eigh(C)
     w = np.clip(w, 0.0, None)
     return (V * np.sqrt(w)[None, :]) @ V.T
@@ -49,7 +47,7 @@ def w2_gaussian_nd(
     m0: np.ndarray, C0: np.ndarray, m1: np.ndarray, C1: np.ndarray
 ) -> float:
     """
-    2-Wasserstein distance between Gaussians.
+    2-Wasserstein distance between Gaussians:
       W2^2 = ||m0-m1||^2 + tr(C0 + C1 - 2*(C1^{1/2} C0 C1^{1/2})^{1/2})
     """
     m0 = np.asarray(m0, dtype=float).reshape(-1)
@@ -65,28 +63,94 @@ def w2_gaussian_nd(
     return float(np.sqrt(max(dm2 + tr_term, 0.0)))
 
 
+def _finite_rows(X: np.ndarray) -> np.ndarray:
+    X = np.asarray(X, dtype=float)
+    if X.ndim == 1:
+        X = X.reshape(-1, 1)
+    mask = np.isfinite(X).all(axis=1)
+    return X[mask]
+
+
 def w2_empirical_1d(x: np.ndarray, y: np.ndarray) -> float:
-    """W2 for equal-weight 1D empirical measures."""
-    x = np.sort(np.asarray(x, dtype=float).reshape(-1))
-    y = np.sort(np.asarray(y, dtype=float).reshape(-1))
+    """W2 for equal-weight 1D empirical measures (finite-only)."""
+    x = _finite_rows(np.asarray(x, dtype=float).reshape(-1))
+    y = _finite_rows(np.asarray(y, dtype=float).reshape(-1))
+    x = np.sort(x.reshape(-1))
+    y = np.sort(y.reshape(-1))
     n = min(len(x), len(y))
+    if n < 2:
+        raise ValueError("Not enough finite samples for w2_empirical_1d")
     x = x[:n]
     y = y[:n]
     return float(np.sqrt(np.mean((x - y) ** 2)))
 
 
-def w2_empirical_2d_hungarian(x: np.ndarray, y: np.ndarray) -> float:
+def sliced_w2_empirical(
+    x: np.ndarray,
+    y: np.ndarray,
+    *,
+    num_projections: int = 256,
+    seed: int = 0,
+) -> float:
     """
-    W2 for equal-weight empirical measures in R^2 using Hungarian assignment.
-    O(n^3) — keep n ~ 200–800.
+    Sliced Wasserstein-2 (SW2) distance between empirical measures in R^d.
+    Stable alternative to Hungarian W2 in d>=2.
+
+    SW2^2 = E_u [ W2^2( <u,x>, <u,y> ) ], where u is random unit direction.
     """
-    x = np.asarray(x, dtype=float)
-    y = np.asarray(y, dtype=float)
+    x = _finite_rows(x)
+    y = _finite_rows(y)
     n = min(x.shape[0], y.shape[0])
+    if n < 10:
+        raise ValueError("Not enough finite samples for sliced_w2_empirical")
     x = x[:n]
     y = y[:n]
-    # Cost matrix: squared distances
+
+    d = x.shape[1]
+    rng = np.random.default_rng(seed)
+    U = rng.normal(size=(int(num_projections), d))
+    U = U / (np.linalg.norm(U, axis=1, keepdims=True) + 1e-12)  # (P,d)
+
+    # Project: (n,P)
+    px = x @ U.T
+    py = y @ U.T
+
+    # 1D W2 per projection
+    px = np.sort(px, axis=0)
+    py = np.sort(py, axis=0)
+    w2_sq = np.mean((px - py) ** 2, axis=0)  # (P,)
+    return float(np.sqrt(np.mean(w2_sq)))
+
+
+def w2_empirical_2d_hungarian(
+    x: np.ndarray, y: np.ndarray, *, max_n: int = 800
+) -> float:
+    """
+    Exact W2 for 2D equal-weight empirical measures using Hungarian assignment.
+    This is O(n^3) and fragile if there are NaNs/infs.
+    We filter non-finite rows and cap n to max_n.
+
+    Prefer `sliced_w2_empirical` for demos unless you really need exact W2 in 2D.
+    """
+    x = _finite_rows(x)
+    y = _finite_rows(y)
+    n = min(x.shape[0], y.shape[0], int(max_n))
+    if n < 10:
+        raise ValueError("Not enough finite samples for Hungarian W2")
+    x = x[:n]
+    y = y[:n]
+
+    # Clip extreme values to avoid overflow in squared distances
+    clip = 1e6
+    x = np.clip(x, -clip, clip)
+    y = np.clip(y, -clip, clip)
+
     C = np.sum((x[:, None, :] - y[None, :, :]) ** 2, axis=-1)  # (n,n)
+    if not np.isfinite(C).all():
+        raise ValueError(
+            "Cost matrix has non-finite entries even after clipping/filtering."
+        )
+
     row, col = linear_sum_assignment(C)
     return float(np.sqrt(np.mean(C[row, col])))
 
@@ -95,9 +159,8 @@ def kl_beta(a: float, b: float, c: float, d: float) -> float:
     """
     KL(Beta(a,b) || Beta(c,d)).
 
-    Formula:
-      KL = log B(c,d) - log B(a,b)
-            + (a-c) ψ(a) + (b-d) ψ(b) + (c+d-a-b) ψ(a+b)
+    KL = log B(c,d) - log B(a,b)
+         + (a-c) ψ(a) + (b-d) ψ(b) + (c+d-a-b) ψ(a+b)
     """
     a = float(a)
     b = float(b)

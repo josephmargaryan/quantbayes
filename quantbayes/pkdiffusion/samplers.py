@@ -1,3 +1,4 @@
+# quantbayes/pkdiffusion/samplers.py
 from __future__ import annotations
 
 from dataclasses import dataclass
