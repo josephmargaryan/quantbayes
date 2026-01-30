@@ -1,3 +1,4 @@
+# quantbayes/stochax/diffusion/samplers/dpm_solver_v3.py
 from __future__ import annotations
 import jax.numpy as jnp
 import jax.random as jr

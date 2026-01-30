@@ -5,19 +5,17 @@ import argparse
 from pathlib import Path
 from typing import Dict, List, Sequence
 
-import numpy as np
 import matplotlib.pyplot as plt
+import numpy as np
 
 from quantbayes.ball_dp.experiments.cifar10_embed_cache import (
     CIFAR10EmbedConfig,
     get_or_compute_cifar10_embeddings,
 )
-from quantbayes.ball_dp.utils.io import ensure_dir, write_json, write_csv_rows
+from quantbayes.ball_dp.metrics import l2_norms
+from quantbayes.ball_dp.radius import within_class_nn_distances, radii_from_percentiles
+from quantbayes.ball_dp.utils.io import ensure_dir, write_csv_rows, write_json
 from quantbayes.ball_dp.utils.seeding import set_global_seed
-
-from quantbayes.retrieval_dp.radius import within_class_nn_distances
-from quantbayes.retrieval_dp.metrics import l2_norm_rows
-from quantbayes.retrieval_dp.sensitivity import bounded_replacement_radius
 
 
 def _ecdf(x: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -56,9 +54,6 @@ def main() -> None:
     ap.add_argument("--r_percentiles", type=str, default="10,25,50,75,90")
     ap.add_argument("--B_quantile", type=float, default=0.999)
 
-    # plotting controls
-    ap.add_argument("--bins", type=int, default=200)
-
     args = ap.parse_args()
     set_global_seed(args.seed)
 
@@ -76,7 +71,7 @@ def main() -> None:
         l2_normalize=bool(args.l2_normalize),
         seed=args.seed,
     )
-    Ztr, ytr, Zte, yte = get_or_compute_cifar10_embeddings(emb_cfg)
+    Ztr, ytr, _, _ = get_or_compute_cifar10_embeddings(emb_cfg)
 
     # Replacement-model distances: within-class NN distances (approx via subsampling)
     nn_dists = within_class_nn_distances(
@@ -90,17 +85,20 @@ def main() -> None:
     r_percentiles: List[float] = [
         float(s.strip()) for s in args.r_percentiles.split(",") if s.strip()
     ]
-    r_vals = {p: float(np.percentile(nn_dists, p)) for p in r_percentiles}
+    r_vals = radii_from_percentiles(nn_dists, r_percentiles)
 
-    # bounded-replacement baseline r_std = 2B (B from public quantile)
-    norms = l2_norm_rows(Ztr)
-    B = float(np.quantile(norms, float(args.B_quantile)))
-    r_std = float(bounded_replacement_radius(B))
+    # bounded-replacement baseline r_std = 2B
+    if bool(args.l2_normalize):
+        B = 1.0
+    else:
+        norms = l2_norms(Ztr)
+        B = float(np.quantile(norms, float(args.B_quantile)))
+    r_std = float(2.0 * B)
 
     # Compute multiplier distributions t/r
     curves: Dict[str, np.ndarray] = {}
     for p in r_percentiles:
-        r = r_vals[p]
+        r = float(r_vals[p])
         curves[f"Ball r=p{int(p)} ({r:.3g})"] = nn_dists / max(r, 1e-12)
 
     curves[f"Bounded r_std=2B ({r_std:.3g})"] = nn_dists / max(r_std, 1e-12)
@@ -131,7 +129,7 @@ def main() -> None:
             "l2_normalize": int(bool(args.l2_normalize)),
             "nn_sample_per_class": int(args.nn_sample_per_class),
             "r_percentiles": r_percentiles,
-            "r_values": r_vals,
+            "r_values": {float(k): float(v) for k, v in r_vals.items()},
             "B_quantile": float(args.B_quantile),
             "B": float(B),
             "r_std": float(r_std),
@@ -158,9 +156,6 @@ def main() -> None:
     out_path = fig_dir / "privacy_profile_multiplier_cdf.png"
     plt.savefig(out_path, dpi=220, bbox_inches="tight")
     plt.close()
-
-    print(f"[OK] wrote: {out_path}")
-    print(f"[OK] wrote: {out_dir / 'privacy_profile_multiplier_summary.csv'}")
 
 
 if __name__ == "__main__":

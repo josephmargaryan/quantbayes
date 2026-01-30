@@ -114,8 +114,11 @@ def main() -> None:
     r_vals = radii_from_percentiles(nn_dists, r_percentiles)
 
     # 3) Standard bounded replacement baseline r_std = 2B (B from norms quantile)
-    norms = l2_norms(Ztr)
-    B = float(np.quantile(norms, float(args.B_quantile)))
+    if bool(args.l2_normalize):
+        B = 1.0
+    else:
+        norms = l2_norms(Ztr)
+        B = float(np.quantile(norms, float(args.B_quantile)))
     r_std = 2.0 * B
 
     write_json(
@@ -160,7 +163,10 @@ def main() -> None:
         ) -> Tuple[List[float], List[float]]:
             means, stds = [], []
             Delta = prototypes_sensitivity_l2(
-                r=float(r_val), n_min=n_min, lam=float(args.lam)
+                r=float(r_val),
+                n_min=n_min,
+                n_total=int(Zsub.shape[0]),
+                lam=float(args.lam),
             )
 
             for eps in eps_list:

@@ -1,3 +1,4 @@
+# quantbayes/bnn/pkstruct/vrw_numpyro.py
 from __future__ import annotations
 
 from dataclasses import dataclass

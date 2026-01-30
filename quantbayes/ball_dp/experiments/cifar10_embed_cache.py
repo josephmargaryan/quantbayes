@@ -1,6 +1,7 @@
 # quantbayes/ball_dp/experiments/cifar10_embed_cache.py
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Tuple
@@ -8,8 +9,8 @@ from typing import Tuple
 import numpy as np
 import torch
 import torch.nn as nn
-from torchvision import datasets, transforms, models
 from torch.utils.data import DataLoader
+from torchvision import datasets, models, transforms
 
 from quantbayes.ball_dp.utils.seeding import set_global_seed
 from quantbayes.ball_dp.utils.io import ensure_dir
@@ -28,9 +29,7 @@ class CIFAR10EmbedConfig:
 
 
 class ResNet18Embedder(nn.Module):
-    """
-    ResNet18 penultimate embeddings: (B,512)
-    """
+    """ResNet18 penultimate embeddings: (B, 512)."""
 
     def __init__(self, weights: str = "DEFAULT"):
         super().__init__()
@@ -61,7 +60,10 @@ def _cifar10_loaders(
         [
             transforms.Resize(224),
             transforms.ToTensor(),
-            transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
+            transforms.Normalize(
+                mean=(0.485, 0.456, 0.406),
+                std=(0.229, 0.224, 0.225),
+            ),
         ]
     )
     train_ds = datasets.CIFAR10(root=data_dir, train=True, download=True, transform=tfm)
@@ -93,6 +95,47 @@ def _extract_embeddings(
     return Z, Y
 
 
+def _expected_cache_meta(cfg: CIFAR10EmbedConfig) -> dict:
+    return {
+        "version": 1,
+        "encoder": "resnet18",
+        "weights": str(cfg.weights),
+        "l2_normalize": bool(cfg.l2_normalize),
+        "transform": "resize224+imagenet_norm",
+    }
+
+
+def _read_cache_if_compatible(
+    path: Path, *, expected_meta: dict
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None:
+    if not path.exists():
+        return None
+
+    d = np.load(path, allow_pickle=False)
+    if "meta_json" not in d.files:
+        # Old cache without metadata: treat as incompatible to avoid silent misuse.
+        return None
+
+    try:
+        meta_str = d["meta_json"].item()
+        meta = json.loads(str(meta_str))
+    except Exception:
+        return None
+
+    # Strict match on the fields that change the embeddings.
+    keys = ["version", "encoder", "weights", "l2_normalize", "transform"]
+    for k in keys:
+        if meta.get(k) != expected_meta.get(k):
+            return None
+
+    return (
+        d["Ztr"].astype(np.float32),
+        d["ytr"].astype(np.int64),
+        d["Zte"].astype(np.float32),
+        d["yte"].astype(np.int64),
+    )
+
+
 def get_or_compute_cifar10_embeddings(
     cfg: CIFAR10EmbedConfig,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -105,14 +148,10 @@ def get_or_compute_cifar10_embeddings(
     cache_path = Path(cfg.cache_npz)
     ensure_dir(cache_path.parent)
 
-    if cache_path.exists():
-        d = np.load(cache_path)
-        return (
-            d["Ztr"].astype(np.float32),
-            d["ytr"].astype(np.int64),
-            d["Zte"].astype(np.float32),
-            d["yte"].astype(np.int64),
-        )
+    expected = _expected_cache_meta(cfg)
+    cached = _read_cache_if_compatible(cache_path, expected_meta=expected)
+    if cached is not None:
+        return cached
 
     device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
     train_loader, test_loader = _cifar10_loaders(
@@ -123,5 +162,8 @@ def get_or_compute_cifar10_embeddings(
     Ztr, ytr = _extract_embeddings(train_loader, enc, device, cfg.l2_normalize)
     Zte, yte = _extract_embeddings(test_loader, enc, device, cfg.l2_normalize)
 
-    np.savez_compressed(cache_path, Ztr=Ztr, ytr=ytr, Zte=Zte, yte=yte)
+    meta_json = np.array(json.dumps(expected), dtype=np.unicode_)
+    np.savez_compressed(
+        cache_path, Ztr=Ztr, ytr=ytr, Zte=Zte, yte=yte, meta_json=meta_json
+    )
     return Ztr, ytr, Zte, yte

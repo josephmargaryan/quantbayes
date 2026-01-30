@@ -238,7 +238,7 @@ def dp_release_erm_params_gaussian(
     """
     params = np.asarray(params, dtype=np.float32).reshape(-1)
     if rng is None:
-        rng = np.random.default_rng(0)
+        rng = np.random.default_rng()
 
     sens = erm_sensitivity_l2(lz=float(lz), r=float(r), lam=float(lam), n=int(n))
     Delta = float(sens.delta_l2)

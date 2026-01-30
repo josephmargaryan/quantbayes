@@ -1,4 +1,4 @@
-# quantbayes/ball_dp/experiments/exp_cifar10_attacks.py
+# quantbayes/ball_dp/experiments/exp_cifar10_attacks_mc.py
 from __future__ import annotations
 
 import argparse
@@ -141,7 +141,7 @@ def main() -> None:
 
         mu0 = mus.copy()
         mu1 = mus.copy()
-        denom = 2.0 * float(counts[c]) + float(args.lam)
+        denom = 2.0 * float(counts[c]) + float(args.lam) * float(Z.shape[0])
         mu1[c] = mu0[c] + (2.0 * (z2 - z1) / denom).astype(np.float32)
 
         return (
@@ -157,7 +157,12 @@ def main() -> None:
     attack_accs = []
 
     for eps in eps_list:
-        Delta = prototypes_sensitivity_l2(r=r_val, n_min=n_min, lam=float(args.lam))
+        Delta = prototypes_sensitivity_l2(
+            r=r_val,
+            n_min=n_min,
+            n_total=int(Z.shape[0]),
+            lam=float(args.lam),
+        )
         sigma = gaussian_sigma(
             Delta, float(eps), float(args.delta), method=str(args.sigma_method)
         )

@@ -22,7 +22,6 @@ How to run
   --l2_normalize \
   --sigma_method analytic \
   --lam 1e-2 \
-  --weight_decay 1e-2 \
   --n_per_class_list 100,2000,5000
 
 # CLASSIC
@@ -31,7 +30,6 @@ How to run
   --l2_normalize \
   --sigma_method classic \
   --lam 1e-2 \
-  --weight_decay 1e-2 \
   --n_per_class_list 100,2000,5000
 
   

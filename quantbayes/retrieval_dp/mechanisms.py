@@ -1,7 +1,7 @@
 # quantbayes/retrieval_dp/mechanisms.py
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, Literal
 
 import numpy as np
@@ -132,8 +132,6 @@ class NoisyScoresTopKLaplaceRetriever:
       1) compute full score vector u(C,·)
       2) add i.i.d. Laplace(0, b) noise to ALL scores with b = Δu/ε
       3) return top-k indices (post-processing)
-
-    This is "release noisy score vector" (stronger than noisy-max), then post-process.
     """
 
     V: np.ndarray
@@ -142,6 +140,10 @@ class NoisyScoresTopKLaplaceRetriever:
     eps: float
     rng: np.random.Generator
     q_norm_bound: float = 1.0  # used only when score="dot"
+
+    # cached
+    Delta_u: float = field(init=False)
+    b: float = field(init=False)
 
     def __post_init__(self) -> None:
         self.V = np.asarray(self.V, dtype=np.float32)
@@ -152,6 +154,13 @@ class NoisyScoresTopKLaplaceRetriever:
         if self.q_norm_bound <= 0:
             raise ValueError("q_norm_bound must be > 0.")
 
+        self.Delta_u = float(
+            score_sensitivity(
+                self.score, r=float(self.r), q_norm_bound=float(self.q_norm_bound)
+            )
+        )
+        self.b = float(self.Delta_u) / float(self.eps)
+
     def query_many(
         self, Q: np.ndarray, k: int, *, candidates: Optional[np.ndarray] = None
     ) -> np.ndarray:
@@ -159,7 +168,6 @@ class NoisyScoresTopKLaplaceRetriever:
         if Q.ndim == 1:
             Q = Q[None, :]
 
-        # enforce query bound if dot scoring
         if self.score == "dot":
             Q = clip_l2_rows(Q, float(self.q_norm_bound))
 
@@ -174,15 +182,9 @@ class NoisyScoresTopKLaplaceRetriever:
             base = cand
 
         scores = dot_scores(Q, V) if self.score == "dot" else neg_l2_scores(Q, V)
-
-        Delta_u = score_sensitivity(
-            self.score, r=float(self.r), q_norm_bound=float(self.q_norm_bound)
-        )
-        b = float(Delta_u) / float(self.eps)
-
-        noise = self.rng.laplace(loc=0.0, scale=b, size=scores.shape).astype(
-            scores.dtype, copy=False
-        )
+        noise = self.rng.laplace(
+            loc=0.0, scale=float(self.b), size=scores.shape
+        ).astype(scores.dtype, copy=False)
         noisy = scores + noise
 
         idx_local = _topk_indices(noisy, k)
@@ -208,9 +210,12 @@ class NoisyScoresTopKGaussianRetriever:
     rng: np.random.Generator
     q_norm_bound: float = 1.0  # used only when score="dot"
 
-    # NEW:
     sigma_method: Literal["classic", "analytic"] = "classic"
     sigma_tol: float = 1e-12
+
+    # cached
+    Delta_u: float = field(init=False)
+    sigma: float = field(init=False)
 
     def __post_init__(self) -> None:
         self.V = np.asarray(self.V, dtype=np.float32)
@@ -226,6 +231,21 @@ class NoisyScoresTopKGaussianRetriever:
             raise ValueError("sigma_tol must be > 0.")
         if self.sigma_method not in ("classic", "analytic"):
             raise ValueError("sigma_method must be 'classic' or 'analytic'.")
+
+        self.Delta_u = float(
+            score_sensitivity(
+                self.score, r=float(self.r), q_norm_bound=float(self.q_norm_bound)
+            )
+        )
+        self.sigma = float(
+            gaussian_sigma(
+                float(self.Delta_u),
+                float(self.eps),
+                float(self.delta),
+                method=self.sigma_method,
+                tol=float(self.sigma_tol),
+            )
+        )
 
     def query_many(
         self, Q: np.ndarray, k: int, *, candidates: Optional[np.ndarray] = None
@@ -248,21 +268,9 @@ class NoisyScoresTopKGaussianRetriever:
             base = cand
 
         scores = dot_scores(Q, V) if self.score == "dot" else neg_l2_scores(Q, V)
-
-        Delta_u = score_sensitivity(
-            self.score, r=float(self.r), q_norm_bound=float(self.q_norm_bound)
-        )
-        sigma = gaussian_sigma(
-            float(Delta_u),
-            float(self.eps),
-            float(self.delta),
-            method=self.sigma_method,
-            tol=float(self.sigma_tol),
-        )
-
-        noise = self.rng.normal(loc=0.0, scale=float(sigma), size=scores.shape).astype(
-            scores.dtype, copy=False
-        )
+        noise = self.rng.normal(
+            loc=0.0, scale=float(self.sigma), size=scores.shape
+        ).astype(scores.dtype, copy=False)
         noisy = scores + noise
 
         idx_local = _topk_indices(noisy, k)
@@ -288,6 +296,9 @@ class ExponentialMechanismTopKRetriever:
     rng: np.random.Generator
     q_norm_bound: float = 1.0
 
+    # cached
+    Delta_u: float = field(init=False)
+
     def __post_init__(self) -> None:
         self.V = np.asarray(self.V, dtype=np.float32)
         if self.eps_total <= 0:
@@ -296,6 +307,12 @@ class ExponentialMechanismTopKRetriever:
             raise ValueError("r must be >= 0.")
         if self.q_norm_bound <= 0:
             raise ValueError("q_norm_bound must be > 0.")
+
+        self.Delta_u = float(
+            score_sensitivity(
+                self.score, r=float(self.r), q_norm_bound=float(self.q_norm_bound)
+            )
+        )
 
     def _stable_softmax(self, logits: np.ndarray) -> np.ndarray:
         m = float(np.max(logits))
@@ -325,9 +342,6 @@ class ExponentialMechanismTopKRetriever:
         B = Q.shape[0]
         out = np.zeros((B, min(int(k), int(pool0.size))), dtype=int)
 
-        Delta_u = score_sensitivity(
-            self.score, r=float(self.r), q_norm_bound=float(self.q_norm_bound)
-        )
         eps_draw = float(self.eps_total) / float(max(1, int(k)))
 
         for b in range(B):
@@ -345,7 +359,7 @@ class ExponentialMechanismTopKRetriever:
                     else neg_l2_scores(q, Vp).reshape(-1)
                 )
 
-                logits = (eps_draw / (2.0 * float(Delta_u))) * s
+                logits = (eps_draw / (2.0 * float(self.Delta_u))) * s
                 p = self._stable_softmax(logits.astype(np.float64))
                 j = int(self.rng.choice(pool.size, p=p))
                 chosen_idx = int(pool[j])

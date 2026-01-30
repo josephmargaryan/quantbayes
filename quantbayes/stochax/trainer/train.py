@@ -1,3 +1,4 @@
+# quantbayes/stochax/trainer/train.py
 import pathlib
 import jax
 import numpy as np

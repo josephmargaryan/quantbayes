@@ -1,3 +1,4 @@
+# quantbayes/ball_dp/experiments/exp_cifar10_attacks.py
 from __future__ import annotations
 
 import argparse
@@ -25,26 +26,26 @@ from quantbayes.ball_dp.utils import (
 )
 
 
-def build_valid_pairs_within_radius(
+def build_pairs_in_distance_range(
     Z: np.ndarray,
     y: np.ndarray,
     *,
     num_classes: int,
-    r: float,
-    band: float = 0.0,
+    t_lo: float,
+    t_hi: float,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Build a pool of VALID within-class pairs (i,j) with ||Z[i]-Z[j]|| in [lo, r],
-    where lo = (1-band)*r if band>0 else 0.
+    Build a pool of within-class pairs (i,j) with ||Z[i]-Z[j]|| in [t_lo, t_hi].
 
     Returns:
       pair_i: (M,)
       pair_j: (M,)
       pair_class: (M,)
     """
-    r = float(r)
-    band = float(band)
-    lo = (1.0 - band) * r if band > 0.0 else 0.0
+    t_lo = float(t_lo)
+    t_hi = float(t_hi)
+    if t_lo < 0 or t_hi < 0 or t_hi < t_lo:
+        raise ValueError("Require 0 <= t_lo <= t_hi.")
 
     pair_i: List[int] = []
     pair_j: List[int] = []
@@ -61,7 +62,7 @@ def build_valid_pairs_within_radius(
         np.fill_diagonal(D2, np.inf)
         D = np.sqrt(np.maximum(D2, 0.0))
 
-        mask = (D <= r) & (D >= lo)
+        mask = (D <= t_hi) & (D >= t_lo)
         ii, jj = np.where(np.triu(mask, k=1))
 
         if ii.size == 0:
@@ -83,6 +84,16 @@ def build_valid_pairs_within_radius(
         np.asarray(pair_j, dtype=int),
         np.asarray(pair_c, dtype=int),
     )
+
+
+def _ecdf(x: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    x = np.asarray(x, dtype=np.float64).reshape(-1)
+    x = x[np.isfinite(x)]
+    x.sort()
+    if x.size == 0:
+        return np.asarray([]), np.asarray([])
+    y = np.linspace(0.0, 1.0, num=x.size, endpoint=True)
+    return x, y
 
 
 def binned_curve(
@@ -135,6 +146,14 @@ def main() -> None:
     # If band>0, only pairs with ||z-z'|| in [(1-band)r, r] are used (hard neighbors).
     ap.add_argument("--band", type=float, default=0.10)
 
+    # NEW: allow sampling beyond r for profile validation plots.
+    ap.add_argument(
+        "--max_mult",
+        type=float,
+        default=1.0,
+        help="Build an extended pair pool up to (max_mult * r). Use >1 to include out-of-radius pairs.",
+    )
+
     # Optional stress-test figure: accuracy vs multiplier t/r for a chosen eps
     ap.add_argument("--make_multiplier_plot", action="store_true")
     ap.add_argument("--mult_eps", type=float, default=1.0)
@@ -174,6 +193,7 @@ def main() -> None:
     num_classes = 10
     counts = np.array([(y == c).sum() for c in range(num_classes)], dtype=int)
     n_min = int(counts.min())
+    n_total = int(Z.shape[0])
 
     # radius computed from full train set NN distances (as in your paper)
     nn_dists = within_class_nn_distances(
@@ -185,16 +205,16 @@ def main() -> None:
     )
     r_val = float(np.percentile(nn_dists, float(args.r_percentile)))
 
-    # Build valid pair pool within radius (try hard band first; if empty, relax to band=0)
-    pair_i, pair_j, pair_c = build_valid_pairs_within_radius(
-        Z, y, num_classes=num_classes, r=r_val, band=float(args.band)
+    # Build VALID ball-neighbor pool in-band near r (for the actual DP slack audit)
+    lo_in = (1.0 - float(args.band)) * r_val if float(args.band) > 0 else 0.0
+    hi_in = r_val
+    pair_i, pair_j, pair_c = build_pairs_in_distance_range(
+        Z, y, num_classes=num_classes, t_lo=lo_in, t_hi=hi_in
     )
     if pair_i.size == 0:
-        print(
-            f"[WARN] No pairs found in band={(1-float(args.band))*r_val:.3g}..{r_val:.3g}. Falling back to band=0."
-        )
-        pair_i, pair_j, pair_c = build_valid_pairs_within_radius(
-            Z, y, num_classes=num_classes, r=r_val, band=0.0
+        # fall back to full in-radius range
+        pair_i, pair_j, pair_c = build_pairs_in_distance_range(
+            Z, y, num_classes=num_classes, t_lo=0.0, t_hi=r_val
         )
     if pair_i.size == 0:
         raise RuntimeError(
@@ -202,11 +222,10 @@ def main() -> None:
             "Increase n_per_class or choose a larger r_percentile."
         )
 
-    # sample pairs (with replacement)
+    # Sample in-radius pairs (with replacement)
     M = int(pair_i.size)
     take = int(args.n_pairs)
     samp = rng.integers(0, M, size=take)
-
     ii = pair_i[samp]
     jj = pair_j[samp]
     cc = pair_c[samp]
@@ -217,12 +236,27 @@ def main() -> None:
     mult = t / max(r_val, 1e-12)  # t/r
 
     # prototype parameter shift magnitude for each sampled pair:
-    # ||mu0-mu1|| = 2||z-z'|| / (2 n_c + lam)
-    denom = 2.0 * counts[cc].astype(np.float64) + float(args.lam)
-    dmu = (2.0 * t) / denom
+    # ||mu0-mu1|| = 2||z-z'|| / (2 n_c + lam*n_total)
+    denom = 2.0 * counts[cc].astype(np.float64) + float(args.lam) * float(n_total)
+    dmu = (2.0 * t) / denom  # scalar magnitude
 
-    # global sensitivity bound for calibration
-    Delta_global = prototypes_sensitivity_l2(r=r_val, n_min=n_min, lam=float(args.lam))
+    # global sensitivity bound for calibration (worst class)
+    Delta_global = prototypes_sensitivity_l2(
+        r=r_val, n_min=n_min, n_total=n_total, lam=float(args.lam)
+    )
+
+    # NEW: tightness diagnostic gamma = ||f(D)-f(D')|| / Delta_global
+    gamma = dmu / max(float(Delta_global), 1e-18)
+    gx, gy = _ecdf(gamma)
+    if gx.size:
+        save_line_plot(
+            gx,
+            gy,
+            title="Tightness diagnostic: ECDF of gamma = ||Δf|| / Δ_r (valid Ball neighbors)",
+            xlabel="gamma",
+            ylabel="CDF",
+            out_path=fig_dir / "audit_gamma_cdf.png",
+        )
 
     eps_list = [float(s.strip()) for s in args.eps_list.split(",") if s.strip()]
 
@@ -252,10 +286,8 @@ def main() -> None:
             dd, rr = gaussian_dp_slack_closed_form(
                 np.zeros(1), np.array([d]), float(sigma), float(eps)
             )
-            if dd > ddir_max:
-                ddir_max = dd
-            if rr > drev_max:
-                drev_max = rr
+            ddir_max = max(ddir_max, dd)
+            drev_max = max(drev_max, rr)
 
         rows.append(
             {
@@ -264,12 +296,12 @@ def main() -> None:
                 "r_percentile": float(args.r_percentile),
                 "r_value": float(r_val),
                 "lam": float(args.lam),
+                "n_total": int(n_total),
                 "delta_target": float(args.delta),
                 "eps": float(eps),
                 "Delta": float(Delta_global),
                 "sigma": float(sigma),
                 "n_pairs": int(take),
-                # keep old column names so your existing table-extractor works unchanged:
                 "attack_acc": float(acc_mean),
                 "attack_acc_std": float(acc_std),
                 "delta_hat_D_to_Dprime": float(ddir_max),
@@ -277,6 +309,10 @@ def main() -> None:
                 "mult_mean": float(np.mean(mult)),
                 "mult_q95": float(np.quantile(mult, 0.95)),
                 "mult_q99": float(np.quantile(mult, 0.99)),
+                "gamma_mean": float(np.mean(gamma)),
+                "gamma_q95": float(np.quantile(gamma, 0.95)),
+                "gamma_q99": float(np.quantile(gamma, 0.99)),
+                "gamma_max": float(np.max(gamma)),
             }
         )
         acc_curve.append(acc_mean)
@@ -293,8 +329,28 @@ def main() -> None:
         out_path=fig_dir / "attack_audit_vs_eps.png",
     )
 
-    # Optional stress-test: accuracy vs multiplier t/r for a chosen eps
+    # Optional stress-test: accuracy vs multiplier t/r for a chosen eps.
+    # If max_mult>1, sample pairs up to max_mult*r to include out-of-radius behavior.
     if bool(args.make_multiplier_plot):
+        max_mult = float(args.max_mult)
+        t_hi_ext = max_mult * r_val
+        pair_i2, pair_j2, pair_c2 = build_pairs_in_distance_range(
+            Z, y, num_classes=num_classes, t_lo=0.0, t_hi=t_hi_ext
+        )
+        if pair_i2.size == 0:
+            raise RuntimeError("No pairs found for multiplier plot pool.")
+
+        M2 = int(pair_i2.size)
+        samp2 = rng.integers(0, M2, size=take)
+        ii2 = pair_i2[samp2]
+        jj2 = pair_j2[samp2]
+        cc2 = pair_c2[samp2]
+
+        t2 = np.linalg.norm(Z[ii2] - Z[jj2], axis=1).astype(np.float64)
+        mult2 = t2 / max(r_val, 1e-12)
+        denom2 = 2.0 * counts[cc2].astype(np.float64) + float(args.lam) * float(n_total)
+        dmu2 = (2.0 * t2) / denom2
+
         eps0 = float(args.mult_eps)
         sigma0 = gaussian_sigma(
             float(Delta_global), eps0, float(args.delta), method=str(args.sigma_method)
@@ -304,16 +360,16 @@ def main() -> None:
                 gaussian_expected_llr_attack_acc(
                     np.zeros(1), np.array([d]), float(sigma0)
                 )
-                for d in dmu
+                for d in dmu2
             ],
             dtype=np.float64,
         )
-        bins = np.linspace(0.0, max(2.0, float(np.max(mult))), 35)
-        xs, ys = binned_curve(mult, acc0, bins=bins)
+        bins = np.linspace(0.0, max(max_mult, float(np.max(mult2))), 40)
+        xs, ys = binned_curve(mult2, acc0, bins=bins)
         save_line_plot(
             xs,
             ys,
-            title=f"Expected LLR accuracy vs multiplier t/r (eps={eps0:g})",
+            title=f"Expected LLR accuracy vs multiplier t/r (eps={eps0:g}, max_mult={max_mult:g})",
             xlabel="multiplier t/r",
             ylabel="expected attack accuracy",
             out_path=fig_dir / f"attack_acc_vs_multiplier_eps{eps0:g}.png",

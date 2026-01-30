@@ -1,3 +1,4 @@
+# quantbayes/stochax/pkstruct/samplers.py
 from __future__ import annotations
 
 from dataclasses import dataclass

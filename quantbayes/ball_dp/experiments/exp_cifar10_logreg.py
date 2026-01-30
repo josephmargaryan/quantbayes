@@ -85,7 +85,6 @@ def main() -> None:
 
     # logreg training knobs
     ap.add_argument("--lr", type=float, default=1e-2)
-    ap.add_argument("--weight_decay", type=float, default=1e-3)
     ap.add_argument("--epochs", type=int, default=50)
     ap.add_argument("--logreg_batch", type=int, default=2048)
 
@@ -124,8 +123,11 @@ def main() -> None:
     r_vals = radii_from_percentiles(nn_dists, r_percentiles)
 
     # Baseline radius 2B (B from norms quantile on full training set)
-    norms = l2_norms(Ztr)
-    B = float(np.quantile(norms, float(args.B_quantile)))
+    if bool(args.l2_normalize):
+        B = 1.0
+    else:
+        norms = l2_norms(Ztr)
+        B = float(np.quantile(norms, float(args.B_quantile)))
     r_std = 2.0 * B
 
     write_json(
@@ -158,8 +160,12 @@ def main() -> None:
         # Train non-private logreg on subset
         log_cfg = LogRegTorchConfig(
             num_classes=10,
+            lam=float(args.lam),
+            regularize_bias=True,
+            optimizer="lbfgs",
+            lbfgs_lr=1.0,
+            lbfgs_max_iter=500,
             lr=float(args.lr),
-            weight_decay=float(args.weight_decay),
             epochs=int(args.epochs),
             batch_size=int(args.logreg_batch),
             device=str(args.device),

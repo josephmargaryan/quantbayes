@@ -1,3 +1,4 @@
+# quantbayes/bnn/pkstruct/demos/demo_vrw_nuts_pk_vs_ablation.py
 from __future__ import annotations
 
 from pathlib import Path

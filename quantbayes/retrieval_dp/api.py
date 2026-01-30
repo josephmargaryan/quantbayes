@@ -53,7 +53,7 @@ def make_topk_retriever(
     """
     V = np.asarray(V, dtype=np.float32)
     if rng is None:
-        rng = np.random.default_rng(0)
+        rng = np.random.default_rng()
 
     if mechanism == "non_private":
         return NonPrivateTopKRetriever(V=V, score=score, q_norm_bound=q_norm_bound)
