@@ -33,6 +33,74 @@ def gaussian_llr(
     return float((np.sum((y - mu1) ** 2) - np.sum((y - mu0) ** 2)) / (2.0 * sig2))
 
 
+def _phi_std(x: float) -> float:
+    """Standard normal CDF."""
+    return 0.5 * (1.0 + math.erf(float(x) / math.sqrt(2.0)))
+
+
+def gaussian_expected_llr_attack_acc(
+    mu0: np.ndarray, mu1: np.ndarray, sigma: float
+) -> float:
+    """
+    Bayes-optimal (LLR) attack accuracy under equal priors for
+    N(mu0, sigma^2 I) vs N(mu1, sigma^2 I).
+    acc = Phi(||mu0-mu1|| / (2 sigma)).
+    """
+    d = float(np.linalg.norm(np.asarray(mu0) - np.asarray(mu1)))
+    if sigma <= 0:
+        raise ValueError("sigma must be > 0")
+    if d == 0.0:
+        return 0.5
+    return float(_phi_std(d / (2.0 * float(sigma))))
+
+
+def gaussian_dp_slack_closed_form(
+    mu0: np.ndarray, mu1: np.ndarray, sigma: float, eps: float
+) -> tuple[float, float]:
+    """
+    Closed-form directional DP slacks for a fixed neighbor pair (mu0, mu1).
+
+    Returns:
+      (delta_D_to_Dprime, delta_Dprime_to_D)
+
+    where
+      delta_D_to_Dprime = max(0, P_D[L>eps] - e^eps P_{D'}[L>eps])
+      delta_Dprime_to_D = max(0, P_{D'}[L<-eps] - e^eps P_{D}[L<-eps])
+    """
+    mu0 = np.asarray(mu0)
+    mu1 = np.asarray(mu1)
+    d = float(np.linalg.norm(mu0 - mu1))
+    if sigma <= 0:
+        raise ValueError("sigma must be > 0")
+    if eps <= 0:
+        raise ValueError("eps must be > 0")
+    if d == 0.0:
+        return 0.0, 0.0
+
+    s = d / float(sigma)  # std of L is s
+    m = 0.5 * s * s  # mean under D is +m, under D' is -m
+    exp_eps = math.exp(float(eps))
+
+    # P_D[L > eps] with L ~ N(m, s^2)
+    p_D_gt = 1.0 - _phi_std((float(eps) - m) / s)
+
+    # P_D'[L > eps] with L ~ N(-m, s^2)
+    p_Dp_gt = 1.0 - _phi_std((float(eps) + m) / s)
+
+    delta_dir = max(0.0, p_D_gt - exp_eps * p_Dp_gt)
+
+    # Reverse-direction event uses L < -eps
+    # P_D[L < -eps]  = Phi((-eps - m)/s)
+    p_D_lt = _phi_std((-float(eps) - m) / s)
+
+    # P_D'[L < -eps] = Phi((-eps + m)/s)
+    p_Dp_lt = _phi_std((-float(eps) + m) / s)
+
+    delta_rev = max(0.0, p_Dp_lt - exp_eps * p_D_lt)
+
+    return float(delta_dir), float(delta_rev)
+
+
 def llr_attack_predict(
     y: np.ndarray, mu0: np.ndarray, mu1: np.ndarray, sigma: float
 ) -> int:

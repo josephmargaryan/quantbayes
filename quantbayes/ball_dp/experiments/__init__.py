@@ -35,5 +35,14 @@ python -m quantbayes.ball_dp.experiments.exp_privacy_profile \
   --r_percentiles 10,25,50,75,90 \
   --nn_sample_per_class 400
 
+  
+# New attack 
+
+python -m quantbayes.ball_dp.experiments.exp_cifar10_attacks2 \
+  --out_dir ./runs/analytic/cifar10_attacks_ball_dp \
+  --l2_normalize \
+  --sigma_method analytic \
+  --n_pairs 5000 \
+  --hard_band 0.1
 
 """
