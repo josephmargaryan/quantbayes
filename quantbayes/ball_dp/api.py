@@ -514,36 +514,3 @@ def dp_release_torch_model_gaussian(
         sigma_method=sigma_method,
         rng=rng,
     )
-
-
-def dp_release_ridge_prototypes_eqx(
-    model: Any,
-    counts: Any,
-    *,
-    r: float,
-    lam: float,
-    eps: float,
-    delta: float,
-    sigma_method: Literal["classic", "analytic"] = "analytic",
-    rng: Optional[np.random.Generator] = None,
-):
-    import jax
-    import jax.numpy as jnp
-
-    # convert to numpy for your existing DP helper
-    mus_np = np.asarray(jax.device_get(model.mus), dtype=np.float32)
-    counts_np = np.asarray(jax.device_get(counts), dtype=np.int64)
-
-    out = dp_release_ridge_prototypes_gaussian(
-        mus_np,
-        counts_np,
-        r=float(r),
-        lam=float(lam),
-        eps=float(eps),
-        delta=float(delta),
-        sigma_method=sigma_method,
-        rng=rng,
-    )
-
-    model_priv = type(model)(mus=jnp.asarray(out["mus_noisy"], dtype=model.mus.dtype))
-    return {"model_private": model_priv, "dp_report": out}
