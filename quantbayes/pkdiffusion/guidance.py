@@ -81,7 +81,7 @@ def make_vrw_radial_rr_guidance(cfg: VRWRadialRRGuidanceConfig) -> Callable:
 
     def guidance(
         t: Array,
-        x_t: Array,      # (2,)
+        x_t: Array,  # (2,)
         score_t: Array,  # (2,)
         *,
         int_beta_fn,

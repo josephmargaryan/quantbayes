@@ -90,10 +90,7 @@ def gaussian_dp_slack_closed_form(
     delta_dir = max(0.0, p_D_gt - exp_eps * p_Dp_gt)
 
     # Reverse-direction event uses L < -eps
-    # P_D[L < -eps]  = Phi((-eps - m)/s)
     p_D_lt = _phi_std((-float(eps) - m) / s)
-
-    # P_D'[L < -eps] = Phi((-eps + m)/s)
     p_Dp_lt = _phi_std((-float(eps) + m) / s)
 
     delta_rev = max(0.0, p_Dp_lt - exp_eps * p_D_lt)
@@ -110,28 +107,19 @@ def llr_attack_predict(
 
 @dataclass(frozen=True)
 class LLRAuditResult:
-    # attack metric (optimal LRT under equal priors)
     attack_acc: float
 
-    # LLR stats, conditioned on which dataset generated y
     llr_mean_under_D: float
     llr_std_under_D: float
     llr_mean_under_Dprime: float
     llr_std_under_Dprime: float
 
-    # directional tail probabilities for the privacy-loss RV L = log p(y|D)/p(y|D')
     p_L_gt_eps_under_D: float
     p_L_gt_eps_under_Dprime: float
-
-    # estimated DP slack:  max(0, P_D[L>eps] - e^eps P_{D'}[L>eps])
     delta_hat_D_to_Dprime: float
 
-    # reverse-direction tails for L_rev = log p(y|D')/p(y|D) = -L
-    # i.e. tails of (L < -eps) under D and D'
     p_L_lt_minus_eps_under_D: float
     p_L_lt_minus_eps_under_Dprime: float
-
-    # estimated reverse DP slack: max(0, P_{D'}[L<-eps] - e^eps P_D[L<-eps])
     delta_hat_Dprime_to_D: float
 
     n_trials: int
@@ -153,11 +141,12 @@ def run_llr_audit_trials(
     seed: int = 0,
 ) -> LLRAuditResult:
     """
-    Threat-model-aligned auditing for a deterministic query f(D) + N(0, sigma^2 I).
+    Monte Carlo auditing for a deterministic query f(D) + N(0, sigma^2 I).
 
-    make_neighbor should return (D_prime, bit, mu0, mu1) where:
-      - bit in {0,1} indicates ground truth mechanism run: 0 => D, 1 => D'
-      - mu0 = f(D), mu1 = f(D')
+    NOTE:
+      Your paper emphasizes closed-form auditing for the Gaussian mechanism.
+      This function is still useful for sanity checks / non-Gaussian variants,
+      but for paper-facing tables, prefer the closed-form aggregator below.
     """
     if float(sigma) <= 0.0:
         raise ValueError("sigma must be > 0")
@@ -171,20 +160,12 @@ def run_llr_audit_trials(
     exp_eps = math.exp(eps)
 
     correct = 0
-
-    # counts by generating dataset
     n_D = 0
     n_Dp = 0
-
-    # store LLRs by generating dataset (for conditional stats)
     llrs_D: list[float] = []
     llrs_Dp: list[float] = []
-
-    # tails for event {L > eps} (same L definition always: log p(y|D)/p(y|D'))
     cnt_D_L_gt = 0
     cnt_Dp_L_gt = 0
-
-    # tails for event {L < -eps} (equivalently, L_rev > eps)
     cnt_D_L_lt = 0
     cnt_Dp_L_lt = 0
 
@@ -201,7 +182,7 @@ def run_llr_audit_trials(
         pred = llr_attack_predict(y, mu0, mu1, sigma)
         correct += int(pred == bit)
 
-        L = gaussian_llr(y, mu0, mu1, sigma)  # L = log p(y|D)/p(y|D')
+        L = gaussian_llr(y, mu0, mu1, sigma)
 
         if bit == 0:
             n_D += 1
@@ -218,17 +199,14 @@ def run_llr_audit_trials(
             if L < -eps:
                 cnt_Dp_L_lt += 1
 
-    # probabilities (guard against pathological n_D or n_Dp = 0)
     p_D_L_gt = float(cnt_D_L_gt) / float(max(1, n_D))
     p_Dp_L_gt = float(cnt_Dp_L_gt) / float(max(1, n_Dp))
     p_D_L_lt = float(cnt_D_L_lt) / float(max(1, n_D))
     p_Dp_L_lt = float(cnt_Dp_L_lt) / float(max(1, n_Dp))
 
-    # DP slack estimators
     delta_hat = max(0.0, p_D_L_gt - exp_eps * p_Dp_L_gt)
     delta_hat_rev = max(0.0, p_Dp_L_lt - exp_eps * p_D_L_lt)
 
-    # conditional stats
     llrs_D_arr = np.asarray(llrs_D, dtype=np.float64) if llrs_D else np.asarray([0.0])
     llrs_Dp_arr = (
         np.asarray(llrs_Dp, dtype=np.float64) if llrs_Dp else np.asarray([0.0])
@@ -250,3 +228,99 @@ def run_llr_audit_trials(
         n_D=int(n_D),
         n_Dprime=int(n_Dp),
     )
+
+
+# ============================================================
+# Closed-form helpers for paper-facing audit tables/plots
+# ============================================================
+
+
+def gaussian_expected_llr_attack_acc_from_distance(d: float, sigma: float) -> float:
+    """
+    acc = Phi(d / (2 sigma)) for equal priors.
+    """
+    d = float(d)
+    sigma = float(sigma)
+    if sigma <= 0:
+        raise ValueError("sigma must be > 0")
+    if d <= 0:
+        return 0.5
+    return float(_phi_std(d / (2.0 * sigma)))
+
+
+def gaussian_dp_slack_from_distance_closed_form(
+    d: float, sigma: float, eps: float
+) -> tuple[float, float]:
+    """
+    Same as gaussian_dp_slack_closed_form but uses only distance d = ||mu0-mu1||.
+    """
+    d = float(d)
+    sigma = float(sigma)
+    eps = float(eps)
+    if sigma <= 0:
+        raise ValueError("sigma must be > 0")
+    if eps <= 0:
+        raise ValueError("eps must be > 0")
+    if d <= 0:
+        return 0.0, 0.0
+
+    s = d / sigma
+    m = 0.5 * s * s
+    exp_eps = math.exp(eps)
+
+    p_D_gt = 1.0 - _phi_std((eps - m) / s)
+    p_Dp_gt = 1.0 - _phi_std((eps + m) / s)
+    delta_dir = max(0.0, p_D_gt - exp_eps * p_Dp_gt)
+
+    p_D_lt = _phi_std((-eps - m) / s)
+    p_Dp_lt = _phi_std((-eps + m) / s)
+    delta_rev = max(0.0, p_Dp_lt - exp_eps * p_D_lt)
+
+    return float(delta_dir), float(delta_rev)
+
+
+def aggregate_closed_form_gaussian_audit(
+    dists: np.ndarray,
+    *,
+    sigma: float,
+    eps: float,
+) -> dict:
+    """
+    Aggregate closed-form audit statistics over a list/array of distances d=||mu0-mu1||.
+
+    Returns:
+      - attack_acc_mean: mean of Phi(d/(2sigma)) over dists
+      - delta_dir_max: max directional slack over dists
+      - delta_rev_max: max reverse slack over dists
+      - d_summary: min/median/p95/max of dists
+    """
+    dists = np.asarray(dists, dtype=np.float64).reshape(-1)
+    if dists.size == 0:
+        raise ValueError("dists must be non-empty")
+
+    acc = np.array(
+        [gaussian_expected_llr_attack_acc_from_distance(d, sigma) for d in dists],
+        dtype=np.float64,
+    )
+    slacks = np.array(
+        [
+            gaussian_dp_slack_from_distance_closed_form(d, float(sigma), float(eps))
+            for d in dists
+        ],
+        dtype=np.float64,
+    )
+    delta_dir = slacks[:, 0]
+    delta_rev = slacks[:, 1]
+
+    return {
+        "attack_acc_mean": float(np.mean(acc)),
+        "delta_dir_max": float(np.max(delta_dir)),
+        "delta_rev_max": float(np.max(delta_rev)),
+        "d_summary": {
+            "min": float(np.min(dists)),
+            "med": float(np.median(dists)),
+            "p95": float(np.quantile(dists, 0.95)),
+            "max": float(np.max(dists)),
+            "n": int(dists.size),
+        },
+    }

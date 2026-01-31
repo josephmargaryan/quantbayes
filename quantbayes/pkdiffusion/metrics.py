@@ -71,7 +71,9 @@ def _finite_rows(X: np.ndarray) -> np.ndarray:
     return X[mask]
 
 
-def w2_empirical_1d(x: np.ndarray, y: np.ndarray, *, num_quantiles: int = 4096) -> float:
+def w2_empirical_1d(
+    x: np.ndarray, y: np.ndarray, *, num_quantiles: int = 4096
+) -> float:
     """
     Empirical W2 in 1D using the quantile formula:
 

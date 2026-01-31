@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 from scipy.stats import beta as sp_beta, kstest
 
 import jax
+
 jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 import jax.random as jr
@@ -22,8 +23,14 @@ from quantbayes.pkstruct.utils.stats import log_scaled_beta_pdf
 from quantbayes.stochax.diffusion.schedules.vp import make_vp_int_beta
 
 from quantbayes.pkdiffusion.models import ScoreMLP
-from quantbayes.pkdiffusion.samplers import sample_many_reverse_vp_sde_euler, VPSDESamplerConfig
-from quantbayes.pkdiffusion.guidance import VRWRadialRRGuidanceConfig, make_vrw_radial_rr_guidance
+from quantbayes.pkdiffusion.samplers import (
+    sample_many_reverse_vp_sde_euler,
+    VPSDESamplerConfig,
+)
+from quantbayes.pkdiffusion.guidance import (
+    VRWRadialRRGuidanceConfig,
+    make_vrw_radial_rr_guidance,
+)
 from quantbayes.pkdiffusion.metrics import w2_empirical_1d, sliced_w2_empirical
 
 
@@ -74,7 +81,9 @@ def _fit_beta_moments(u: np.ndarray, eps: float = 1e-6) -> tuple[float, float, d
     return float(a), float(b), stats
 
 
-def _sample_vrw_endpoints(*, N: int, MU: float, KAPPA: float, draws: int, seed: int) -> np.ndarray:
+def _sample_vrw_endpoints(
+    *, N: int, MU: float, KAPPA: float, draws: int, seed: int
+) -> np.ndarray:
     key = jr.PRNGKey(seed)
     theta = dist.VonMises(MU, KAPPA).expand([N]).to_event(1).sample(key, (int(draws),))
     end = jax.vmap(vrw_endpoint)(theta)  # (draws,2)
@@ -105,8 +114,12 @@ def _importance_resample(
     rj = jnp.asarray(r)
 
     # logw = log q(r) - log ref(r)
-    logw = np.array(jax.vmap(lambda rr: log_scaled_beta_pdf(rr, q_alpha, q_beta, N))(rj))
-    logw -= np.array(jax.vmap(lambda rr: log_scaled_beta_pdf(rr, ref_alpha, ref_beta, N))(rj))
+    logw = np.array(
+        jax.vmap(lambda rr: log_scaled_beta_pdf(rr, q_alpha, q_beta, N))(rj)
+    )
+    logw -= np.array(
+        jax.vmap(lambda rr: log_scaled_beta_pdf(rr, ref_alpha, ref_beta, N))(rj)
+    )
 
     # Stabilize + avoid full underflow
     logw = logw - np.max(logw)
@@ -160,7 +173,9 @@ def main():
     t1 = float(cfg["t1"])
     beta_min = float(cfg["beta_min"])
     beta_max = float(cfg["beta_max"])
-    int_beta_fn = make_vp_int_beta("linear", beta_min=beta_min, beta_max=beta_max, t1=t1)
+    int_beta_fn = make_vp_int_beta(
+        "linear", beta_min=beta_min, beta_max=beta_max, t1=t1
+    )
 
     sampler_cfg = VPSDESamplerConfig(
         t1=t1,
@@ -259,7 +274,9 @@ def main():
     X_guided_np, frac_g = _finite(X_guided_np)
     X_is, frac_is = _finite(X_is)
 
-    print(f"Finite fraction: uncond={frac_u:.4f}, guided={frac_g:.4f}, IS={frac_is:.4f}")
+    print(
+        f"Finite fraction: uncond={frac_u:.4f}, guided={frac_g:.4f}, IS={frac_is:.4f}"
+    )
     print("IS diagnostics:", is_diag)
 
     # -------------------------
@@ -292,9 +309,23 @@ def main():
     # -------------------------
     # Scatter
     plt.figure(figsize=(7, 7))
-    plt.scatter(X_uncond_np[::8, 0], X_uncond_np[::8, 1], s=6, alpha=0.15, label="uncond diffusion")
-    plt.scatter(X_guided_np[::8, 0], X_guided_np[::8, 1], s=6, alpha=0.15, label="guided diffusion")
-    plt.scatter(X_is[::8, 0], X_is[::8, 1], s=6, alpha=0.15, label="IS baseline (VRW + weights)")
+    plt.scatter(
+        X_uncond_np[::8, 0],
+        X_uncond_np[::8, 1],
+        s=6,
+        alpha=0.15,
+        label="uncond diffusion",
+    )
+    plt.scatter(
+        X_guided_np[::8, 0],
+        X_guided_np[::8, 1],
+        s=6,
+        alpha=0.15,
+        label="guided diffusion",
+    )
+    plt.scatter(
+        X_is[::8, 0], X_is[::8, 1], s=6, alpha=0.15, label="IS baseline (VRW + weights)"
+    )
     plt.gca().set_aspect("equal", "box")
     plt.title("VRW endpoints: uncond vs guided diffusion vs IS baseline")
     plt.xlabel("x")
@@ -317,14 +348,34 @@ def main():
     r_is_plot = _in_support(r_is)
 
     plt.figure(figsize=(10, 4.5))
-    plt.hist(r_u_plot, bins=bins, density=True, alpha=0.35, label=f"uncond r (u>1: {frac_u_gt1:.3f})")
-    plt.hist(r_g_plot, bins=bins, density=True, alpha=0.35, label=f"guided r (u>1: {frac_g_gt1:.3f})")
-    plt.hist(r_is_plot, bins=bins, density=True, alpha=0.35, label=f"IS r (u>1: {frac_is_gt1:.3f})")
+    plt.hist(
+        r_u_plot,
+        bins=bins,
+        density=True,
+        alpha=0.35,
+        label=f"uncond r (u>1: {frac_u_gt1:.3f})",
+    )
+    plt.hist(
+        r_g_plot,
+        bins=bins,
+        density=True,
+        alpha=0.35,
+        label=f"guided r (u>1: {frac_g_gt1:.3f})",
+    )
+    plt.hist(
+        r_is_plot,
+        bins=bins,
+        density=True,
+        alpha=0.35,
+        label=f"IS r (u>1: {frac_is_gt1:.3f})",
+    )
 
     rg = np.linspace(1e-4, float(N) - 1e-4, 400)
     xg = rg / float(N)
     target = (1.0 / float(N)) * sp_beta.pdf(xg, q_alpha, q_beta)
-    plt.plot(rg, target, linewidth=2, label=f"target q(r): Beta({q_alpha},{q_beta}) on r/N")
+    plt.plot(
+        rg, target, linewidth=2, label=f"target q(r): Beta({q_alpha},{q_beta}) on r/N"
+    )
 
     plt.title("Radial distribution r = ||endpoint|| (shared bins)")
     plt.xlabel("r")
@@ -365,10 +416,18 @@ def main():
         "KAPPA": KAPPA,
         "evidence_beta_on_u": {"alpha": q_alpha, "beta": q_beta},
         "ref_beta_fit_on_u": {"alpha": ref_alpha, "beta": ref_beta, **ref_stats},
-        "sampler": {"t1": sampler_cfg.t1, "num_steps": sampler_cfg.num_steps, "num_samples": sampler_cfg.num_samples},
+        "sampler": {
+            "t1": sampler_cfg.t1,
+            "num_steps": sampler_cfg.num_steps,
+            "num_samples": sampler_cfg.num_samples,
+        },
         "guidance": {"ref_kind": gcfg.ref_kind, "guidance_scale": gcfg.guidance_scale},
         "finite_fraction": {"uncond": frac_u, "guided": frac_g, "is": frac_is},
-        "support_mass_u_gt_1": {"uncond": frac_u_gt1, "guided": frac_g_gt1, "is": frac_is_gt1},
+        "support_mass_u_gt_1": {
+            "uncond": frac_u_gt1,
+            "guided": frac_g_gt1,
+            "is": frac_is_gt1,
+        },
         "ks_beta_on_u": {
             "uncond": {"D": float(D_u), "p": float(p_u)},
             "guided": {"D": float(D_g), "p": float(p_g)},
@@ -376,7 +435,11 @@ def main():
         },
         "is_diag": is_diag,
         "dist_vs_is": {"w2_r": float(w2_r_g_is), "sw2_x": float(sw2_x_g_is)},
-        "files": {"scatter": str(scatter_path), "radial_hist": str(hist_path), "radial_cdf": str(cdf_path)},
+        "files": {
+            "scatter": str(scatter_path),
+            "radial_hist": str(hist_path),
+            "radial_cdf": str(cdf_path),
+        },
     }
     (OUT_DIR / "metrics.json").write_text(json.dumps(summary, indent=2))
 
