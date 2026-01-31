@@ -41,6 +41,26 @@ def empirical_mean_cov(X: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return m, C
 
 
+def _report(
+    name: str,
+    X: np.ndarray,
+    a: np.ndarray,
+    post: GaussianND,
+    q_mean: float,
+    q_var: float,
+) -> dict:
+    m, C = empirical_mean_cov(X)
+    kl = float(kl_gaussian_nd(m, C, post.mean, post.cov))
+    w2 = float(w2_gaussian_nd(m, C, post.mean, post.cov))
+
+    y = X @ a
+    y_m = float(np.mean(y))
+    y_v = float(np.var(y))
+    kl_y = float(kl_gaussian_1d(y_m, y_v, q_mean, q_var))
+
+    return dict(name=name, KL=kl, W2=w2, y_mean=y_m, y_var=y_v, KL_y=kl_y)
+
+
 def main():
     # -------------------------
     # Ground-truth prior and PK posterior (analytic)
@@ -58,7 +78,7 @@ def main():
     post = pk_update_linear_gaussian(prior, a, q_mean=q_mean, q_var=q_var)
 
     # -------------------------
-    # VP schedule (must match your sampler conventions)
+    # VP schedule
     # -------------------------
     t1 = 10.0
     beta_min = 0.1
@@ -82,26 +102,44 @@ def main():
     )
 
     # -------------------------
-    # Guidance = PK/RR on y=a^T x0
+    # Guidance configs
     # -------------------------
-    gcfg = LinearGaussianRRGuidanceConfig(
+    # Use your sweep optimum here:
+    BEST_SCALE = 1.15
+
+    gcfg_noise = LinearGaussianRRGuidanceConfig(
         a=jnp.asarray(a),
         q_mean=q_mean,
         q_var=q_var,
         py_mean=py_mean,
         py_var=py_var,
-        guidance_scale=1.0,  # <-- YOU WILL SWEEP THIS LATER
+        guidance_scale=float(BEST_SCALE),
+        noise_aware=True,
         min_alpha=0.05,
         max_guidance_norm=25.0,
         snr_gamma=1.0,
     )
-    guidance_fn = make_linear_gaussian_rr_guidance(gcfg)
+    guidance_noise = make_linear_gaussian_rr_guidance(gcfg_noise)
+
+    gcfg_no_noise = LinearGaussianRRGuidanceConfig(
+        a=jnp.asarray(a),
+        q_mean=q_mean,
+        q_var=q_var,
+        py_mean=py_mean,
+        py_var=py_var,
+        guidance_scale=float(BEST_SCALE),
+        noise_aware=False,  # ablation
+        min_alpha=0.05,
+        max_guidance_norm=25.0,
+        snr_gamma=1.0,
+    )
+    guidance_no_noise = make_linear_gaussian_rr_guidance(gcfg_no_noise)
 
     # -------------------------
     # Sample
     # -------------------------
     key = jr.PRNGKey(0)
-    k0, k1, k2 = jr.split(key, 3)
+    k0, k1, k2, k3 = jr.split(key, 4)
 
     num_samples = 20000
     num_steps = 800
@@ -119,7 +157,7 @@ def main():
         )
     )
 
-    X_guided = np.array(
+    X_guided_noise = np.array(
         sample_many_reverse_vp_sde_euler(
             prior_score,
             int_beta_fn,
@@ -128,11 +166,11 @@ def main():
             num_samples=num_samples,
             t1=t1,
             num_steps=num_steps,
-            guidance_fn=guidance_fn,
+            guidance_fn=guidance_noise,
         )
     )
 
-    X_uncond = np.array(
+    X_guided_no_noise = np.array(
         sample_many_reverse_vp_sde_euler(
             prior_score,
             int_beta_fn,
@@ -141,40 +179,45 @@ def main():
             num_samples=num_samples,
             t1=t1,
             num_steps=num_steps,
+            guidance_fn=guidance_no_noise,
+        )
+    )
+
+    X_uncond = np.array(
+        sample_many_reverse_vp_sde_euler(
+            prior_score,
+            int_beta_fn,
+            sample_shape=(2,),
+            key=k3,
+            num_samples=num_samples,
+            t1=t1,
+            num_steps=num_steps,
             guidance_fn=None,
         )
     )
 
     # -------------------------
-    # Metrics vs true posterior
+    # Metrics
     # -------------------------
-    mT, CT = post.mean, post.cov
-
-    def report(name: str, X: np.ndarray):
-        m, C = empirical_mean_cov(X)
-        kl = kl_gaussian_nd(m, C, mT, CT)
-        w2 = w2_gaussian_nd(m, C, mT, CT)
-
-        y = X @ a
-        y_m = float(np.mean(y))
-        y_v = float(np.var(y))
-        kl_y = kl_gaussian_1d(y_m, y_v, q_mean, q_var)
-
-        return dict(name=name, kl=kl, w2=w2, y_mean=y_m, y_var=y_v, kl_y=kl_y)
-
-    R_oracle = report("oracle_post_score", X_oracle)
-    R_guided = report("guided_prior+RR", X_guided)
-    R_uncond = report("uncond_prior", X_uncond)
+    R_oracle = _report("oracle_post_score", X_oracle, a, post, q_mean, q_var)
+    R_guided_noise = _report(
+        f"guided_noise_aware_scale={BEST_SCALE}", X_guided_noise, a, post, q_mean, q_var
+    )
+    R_guided_no_noise = _report(
+        f"guided_NO_noise_scale={BEST_SCALE}", X_guided_no_noise, a, post, q_mean, q_var
+    )
+    R_uncond = _report("uncond_prior", X_uncond, a, post, q_mean, q_var)
 
     print("=== VP Gaussian Oracle vs Guided ===")
-    print("True posterior (PK) mean:", mT)
-    print("True posterior (PK) cov:\n", CT)
-    for R in [R_oracle, R_guided, R_uncond]:
+    print("True posterior (PK) mean:", post.mean)
+    print("True posterior (PK) cov:\n", post.cov)
+
+    for R in [R_oracle, R_guided_noise, R_guided_no_noise, R_uncond]:
         print("\n---", R["name"], "---")
-        print(f"KL(emp || true)  = {R['kl']:.6f}")
-        print(f"W2(emp, true)    = {R['w2']:.6f}")
+        print(f"KL(emp || true)  = {R['KL']:.6f}")
+        print(f"W2(emp, true)    = {R['W2']:.6f}")
         print(f"Y mean/var       = ({R['y_mean']:.6f}, {R['y_var']:.6f})")
-        print(f"KL(Y || q)       = {R['kl_y']:.6f}")
+        print(f"KL(Y || q)       = {R['KL_y']:.6f}")
 
     # -------------------------
     # Plots
@@ -184,7 +227,18 @@ def main():
         X_uncond[::20, 0], X_uncond[::20, 1], s=6, alpha=0.15, label="uncond prior"
     )
     plt.scatter(
-        X_guided[::20, 0], X_guided[::20, 1], s=6, alpha=0.15, label="guided prior+RR"
+        X_guided_no_noise[::20, 0],
+        X_guided_no_noise[::20, 1],
+        s=6,
+        alpha=0.15,
+        label="guided (no noise-aware)",
+    )
+    plt.scatter(
+        X_guided_noise[::20, 0],
+        X_guided_noise[::20, 1],
+        s=6,
+        alpha=0.15,
+        label="guided (noise-aware)",
     )
     plt.scatter(
         X_oracle[::20, 0],
@@ -200,26 +254,7 @@ def main():
     plt.savefig(p1, dpi=200, bbox_inches="tight")
     plt.close()
 
-    # Coarse hist
-    yT = np.random.default_rng(0).multivariate_normal(mT, CT, size=200000) @ a
-    yU = X_uncond @ a
-    yG = X_guided @ a
-    yO = X_oracle @ a
-    bins = 120
-
-    plt.figure(figsize=(10, 4.5))
-    plt.hist(yT, bins=bins, density=True, alpha=0.25, label="true PK posterior (MC)")
-    plt.hist(yU, bins=bins, density=True, alpha=0.25, label="uncond prior")
-    plt.hist(yG, bins=bins, density=True, alpha=0.25, label="guided")
-    plt.hist(yO, bins=bins, density=True, alpha=0.25, label="oracle")
-    plt.title("Coarse marginal y=aᵀx: should match q under PK posterior")
-    plt.legend()
-    p2 = OUT_DIR / "coarse_hist.png"
-    plt.savefig(p2, dpi=200, bbox_inches="tight")
-    plt.close()
-
     print("\nSaved:", p1)
-    print("Saved:", p2)
 
 
 if __name__ == "__main__":

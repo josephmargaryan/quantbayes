@@ -58,6 +58,8 @@ class VRWRadialRRGuidanceConfig:
     # Noise-aware tempering (heuristic but principled)
     noise_aware: bool = True
     noise_power: float = 1.0  # 1.0 is default
+    support_barrier: float = 0.0  # try 5.0 or 10.0 if you want u>1 ~ 0
+    support_eps: float = 1e-3  # distance from N where barrier turns on
 
 
 def make_vrw_radial_rr_guidance(cfg: VRWRadialRRGuidanceConfig) -> Callable:
@@ -117,6 +119,13 @@ def make_vrw_radial_rr_guidance(cfg: VRWRadialRRGuidanceConfig) -> Callable:
         # Evaluate derivative at clipped r
         r_eval = jnp.clip(r_raw, cfg.eps, float(cfg.N) - cfg.eps)
         dldr = dlog_ratio_dr(r_eval)  # scalar
+        # Optional barrier: penalize r > N - support_eps
+        if cfg.support_barrier > 0.0:
+            Nf = jnp.asarray(float(cfg.N), dtype=x_t.dtype)
+            thr = Nf - jnp.asarray(cfg.support_eps, dtype=x_t.dtype)
+            overflow = jnp.maximum(r_raw - thr, 0.0)
+            # log barrier term ~ -0.5 * lambda * overflow^2  => d/dr = -lambda * overflow
+            dldr = dldr - jnp.asarray(cfg.support_barrier, dtype=x_t.dtype) * overflow
 
         # Noise-aware tempering (apply AFTER dldr is computed)
         if cfg.noise_aware:
