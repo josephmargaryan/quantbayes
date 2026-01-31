@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Callable, Dict, Literal, Optional, Sequence, Tuple, Any
 
 import numpy as np
-import jax.numpy as jnp
 
 import copy
 import numpy as np
@@ -17,7 +16,6 @@ from quantbayes.ball_dp.metrics import clip_l2_rows, l2_norms, maybe_l2_normaliz
 from quantbayes.ball_dp.radius import within_class_nn_distances, radii_from_percentiles
 from quantbayes.ball_dp.sensitivity import erm_sensitivity_l2
 from quantbayes.ball_dp.mechanisms import add_gaussian_noise, gaussian_sigma
-from quantbayes.ball_dp.heads.prototypes_eqx import RidgePrototypesEqx
 
 
 @dataclass(frozen=True)
@@ -519,8 +517,8 @@ def dp_release_torch_model_gaussian(
 
 
 def dp_release_ridge_prototypes_eqx(
-    model: RidgePrototypesEqx,
-    counts: "jnp.ndarray",
+    model: Any,
+    counts: Any,
     *,
     r: float,
     lam: float,
