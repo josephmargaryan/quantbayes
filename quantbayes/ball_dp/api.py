@@ -4,14 +4,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, Literal, Optional, Sequence, Tuple
+from typing import Callable, Dict, Literal, Optional, Sequence, Tuple, Any
 
 import numpy as np
+import jax.numpy as jnp
+
+import copy
+import numpy as np
+
 
 from quantbayes.ball_dp.metrics import clip_l2_rows, l2_norms, maybe_l2_normalize
 from quantbayes.ball_dp.radius import within_class_nn_distances, radii_from_percentiles
 from quantbayes.ball_dp.sensitivity import erm_sensitivity_l2
 from quantbayes.ball_dp.mechanisms import add_gaussian_noise, gaussian_sigma
+from quantbayes.ball_dp.heads.prototypes_eqx import RidgePrototypesEqx
 
 
 @dataclass(frozen=True)
@@ -311,6 +317,39 @@ def dp_release_erm_params_gaussian(
     }
 
 
+def dp_release_from_flat_params(
+    theta_hat: np.ndarray,
+    unflatten: Callable[[np.ndarray], Any],
+    *,
+    lz: float,
+    r: float,
+    lam: float,
+    n: int,
+    eps: float,
+    delta: float,
+    sigma_method: Literal["classic", "analytic"] = "analytic",
+    rng: Optional[np.random.Generator] = None,
+) -> Dict[str, Any]:
+    out = dp_release_erm_params_gaussian(
+        np.asarray(theta_hat, dtype=np.float32).reshape(-1),
+        lz=float(lz),
+        r=float(r),
+        lam=float(lam),
+        n=int(n),
+        eps=float(eps),
+        delta=float(delta),
+        sigma_method=sigma_method,
+        rng=rng,
+    )
+    theta_priv = out["params_noisy"]
+    model_priv = unflatten(theta_priv)
+    return {
+        "theta_private": theta_priv,
+        "model_private": model_priv,
+        "dp_report": out,
+    }
+
+
 def dp_release_ridge_prototypes_gaussian(
     mus: np.ndarray,
     counts: np.ndarray,
@@ -372,3 +411,141 @@ def dp_release_ridge_prototypes_gaussian(
         "n_total": int(n_total),
         "n_min": int(n_min),
     }
+
+
+def eqx_flatten_adapter(model: Any):
+    # Lazy imports => no hard dependency unless user calls this
+    try:
+        import jax
+        import jax.numpy as jnp
+        import equinox as eqx
+        from jax.flatten_util import ravel_pytree
+    except Exception as e:
+        raise ImportError(
+            "eqx_flatten_adapter requires jax + equinox. Install them to use this adapter."
+        ) from e
+
+    params, static = eqx.partition(model, eqx.is_inexact_array)
+    theta_jax, unravel = ravel_pytree(params)
+
+    theta_hat = np.asarray(jax.device_get(theta_jax), dtype=np.float32)
+    theta_dtype = theta_jax.dtype  # preserve on rebuild
+
+    def unflatten(theta_np: np.ndarray):
+        params_priv = unravel(jnp.asarray(theta_np, dtype=theta_dtype))
+        return eqx.combine(params_priv, static)
+
+    return theta_hat, unflatten
+
+
+def torch_flatten_adapter(model: Any):
+    try:
+        import torch
+        from torch.nn.utils import parameters_to_vector, vector_to_parameters
+    except Exception as e:
+        raise ImportError(
+            "torch_flatten_adapter requires torch. Install torch to use this adapter."
+        ) from e
+
+    # Make sure dtype is consistent (float32) if you cast to np.float32
+    model_cpu = copy.deepcopy(model).to("cpu").eval().float()
+
+    with torch.no_grad():
+        theta_t = parameters_to_vector(model_cpu.parameters()).detach().cpu()
+        theta_hat = theta_t.numpy().astype(np.float32, copy=False)
+
+    def unflatten(theta_np: np.ndarray):
+        m = copy.deepcopy(model_cpu).to("cpu").eval().float()
+        vec = torch.from_numpy(np.asarray(theta_np, dtype=np.float32))
+        with torch.no_grad():
+            vector_to_parameters(vec, m.parameters())
+        return m
+
+    return theta_hat, unflatten
+
+
+def dp_release_eqx_model_gaussian(
+    model: Any,
+    *,
+    lz: float,
+    r: float,
+    lam: float,
+    n: int,
+    eps: float,
+    delta: float,
+    sigma_method: Literal["classic", "analytic"] = "analytic",
+    rng: Optional[np.random.Generator] = None,
+) -> Dict[str, Any]:
+    theta_hat, unflatten = eqx_flatten_adapter(model)
+    return dp_release_from_flat_params(
+        theta_hat,
+        unflatten,
+        lz=lz,
+        r=r,
+        lam=lam,
+        n=n,
+        eps=eps,
+        delta=delta,
+        sigma_method=sigma_method,
+        rng=rng,
+    )
+
+
+def dp_release_torch_model_gaussian(
+    model: Any,
+    *,
+    lz: float,
+    r: float,
+    lam: float,
+    n: int,
+    eps: float,
+    delta: float,
+    sigma_method: Literal["classic", "analytic"] = "analytic",
+    rng: Optional[np.random.Generator] = None,
+) -> Dict[str, Any]:
+    theta_hat, unflatten = torch_flatten_adapter(model)
+    return dp_release_from_flat_params(
+        theta_hat,
+        unflatten,
+        lz=lz,
+        r=r,
+        lam=lam,
+        n=n,
+        eps=eps,
+        delta=delta,
+        sigma_method=sigma_method,
+        rng=rng,
+    )
+
+
+def dp_release_ridge_prototypes_eqx(
+    model: RidgePrototypesEqx,
+    counts: "jnp.ndarray",
+    *,
+    r: float,
+    lam: float,
+    eps: float,
+    delta: float,
+    sigma_method: Literal["classic", "analytic"] = "analytic",
+    rng: Optional[np.random.Generator] = None,
+):
+    import jax
+    import jax.numpy as jnp
+
+    # convert to numpy for your existing DP helper
+    mus_np = np.asarray(jax.device_get(model.mus), dtype=np.float32)
+    counts_np = np.asarray(jax.device_get(counts), dtype=np.int64)
+
+    out = dp_release_ridge_prototypes_gaussian(
+        mus_np,
+        counts_np,
+        r=float(r),
+        lam=float(lam),
+        eps=float(eps),
+        delta=float(delta),
+        sigma_method=sigma_method,
+        rng=rng,
+    )
+
+    model_priv = type(model)(mus=jnp.asarray(out["mus_noisy"], dtype=model.mus.dtype))
+    return {"model_private": model_priv, "dp_report": out}
