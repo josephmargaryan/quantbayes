@@ -209,7 +209,7 @@ def main():
         kappa=KAPPA,
         alpha=q_alpha,
         beta=q_beta,
-        ref_kind="beta",
+        ref_kind="stephens",
         ref_alpha=ref_alpha,
         ref_beta=ref_beta,
         guidance_scale=2.0,

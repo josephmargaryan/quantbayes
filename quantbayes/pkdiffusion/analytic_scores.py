@@ -19,7 +19,7 @@ class AnalyticGaussianVPSScore(eqx.Module):
 
     mean0: Array  # (d,)
     cov0: Array  # (d,d)
-    int_beta_fn: Callable = eqx.static_field()
+    int_beta_fn: Callable = eqx.field(static=True)
 
     def __call__(
         self,

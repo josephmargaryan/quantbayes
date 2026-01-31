@@ -55,6 +55,9 @@ class VRWRadialRRGuidanceConfig:
     # Soft ramp-in based on SNR; bounded in [0,1]
     snr_gamma: float = 1.0
 
+    noise_aware: bool = True
+    noise_power: float = 1.0  # optional; keep 1.0
+
 
 def make_vrw_radial_rr_guidance(cfg: VRWRadialRRGuidanceConfig) -> Callable:
     # Build Stephens config only if needed
@@ -63,6 +66,13 @@ def make_vrw_radial_rr_guidance(cfg: VRWRadialRRGuidanceConfig) -> Callable:
         if cfg.ref_kind == "stephens"
         else None
     )
+    # evidence variance of r when u=r/N ~ Beta(alpha,beta)
+    a = float(cfg.alpha)
+    b = float(cfg.beta)
+    N = float(cfg.N)
+    var_u = (a * b) / (((a + b) ** 2) * (a + b + 1.0))
+    var_r = (N * N) * var_u
+    var_r = jnp.asarray(var_r)
 
     def ref_logpdf_r(r: Array) -> Array:
         if cfg.ref_kind == "stephens":
@@ -98,6 +108,13 @@ def make_vrw_radial_rr_guidance(cfg: VRWRadialRRGuidanceConfig) -> Callable:
         a_safe = jnp.maximum(a, cfg.eps)
         s2 = s * s
         x0_hat = (x_t + s2 * score_t) / a_safe  # (2,)
+
+        sigma_x0_sq = s2 / (a_safe * a_safe + cfg.eps)  # scalar
+
+        if cfg.noise_aware:
+            shrink = var_r / (var_r + sigma_x0_sq + cfg.eps)
+            shrink = shrink ** jnp.asarray(cfg.noise_power, dtype=x_t.dtype)
+            dldr = dldr * shrink
 
         # Direction uses raw norm
         r_raw = jnp.linalg.norm(x0_hat)

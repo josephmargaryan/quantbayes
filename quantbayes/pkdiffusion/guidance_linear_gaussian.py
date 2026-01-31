@@ -37,6 +37,7 @@ class LinearGaussianRRGuidanceConfig:
     min_alpha: float = 0.05
     max_guidance_norm: float = 25.0
     snr_gamma: float = 1.0
+    noise_aware: bool = True
 
 
 def make_linear_gaussian_rr_guidance(cfg: LinearGaussianRRGuidanceConfig) -> Callable:
@@ -74,7 +75,20 @@ def make_linear_gaussian_rr_guidance(cfg: LinearGaussianRRGuidanceConfig) -> Cal
 
         # y-hat and gradient
         y_hat = jnp.dot(a_vec, x0_hat)
-        dldy = dlogratio_dy(y_hat)  # scalar
+        sigma_x0_sq = s2 / (a_safe * a_safe + cfg.eps)  # scalar
+
+        if cfg.noise_aware:
+            q_var_eff = jnp.asarray(cfg.q_var, dtype=x_t.dtype) + sigma_x0_sq
+            py_var_eff = jnp.asarray(cfg.py_var, dtype=x_t.dtype) + sigma_x0_sq
+        else:
+            q_var_eff = jnp.asarray(cfg.q_var, dtype=x_t.dtype)
+            py_var_eff = jnp.asarray(cfg.py_var, dtype=x_t.dtype)
+
+        # d/dy log N(y|m,v) = -(y-m)/v
+        dldy = (-(y_hat - cfg.q_mean) / q_var_eff) - (
+            -(y_hat - cfg.py_mean) / py_var_eff
+        )
+        # i.e. = -(y_hat-q_mean)/q_var_eff + (y_hat-py_mean)/py_var_eff
 
         # ∇_{x0} log ratio = a * d/dy
         grad_x0 = a_vec * dldy
