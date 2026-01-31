@@ -232,7 +232,7 @@ def main():
         alpha=q_alpha,
         beta=q_beta,
         ref_kind=REF_KIND,
-        guidance_scale=0.5,  # IMPORTANT: start smaller than 2.0
+        guidance_scale=1.0,  # IMPORTANT: start smaller than 2.0
         noise_aware=True,
         noise_power=1.0,
         eps=1e-6,
@@ -468,7 +468,7 @@ def main():
     (OUT_DIR / "metrics.json").write_text(json.dumps(summary, indent=2))
 
     txt = (
-        "=== VRW endpoint guided diffusion demo (beta-ref) ===\n"
+        "=== VRW endpoint guided diffusion demo (stephens-ref) ===\n"
         f"Saved scatter:    {scatter_path}\n"
         f"Saved radial hist:{hist_path}\n"
         f"Saved radial CDF: {cdf_path}\n\n"
