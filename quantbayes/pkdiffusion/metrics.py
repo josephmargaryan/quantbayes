@@ -71,18 +71,33 @@ def _finite_rows(X: np.ndarray) -> np.ndarray:
     return X[mask]
 
 
-def w2_empirical_1d(x: np.ndarray, y: np.ndarray) -> float:
-    """W2 for equal-weight 1D empirical measures (finite-only)."""
-    x = _finite_rows(np.asarray(x, dtype=float).reshape(-1))
-    y = _finite_rows(np.asarray(y, dtype=float).reshape(-1))
-    x = np.sort(x.reshape(-1))
-    y = np.sort(y.reshape(-1))
-    n = min(len(x), len(y))
-    if n < 2:
+def w2_empirical_1d(x: np.ndarray, y: np.ndarray, *, num_quantiles: int = 4096) -> float:
+    """
+    Empirical W2 in 1D using the quantile formula:
+
+      W2^2 = ∫_0^1 (F_x^{-1}(u) - F_y^{-1}(u))^2 du
+
+    Works for unequal sample sizes without bias.
+    """
+    x = np.asarray(x, dtype=float).reshape(-1)
+    y = np.asarray(y, dtype=float).reshape(-1)
+    x = x[np.isfinite(x)]
+    y = y[np.isfinite(y)]
+
+    if x.size < 2 or y.size < 2:
         raise ValueError("Not enough finite samples for w2_empirical_1d")
-    x = x[:n]
-    y = y[:n]
-    return float(np.sqrt(np.mean((x - y) ** 2)))
+
+    # Exact for equal sizes (fast path)
+    if x.size == y.size:
+        xs = np.sort(x)
+        ys = np.sort(y)
+        return float(np.sqrt(np.mean((xs - ys) ** 2)))
+
+    # Quantile approximation for unequal sizes
+    q = np.linspace(0.0, 1.0, int(num_quantiles), endpoint=True)
+    xq = np.quantile(x, q)
+    yq = np.quantile(y, q)
+    return float(np.sqrt(np.mean((xq - yq) ** 2)))
 
 
 def sliced_w2_empirical(

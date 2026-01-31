@@ -9,7 +9,6 @@ import matplotlib.pyplot as plt
 from scipy.stats import beta as sp_beta, kstest
 
 import jax
-
 jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 import jax.random as jr
@@ -19,25 +18,13 @@ import numpyro.distributions as dist
 
 from quantbayes.pkstruct.toy.vrw import vrw_endpoint
 from quantbayes.pkstruct.utils.stats import log_scaled_beta_pdf
-from quantbayes.pkstruct.toy.vrw import stephens_logpdf_r, StephensConfig
 
-from quantbayes.stochax.diffusion.sde import make_weight_fn
 from quantbayes.stochax.diffusion.schedules.vp import make_vp_int_beta
 
 from quantbayes.pkdiffusion.models import ScoreMLP
-from quantbayes.pkdiffusion.samplers import (
-    sample_many_reverse_vp_sde_euler,
-    VPSDESamplerConfig,
-)
-from quantbayes.pkdiffusion.guidance import (
-    VRWRadialRRGuidanceConfig,
-    make_vrw_radial_rr_guidance,
-)
-from quantbayes.pkdiffusion.metrics import (
-    w2_empirical_1d,
-    sliced_w2_empirical,
-    w2_empirical_2d_hungarian,
-)
+from quantbayes.pkdiffusion.samplers import sample_many_reverse_vp_sde_euler, VPSDESamplerConfig
+from quantbayes.pkdiffusion.guidance import VRWRadialRRGuidanceConfig, make_vrw_radial_rr_guidance
+from quantbayes.pkdiffusion.metrics import w2_empirical_1d, sliced_w2_empirical
 
 
 OUT_DIR = Path("reports/pkdiffusion/vrw_endpoint_guided")
@@ -50,7 +37,6 @@ MODEL_FILE = MODEL_DIR / "ema_score_model.eqx"
 
 def _load_score_model(cfg: dict) -> eqx.Module:
     arch = cfg["model_arch"]
-    # Template model (params overwritten by deserialise)
     template = ScoreMLP(
         dim=arch["dim"],
         time_dim=arch["time_dim"],
@@ -63,52 +49,89 @@ def _load_score_model(cfg: dict) -> eqx.Module:
     return model
 
 
-def _importance_resample_posterior_endpoints(
+def _fit_beta_moments(u: np.ndarray, eps: float = 1e-6) -> tuple[float, float, dict]:
+    """
+    Fit Beta(a,b) on [0,1] by method of moments.
+    Returns (a,b,stats).
+    """
+    u = np.asarray(u, dtype=float)
+    u = np.clip(u, eps, 1.0 - eps)
+    m = float(np.mean(u))
+    v = float(np.var(u))
+
+    # Ensure feasible variance
+    vmax = m * (1.0 - m) - 1e-12
+    if v <= 1e-12:
+        v = 1e-12
+    if v >= vmax:
+        v = 0.99 * vmax
+
+    t = m * (1.0 - m) / v - 1.0
+    a = max(m * t, 1e-3)
+    b = max((1.0 - m) * t, 1e-3)
+
+    stats = {"mean": m, "var": v, "std": float(np.sqrt(v))}
+    return float(a), float(b), stats
+
+
+def _sample_vrw_endpoints(*, N: int, MU: float, KAPPA: float, draws: int, seed: int) -> np.ndarray:
+    key = jr.PRNGKey(seed)
+    theta = dist.VonMises(MU, KAPPA).expand([N]).to_event(1).sample(key, (int(draws),))
+    end = jax.vmap(vrw_endpoint)(theta)  # (draws,2)
+    return np.array(end)
+
+
+def _importance_resample(
+    X_prop: np.ndarray,
     *,
     N: int,
-    MU: float,
-    KAPPA: float,
-    alpha: float,
-    beta: float,
+    q_alpha: float,
+    q_beta: float,
+    ref_alpha: float,
+    ref_beta: float,
     num_samples: int,
-    draws: int,
     seed: int,
-) -> np.ndarray:
+) -> tuple[np.ndarray, dict]:
     """
-    Baseline: sample endpoints from prior, weight by w(r)=q(r)/ref(r),
-    and resample.
+    Importance resampling baseline:
+      w(r) ∝ q(r) / ref(r)
+    where q and ref are ScaledBeta on r in (0,N).
 
-    This targets the same unnormalised endpoint posterior implied by
-    multiplying the prior by exp(log_evidence - log_reference).
+    Returns (resampled_endpoints, diagnostics).
     """
     rng = np.random.default_rng(seed)
-    key = jr.PRNGKey(seed)
 
-    theta = dist.VonMises(MU, KAPPA).expand([N]).to_event(1).sample(key, (draws,))
-    end = jax.vmap(vrw_endpoint)(theta)  # (draws,2)
-    end_np = np.array(end)
+    r = np.linalg.norm(X_prop, axis=-1)
+    rj = jnp.asarray(r)
 
-    r = np.linalg.norm(end_np, axis=-1)
-    # weights in log space
-    steph_cfg = StephensConfig(kappa=KAPPA, N=N)
-    logw = np.array(
-        jax.vmap(lambda rr: log_scaled_beta_pdf(rr, alpha, beta, N))(jnp.asarray(r))
-    )
-    logw -= np.array(
-        jax.vmap(lambda rr: stephens_logpdf_r(rr, cfg=steph_cfg))(jnp.asarray(r))
-    )
+    # logw = log q(r) - log ref(r)
+    logw = np.array(jax.vmap(lambda rr: log_scaled_beta_pdf(rr, q_alpha, q_beta, N))(rj))
+    logw -= np.array(jax.vmap(lambda rr: log_scaled_beta_pdf(rr, ref_alpha, ref_beta, N))(rj))
+
+    # Stabilize + avoid full underflow
     logw = logw - np.max(logw)
+    logw = np.clip(logw, -80.0, 0.0)
+
     w = np.exp(logw)
     w = w / np.sum(w)
 
-    idx = rng.choice(end_np.shape[0], size=num_samples, replace=True, p=w)
-    return end_np[idx]
+    ess = float(1.0 / np.sum(w**2))
+    w_max = float(np.max(w))
+
+    idx = rng.choice(X_prop.shape[0], size=int(num_samples), replace=True, p=w)
+    unique = int(np.unique(idx).size)
+
+    diag = {
+        "ess": ess,
+        "ess_frac": float(ess / X_prop.shape[0]),
+        "w_max": w_max,
+        "unique_idx": unique,
+        "unique_frac": float(unique / num_samples),
+    }
+    return X_prop[idx], diag
 
 
 def main():
-    # -------------------------
-    # Load trained model config
-    # -------------------------
     if not MODEL_CFG.exists() or not MODEL_FILE.exists():
         raise FileNotFoundError(
             "Missing trained model. Run:\n"
@@ -119,21 +142,25 @@ def main():
     cfg = json.loads(MODEL_CFG.read_text())
     score_model = _load_score_model(cfg)
 
-    # -------------------------
-    # Experiment config
-    # -------------------------
+    # VRW prior params (from training config)
     N = int(cfg["N"])
     MU = float(cfg["MU"])
     KAPPA = float(cfg["KAPPA"])
 
-    # Evidence q(r): ScaledBeta(alpha,beta) on r in (0,N)
-    ALPHA = 10.0
-    BETA = 10.0
+    # -------------------------
+    # Evidence q(r) on (0,N)
+    # -------------------------
+    # Start with a MODERATE shift first (so the demo is clean).
+    # After it works, try the hard stress-test:
+    #   q_alpha=10.0; q_beta=10.0
+    q_alpha = 20.0
+    q_beta = 2.0
 
-    # Diffusion sampler config (must match training t1 / betas)
+    # Diffusion schedule (must match training)
     t1 = float(cfg["t1"])
     beta_min = float(cfg["beta_min"])
     beta_max = float(cfg["beta_max"])
+    int_beta_fn = make_vp_int_beta("linear", beta_min=beta_min, beta_max=beta_max, t1=t1)
 
     sampler_cfg = VPSDESamplerConfig(
         t1=t1,
@@ -142,35 +169,48 @@ def main():
         seed=0,
     )
 
-    # Build int_beta_fn (must match training)
-    int_beta_fn = make_vp_int_beta(
-        "linear", beta_min=beta_min, beta_max=beta_max, t1=t1
-    )
-    _ = make_weight_fn(
-        int_beta_fn, name="likelihood"
-    )  # not used, but kept for symmetry
+    # -------------------------
+    # Fit ref(r) as a Beta on r/N using prior samples
+    # -------------------------
+    draws_prop = 250_000
+    X_prop = _sample_vrw_endpoints(N=N, MU=MU, KAPPA=KAPPA, draws=draws_prop, seed=123)
 
-    # Guidance
+    r_prop = np.linalg.norm(X_prop, axis=-1)
+    u_prop = np.clip(r_prop / N, 1e-6, 1.0 - 1e-6)
+
+    ref_alpha, ref_beta, ref_stats = _fit_beta_moments(u_prop)
+
+    print("=== Reference fit (prior r/N) ===")
+    print(f"ref_kind = beta-fit")
+    print(f"ref_alpha = {ref_alpha:.6f}, ref_beta = {ref_beta:.6f}")
+    print(f"ref mean(u)= {ref_stats['mean']:.6f}, std(u)= {ref_stats['std']:.6f}")
+    print(f"q   mean(u)= {q_alpha/(q_alpha+q_beta):.6f}")
+
+    # -------------------------
+    # Guidance using ref_kind="beta"
+    # -------------------------
     gcfg = VRWRadialRRGuidanceConfig(
         N=N,
         kappa=KAPPA,
-        alpha=ALPHA,
-        beta=BETA,
-        guidance_scale=1.0,  # start safer; increase to 2.0 after it’s stable
+        alpha=q_alpha,
+        beta=q_beta,
+        ref_kind="beta",
+        ref_alpha=ref_alpha,
+        ref_beta=ref_beta,
+        guidance_scale=2.0,
         eps=1e-6,
-        min_alpha=0.05,  # IMPORTANT for t1=10.0
-        max_guidance_norm=25.0,  # safety
+        min_alpha=0.05,
+        max_guidance_norm=25.0,
         snr_gamma=1.0,
     )
     guidance_fn = make_vrw_radial_rr_guidance(gcfg)
 
     # -------------------------
-    # Sample: unconditional (prior) diffusion vs guided diffusion
+    # Sample: unconditional vs guided diffusion
     # -------------------------
     key = jr.PRNGKey(sampler_cfg.seed)
-
-    # unconditional
     key_u, key_g = jr.split(key)
+
     X_uncond = sample_many_reverse_vp_sde_euler(
         score_model,
         int_beta_fn,
@@ -183,7 +223,6 @@ def main():
     )
     X_uncond_np = np.array(X_uncond)
 
-    # guided
     X_guided = sample_many_reverse_vp_sde_euler(
         score_model,
         int_beta_fn,
@@ -197,19 +236,20 @@ def main():
     X_guided_np = np.array(X_guided)
 
     # -------------------------
-    # Baseline: importance resampling
+    # Baseline: IS resampling from VRW prior
     # -------------------------
-    X_is = _importance_resample_posterior_endpoints(
+    X_is, is_diag = _importance_resample(
+        X_prop,
         N=N,
-        MU=MU,
-        KAPPA=KAPPA,
-        alpha=ALPHA,
-        beta=BETA,
+        q_alpha=q_alpha,
+        q_beta=q_beta,
+        ref_alpha=ref_alpha,
+        ref_beta=ref_beta,
         num_samples=sampler_cfg.num_samples,
-        draws=200_000,
-        seed=123,
+        seed=999,
     )
 
+    # Finite filtering (should be 100%)
     def _finite(X):
         X = np.asarray(X)
         m = np.isfinite(X).all(axis=1)
@@ -219,9 +259,8 @@ def main():
     X_guided_np, frac_g = _finite(X_guided_np)
     X_is, frac_is = _finite(X_is)
 
-    print(
-        f"Finite fraction: uncond={frac_u:.4f}, guided={frac_g:.4f}, IS={frac_is:.4f}"
-    )
+    print(f"Finite fraction: uncond={frac_u:.4f}, guided={frac_g:.4f}, IS={frac_is:.4f}")
+    print("IS diagnostics:", is_diag)
 
     # -------------------------
     # Metrics on r
@@ -230,43 +269,34 @@ def main():
     r_g = np.linalg.norm(X_guided_np, axis=-1)
     r_is = np.linalg.norm(X_is, axis=-1)
 
-    # KS against Beta on r/N
-    D_u, p_u = kstest(r_u / N, "beta", args=(ALPHA, BETA))
-    D_g, p_g = kstest(r_g / N, "beta", args=(ALPHA, BETA))
-    D_is, p_is = kstest(r_is / N, "beta", args=(ALPHA, BETA))
+    u_u = r_u / N
+    u_g = r_g / N
+    u_is = r_is / N
+
+    # Out-of-support mass (should be near 0)
+    frac_u_gt1 = float(np.mean(u_u > 1.0))
+    frac_g_gt1 = float(np.mean(u_g > 1.0))
+    frac_is_gt1 = float(np.mean(u_is > 1.0))
+
+    # KS against Beta on u=r/N
+    D_u, p_u = kstest(u_u, "beta", args=(q_alpha, q_beta))
+    D_g, p_g = kstest(u_g, "beta", args=(q_alpha, q_beta))
+    D_is, p_is = kstest(u_is, "beta", args=(q_alpha, q_beta))
 
     # Wasserstein distances vs IS baseline
     w2_r_g_is = w2_empirical_1d(r_g, r_is)
-    w2_x_g_is = sliced_w2_empirical(
-        X_guided_np,
-        X_is,
-        num_projections=256,
-        seed=0,
-    )
+    sw2_x_g_is = sliced_w2_empirical(X_guided_np, X_is, num_projections=256, seed=0)
+
     # -------------------------
-    # Plots
+    # Plots (with shared bins!)
     # -------------------------
     # Scatter
     plt.figure(figsize=(7, 7))
-    plt.scatter(
-        X_uncond_np[::8, 0],
-        X_uncond_np[::8, 1],
-        s=6,
-        alpha=0.15,
-        label="uncond diffusion",
-    )
-    plt.scatter(
-        X_guided_np[::8, 0],
-        X_guided_np[::8, 1],
-        s=6,
-        alpha=0.15,
-        label="guided diffusion",
-    )
-    plt.scatter(
-        X_is[::8, 0], X_is[::8, 1], s=6, alpha=0.15, label="IS baseline (RR weights)"
-    )
+    plt.scatter(X_uncond_np[::8, 0], X_uncond_np[::8, 1], s=6, alpha=0.15, label="uncond diffusion")
+    plt.scatter(X_guided_np[::8, 0], X_guided_np[::8, 1], s=6, alpha=0.15, label="guided diffusion")
+    plt.scatter(X_is[::8, 0], X_is[::8, 1], s=6, alpha=0.15, label="IS baseline (VRW + weights)")
     plt.gca().set_aspect("equal", "box")
-    plt.title("VRW endpoints: unconditional vs guided diffusion vs IS baseline")
+    plt.title("VRW endpoints: uncond vs guided diffusion vs IS baseline")
     plt.xlabel("x")
     plt.ylabel("y")
     plt.legend()
@@ -274,23 +304,56 @@ def main():
     plt.savefig(scatter_path, dpi=200, bbox_inches="tight")
     plt.close()
 
-    # Radial histogram + target curve
+    # Radial histogram + target curve (shared bins)
+    bins = np.linspace(0.0, float(N), 81)
+
+    def _in_support(r):
+        r = np.asarray(r)
+        m = (r >= 0.0) & (r <= float(N))
+        return r[m]
+
+    r_u_plot = _in_support(r_u)
+    r_g_plot = _in_support(r_g)
+    r_is_plot = _in_support(r_is)
+
     plt.figure(figsize=(10, 4.5))
-    plt.hist(r_u, bins=80, density=True, alpha=0.35, label="uncond diffusion r")
-    plt.hist(r_g, bins=80, density=True, alpha=0.35, label="guided diffusion r")
-    plt.hist(r_is, bins=80, density=True, alpha=0.35, label="IS baseline r")
+    plt.hist(r_u_plot, bins=bins, density=True, alpha=0.35, label=f"uncond r (u>1: {frac_u_gt1:.3f})")
+    plt.hist(r_g_plot, bins=bins, density=True, alpha=0.35, label=f"guided r (u>1: {frac_g_gt1:.3f})")
+    plt.hist(r_is_plot, bins=bins, density=True, alpha=0.35, label=f"IS r (u>1: {frac_is_gt1:.3f})")
 
-    rg = np.linspace(1e-4, N - 1e-4, 400)
-    xg = rg / N
-    target = (1.0 / N) * sp_beta.pdf(xg, ALPHA, BETA)
-    plt.plot(rg, target, linewidth=2, label="target q(r) (ScaledBeta)")
+    rg = np.linspace(1e-4, float(N) - 1e-4, 400)
+    xg = rg / float(N)
+    target = (1.0 / float(N)) * sp_beta.pdf(xg, q_alpha, q_beta)
+    plt.plot(rg, target, linewidth=2, label=f"target q(r): Beta({q_alpha},{q_beta}) on r/N")
 
-    plt.title("Radial distribution r = ||endpoint||")
+    plt.title("Radial distribution r = ||endpoint|| (shared bins)")
     plt.xlabel("r")
     plt.ylabel("density")
     plt.legend()
     hist_path = OUT_DIR / "radial_hist.png"
     plt.savefig(hist_path, dpi=200, bbox_inches="tight")
+    plt.close()
+
+    # CDF plot in u=r/N (bin-free diagnostic)
+    def _ecdf(x):
+        x = np.sort(np.asarray(x))
+        y = np.arange(1, x.size + 1) / x.size
+        return x, y
+
+    plt.figure(figsize=(8, 5))
+    for u, name in [(u_u, "uncond"), (u_g, "guided"), (u_is, "IS")]:
+        xs, ys = _ecdf(np.clip(u, 0.0, 1.0))
+        plt.plot(xs, ys, linewidth=2, label=name)
+
+    ug = np.linspace(0.0, 1.0, 500)
+    plt.plot(ug, sp_beta.cdf(ug, q_alpha, q_beta), linewidth=2, label="target Beta CDF")
+
+    plt.title("CDFs of u=r/N (clipped to [0,1])")
+    plt.xlabel("u")
+    plt.ylabel("CDF")
+    plt.legend()
+    cdf_path = OUT_DIR / "radial_cdf.png"
+    plt.savefig(cdf_path, dpi=200, bbox_inches="tight")
     plt.close()
 
     # -------------------------
@@ -300,43 +363,39 @@ def main():
         "N": N,
         "MU": MU,
         "KAPPA": KAPPA,
-        "ALPHA": ALPHA,
-        "BETA": BETA,
-        "sampler": dict(
-            t1=sampler_cfg.t1,
-            num_steps=sampler_cfg.num_steps,
-            num_samples=sampler_cfg.num_samples,
-        ),
-        "guidance": dict(
-            guidance_scale=gcfg.guidance_scale,
-        ),
-        "ks_beta_r_over_N": {
+        "evidence_beta_on_u": {"alpha": q_alpha, "beta": q_beta},
+        "ref_beta_fit_on_u": {"alpha": ref_alpha, "beta": ref_beta, **ref_stats},
+        "sampler": {"t1": sampler_cfg.t1, "num_steps": sampler_cfg.num_steps, "num_samples": sampler_cfg.num_samples},
+        "guidance": {"ref_kind": gcfg.ref_kind, "guidance_scale": gcfg.guidance_scale},
+        "finite_fraction": {"uncond": frac_u, "guided": frac_g, "is": frac_is},
+        "support_mass_u_gt_1": {"uncond": frac_u_gt1, "guided": frac_g_gt1, "is": frac_is_gt1},
+        "ks_beta_on_u": {
             "uncond": {"D": float(D_u), "p": float(p_u)},
             "guided": {"D": float(D_g), "p": float(p_g)},
             "is": {"D": float(D_is), "p": float(p_is)},
         },
-        "w2_vs_is": {
-            "w2_r": float(w2_r_g_is),
-            "w2_x_hungarian_n600": float(w2_x_g_is),
-        },
-        "files": {
-            "scatter": str(scatter_path),
-            "radial_hist": str(hist_path),
-        },
+        "is_diag": is_diag,
+        "dist_vs_is": {"w2_r": float(w2_r_g_is), "sw2_x": float(sw2_x_g_is)},
+        "files": {"scatter": str(scatter_path), "radial_hist": str(hist_path), "radial_cdf": str(cdf_path)},
     }
     (OUT_DIR / "metrics.json").write_text(json.dumps(summary, indent=2))
 
     txt = (
-        "=== VRW endpoint guided diffusion demo ===\n"
-        f"Saved scatter: {scatter_path}\n"
-        f"Saved radial hist: {hist_path}\n\n"
-        f"KS (r/N vs Beta({ALPHA},{BETA})):\n"
-        f"  uncond: D={D_u:.4f}, p={p_u:.3g}\n"
-        f"  guided: D={D_g:.4f}, p={p_g:.3g}\n"
-        f"  IS:     D={D_is:.4f}, p={p_is:.3g}\n\n"
-        f"W2 vs IS baseline:\n"
-        f"  W2(r): {w2_r_g_is:.6f}\n"
-        f"  W2(x) (Hungarian, n=600): {w2_x_g_is:.6f}\n"
+        "=== VRW endpoint guided diffusion demo (beta-ref) ===\n"
+        f"Saved scatter:    {scatter_path}\n"
+        f"Saved radial hist:{hist_path}\n"
+        f"Saved radial CDF: {cdf_path}\n\n"
+        f"Ref fit on u=r/N: Beta({ref_alpha:.4f},{ref_beta:.4f}), mean={ref_stats['mean']:.4f}, std={ref_stats['std']:.4f}\n"
+        f"Evidence on u:    Beta({q_alpha:.1f},{q_beta:.1f}), mean={q_alpha/(q_alpha+q_beta):.4f}\n\n"
+        f"IS diagnostics: ESS={is_diag['ess']:.1f} ({is_diag['ess_frac']:.3g} of proposal), "
+        f"w_max={is_diag['w_max']:.3g}, unique_frac={is_diag['unique_frac']:.3f}\n\n"
+        f"KS (u=r/N vs Beta({q_alpha},{q_beta})):\n"
+        f"  uncond: D={D_u:.4f}, p={p_u:.3g} (u>1: {frac_u_gt1:.3f})\n"
+        f"  guided: D={D_g:.4f}, p={p_g:.3g} (u>1: {frac_g_gt1:.3f})\n"
+        f"  IS:     D={D_is:.4f}, p={p_is:.3g} (u>1: {frac_is_gt1:.3f})\n\n"
+        f"Distances vs IS baseline:\n"
+        f"  W2(r):  {w2_r_g_is:.6f}\n"
+        f"  SW2(x): {sw2_x_g_is:.6f}\n"
     )
     (OUT_DIR / "summary.txt").write_text(txt)
     print(txt)
