@@ -26,16 +26,16 @@ class VRWRadialRRGuidanceConfig:
       - Stephens approximation ("stephens"), or
       - a ScaledBeta fit to prior r/N samples ("beta")
 
-    The guidance uses a DPS-style Tweedie x0-hat:
+    Uses Tweedie x0-hat:
         x0_hat = (x_t + sigma(t)^2 * score_t) / alpha(t)
 
-    and radial gradient in x0 space, approximately mapped to x_t space via 1/alpha(t).
+    and radial gradient in x0 space, mapped to x_t space via ~1/alpha(t).
     """
 
     N: int = 5
     kappa: float = 10.0
 
-    # Evidence q(r)
+    # Evidence q(r) via Beta(alpha,beta) on u=r/N
     alpha: float = 10.0
     beta: float = 10.0
 
@@ -55,8 +55,9 @@ class VRWRadialRRGuidanceConfig:
     # Soft ramp-in based on SNR; bounded in [0,1]
     snr_gamma: float = 1.0
 
+    # Noise-aware tempering (heuristic but principled)
     noise_aware: bool = True
-    noise_power: float = 1.0  # optional; keep 1.0
+    noise_power: float = 1.0  # 1.0 is default
 
 
 def make_vrw_radial_rr_guidance(cfg: VRWRadialRRGuidanceConfig) -> Callable:
@@ -66,13 +67,13 @@ def make_vrw_radial_rr_guidance(cfg: VRWRadialRRGuidanceConfig) -> Callable:
         if cfg.ref_kind == "stephens"
         else None
     )
-    # evidence variance of r when u=r/N ~ Beta(alpha,beta)
-    a = float(cfg.alpha)
-    b = float(cfg.beta)
-    N = float(cfg.N)
-    var_u = (a * b) / (((a + b) ** 2) * (a + b + 1.0))
-    var_r = (N * N) * var_u
-    var_r = jnp.asarray(var_r)
+
+    # Evidence variance of r when u=r/N ~ Beta(alpha,beta)
+    qa = float(cfg.alpha)
+    qb = float(cfg.beta)
+    Nf = float(cfg.N)
+    var_u = (qa * qb) / (((qa + qb) ** 2) * (qa + qb + 1.0))
+    var_r_const = (Nf * Nf) * var_u  # python float
 
     def ref_logpdf_r(r: Array) -> Array:
         if cfg.ref_kind == "stephens":
@@ -97,38 +98,39 @@ def make_vrw_radial_rr_guidance(cfg: VRWRadialRRGuidanceConfig) -> Callable:
         int_beta_fn,
     ) -> Array:
         # VP scalars
-        a, s = vp_alpha_sigma(int_beta_fn, t)
-        a = jnp.asarray(a)
-        s = jnp.asarray(s)
+        alpha_t, sigma_t = vp_alpha_sigma(int_beta_fn, t)
+        alpha_t = jnp.asarray(alpha_t, dtype=x_t.dtype)
+        sigma_t = jnp.asarray(sigma_t, dtype=x_t.dtype)
 
         # Gate: avoid pathological Tweedie when alpha is extremely small
-        gate = (a >= cfg.min_alpha).astype(x_t.dtype)
+        gate = (alpha_t >= cfg.min_alpha).astype(x_t.dtype)
 
         # Tweedie estimate for x0
-        a_safe = jnp.maximum(a, cfg.eps)
-        s2 = s * s
-        x0_hat = (x_t + s2 * score_t) / a_safe  # (2,)
+        alpha_safe = jnp.maximum(alpha_t, cfg.eps)
+        sigma2 = sigma_t * sigma_t
+        x0_hat = (x_t + sigma2 * score_t) / alpha_safe  # (2,)
 
-        sigma_x0_sq = s2 / (a_safe * a_safe + cfg.eps)  # scalar
+        # Direction
+        r_raw = jnp.linalg.norm(x0_hat)
+        direction = x0_hat / (r_raw + cfg.eps)
 
+        # Evaluate derivative at clipped r
+        r_eval = jnp.clip(r_raw, cfg.eps, float(cfg.N) - cfg.eps)
+        dldr = dlog_ratio_dr(r_eval)  # scalar
+
+        # Noise-aware tempering (apply AFTER dldr is computed)
         if cfg.noise_aware:
+            sigma_x0_sq = sigma2 / (alpha_safe * alpha_safe + cfg.eps)  # scalar
+            var_r = jnp.asarray(var_r_const, dtype=x_t.dtype)
             shrink = var_r / (var_r + sigma_x0_sq + cfg.eps)
             shrink = shrink ** jnp.asarray(cfg.noise_power, dtype=x_t.dtype)
             dldr = dldr * shrink
 
-        # Direction uses raw norm
-        r_raw = jnp.linalg.norm(x0_hat)
-        direction = x0_hat / (r_raw + cfg.eps)
-
-        # Clip r only for evaluating derivative
-        r_eval = jnp.clip(r_raw, cfg.eps, float(cfg.N) - cfg.eps)
-        dldr = dlog_ratio_dr(r_eval)
-
         grad_x0 = direction * dldr
-        grad_xt = grad_x0 / a_safe
+        grad_xt = grad_x0 / alpha_safe
 
         # bounded SNR ramp
-        snr = (a_safe * a_safe) / (s2 + cfg.eps)
+        snr = (alpha_safe * alpha_safe) / (sigma2 + cfg.eps)
         w = (snr / (1.0 + snr)) ** cfg.snr_gamma
 
         extra = cfg.guidance_scale * gate * w * grad_xt

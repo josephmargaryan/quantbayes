@@ -32,6 +32,7 @@ from quantbayes.pkdiffusion.guidance import (
     make_vrw_radial_rr_guidance,
 )
 from quantbayes.pkdiffusion.metrics import w2_empirical_1d, sliced_w2_empirical
+from quantbayes.pkstruct.toy.vrw import stephens_logpdf_r, StephensConfig
 
 
 OUT_DIR = Path("reports/pkdiffusion/vrw_endpoint_guided")
@@ -96,15 +97,20 @@ def _importance_resample(
     N: int,
     q_alpha: float,
     q_beta: float,
-    ref_alpha: float,
-    ref_beta: float,
+    ref_kind: str,
+    kappa: float | None,
+    ref_alpha: float | None,
+    ref_beta: float | None,
     num_samples: int,
     seed: int,
 ) -> tuple[np.ndarray, dict]:
     """
     Importance resampling baseline:
       w(r) ∝ q(r) / ref(r)
-    where q and ref are ScaledBeta on r in (0,N).
+
+    ref_kind:
+      - "stephens": ref(r)=Stephens approximation
+      - "beta":     ref(r)=ScaledBeta(ref_alpha, ref_beta) on r/N
 
     Returns (resampled_endpoints, diagnostics).
     """
@@ -113,13 +119,27 @@ def _importance_resample(
     r = np.linalg.norm(X_prop, axis=-1)
     rj = jnp.asarray(r)
 
-    # logw = log q(r) - log ref(r)
-    logw = np.array(
+    # log q(r)
+    logq = np.array(
         jax.vmap(lambda rr: log_scaled_beta_pdf(rr, q_alpha, q_beta, N))(rj)
     )
-    logw -= np.array(
-        jax.vmap(lambda rr: log_scaled_beta_pdf(rr, ref_alpha, ref_beta, N))(rj)
-    )
+
+    # log ref(r)
+    if ref_kind == "stephens":
+        if kappa is None:
+            raise ValueError("kappa must be provided when ref_kind='stephens'")
+        scfg = StephensConfig(kappa=float(kappa), N=int(N))
+        logref = np.array(jax.vmap(lambda rr: stephens_logpdf_r(rr, cfg=scfg))(rj))
+    elif ref_kind == "beta":
+        if ref_alpha is None or ref_beta is None:
+            raise ValueError("ref_alpha/ref_beta must be provided when ref_kind='beta'")
+        logref = np.array(
+            jax.vmap(lambda rr: log_scaled_beta_pdf(rr, ref_alpha, ref_beta, N))(rj)
+        )
+    else:
+        raise ValueError(f"Unknown ref_kind={ref_kind!r}")
+
+    logw = logq - logref
 
     # Stabilize + avoid full underflow
     logw = logw - np.max(logw)
@@ -140,11 +160,13 @@ def _importance_resample(
         "w_max": w_max,
         "unique_idx": unique,
         "unique_frac": float(unique / num_samples),
+        "ref_kind": ref_kind,
     }
     return X_prop[idx], diag
 
 
 def main():
+    REF_KIND = "stephens"
     if not MODEL_CFG.exists() or not MODEL_FILE.exists():
         raise FileNotFoundError(
             "Missing trained model. Run:\n"
@@ -209,10 +231,10 @@ def main():
         kappa=KAPPA,
         alpha=q_alpha,
         beta=q_beta,
-        ref_kind="stephens",
-        ref_alpha=ref_alpha,
-        ref_beta=ref_beta,
-        guidance_scale=2.0,
+        ref_kind=REF_KIND,
+        guidance_scale=0.5,  # IMPORTANT: start smaller than 2.0
+        noise_aware=True,
+        noise_power=1.0,
         eps=1e-6,
         min_alpha=0.05,
         max_guidance_norm=25.0,
@@ -258,6 +280,8 @@ def main():
         N=N,
         q_alpha=q_alpha,
         q_beta=q_beta,
+        ref_kind=REF_KIND,
+        kappa=KAPPA,
         ref_alpha=ref_alpha,
         ref_beta=ref_beta,
         num_samples=sampler_cfg.num_samples,

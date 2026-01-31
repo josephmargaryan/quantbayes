@@ -13,4 +13,7 @@ python -m quantbayes.pkdiffusion.demos.demo_vrw_endpoint_guided_sampling
 
 # 5) Evaluate trained score model (plots + metrics)
 python -m quantbayes.pkdiffusion.demos.demo_vrw_endpoint_eval_score
+
+python -m quantbayes.pkdiffusion.demos.demo_vp_gaussian_oracle_vs_guided
+
 """
