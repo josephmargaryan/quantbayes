@@ -14,7 +14,7 @@ from quantbayes.pkdiffusion.gaussian_pk import (
 from quantbayes.pkdiffusion.metrics import kl_gaussian_1d, kl_gaussian_nd
 from quantbayes.pkdiffusion.f_divergences import (
     hellinger2_gaussian_nd,
-    chi2_divergence_mc_gaussian,
+    js_divergence_mc,
 )
 
 OUT_DIR = Path("reports/pkdiffusion/gaussian_f_divergence_isometry")
@@ -43,49 +43,49 @@ def log_gaussian_1d(y: np.ndarray, m: float, v: float) -> np.ndarray:
 def main():
     rng = np.random.default_rng(0)
 
-    # Prior in X-space
     prior = GaussianND(mean=np.zeros(2), cov=np.eye(2))
-
-    # Coarse y = a^T x
     a = np.array([1.0, 0.7], dtype=float)
     a = a / np.linalg.norm(a)
-    py_m, py_v = marginal_1d(prior, a)
 
-    # Two evidences q1, q2 on y
+    # two evidences on Y
     q1_m, q1_v = 1.0, 0.25**2
     q2_m, q2_v = -0.4, 0.35**2
 
-    # PK posteriors
     p1 = pk_update_linear_gaussian(prior, a, q_mean=q1_m, q_var=q1_v)
     p2 = pk_update_linear_gaussian(prior, a, q_mean=q2_m, q_var=q2_v)
 
-    # KL isometry (analytic)
+    # KL (analytic)
     kl_x = kl_gaussian_nd(p1.mean, p1.cov, p2.mean, p2.cov)
     kl_y = kl_gaussian_1d(q1_m, q1_v, q2_m, q2_v)
 
-    # Hellinger^2 isometry (analytic)
+    # Hellinger^2 (analytic)
     h2_x = hellinger2_gaussian_nd(p1.mean, p1.cov, p2.mean, p2.cov)
     h2_y = hellinger2_gaussian_nd(
         np.array([q1_m]), np.array([[q1_v]]), np.array([q2_m]), np.array([[q2_v]])
     )
 
-    # Chi-square isometry (MC)
+    # JS (MC, stable)
     n_mc = 200_000
+    Xp = sample_gaussian(GaussianND(mean=p1.mean, cov=p1.cov), n=n_mc, rng=rng)
     Xq = sample_gaussian(GaussianND(mean=p2.mean, cov=p2.cov), n=n_mc, rng=rng)
+
+    Yp = rng.normal(loc=q1_m, scale=np.sqrt(q1_v), size=n_mc)
     Yq = rng.normal(loc=q2_m, scale=np.sqrt(q2_v), size=n_mc)
 
-    chi2_x = chi2_divergence_mc_gaussian(
+    js_x = js_divergence_mc(
+        sample_p=Xp,
         sample_q=Xq,
         logp_fn=lambda x: log_gaussian_nd(x, p1.mean, p1.cov),
         logq_fn=lambda x: log_gaussian_nd(x, p2.mean, p2.cov),
     )
-    chi2_y = chi2_divergence_mc_gaussian(
+    js_y = js_divergence_mc(
+        sample_p=Yp,
         sample_q=Yq,
         logp_fn=lambda y: log_gaussian_1d(y, q1_m, q1_v),
         logq_fn=lambda y: log_gaussian_1d(y, q2_m, q2_v),
     )
 
-    print("=== Gaussian f-divergence isometry demo ===")
+    print("=== Gaussian f-divergence isometry demo (stable set) ===")
     print(
         f"KL:          X-space={kl_x:.8f}  Y-space={kl_y:.8f}  absdiff={abs(kl_x-kl_y):.3e}"
     )
@@ -93,13 +93,12 @@ def main():
         f"Hellinger^2: X-space={h2_x:.8f}  Y-space={h2_y:.8f}  absdiff={abs(h2_x-h2_y):.3e}"
     )
     print(
-        f"Chi^2 (MC):  X-space={chi2_x:.8f}  Y-space={chi2_y:.8f}  absdiff={abs(chi2_x-chi2_y):.3e}"
+        f"JS (MC):     X-space={js_x:.8f}  Y-space={js_y:.8f}  absdiff={abs(js_x-js_y):.3e}"
     )
 
-    # Plot
-    labels = ["KL", "Hellinger^2", "Chi^2 (MC)"]
-    x_vals = [kl_x, h2_x, chi2_x]
-    y_vals = [kl_y, h2_y, chi2_y]
+    labels = ["KL", "Hellinger^2", "JS (MC)"]
+    x_vals = [kl_x, h2_x, js_x]
+    y_vals = [kl_y, h2_y, js_y]
 
     fig = plt.figure(figsize=(8.5, 4.8))
     ax = fig.add_subplot(1, 1, 1)
@@ -110,7 +109,7 @@ def main():
     ax.set_xticks(idx)
     ax.set_xticklabels(labels)
     ax.set_ylabel("divergence value")
-    ax.set_title("PK update induces f-divergence isometries (Gaussian linear case)")
+    ax.set_title("PK induces divergence isometries (Gaussian linear case)")
     ax.legend()
     fig.tight_layout()
 
@@ -118,12 +117,12 @@ def main():
     fig.savefig(fig_path, dpi=200, bbox_inches="tight")
 
     summary = (
-        "=== Gaussian f-divergence isometry ===\n"
+        "=== Gaussian f-divergence isometry (stable) ===\n"
         f"a={a.tolist()}\n"
         f"q1=N({q1_m},{q1_v})  q2=N({q2_m},{q2_v})\n"
         f"KL(X)={kl_x:.10f} KL(Y)={kl_y:.10f}\n"
         f"H2(X)={h2_x:.10f} H2(Y)={h2_y:.10f}\n"
-        f"chi2(X)={chi2_x:.10f} chi2(Y)={chi2_y:.10f}\n"
+        f"JS(X)={js_x:.10f} JS(Y)={js_y:.10f}\n"
         f"Saved figure: {fig_path}\n"
     )
     (OUT_DIR / "summary.txt").write_text(summary)

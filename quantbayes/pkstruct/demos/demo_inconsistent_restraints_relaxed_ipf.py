@@ -24,20 +24,30 @@ def distance(x: np.ndarray, a: np.ndarray) -> np.ndarray:
     return np.linalg.norm(x - a[None, :], axis=-1)
 
 
+def logsumexp(x: np.ndarray) -> float:
+    x = np.asarray(x, dtype=float).reshape(-1)
+    m = float(np.max(x))
+    return float(m + np.log(np.sum(np.exp(x - m)) + 1e-300))
+
+
+def softmax_logw(logw: np.ndarray) -> np.ndarray:
+    lse = logsumexp(logw)
+    w = np.exp(logw - lse)
+    s = float(np.sum(w))
+    if not np.isfinite(s) or s <= 0.0:
+        return np.ones_like(logw) / logw.size
+    return w / s
+
+
 def hist_density(
     values: np.ndarray, weights: np.ndarray, bins: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Weighted histogram density estimate on bins.
-    Returns (pdf_per_bin, mass_per_bin).
-    """
     values = np.asarray(values, dtype=float).reshape(-1)
     weights = np.asarray(weights, dtype=float).reshape(-1)
-    weights = weights / np.sum(weights)
+    weights = weights / max(float(np.sum(weights)), 1e-300)
 
-    counts, _ = np.histogram(values, bins=bins, weights=weights)
+    mass, _ = np.histogram(values, bins=bins, weights=weights)
     binw = np.diff(bins)
-    mass = counts  # already sums to 1 approximately
     pdf = mass / (binw + 1e-12)
     return pdf, mass
 
@@ -55,92 +65,94 @@ def kl_discrete(p_mass: np.ndarray, q_mass: np.ndarray, eps: float = 1e-12) -> f
 def main():
     rng = np.random.default_rng(0)
 
-    # Prior over x in R^2
     n = 80_000
-    X = rng.normal(size=(n, 2))  # N(0,I)
-    w = np.ones(n, dtype=float) / n
+    X0 = rng.normal(size=(n, 2))
+    logw0 = np.zeros(n, dtype=float)
 
-    # Two anchor points separated by distance d=2.0
     a1 = np.array([-1.0, 0.0])
     a2 = np.array([+1.0, 0.0])
     d_anchors = float(np.linalg.norm(a1 - a2))
     print(f"Anchor distance d={d_anchors:.3f}")
 
-    # Coarse observables: y1=||x-a1||, y2=||x-a2||
     def y1_fn(x):
         return distance(x, a1)
 
     def y2_fn(x):
         return distance(x, a2)
 
-    # Inconsistent soft evidences: both very small (but y1+y2 >= d must hold)
+    # intentionally inconsistent tight evidences
     q1_mean, q1_sd = 0.15, 0.03
     q2_mean, q2_sd = 0.15, 0.03
 
-    # Histogram grid
     y_max = 5.0
     bins = np.linspace(0.0, y_max, 220)
     mids = 0.5 * (bins[:-1] + bins[1:])
     binw = np.diff(bins)
 
-    # Evidence masses on bins (approx by pdf(mid)*binw then normalize)
     q1_pdf = trunc_normal_pdf(mids, mean=q1_mean, sd=q1_sd, low=0.0)
     q2_pdf = trunc_normal_pdf(mids, mean=q2_mean, sd=q2_sd, low=0.0)
     q1_mass = q1_pdf * binw
-    q2_mass = q2_pdf * binw
     q1_mass = q1_mass / np.sum(q1_mass)
+    q2_mass = q2_pdf * binw
     q2_mass = q2_mass / np.sum(q2_mass)
 
-    def one_run(tau: float, num_iters: int = 60, resample_every: int = 5) -> dict:
-        Xc = X.copy()
-        wc = w.copy()
+    def one_run(
+        tau: float, num_iters: int = 80, resample_every: int = 5, eps: float = 1e-12
+    ) -> dict:
+        X = X0.copy()
+        logw = logw0.copy()
 
         kl1_hist, kl2_hist = [], []
 
         for it in range(num_iters):
-            y1 = y1_fn(Xc)
-            y2 = y2_fn(Xc)
+            if not np.isfinite(logw).all():
+                logw[:] = 0.0
 
-            p1_pdf, p1_mass = hist_density(y1, wc, bins)
-            p2_pdf, p2_mass = hist_density(y2, wc, bins)
+            w = softmax_logw(logw)
+
+            # diagnostics before updates
+            y1 = y1_fn(X)
+            y2 = y2_fn(X)
+
+            p1_pdf, p1_mass = hist_density(y1, w, bins)
+            p2_pdf, p2_mass = hist_density(y2, w, bins)
 
             kl1_hist.append(kl_discrete(p1_mass, q1_mass))
             kl2_hist.append(kl_discrete(p2_mass, q2_mass))
 
-            # Update toward constraint 1
+            # update toward constraint 1
             idx1 = np.clip(np.digitize(y1, bins) - 1, 0, p1_pdf.size - 1)
-            p1_y = p1_pdf[idx1]
-            q1_y = trunc_normal_pdf(y1, mean=q1_mean, sd=q1_sd, low=0.0)
-            ratio1 = (q1_y / (p1_y + 1e-12)) ** tau
-            wc = wc * ratio1
-            wc = wc / np.sum(wc)
+            logp1 = np.log(p1_pdf[idx1] + eps)
+            logq1 = np.log(trunc_normal_pdf(y1, mean=q1_mean, sd=q1_sd, low=0.0) + eps)
+            logw = logw + tau * (logq1 - logp1)
+            logw = logw - logsumexp(logw)
 
-            # Update toward constraint 2
-            y2 = y2_fn(Xc)
-            p2_pdf, _ = hist_density(y2, wc, bins)
+            # update toward constraint 2
+            w = softmax_logw(logw)
+            y2 = y2_fn(X)
+            p2_pdf, _ = hist_density(y2, w, bins)
             idx2 = np.clip(np.digitize(y2, bins) - 1, 0, p2_pdf.size - 1)
-            p2_y = p2_pdf[idx2]
-            q2_y = trunc_normal_pdf(y2, mean=q2_mean, sd=q2_sd, low=0.0)
-            ratio2 = (q2_y / (p2_y + 1e-12)) ** tau
-            wc = wc * ratio2
-            wc = wc / np.sum(wc)
+            logp2 = np.log(p2_pdf[idx2] + eps)
+            logq2 = np.log(trunc_normal_pdf(y2, mean=q2_mean, sd=q2_sd, low=0.0) + eps)
+            logw = logw + tau * (logq2 - logp2)
+            logw = logw - logsumexp(logw)
 
-            # Occasional resampling for particle health
+            # resample for particle health
             if (resample_every > 0) and ((it + 1) % resample_every == 0):
-                ess = 1.0 / np.sum(wc * wc)
-                # resample if ESS is low
+                w = softmax_logw(logw)
+                ess = 1.0 / np.sum(w * w)
                 if ess < 0.25 * n:
-                    idx = rng.choice(n, size=n, replace=True, p=wc)
-                    Xc = Xc[idx]
-                    wc = np.ones(n, dtype=float) / n
+                    idx = rng.choice(n, size=n, replace=True, p=w)
+                    X = X[idx]
+                    logw[:] = 0.0
 
-        return dict(X=Xc, w=wc, kl1=np.array(kl1_hist), kl2=np.array(kl2_hist))
+        return dict(
+            X=X, w=softmax_logw(logw), kl1=np.array(kl1_hist), kl2=np.array(kl2_hist)
+        )
 
-    # Compare: hard projections (tau=1) vs damped (tau<1)
-    hard = one_run(tau=1.0, num_iters=80)
-    damp = one_run(tau=0.25, num_iters=80)
+    hard = one_run(tau=1.0)
+    damp = one_run(tau=0.25)
 
-    # Plot KL traces
     fig = plt.figure(figsize=(12.5, 5.2))
     ax1 = fig.add_subplot(1, 2, 1)
     ax1.plot(hard["kl1"], linewidth=2, label="KL(y1||q1) hard (tau=1)")
@@ -157,9 +169,8 @@ def main():
     ax1.set_title("Inconsistent restraints: hard oscillation vs damped convergence")
     ax1.legend()
 
-    # Scatter: final particle clouds
     ax2 = fig.add_subplot(1, 2, 2)
-    ax2.scatter(X[::80, 0], X[::80, 1], s=6, alpha=0.08, label="prior")
+    ax2.scatter(X0[::80, 0], X0[::80, 1], s=6, alpha=0.08, label="prior")
     ax2.scatter(damp["X"][::80, 0], damp["X"][::80, 1], s=6, alpha=0.12, label="damped")
     ax2.scatter(hard["X"][::80, 0], hard["X"][::80, 1], s=6, alpha=0.12, label="hard")
     ax2.scatter([a1[0], a2[0]], [a1[1], a2[1]], s=80, marker="x", label="anchors")
@@ -172,10 +183,10 @@ def main():
     fig.savefig(fig_path, dpi=200, bbox_inches="tight")
 
     summary = (
-        "=== Inconsistent restraints: relaxed IPF demo ===\n"
+        "=== Inconsistent restraints: relaxed IPF demo (stable log-weights) ===\n"
         f"anchors distance d={d_anchors:.3f}\n"
         f"q1 ~ TN(mean={q1_mean}, sd={q1_sd}), q2 ~ TN(mean={q2_mean}, sd={q2_sd})\n"
-        "Expectation: constraints incompatible, so exact enforcement is impossible.\n"
+        "Exact satisfaction is impossible; damped projections converge to a compromise.\n"
         f"Saved figure: {fig_path}\n"
     )
     (OUT_DIR / "summary.txt").write_text(summary)

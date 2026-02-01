@@ -10,9 +10,6 @@ def hellinger2_gaussian_nd(
     """
     Squared Hellinger distance between Gaussians:
       H^2(P,Q) = 1 - BC(P,Q)
-    where Bhattacharyya coefficient:
-      BC = |C0|^{1/4}|C1|^{1/4} / |(C0+C1)/2|^{1/2}
-           * exp(-1/8 (m0-m1)^T ((C0+C1)/2)^{-1} (m0-m1))
     """
     m0 = np.asarray(m0, dtype=float).reshape(-1)
     m1 = np.asarray(m1, dtype=float).reshape(-1)
@@ -34,26 +31,28 @@ def hellinger2_gaussian_nd(
 
     logBC = 0.25 * (logdet0 + logdet1) - 0.5 * logdetb - 0.125 * quad
     BC = float(np.exp(logBC))
-    H2 = float(max(1.0 - BC, 0.0))
-    return H2
+    return float(max(1.0 - BC, 0.0))
 
 
-def chi2_divergence_mc_gaussian(
-    *,
-    sample_q: np.ndarray,
-    logp_fn,
-    logq_fn,
+def js_divergence_mc(
+    *, sample_p: np.ndarray, sample_q: np.ndarray, logp_fn, logq_fn
 ) -> float:
     """
-    Monte Carlo estimate of chi-square divergence:
-      chi2(P||Q) = E_{x~Q}[(p/q - 1)^2]
-    using samples x~Q and access to log densities.
+    Jensen-Shannon divergence (nats) via Monte Carlo:
+      JS(P,Q) = 0.5 KL(P||M) + 0.5 KL(Q||M),  M = 0.5(P+Q)
+    This is bounded and numerically stable.
     """
-    x = np.asarray(sample_q)
-    lp = np.asarray(logp_fn(x), dtype=float).reshape(-1)
-    lq = np.asarray(logq_fn(x), dtype=float).reshape(-1)
+    x_p = np.asarray(sample_p, dtype=float)
+    x_q = np.asarray(sample_q, dtype=float)
 
-    lr = lp - lq
-    lr = np.clip(lr, -50.0, 50.0)  # stabilize
-    r = np.exp(lr)
-    return float(np.mean((r - 1.0) ** 2))
+    lp_p = np.asarray(logp_fn(x_p), dtype=float).reshape(-1)
+    lq_p = np.asarray(logq_fn(x_p), dtype=float).reshape(-1)
+    logm_p = np.logaddexp(lp_p, lq_p) - np.log(2.0)
+    kl_p_m = float(np.mean(lp_p - logm_p))
+
+    lp_q = np.asarray(logp_fn(x_q), dtype=float).reshape(-1)
+    lq_q = np.asarray(logq_fn(x_q), dtype=float).reshape(-1)
+    logm_q = np.logaddexp(lp_q, lq_q) - np.log(2.0)
+    kl_q_m = float(np.mean(lq_q - logm_q))
+
+    return 0.5 * (kl_p_m + kl_q_m)
