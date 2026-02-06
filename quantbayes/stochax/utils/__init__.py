@@ -46,12 +46,6 @@ from .research_diagnostics import (
     load_diagnostics_npz,
 )
 from .lip_upper import make_lipschitz_upper_fn
-from .pk import (
-    pk_weights_from_y_samples_1d,
-    effective_sample_size,
-    resample_indices,
-    normal_logpdf,
-)
 
 __all__ = [
     "bayesianize",
