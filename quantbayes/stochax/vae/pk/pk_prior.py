@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from typing import Optional
 
 import equinox as eqx
-import jax
 import jax.numpy as jnp
 
 from .features import FeatureMap
@@ -15,11 +14,15 @@ from .score_model import LatentScoreNet
 @dataclass(frozen=True)
 class PKPriorConfig:
     lambda_strength: float = 1.0
-    sigma_max: Optional[float] = None  # apply correction only when sigma <= sigma_max
 
-    # sigma-weight dial: w(sigma) = (sigma_ref^2 / (sigma^2 + sigma_ref^2))^gamma
+    # NEW: band-pass gate for correction
+    sigma_max: Optional[float] = None
+    sigma_min: Optional[float] = None
+
+    # sigma weighting
     sigma_ref: float = 1.0
     sigma_weight_gamma: float = 0.0
+    sigma_weight_mode: str = "edm"  # "edm" | "high" | "flat"
 
     max_correction_norm: float = 50.0
     eps: float = 1e-12
@@ -28,8 +31,14 @@ class PKPriorConfig:
 class PKLatentPrior(eqx.Module):
     """
     PK-updated latent prior score:
-      score(z) = score_base(z) + lambda * gate * w(sigma) * J_F(z)^T (s_p(u) - s_pi(u))
-    where base prior is N(0,I) => score_base(z) = -z.
+      score(z) = score_base(z) + λ * gate(σ) * w(σ) * J_F(z)^T [ s_p(u) - s_pi(u) ]
+
+    Base prior: z~N(0,I) => score_base(z) = -z.
+
+    evidence_score: DSM score net for u=F(z) under evidence distribution (aggregate posterior)
+    reference_score:
+        - if provided: DSM score net for u under pushforward of N(0,I)
+        - else: requires feature_map.prior_score_u(u) analytic (Identity/Linear)
     """
 
     feature_map: FeatureMap
@@ -37,32 +46,47 @@ class PKLatentPrior(eqx.Module):
     reference_score: Optional[LatentScoreNet] = None
     cfg: PKPriorConfig = eqx.field(static=True)
 
-    def __init__(
-        self,
-        *,
-        feature_map: FeatureMap,
-        evidence_score: LatentScoreNet,
-        reference_score: Optional[LatentScoreNet],
-        cfg: PKPriorConfig,
-    ):
-        self.feature_map = feature_map
-        self.evidence_score = evidence_score
-        self.reference_score = reference_score
-        self.cfg = cfg
-
     def _as_batch(self, z: jnp.ndarray):
         z = jnp.asarray(z)
         if z.ndim == 1:
             return z[None, :], True
         return z, False
 
+    def _gate(self, sigma: jnp.ndarray, dtype) -> jnp.ndarray:
+        gate = jnp.asarray(1.0, dtype=dtype)
+        if self.cfg.sigma_max is not None:
+            gate = gate * (sigma <= float(self.cfg.sigma_max)).astype(dtype)
+        if self.cfg.sigma_min is not None:
+            gate = gate * (sigma >= float(self.cfg.sigma_min)).astype(dtype)
+        return gate
+
+    def _w_sigma(self, sigma: jnp.ndarray, dtype) -> jnp.ndarray:
+        mode = (self.cfg.sigma_weight_mode or "edm").lower().strip()
+        if mode == "flat" or float(self.cfg.sigma_weight_gamma) == 0.0:
+            return jnp.asarray(1.0, dtype=dtype)
+
+        sr2 = float(self.cfg.sigma_ref) ** 2
+        s2 = sigma**2
+
+        if mode == "edm":
+            base = sr2 / (s2 + sr2)
+        elif mode == "high":
+            base = s2 / (s2 + sr2)
+        else:
+            raise ValueError(
+                f"Unknown sigma_weight_mode={self.cfg.sigma_weight_mode!r}"
+            )
+
+        return jnp.power(base, float(self.cfg.sigma_weight_gamma)).astype(dtype)
+
     def __call__(self, log_sigma: jnp.ndarray, z: jnp.ndarray) -> jnp.ndarray:
         z, squeeze = self._as_batch(z)
         b = z.shape[0]
+        dtype = z.dtype
 
         sigma = jnp.exp(jnp.asarray(log_sigma).reshape(()))
 
-        # base prior score for N(0,I)
+        # base prior score
         score_base = -z
 
         u = self.feature_map(z)  # (B,M)
@@ -71,7 +95,6 @@ class PKLatentPrior(eqx.Module):
         s_p = self.evidence_score(jnp.full((b,), jnp.log(sigma)), u)
 
         # reference score s_pi(u | sigma)
-        s_pi = None
         if self.reference_score is not None:
             s_pi = self.reference_score(jnp.full((b,), jnp.log(sigma)), u)
         else:
@@ -82,32 +105,16 @@ class PKLatentPrior(eqx.Module):
                     "Provide reference_score or use Identity/Linear feature map."
                 )
 
-        delta_u = s_p - s_pi  # (B,M)
-        delta_z = self.feature_map.vjp(z, delta_u)  # (B,D)
+        delta_u = s_p - s_pi
+        delta_z = self.feature_map.vjp(z, delta_u)
 
-        # per-sample clip
+        # clip correction per sample
         n = jnp.sqrt(jnp.sum(delta_z * delta_z, axis=-1, keepdims=True) + self.cfg.eps)
-        clip = jnp.minimum(1.0, self.cfg.max_correction_norm / n)
+        clip = jnp.minimum(1.0, float(self.cfg.max_correction_norm) / n)
         delta_z = delta_z * clip
 
-        # gate
-        gate = 1.0
-        if self.cfg.sigma_max is not None:
-            gate = (sigma <= float(self.cfg.sigma_max)).astype(z.dtype)
+        gate = self._gate(sigma, dtype)
+        w = self._w_sigma(sigma, dtype)
 
-        # sigma-weight
-        gamma = float(self.cfg.sigma_weight_gamma)
-        if gamma != 0.0:
-            sr = float(self.cfg.sigma_ref)
-            base = (sr * sr) / (sigma * sigma + sr * sr)
-            w_sigma = jnp.power(base, gamma).astype(z.dtype)
-        else:
-            w_sigma = jnp.asarray(1.0, dtype=z.dtype)
-
-        total = (
-            score_base + (float(self.cfg.lambda_strength) * gate * w_sigma) * delta_z
-        )
-
-        if squeeze:
-            return total[0]
-        return total
+        total = score_base + (float(self.cfg.lambda_strength) * gate * w) * delta_z
+        return total[0] if squeeze else total

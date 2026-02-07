@@ -9,12 +9,11 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import jax.random as jr
-import optax
 
 from quantbayes.stochax.diffusion.edm import edm_precond_scalars
 from quantbayes.stochax.diffusion.parameterizations import edm_denoise_to_x0
 
-# Reuse your 1D DSM score-net from the diffusion PK module you added earlier
+# Reuse 1D DSM score net
 from quantbayes.stochax.diffusion.pk.reference_score import (
     ScoreNet1D,
     ScoreNet1DConfig,
@@ -45,14 +44,29 @@ class DecodedInkPKConfig:
 
     # PK guidance knobs
     guide_strength: float = 8.0  # λ
-    guide_sigma_max: float = 1.5  # 𝟙[σ <= ...]
-    max_guide_norm: float = 50.0  # clip on ||grad_z||
 
-    # sigma weight exponent
+    # NEW: band-pass gating to avoid late-time collapse:
+    # Guidance active only when sigma_min <= σ <= sigma_max
+    guide_sigma_max: float = 1.5
+    guide_sigma_min: float = 0.0
+
+    # clip on ||grad_z||
+    max_guide_norm: float = 50.0
+
+    # sigma weighting
     sigma_data: float = 0.5
     w_gamma: float = 0.5
 
-    # numerical
+    # NEW: choose where guidance is strongest
+    # "edm"  -> base = σ_data^2 / (σ^2 + σ_data^2)   (strong at small σ)
+    # "high" -> base = σ^2 / (σ^2 + σ_data^2)        (strong at large σ)
+    # "flat" -> base = 1
+    sigma_weight_mode: str = "edm"  # "edm" | "high" | "flat"
+
+    # NEW: optionally reduce collapse by not scaling x0-update by σ^2
+    # (default keeps your current behavior)
+    scale_by_sigma2: bool = True
+
     eps: float = 1e-12
 
 
@@ -93,7 +107,7 @@ def train_reference_score_for_decoded_ink(
     *,
     vae,
     decode_logits_fn: Callable[[jnp.ndarray], jnp.ndarray],  # z(B,D)->logits(B,1,H,W)
-    z_samples: jnp.ndarray,  # (N,D) from latent prior sampling
+    z_samples: jnp.ndarray,  # (N,D)
     score_path: Path,
     cfg: ScoreNet1DConfig,
     ink_thr: float,
@@ -118,14 +132,19 @@ def train_reference_score_for_decoded_ink(
 class DecodedInkPKGuidance:
     """
     Computes delta in x0(z) space:
-      x0_z <- x0_z + sigma^2 * guidance
-    where guidance is proportional to (score_p(d)-score_pi(d)) * ∇_z d(decode(x0_z)).
+      x0_z <- x0_z + [σ^2 if enabled] * scale(σ) * g(z)
+    where g(z) ∝ (score_p(d)-score_pi(d)) * ∇_z d(decode(x0_z)).
+
+    Key new bits:
+      - band-pass gate: σ_min <= σ <= σ_max
+      - sigma_weight_mode: "edm" | "high" | "flat"
+      - optional disable σ^2 scaling (scale_by_sigma2=False)
     """
 
     def __init__(
         self,
         *,
-        vae_decoder,  # module with .__call__(z)->logits or callable
+        vae_decoder,
         evidence: InkEvidence,
         ref_score_net: ScoreNet1D,
         cfg: DecodedInkPKConfig,
@@ -140,7 +159,6 @@ class DecodedInkPKGuidance:
             raise ValueError("mode must be 'pk' or 'evidence'.")
 
     def _decode_logits(self, z: jnp.ndarray) -> jnp.ndarray:
-        # decoder in your VAEs expects z(B,D) and returns logits(B,1,H,W)
         return self.decoder(z, rng=None, train=False)
 
     def _grad_z_of_d(self, z: jnp.ndarray) -> Tuple[jnp.ndarray, jnp.ndarray]:
@@ -155,7 +173,6 @@ class DecodedInkPKGuidance:
             x01, thr=self.cfg.ink_thr, temp=self.cfg.ink_temp
         )
 
-        # d is function of x01; x01 = sigmoid(logits)
         # grad wrt logits: grad_x * sigmoid'(logits)
         sigp = x01 * (1.0 - x01)
         grad_logits = grad_x * sigp  # (B,1,H,W)
@@ -163,7 +180,6 @@ class DecodedInkPKGuidance:
         # Per-sample VJP through decoder
         def one(z_i, g_i):
             def f(zz):
-                # returns (1,H,W) with channel dim
                 return self._decode_logits(zz[None, :])[0]
 
             _, vjp = jax.vjp(f, z_i)
@@ -173,15 +189,38 @@ class DecodedInkPKGuidance:
         grad_z = jax.vmap(one)(z, grad_logits)
         return d, grad_z
 
+    def _sigma_weight(self, sigma: jnp.ndarray, dtype) -> jnp.ndarray:
+        mode = (self.cfg.sigma_weight_mode or "edm").lower().strip()
+        if mode == "flat":
+            return jnp.asarray(1.0, dtype=dtype)
+
+        sd2 = float(self.cfg.sigma_data) ** 2
+        s2 = sigma**2
+
+        if mode == "edm":
+            base = sd2 / (s2 + sd2)
+        elif mode == "high":
+            base = s2 / (s2 + sd2)
+        else:
+            raise ValueError(
+                f"Unknown sigma_weight_mode={self.cfg.sigma_weight_mode!r}"
+            )
+
+        return jnp.power(base, float(self.cfg.w_gamma)).astype(dtype)
+
     def delta_x0(self, x0_z: jnp.ndarray, *, sigma: jnp.ndarray) -> jnp.ndarray:
         """
         x0_z: (B,D)
         sigma: scalar
         """
         sigma = jnp.asarray(sigma).reshape(())
-        do_guide = (sigma <= float(self.cfg.guide_sigma_max)).astype(x0_z.dtype)
+        dtype = x0_z.dtype
 
-        # early exit (keeps it cheap)
+        # band-pass gating
+        smax = float(self.cfg.guide_sigma_max)
+        smin = float(self.cfg.guide_sigma_min)
+        do_guide = ((sigma <= smax) & (sigma >= smin)).astype(dtype)
+
         if float(self.cfg.guide_strength) == 0.0:
             return jnp.zeros_like(x0_z)
 
@@ -212,16 +251,14 @@ class DecodedInkPKGuidance:
         clip = jnp.minimum(1.0, float(self.cfg.max_guide_norm) / n)
         g = g * clip
 
-        # sigma weight
-        base = (float(self.cfg.sigma_data) ** 2) / (
-            sigma**2 + float(self.cfg.sigma_data) ** 2
-        )
-        w_sigma = jnp.power(base, float(self.cfg.w_gamma)).astype(x0_z.dtype)
+        w_sigma = self._sigma_weight(sigma, dtype)
 
         scale = float(self.cfg.guide_strength) * do_guide * w_sigma
 
-        # x0 guidance uses sigma^2
-        return (sigma**2) * scale * g
+        if self.cfg.scale_by_sigma2:
+            return (sigma**2) * scale * g
+        else:
+            return scale * g
 
 
 def wrap_denoise_fn_with_x0_guidance(
