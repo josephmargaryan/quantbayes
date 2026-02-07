@@ -1,18 +1,17 @@
 # ============================================================
 # PK MNIST INK: "PERFECT" EXPERIMENT (FIRST CHAPTER ONLY)
 #
-# Reproduces the FIRST result from your v3 notebook script:
-#   evidence_sharpen = 0.60  -> tag "sh060"
+# Self-contained test:
+#   - Loads MNIST
+#   - Trains/loads an EDM prior (checkpointed) automatically
+#   - Estimates prior pushforward π(d) for the ink observable
+#   - Trains/loads 1D reference score s_pi(z) via DSM
+#   - Optionally calibrates PK guidance OR uses fixed (λ, sigma_max)
+#   - Compares none vs evidence-only vs PK
 #
-# Steps:
-#   1) compute evidence stats from real MNIST class-k ink fractions
-#   2) estimate prior pushforward π(d) by sampling prior
-#   3) load/train 1D reference score s_pi(z) from SCORE_PATH
-#   4) calibrate PK over (gamma, guide_strength, guide_sigma_max)
-#   5) final compare: none vs evidence-only vs PK with calibrated params
-#
-# Artifacts:
-#   OUTDIR/exp_runs_v3/sh060/{calibration_sweep_pk.csv, summary.txt, compare_grids.png, compare_hist_z.png}
+# Switch models:
+#   Edit MODEL_NAME and the build_diffusion_model() switchboard.
+#   (By default, each MODEL_NAME gets its own artifact folder + checkpoints.)
 # ============================================================
 
 from __future__ import annotations
@@ -30,12 +29,13 @@ import tensorflow_datasets as tfds
 import equinox as eqx
 import optax
 
+# ---- model(s)
 from quantbayes.stochax.diffusion.models.mixer_2d import Mixer2d
-from quantbayes.stochax.diffusion.checkpoint import load_checkpoint
+
+# ---- EDM / PK utilities
 from quantbayes.stochax.diffusion.edm import edm_precond_scalars
 from quantbayes.stochax.diffusion.pk import (
     InkFractionObservable,
-    ScoreNet1D,
     ScoreNet1DConfig,
     train_or_load_score_net_dsm,
     EDMHeunConfig,
@@ -49,12 +49,25 @@ from quantbayes.stochax.diffusion.pk import (
     w1_to_gaussian,
 )
 
+# ---- train-or-load EDM prior (THIS is the key fix)
+from quantbayes.stochax.diffusion.pk.training_edm import (
+    EDMTrainConfig,
+    train_or_load_edm_unconditional,
+)
+
 # ----------------------------
 # USER CONTROLS
 # ----------------------------
 SEED = 0
 
-OUTDIR = Path("artifacts/pk_mnist_ink_only")
+# ----------------------------
+# MODEL SWITCHBOARD
+# ----------------------------
+MODEL_NAME = "mixer2d"  # <- change this and update build_diffusion_model() below
+
+# Put each model in its own artifact tree automatically
+ARTIFACT_ROOT = Path("artifacts/pk_mnist_ink_only")
+OUTDIR = ARTIFACT_ROOT / MODEL_NAME
 RUN_DIR = OUTDIR / "exp_runs_v3"
 RUN_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -65,26 +78,43 @@ SCORE_PATH = OUTDIR / "score_pi_z_ink.eqx"
 # Evidence (real MNIST)
 TARGET_DIGIT_FOR_EVIDENCE = 3
 FAT_QUANTILE = 0.80
-EVIDENCE_SHARPEN = 0.60  # <-- FIRST CHAPTER ONLY (sh060)
+EVIDENCE_SHARPEN = 0.60  # "first chapter" tag sh060
 
 # Observable
 INK_THRESH = 0.35
 INK_TEMP = 0.08
 
-# Diffusion sampler
+# EDM training (prior)
+PRIOR_NUM_STEPS = 40000  # increase for better samples
+PRIOR_BATCH_SIZE = 128
+PRIOR_PRINT_EVERY = 500
+PRIOR_CKPT_EVERY = 5000
+PRIOR_KEEP_LAST = 3
+
+# (Optional) quick debug: train on a subset
+PRIOR_TRAIN_MAX_N = None  # e.g. 20000 for quick debug, or None for full train set
+
+# Diffusion sampler / EDM params
 SIGMA_DATA = 0.5
 SAMPLE_STEPS = 40
 SIGMA_MIN_SAMPLE = 0.002
 SIGMA_MAX_SAMPLE = 80.0
 
-# Calibration grids (same as notebook)
+# Guidance experiment controls
+DO_CALIBRATION = True  # set False to use FIXED_* below
+
+# Fixed guidance (used if DO_CALIBRATION=False)
+FIXED_W_GAMMA = 0.5
+FIXED_GUIDE_STRENGTH = 8.0  # λ
+FIXED_GUIDE_SIGMA_MAX = 1.5  # indicator 𝟙[σ <= 1.5]
+
+# Calibration grids (used if DO_CALIBRATION=True)
 W_GAMMA_GRID = [0.0, 0.5, 1.0]
 GUIDE_STRENGTH_GRID = [0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0]
 GUIDE_SIGMA_MAX_GRID = [1.0, 1.5, 2.0, 3.0, 5.0]
 
 ALPHA_CLIP = 0.25
 BETA_W1 = 0.10
-
 MAX_GUIDE_NORM = 10.0
 
 # Sample sizes
@@ -92,11 +122,6 @@ N_REF = 4096
 N_CALIB = 1024
 N_FINAL = 2048
 NUM_SHOW = 64  # must be perfect square
-
-# For loading checkpoints: must match the optimizer structure used when saving
-DIFF_CLIP = 1.0
-DIFF_LR = 2e-4
-DIFF_WD = 1e-4
 
 
 # ----------------------------
@@ -127,53 +152,102 @@ def load_mnist_nchw_scaled():
 
 
 class EDMNet(eqx.Module):
+    """
+    Generic wrapper that adapts your model to the EDM trainer.
+
+    The EDM trainer calls:
+        model(log_sigma, x_in, key=..., train=True)
+
+    Many of your models accept (t, y, *, key=None) and ignore `train`.
+    This wrapper tries to forward `train` if the base model supports it.
+    """
+
     net: eqx.Module
 
     def __call__(self, log_sigma, x, *, key=None, train=False, **kwargs):
-        return self.net(log_sigma, x, key=key)
+        # Attempt to forward train if supported; otherwise fall back.
+        try:
+            return self.net(log_sigma, x, key=key, train=train, **kwargs)
+        except TypeError:
+            return self.net(log_sigma, x, key=key, **kwargs)
 
 
 def build_diffusion_model():
-    k = jr.PRNGKey(SEED + 2)
-    base = Mixer2d(
-        img_size=(1, 28, 28),
-        patch_size=4,
-        hidden_size=96,
-        mix_patch_size=512,
-        mix_hidden_size=512,
-        num_blocks=4,
-        t1=1.0,
-        key=k,
-    )
-    return EDMNet(base)
+    """
+    >>> EASY MODEL SWAP <<<
+    Add cases here for other architectures. Keep the returned module shape/signature
+    consistent across runs if you want to reuse the same checkpoint directory.
 
+    Tip: since OUTDIR is already model-specific (OUTDIR/MODEL_NAME), you can freely
+    switch MODEL_NAME without colliding checkpoints.
+    """
+    key = jr.PRNGKey(SEED + 2)
 
-def load_ema_eval_model():
-    if not (DIFF_CKPT_DIR / "latest.txt").exists():
-        raise FileNotFoundError(
-            f"No diffusion checkpoint found in {DIFF_CKPT_DIR}. "
-            "Train your EDM prior first (the earlier MNIST diffusion script)."
+    name = MODEL_NAME.lower().replace("-", "").replace("_", "").strip()
+
+    if name in ("mixer2d", "mixer"):
+        base = Mixer2d(
+            img_size=(1, 28, 28),
+            patch_size=4,
+            hidden_size=96,
+            mix_patch_size=512,
+            mix_hidden_size=512,
+            num_blocks=4,
+            t1=1.0,  # unused in Mixer2d but kept for API compat
+            key=key,
         )
+        return EDMNet(base)
 
-    model_template = build_diffusion_model()
+    # مثال: add another model
+    # elif name in ("unet2d", "unet"):
+    #     from quantbayes.stochax.diffusion.models.unet_2d import UNet2d
+    #     base = UNet2d(..., key=key)
+    #     return EDMNet(base)
 
-    optimizer = optax.chain(
-        optax.clip_by_global_norm(DIFF_CLIP),
-        optax.adamw(DIFF_LR, weight_decay=DIFF_WD),
-    )
-    opt_state_template = optimizer.init(
-        eqx.filter(model_template, eqx.is_inexact_array)
+    raise ValueError(
+        f"Unknown MODEL_NAME={MODEL_NAME!r}. "
+        "Edit build_diffusion_model() to add your architecture."
     )
 
-    model, ema_model, opt_state, step = load_checkpoint(
-        DIFF_CKPT_DIR,
-        model_template,
-        model_template,
-        opt_state_template,
-        step=None,
+
+def get_or_train_ema_eval_model(x_train: jnp.ndarray):
+    """
+    Train EDM prior if no checkpoint exists; otherwise load/resume.
+    Returns EMA model in inference mode.
+    """
+    DIFF_CKPT_DIR.mkdir(parents=True, exist_ok=True)
+
+    train_cfg = EDMTrainConfig(
+        lr=2e-4,
+        weight_decay=1e-4,
+        batch_size=PRIOR_BATCH_SIZE,
+        num_steps=PRIOR_NUM_STEPS,
+        ema_decay=0.999,
+        grad_clip_norm=1.0,
+        print_every=PRIOR_PRINT_EVERY,
+        checkpoint_every=PRIOR_CKPT_EVERY,
+        keep_last=PRIOR_KEEP_LAST,
+        sigma_data=SIGMA_DATA,
+        sigma_min_train=SIGMA_MIN_SAMPLE,
+        sigma_max_train=SIGMA_MAX_SAMPLE,
+        seed=SEED,
     )
+
+    # Optionally limit training set for quick debugging
+    if PRIOR_TRAIN_MAX_N is not None:
+        x_train_use = x_train[: int(PRIOR_TRAIN_MAX_N)]
+    else:
+        x_train_use = x_train
+
+    _, ema_model = train_or_load_edm_unconditional(
+        ckpt_dir=DIFF_CKPT_DIR,
+        build_model_fn=build_diffusion_model,
+        dataset=x_train_use,
+        cfg=train_cfg,
+    )
+
     ema_eval = eqx.tree_inference(ema_model, value=True)
-    print(f"[diffusion] Loaded EMA checkpoint at step={step} from {DIFF_CKPT_DIR}")
+    print(f"[diffusion] EMA ready from {DIFF_CKPT_DIR}")
     return ema_eval
 
 
@@ -216,9 +290,9 @@ def main():
     )
 
     # ----------------------------
-    # Step 2: load diffusion EMA and define denoise_fn
+    # Step 2: train-or-load diffusion EMA and define denoise_fn
     # ----------------------------
-    ema_eval = load_ema_eval_model()
+    ema_eval = get_or_train_ema_eval_model(x_train)
     denoise_fn = make_denoise_fn(ema_eval)
 
     sample_cfg = EDMHeunConfig(
@@ -245,14 +319,14 @@ def main():
     print(f"\n[prior] Sampling {N_REF} prior images to estimate π(d)...")
     x_ref, _ = sampler_none_ref(
         jr.PRNGKey(SEED + 4242),
-        jnp.array(0.0, jnp.float32),
-        jnp.array(1.0, jnp.float32),
-        jnp.array(0.0, jnp.float32),
-        jnp.array(1.0, jnp.float32),
-        jnp.array(0.0, jnp.float32),
-        jnp.array(0.0, jnp.float32),
-        jnp.array(1.0, jnp.float32),
-        jnp.array(0.0, jnp.float32),
+        jnp.array(0.0, jnp.float32),  # mean_d (dummy)
+        jnp.array(1.0, jnp.float32),  # std_d  (dummy)
+        jnp.array(0.0, jnp.float32),  # mu_z   (dummy)
+        jnp.array(1.0, jnp.float32),  # tau_z  (dummy)
+        jnp.array(0.0, jnp.float32),  # guide_strength
+        jnp.array(0.0, jnp.float32),  # guide_sigma_max
+        jnp.array(1.0, jnp.float32),  # max_guide_norm
+        jnp.array(0.0, jnp.float32),  # w_gamma
     )
 
     d_ref = obs.value(jnp.clip(x_ref, -1.0, 1.0))
@@ -268,7 +342,7 @@ def main():
     print(f"[target] z-space: mu_z={mu_z:.3f}, tau_z={tau_z:.3f}")
 
     # ----------------------------
-    # Step 4: load/train score net (loads if file exists)
+    # Step 4: load/train score net s_pi(z) via DSM (loads if file exists)
     # ----------------------------
     score_cfg = ScoreNet1DConfig(
         hidden=128,
@@ -286,9 +360,8 @@ def main():
     print(f"[score] s_pi(z) ready at: {SCORE_PATH}")
 
     # ----------------------------
-    # Step 5: build parametric samplers
+    # Step 5: build samplers
     # ----------------------------
-    # coarse function used by calibration
     def coarse_value_fn(x):
         return obs.value(jnp.clip(x, -1.0, 1.0))
 
@@ -331,48 +404,57 @@ def main():
     )
 
     # ----------------------------
-    # Step 6: calibration sweep (PK)
+    # Step 6: choose guidance params (calibrate OR fixed)
     # ----------------------------
-    grids = PKCalibrationGrids(
-        w_gamma_grid=W_GAMMA_GRID,
-        guide_strength_grid=GUIDE_STRENGTH_GRID,
-        guide_sigma_max_grid=GUIDE_SIGMA_MAX_GRID,
-    )
-    weights = PKCalibrationWeights(alpha_clip=ALPHA_CLIP, beta_w1=BETA_W1)
+    if DO_CALIBRATION:
+        grids = PKCalibrationGrids(
+            w_gamma_grid=W_GAMMA_GRID,
+            guide_strength_grid=GUIDE_STRENGTH_GRID,
+            guide_sigma_max_grid=GUIDE_SIGMA_MAX_GRID,
+        )
+        weights = PKCalibrationWeights(alpha_clip=ALPHA_CLIP, beta_w1=BETA_W1)
 
-    print("\n[calib] Sweeping PK hyperparams...")
-    best, rows = calibrate_pk_gaussian_1d(
-        sampler_pk_calib,
-        coarse_value_fn,
-        mean_d=mean_d,
-        std_d=std_d,
-        mu_z=mu_z,
-        tau_z=tau_z,
-        max_guide_norm=MAX_GUIDE_NORM,
-        grids=grids,
-        weights=weights,
-        seed=SEED,
-    )
+        print("\n[calib] Sweeping PK hyperparams...")
+        best, rows = calibrate_pk_gaussian_1d(
+            sampler_pk_calib,
+            coarse_value_fn,
+            mean_d=mean_d,
+            std_d=std_d,
+            mu_z=mu_z,
+            tau_z=tau_z,
+            max_guide_norm=MAX_GUIDE_NORM,
+            grids=grids,
+            weights=weights,
+            seed=SEED,
+        )
 
-    csv_path = subdir / "calibration_sweep_pk.csv"
-    save_csv(csv_path, rows)
-    print(f"[saved] {csv_path}")
+        csv_path = subdir / "calibration_sweep_pk.csv"
+        save_csv(csv_path, rows)
+        print(f"[saved] {csv_path}")
 
-    print(
-        "[best PK calib] "
-        f"γ={best['w_gamma']} | gs={best['guide_strength']} | smax={best['guide_sigma_max']} || "
-        f"mean_z={best['mean_z']:.3f}, std_z={best['std_z']:.3f}, "
-        f"W1={best['w1']:.4f}, clip={best['clip_rate']:.3f}, loss={best['calib_loss']:.4f}"
-    )
+        print(
+            "[best PK calib] "
+            f"γ={best['w_gamma']} | gs={best['guide_strength']} | smax={best['guide_sigma_max']} || "
+            f"mean_z={best['mean_z']:.3f}, std_z={best['std_z']:.3f}, "
+            f"W1={best['w1']:.4f}, clip={best['clip_rate']:.3f}, loss={best['calib_loss']:.4f}"
+        )
 
-    w_best = float(best["w_gamma"])
-    gs_best = float(best["guide_strength"])
-    smax_best = float(best["guide_sigma_max"])
+        w_best = float(best["w_gamma"])
+        gs_best = float(best["guide_strength"])
+        smax_best = float(best["guide_sigma_max"])
+    else:
+        w_best = float(FIXED_W_GAMMA)
+        gs_best = float(FIXED_GUIDE_STRENGTH)
+        smax_best = float(FIXED_GUIDE_SIGMA_MAX)
+        print(
+            "\n[fixed] Using fixed guidance: "
+            f"γ={w_best} | λ={gs_best} | sigma_max={smax_best}"
+        )
 
     # ----------------------------
     # Step 7: final sampling (none / evidence / pk)
     # ----------------------------
-    print("\n[final] Sampling none / evidence / PK with calibrated params...")
+    print("\n[final] Sampling none / evidence / PK ...")
     k_base = jr.PRNGKey(SEED + 123456)
     k_none = jr.fold_in(k_base, 1)
     k_evd = jr.fold_in(k_base, 2)
@@ -383,6 +465,7 @@ def main():
     mu_z_a = jnp.array(mu_z, jnp.float32)
     tau_z_a = jnp.array(tau_z, jnp.float32)
     max_norm_a = jnp.array(MAX_GUIDE_NORM, jnp.float32)
+    w_best_a = jnp.array(w_best, jnp.float32)
 
     x_none, clip_none = sampler_none_final(
         k_none,
@@ -393,7 +476,7 @@ def main():
         jnp.array(0.0, jnp.float32),
         jnp.array(0.0, jnp.float32),
         max_norm_a,
-        jnp.array(w_best, jnp.float32),
+        w_best_a,
     )
     x_evd, clip_evd = sampler_evd_final(
         k_evd,
@@ -404,7 +487,7 @@ def main():
         jnp.array(gs_best, jnp.float32),
         jnp.array(smax_best, jnp.float32),
         max_norm_a,
-        jnp.array(w_best, jnp.float32),
+        w_best_a,
     )
     x_pk, clip_pk = sampler_pk_final(
         k_pk,
@@ -415,7 +498,7 @@ def main():
         jnp.array(gs_best, jnp.float32),
         jnp.array(smax_best, jnp.float32),
         max_norm_a,
-        jnp.array(w_best, jnp.float32),
+        w_best_a,
     )
 
     d_none = coarse_value_fn(x_none)
@@ -453,6 +536,7 @@ def main():
     # ----------------------------
     summary_path = subdir / "summary.txt"
     with open(summary_path, "w") as f:
+        f.write(f"model_name={MODEL_NAME}\n")
         f.write(f"chapter={tag}\n")
         f.write(f"digit={TARGET_DIGIT_FOR_EVIDENCE}\n")
         f.write(f"fat_quantile={FAT_QUANTILE}\n")
@@ -478,7 +562,7 @@ def main():
     print(f"[saved] {summary_path}")
 
     # ----------------------------
-    # Plots: grids + histogram (matches your notebook outputs)
+    # Plots: grids + histogram
     # ----------------------------
     nrow = int(round(math.sqrt(NUM_SHOW)))
     assert nrow * nrow == NUM_SHOW
@@ -494,11 +578,11 @@ def main():
     plt.axis("off")
     plt.subplot(1, 3, 2)
     plt.imshow(g_evd, cmap="gray")
-    plt.title(f"Evidence-only | γ={w_best}, gs={gs_best}, smax={smax_best}")
+    plt.title(f"Evidence-only | γ={w_best}, λ={gs_best}, smax={smax_best}")
     plt.axis("off")
     plt.subplot(1, 3, 3)
     plt.imshow(g_pk, cmap="gray")
-    plt.title(f"PK | γ={w_best}, gs={gs_best}, smax={smax_best}")
+    plt.title(f"PK | γ={w_best}, λ={gs_best}, smax={smax_best}")
     plt.axis("off")
     plt.tight_layout()
     grid_path = subdir / "compare_grids.png"
@@ -545,7 +629,7 @@ def main():
         linewidth=2,
         label="target p(z) (Gaussian)",
     )
-    plt.title(f"{tag}: ink fraction distribution in z-space")
+    plt.title(f"{MODEL_NAME} | {tag}: ink fraction distribution in z-space")
     plt.xlabel("z")
     plt.ylabel("density")
     plt.legend()

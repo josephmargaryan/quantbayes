@@ -18,9 +18,9 @@ class SinusoidalTimeEmb(eqx.Module):
 
     def __call__(self, t: jnp.ndarray) -> jnp.ndarray:
         t = jnp.asarray(t)
-        e = t[..., None] * self.freqs[None, :]
-        emb = jnp.concatenate([jnp.sin(e), jnp.cos(e)], axis=-1)
-        return emb[..., : self.dim]
+        e = t[..., None] * self.freqs  # (..., half)
+        emb = jnp.concatenate([jnp.sin(e), jnp.cos(e)], axis=-1)  # (..., 2*half)
+        return emb[..., : self.dim]  # (..., dim)
 
 
 @dataclass(frozen=True)

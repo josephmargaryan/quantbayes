@@ -10,16 +10,18 @@ import jax.numpy as jnp
 
 class SinusoidalTimeEmb(eqx.Module):
     freqs: jnp.ndarray
+    dim: int = eqx.field(static=True)
 
     def __init__(self, dim: int):
-        half = dim // 2
-        f = jnp.exp(jnp.arange(half) * -(jnp.log(10000.0) / jnp.maximum(half - 1, 1)))
-        self.freqs = f
+        self.dim = int(dim)
+        half = max((self.dim + 1) // 2, 1)
+        self.freqs = jnp.exp(jnp.arange(half) * -(jnp.log(10000.0) / max(half - 1, 1)))
 
     def __call__(self, t: jnp.ndarray) -> jnp.ndarray:
         t = jnp.asarray(t)
-        e = t[..., None] * self.freqs[None, :]
-        return jnp.concatenate([jnp.sin(e), jnp.cos(e)], axis=-1)  # (..., dim)
+        e = t[..., None] * self.freqs
+        emb = jnp.concatenate([jnp.sin(e), jnp.cos(e)], axis=-1)
+        return emb[..., : self.dim]
 
 
 @dataclass(frozen=True)
