@@ -10,6 +10,7 @@ import jax.random as jr
 
 from .generate import generate_with_sampler
 from .samplers.dpm_solver_pp import sample_dpmpp_3m
+from .edm import edm_precond_scalars
 
 
 def _inference_copy(model):
@@ -39,7 +40,7 @@ def sample_edm(
     *,
     steps: int = 30,
     sigma_min: float = 0.002,
-    sigma_max: float = 1.0,
+    sigma_max: float = 80.0,
     sigma_data: float = 0.5,
     rho: float = 7.0,
     sampler: str = "dpmpp_3m",
@@ -48,7 +49,9 @@ def sample_edm(
     ema_eval = _inference_copy(ema_model)
 
     def denoise_fn(log_sigma, x):
-        return ema_eval(log_sigma, x, key=None, train=False)
+        sigma = jnp.exp(log_sigma)
+        c_in, _, _ = edm_precond_scalars(sigma, sigma_data)
+        return ema_eval(log_sigma, x * c_in, key=None, train=False)
 
     return generate_with_sampler(
         denoise_fn,
@@ -103,9 +106,11 @@ def sample_edm_conditional(
     def one_sample(k, lbl_scalar):
         # Build a per-sample denoise function that captures a SCALAR label.
         def denoise_single(log_sigma, x):
+            sigma = jnp.exp(log_sigma)
+            c_in, _, _ = edm_precond_scalars(sigma, sigma_data)
             return ema_eval(
                 log_sigma,
-                x,
+                x * c_in,
                 key=None,
                 train=False,
                 label=lbl_scalar,

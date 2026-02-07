@@ -1,3 +1,4 @@
+# quantbayes/stochax/diffusion/pk/observables.py
 from __future__ import annotations
 
 from dataclasses import dataclass

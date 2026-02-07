@@ -1,4 +1,6 @@
-# ebm_base.py
+# quantbayes/stochax/energy_based/base.py
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from typing import Callable, Optional
 
@@ -6,39 +8,72 @@ import equinox as eqx
 import jax
 import jax.nn as jnn
 import jax.numpy as jnp
-import jax.random as jrandom
+import jax.random as jr
 
 
 class BaseEBM(eqx.Module, ABC):
     """
-    Abstract base class for Energy-Based Models.
+    Base class for EBMs.
 
-    Required Methods:
-      - energy(x): Returns the scalar energy (or batch of energies) for input x.
+    Convention:
+      - energy(x) returns a scalar for single sample or (B,) for batch.
+      - score(x) returns ∇x log p(x) ≈ -∇x E(x), same shape as x.
     """
+
+    sample_ndim: int = eqx.static_field()
+
+    def _as_batch(self, x: jnp.ndarray):
+        x = jnp.asarray(x)
+        if x.ndim == self.sample_ndim:
+            return x[None, ...], True
+        if x.ndim == self.sample_ndim + 1:
+            return x, False
+        raise ValueError(
+            f"Expected x.ndim in {{{self.sample_ndim}, {self.sample_ndim+1}}}, got {x.ndim}"
+        )
 
     @abstractmethod
+    def energy_batch(self, x_batched: jnp.ndarray) -> jnp.ndarray:
+        """x_batched: (B, ...) -> energies: (B,)"""
+        raise NotImplementedError
+
     def energy(self, x: jnp.ndarray) -> jnp.ndarray:
-        """
-        Computes the energy of input x.
-        This should return a shape (batch,) or () if single sample.
-        """
-        pass
+        xb, squeeze = self._as_batch(x)
+        e = self.energy_batch(xb)
+        return e[0] if squeeze else e
 
     def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
-        """
-        By default, calling the model is the same as computing the energy.
-        Feel free to override if needed.
-        """
         return self.energy(x)
 
+    def score(self, x: jnp.ndarray) -> jnp.ndarray:
+        """
+        ∇x log p(x) ≈ -∇x E(x).
+        Uses grad of sum energies so we get a full batch gradient in one call.
+        """
+        xb, squeeze = self._as_batch(x)
 
+        def sum_energy(z):
+            return jnp.sum(self.energy_batch(z))
+
+        grad_x = jax.grad(sum_energy)(xb)  # same shape as xb
+        sc = -grad_x
+        return sc[0] if squeeze else sc
+
+
+# ------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------
+class GlobalAvgPool2d(eqx.Module):
+    def __call__(self, x: jnp.ndarray, **kwargs) -> jnp.ndarray:
+        # x: (C,H,W)
+        return jnp.mean(x, axis=(-2, -1))  # (C,)
+
+
+# ------------------------------------------------------------
+# MLP EBM
+# ------------------------------------------------------------
 class MLPBasedEBM(BaseEBM):
-    """
-    EBM using a simple MLP for energy computation:
-        E(x) = MLP(x)
-    """
-
+    sample_ndim: int = eqx.static_field()
     mlp: eqx.nn.MLP
 
     def __init__(
@@ -46,250 +81,178 @@ class MLPBasedEBM(BaseEBM):
         in_size: int,
         hidden_size: int,
         depth: int,
-        key: jrandom.PRNGKey,
+        *,
+        key: jr.PRNGKey,
         activation: Callable = jnn.relu,
     ):
-        super().__init__()
+        self.sample_ndim = 1
         self.mlp = eqx.nn.MLP(
             in_size=in_size,
             out_size=1,
             width_size=hidden_size,
             depth=depth,
             activation=activation,
-            final_activation=lambda x: x,  # Identity on the final layer.
+            final_activation=lambda x: x,
             key=key,
         )
 
-    def energy(self, x: jnp.ndarray) -> jnp.ndarray:
-        # Apply vmap so that self.mlp processes each sample (of shape (in_size,)) individually.
-        energies = jax.vmap(self.mlp)(x)  # Now energies has shape (batch, 1)
-        return jnp.squeeze(energies, axis=-1)
+    def energy_batch(self, x_batched: jnp.ndarray) -> jnp.ndarray:
+        e = jax.vmap(self.mlp)(x_batched)  # (B,1)
+        return jnp.squeeze(e, axis=-1)  # (B,)
 
 
+# ------------------------------------------------------------
+# Conv EBM (NCHW)
+# ------------------------------------------------------------
 class ConvEBM(BaseEBM):
-    """
-    EBM for image data. Typical architecture for 2D images:
-      E(x) = CNN(x)
-    We flatten or pool at the end to produce a scalar energy.
-    """
+    sample_ndim: int = eqx.static_field()
+    net: eqx.nn.Sequential
 
-    conv_net: eqx.nn.Sequential
-
-    def __init__(self, key, in_channels=3, hidden_channels=32, out_channels=64):
-        super().__init__()
-        # Define a series of conv -> activation -> conv -> activation -> pooling -> linear.
-        k1, k2, k3 = jrandom.split(key, 3)
-        self.conv_net = eqx.nn.Sequential(
+    def __init__(
+        self,
+        *,
+        key: jr.PRNGKey,
+        in_channels: int = 1,
+        hidden_channels: int = 64,
+    ):
+        self.sample_ndim = 3
+        k1, k2, k3 = jr.split(key, 3)
+        self.net = eqx.nn.Sequential(
             [
                 eqx.nn.Conv2d(
-                    in_channels=in_channels,
-                    out_channels=hidden_channels,
+                    in_channels,
+                    hidden_channels,
                     kernel_size=3,
                     stride=2,
-                    padding=1,
+                    padding="SAME",
                     key=k1,
                 ),
-                # Wrap activation to ignore extra keyword arguments.
-                lambda x, **kwargs: jnn.relu(x),
+                lambda x, **kw: jnn.silu(x),
                 eqx.nn.Conv2d(
-                    in_channels=hidden_channels,
-                    out_channels=hidden_channels,
+                    hidden_channels,
+                    hidden_channels,
                     kernel_size=3,
                     stride=2,
-                    padding=1,
+                    padding="SAME",
                     key=k2,
                 ),
-                lambda x, **kwargs: jnn.relu(x),
+                lambda x, **kw: jnn.silu(x),
                 GlobalAvgPool2d(),
                 eqx.nn.Linear(hidden_channels, 1, use_bias=True, key=k3),
             ]
         )
 
-    def energy(self, x: jnp.ndarray) -> jnp.ndarray:
-        # x has shape (batch, C, H, W)
-        # Use vmap to apply conv_net to each image individually.
-        energies = jax.vmap(self.conv_net)(x)  # Now shape is (batch, 1)
-        return jnp.squeeze(energies, axis=-1)
+    def energy_batch(self, x_batched: jnp.ndarray) -> jnp.ndarray:
+        # x_batched: (B,C,H,W); vmap over images -> (B,1)
+        e = jax.vmap(self.net)(x_batched)
+        return jnp.squeeze(e, axis=-1)  # (B,)
 
 
-class GlobalAvgPool2d(eqx.Module):
-    """
-    A small helper module to do average pooling across spatial dimensions H, W.
-    """
-
-    def __call__(self, x: jnp.ndarray, **kwargs) -> jnp.ndarray:
-        # x is shape (channels, H, W) when used with vmap.
-        return jnp.mean(x, axis=(-2, -1))  # shape (channels)
-
-
+# ------------------------------------------------------------
+# Sequence EBMs (GRU / LSTM) – batch-vmap outside scan (faster)
+# ------------------------------------------------------------
 class RNNBasedEBM(BaseEBM):
-    """
-    EBM for sequence data using a GRU cell.
-    It scans over the sequence using a GRUCell and then maps the final hidden state to a scalar energy.
-    """
+    sample_ndim: int = eqx.static_field()
+    gru: eqx.nn.GRUCell
+    proj: eqx.nn.Linear
+    hidden_size: int = eqx.static_field()
 
-    gru_cell: eqx.nn.GRUCell
-    linear: eqx.nn.Linear
-    hidden_size: int
-
-    def __init__(
-        self,
-        input_size: int,
-        hidden_size: int,
-        key: jrandom.PRNGKey,
-    ):
-        super().__init__()
-        k1, k2 = jrandom.split(key, 2)
-        self.gru_cell = eqx.nn.GRUCell(
+    def __init__(self, input_size: int, hidden_size: int, *, key: jr.PRNGKey):
+        self.sample_ndim = 2
+        self.hidden_size = int(hidden_size)
+        k1, k2 = jr.split(key, 2)
+        self.gru = eqx.nn.GRUCell(
             input_size=input_size, hidden_size=hidden_size, key=k1
         )
-        self.linear = eqx.nn.Linear(hidden_size, 1, use_bias=True, key=k2)
-        self.hidden_size = hidden_size
+        self.proj = eqx.nn.Linear(hidden_size, 1, use_bias=True, key=k2)
 
-    def energy(self, x: jnp.ndarray) -> jnp.ndarray:
-        """
-        x: shape (batch, seq_len, input_size)
-        Processes the sequence using a GRU and returns an energy value per sequence.
-        """
-        batch_size, seq_len, _ = x.shape
-        # Initialize hidden state for each sequence in the batch.
-        init_h = jnp.zeros((batch_size, self.hidden_size))
+    def energy_batch(self, x_batched: jnp.ndarray) -> jnp.ndarray:
+        # x_batched: (B,T,D)
+        def run_one(seq):
+            h0 = jnp.zeros((self.hidden_size,), dtype=seq.dtype)
 
-        def scan_fn(h, x_t):
-            # h: shape (batch, hidden_size)
-            # x_t: shape (batch, input_size)
-            new_h = jax.vmap(self.gru_cell)(x_t, h)  # returns (batch, hidden_size)
-            return new_h, new_h
+            def step(h, x_t):
+                h = self.gru(x_t, h)
+                return h, None
 
-        # Transpose x so that time is the leading axis: (seq_len, batch, input_size)
-        final_h, _ = jax.lax.scan(scan_fn, init_h, x.transpose(1, 0, 2))
-        # final_h has shape (batch, hidden_size)
+            hT, _ = jax.lax.scan(step, h0, seq)  # (hidden,)
+            return hT
 
-        # Use vmap to apply the linear layer to each sample.
-        energies = jax.vmap(self.linear)(final_h)  # now shape (batch, 1)
-        return jnp.squeeze(energies, axis=-1)
+        h = jax.vmap(run_one)(x_batched)  # (B,H)
+        e = jax.vmap(self.proj)(h)  # (B,1)
+        return jnp.squeeze(e, axis=-1)
 
 
 class LSTMBasedEBM(BaseEBM):
-    """
-    EBM for sequence data using an LSTM.
-    It scans over the input sequence with an LSTMCell and then maps the final hidden state to a scalar energy.
-    """
+    sample_ndim: int = eqx.static_field()
+    lstm: eqx.nn.LSTMCell
+    proj: eqx.nn.Linear
+    hidden_size: int = eqx.static_field()
 
-    lstm_cell: eqx.nn.LSTMCell
-    linear: eqx.nn.Linear
-    hidden_size: int
-
-    def __init__(self, input_size: int, hidden_size: int, key: jrandom.PRNGKey):
-        super().__init__()
-        k1, k2 = jrandom.split(key, 2)
-        self.lstm_cell = eqx.nn.LSTMCell(
+    def __init__(self, input_size: int, hidden_size: int, *, key: jr.PRNGKey):
+        self.sample_ndim = 2
+        self.hidden_size = int(hidden_size)
+        k1, k2 = jr.split(key, 2)
+        self.lstm = eqx.nn.LSTMCell(
             input_size=input_size, hidden_size=hidden_size, key=k1
         )
-        self.linear = eqx.nn.Linear(hidden_size, 1, use_bias=True, key=k2)
-        self.hidden_size = hidden_size
+        self.proj = eqx.nn.Linear(hidden_size, 1, use_bias=True, key=k2)
 
-    def energy(self, x: jnp.ndarray) -> jnp.ndarray:
-        """
-        x: shape (batch, seq_len, input_size)
-        Returns energy for each sequence in the batch.
-        """
-        batch_size, seq_len, _ = x.shape
-        # Initialize both hidden and cell states to zeros.
-        init_state = (
-            jnp.zeros((batch_size, self.hidden_size)),
-            jnp.zeros((batch_size, self.hidden_size)),
-        )
+    def energy_batch(self, x_batched: jnp.ndarray) -> jnp.ndarray:
+        # x_batched: (B,T,D)
+        def run_one(seq):
+            h0 = jnp.zeros((self.hidden_size,), dtype=seq.dtype)
+            c0 = jnp.zeros((self.hidden_size,), dtype=seq.dtype)
+            state0 = (h0, c0)
 
-        def scan_fn(state, x_t):
-            # x_t: shape (batch, input_size)
-            # Process each time step with the LSTMCell (using vmap over the batch).
-            new_state = jax.vmap(self.lstm_cell)(x_t, state)
-            # new_state is a tuple (h, c)
-            return new_state, new_state[0]  # output the hidden state
+            def step(state, x_t):
+                state = self.lstm(x_t, state)
+                return state, None
 
-        # Transpose x so that time is the leading axis: (seq_len, batch, input_size)
-        final_state, _ = jax.lax.scan(scan_fn, init_state, x.transpose(1, 0, 2))
-        final_h = final_state[0]  # shape: (batch, hidden_size)
+            (hT, _), _ = jax.lax.scan(step, state0, seq)
+            return hT
 
-        # Use vmap to apply the linear layer on each sample in the batch.
-        energies = jax.vmap(self.linear)(final_h)  # shape: (batch, 1)
-        return jnp.squeeze(energies, axis=-1)
+        h = jax.vmap(run_one)(x_batched)  # (B,H)
+        e = jax.vmap(self.proj)(h)  # (B,1)
+        return jnp.squeeze(e, axis=-1)
 
 
 class AttentionBasedEBM(BaseEBM):
-    """
-    EBM that uses multihead attention to process sequence (or set) data.
-    It adds learnable positional embeddings to the input before applying attention.
-    """
-
+    sample_ndim: int = eqx.static_field()
     attn: eqx.nn.MultiheadAttention
-    linear: eqx.nn.Linear
-    pos_embed: jnp.ndarray  # learnable positional embeddings
-    max_seq_len: int
-    input_size: int
-    num_heads: int
+    proj: eqx.nn.Linear
+    pos_embed: jnp.ndarray
+    max_seq_len: int = eqx.static_field()
 
     def __init__(
         self,
         input_size: int,
         num_heads: int,
         max_seq_len: int,
-        key: jrandom.PRNGKey,
-        qk_size: Optional[int] = None,
-        vo_size: Optional[int] = None,
+        *,
+        key: jr.PRNGKey,
     ):
-        super().__init__()
-        if qk_size is None:
-            qk_size = input_size // num_heads
-        if vo_size is None:
-            vo_size = input_size // num_heads
-        k1, k2, k3 = jrandom.split(key, 3)
+        self.sample_ndim = 2
+        self.max_seq_len = int(max_seq_len)
+        k1, k2, k3 = jr.split(key, 3)
         self.attn = eqx.nn.MultiheadAttention(
-            num_heads=num_heads,
-            query_size=input_size,
-            key_size=input_size,
-            value_size=input_size,
-            output_size=input_size,
-            qk_size=qk_size,
-            vo_size=vo_size,
-            use_query_bias=False,
-            use_key_bias=False,
-            use_value_bias=False,
-            use_output_bias=False,
-            dropout_p=0.0,
-            inference=False,
-            key=k1,
+            num_heads=num_heads, query_size=input_size, key=k1
         )
-        self.linear = eqx.nn.Linear(input_size, 1, use_bias=True, key=k2)
-        # Initialize learnable positional embeddings for up to max_seq_len positions.
-        self.max_seq_len = max_seq_len
-        self.input_size = input_size
-        self.num_heads = num_heads
-        # Simply assign a normal array; Equinox treats it as trainable.
-        self.pos_embed = jax.random.normal(k3, (max_seq_len, input_size))
+        self.proj = eqx.nn.Linear(input_size, 1, use_bias=True, key=k2)
+        self.pos_embed = jr.normal(k3, (self.max_seq_len, input_size))
 
-    def energy(self, x: jnp.ndarray) -> jnp.ndarray:
-        """
-        x: shape (batch, seq_len, input_size)
-        Adds positional embeddings and processes through multihead attention.
-        """
-        batch, seq_len, _ = x.shape
-        if seq_len > self.max_seq_len:
-            raise ValueError(
-                f"Sequence length {seq_len} exceeds max_seq_len {self.max_seq_len}"
-            )
-        # Slice positional embeddings to match the current sequence length.
-        pos_embeds = self.pos_embed[:seq_len, :]  # shape (seq_len, input_size)
-        # Broadcast addition: (batch, seq_len, input_size) + (seq_len, input_size)
-        x_pos = x + pos_embeds
+    def energy_batch(self, x_batched: jnp.ndarray) -> jnp.ndarray:
+        # x_batched: (B,T,D)
+        b, t, d = x_batched.shape
+        if t > self.max_seq_len:
+            raise ValueError(f"seq_len {t} > max_seq_len {self.max_seq_len}")
 
-        # Process each sample in the batch independently.
-        def sample_energy(sample):
-            # sample: shape (seq_len, input_size)
-            attended = self.attn(sample, sample, sample)
-            pooled = jnp.mean(attended, axis=0)  # aggregate over time
-            return self.linear(pooled)  # shape (1,)
+        pe = self.pos_embed[:t][None, :, :]  # (1,T,D)
+        x = x_batched + pe
 
-        energies = jax.vmap(sample_energy)(x_pos)  # shape (batch, 1)
-        return jnp.squeeze(energies, axis=-1)
+        def one(seq):
+            y = self.attn(seq, seq, seq)  # (T,D)
+            pooled = jnp.mean(y, axis=0)  # (D,)
+            return self.proj(pooled)[0]  # scalar
+
+        return jax.vmap(one)(x)  # (B,)

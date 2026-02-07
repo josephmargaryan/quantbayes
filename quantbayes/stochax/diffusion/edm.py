@@ -81,11 +81,22 @@ def edm_batch_loss(
     if sample == "uniform":
         rho = jr.uniform(k_sigma, (b,), minval=rho_min, maxval=rho_max)
     elif sample == "normal":
-        rho = (
-            jr.truncated_normal(k_sigma, lower=rho_min, upper=rho_max, shape=(b,))
-            * p_std
-            + p_mean
-        )
+        # NOTE: truncated_normal expects bounds in *standard normal units*.
+        # If we want rho ~ TruncNormal(p_mean, p_std) truncated to [rho_min, rho_max],
+        # we must standardize the bounds first.
+        p_mean_a = jnp.asarray(p_mean, dtype=data.dtype)
+        p_std_a = jnp.asarray(p_std, dtype=data.dtype)
+
+        rho_min_a = jnp.asarray(rho_min, dtype=data.dtype)
+        rho_max_a = jnp.asarray(rho_max, dtype=data.dtype)
+
+        denom = jnp.maximum(p_std_a, 1e-12)
+        lower = (rho_min_a - p_mean_a) / denom
+        upper = (rho_max_a - p_mean_a) / denom
+
+        eps = jr.truncated_normal(k_sigma, lower=lower, upper=upper, shape=(b,))
+        rho = eps * p_std_a + p_mean_a
+
     else:
         raise ValueError(f"Unknown sigma sampling: {sample!r}")
     sigmas = jnp.exp(rho)

@@ -80,10 +80,11 @@ def single_loss_fn(
     mean, var = _mean_var_from_int_beta(data, intb_t)
     std = jnp.sqrt(var)
 
-    noise = jr.normal(key, data.shape)
+    k_noise, k_model = jr.split(key)
+    noise = jr.normal(k_noise, data.shape)
     y = mean + std * noise
-    # model must accept (t, y, key=...) — pass the same per-example key.
-    pred = model(t, y, key=key)  # score prediction
+    # If the model uses dropout etc., keep its RNG independent of the noise RNG.
+    pred = model(t, y, key=k_model)  # score prediction
 
     # Target score = -(y - mean)/var = -(noise/std)
     target = -(noise / std)

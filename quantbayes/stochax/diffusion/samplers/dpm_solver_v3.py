@@ -45,12 +45,14 @@ def sample_dpmv3(
     sigmas = get_sigmas_karras(steps, sigma_min, sigma_max, rho=rho, include_zero=True)
     x = jr.normal(key, shape) * sigmas[0]
 
+    last = len(sigmas) - 2  # last transition is to the appended sigma=0
+
     for i in range(len(sigmas) - 1):
         s, sn = sigmas[i], sigmas[i + 1]
         x0_s = _x0_from_D(denoise_fn, x, s, sigma_data)
 
-        # snap to x0 at the end
-        if jnp.isclose(sn, 0.0):
+        # JIT-safe final step: snap to x0
+        if i == last:
             x = x0_s
             continue
 
@@ -63,6 +65,7 @@ def sample_dpmv3(
             eh2 = jnp.exp(0.5 * h)
             x_mid = eh2 * x - (eh2 - 1.0) * x0_s
             x0_mid = _x0_from_D(denoise_fn, x_mid, eh2 * s, sigma_data)
+
             eh = jnp.exp(h)
             x = eh * x - (eh - 1.0) * x0_mid
 

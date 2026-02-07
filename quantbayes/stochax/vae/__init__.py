@@ -14,6 +14,7 @@ from .components import (
 )
 from .train_vae import TrainConfig, train_vae
 from . import losses, schedules
+from .pk import *
 
 __all__ = [
     "MLP_VAE",
