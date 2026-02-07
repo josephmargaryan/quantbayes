@@ -24,9 +24,8 @@ class FeatureMap(Protocol):
         ...
 
 
-@dataclass
 class IdentityFeatureMap(eqx.Module):
-    latent_dim: int = eqx.static_field()
+    latent_dim: int = eqx.field(static=True)
 
     @property
     def out_dim(self) -> int:
@@ -53,7 +52,6 @@ class IdentityFeatureMap(eqx.Module):
         return -u
 
 
-@dataclass
 class LinearFeatureMap(eqx.Module):
     """
     u = z @ A^T + b
@@ -64,14 +62,13 @@ class LinearFeatureMap(eqx.Module):
     A: jnp.ndarray  # (M,D)
     b: jnp.ndarray  # (M,)
     eps: float = 1e-6
-
-    _Sigma_inv: jnp.ndarray = eqx.field(init=False)  # (M,M)
+    _Sigma_inv: jnp.ndarray = eqx.field(init=False, repr=False)  # (M,M)
 
     def __post_init__(self):
         A = jnp.asarray(self.A)
         M = A.shape[0]
         Sigma = A @ A.T + self.eps * jnp.eye(M, dtype=A.dtype)
-        self._Sigma_inv = jnp.linalg.inv(Sigma)
+        object.__setattr__(self, "_Sigma_inv", jnp.linalg.inv(Sigma))
 
     @property
     def out_dim(self) -> int:
@@ -84,11 +81,7 @@ class LinearFeatureMap(eqx.Module):
         return z @ self.A.T + self.b[None, :]
 
     def vjp(self, z: jnp.ndarray, g_u: jnp.ndarray) -> jnp.ndarray:
-        # J is A, so J^T g = g @ A
-        z = jnp.asarray(z)
         g_u = jnp.asarray(g_u)
-        if z.ndim == 1:
-            z = z[None, :]
         if g_u.ndim == 1:
             g_u = g_u[None, :]
         return g_u @ self.A  # (B,D)
@@ -97,11 +90,9 @@ class LinearFeatureMap(eqx.Module):
         u = jnp.asarray(u)
         if u.ndim == 1:
             u = u[None, :]
-        # score of N(b, Sigma): -Sigma^{-1}(u-b)
         return -(u - self.b[None, :]) @ self._Sigma_inv.T
 
 
-@dataclass
 class NormFeatureMap(eqx.Module):
     """
     u = ||z||_2 (scalar). No analytic pushforward score supplied (non-Gaussian).

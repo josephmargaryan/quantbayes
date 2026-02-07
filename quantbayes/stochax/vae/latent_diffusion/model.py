@@ -9,7 +9,7 @@ import jax.numpy as jnp
 
 class SinusoidalTimeEmb(eqx.Module):
     freqs: jnp.ndarray
-    dim: int = eqx.static_field()
+    dim: int = eqx.field(static=True)
 
     def __init__(self, dim: int):
         self.dim = int(dim)
@@ -32,7 +32,7 @@ class LatentEDMConfig:
 
 
 class LatentEDMMLP(eqx.Module):
-    cfg: LatentEDMConfig = eqx.static_field()
+    cfg: LatentEDMConfig = eqx.field(static=True)
     time_emb: SinusoidalTimeEmb
     net: eqx.nn.MLP
 

@@ -27,7 +27,7 @@ class LatentEDMCondMLP(eqx.Module):
     Input: concat([z, time_emb(log_sigma), label_emb(label_or_null)]) -> MLP -> D (latent_dim).
     """
 
-    cfg: LatentEDMCondConfig = eqx.static_field()
+    cfg: LatentEDMCondConfig = eqx.field(static=True)
     time_emb: SinusoidalTimeEmb
     label_emb: eqx.nn.Embedding
     net: eqx.nn.MLP

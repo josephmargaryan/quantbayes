@@ -36,7 +36,7 @@ class LatentScoreNet(eqx.Module):
       s_theta(log_sigma, x) ≈ ∇_x log p_sigma(x)
     """
 
-    cfg: ScoreNetConfig = eqx.static_field()
+    cfg: ScoreNetConfig = eqx.field(static=True)
     time_emb: SinusoidalTimeEmb
     mlp: eqx.nn.MLP
 

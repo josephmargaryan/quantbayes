@@ -35,7 +35,7 @@ class PKLatentPrior(eqx.Module):
     feature_map: FeatureMap
     evidence_score: LatentScoreNet
     reference_score: Optional[LatentScoreNet] = None
-    cfg: PKPriorConfig = eqx.static_field()
+    cfg: PKPriorConfig = eqx.field(static=True)
 
     def __init__(
         self,

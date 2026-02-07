@@ -20,7 +20,7 @@ class BaseEBM(eqx.Module, ABC):
       - score(x) returns ∇x log p(x) ≈ -∇x E(x), same shape as x.
     """
 
-    sample_ndim: int = eqx.static_field()
+    sample_ndim: int = eqx.field(static=True)
 
     def _as_batch(self, x: jnp.ndarray):
         x = jnp.asarray(x)
@@ -73,7 +73,7 @@ class GlobalAvgPool2d(eqx.Module):
 # MLP EBM
 # ------------------------------------------------------------
 class MLPBasedEBM(BaseEBM):
-    sample_ndim: int = eqx.static_field()
+    sample_ndim: int = eqx.field(static=True)
     mlp: eqx.nn.MLP
 
     def __init__(
@@ -105,7 +105,7 @@ class MLPBasedEBM(BaseEBM):
 # Conv EBM (NCHW)
 # ------------------------------------------------------------
 class ConvEBM(BaseEBM):
-    sample_ndim: int = eqx.static_field()
+    sample_ndim: int = eqx.field(static=True)
     net: eqx.nn.Sequential
 
     def __init__(
@@ -152,10 +152,10 @@ class ConvEBM(BaseEBM):
 # Sequence EBMs (GRU / LSTM) – batch-vmap outside scan (faster)
 # ------------------------------------------------------------
 class RNNBasedEBM(BaseEBM):
-    sample_ndim: int = eqx.static_field()
+    sample_ndim: int = eqx.field(static=True)
     gru: eqx.nn.GRUCell
     proj: eqx.nn.Linear
-    hidden_size: int = eqx.static_field()
+    hidden_size: int = eqx.field(static=True)
 
     def __init__(self, input_size: int, hidden_size: int, *, key: jr.PRNGKey):
         self.sample_ndim = 2
@@ -184,10 +184,10 @@ class RNNBasedEBM(BaseEBM):
 
 
 class LSTMBasedEBM(BaseEBM):
-    sample_ndim: int = eqx.static_field()
+    sample_ndim: int = eqx.field(static=True)
     lstm: eqx.nn.LSTMCell
     proj: eqx.nn.Linear
-    hidden_size: int = eqx.static_field()
+    hidden_size: int = eqx.field(static=True)
 
     def __init__(self, input_size: int, hidden_size: int, *, key: jr.PRNGKey):
         self.sample_ndim = 2
@@ -218,11 +218,11 @@ class LSTMBasedEBM(BaseEBM):
 
 
 class AttentionBasedEBM(BaseEBM):
-    sample_ndim: int = eqx.static_field()
+    sample_ndim: int = eqx.field(static=True)
     attn: eqx.nn.MultiheadAttention
     proj: eqx.nn.Linear
     pos_embed: jnp.ndarray
-    max_seq_len: int = eqx.static_field()
+    max_seq_len: int = eqx.field(static=True)
 
     def __init__(
         self,
