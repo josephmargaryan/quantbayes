@@ -51,7 +51,9 @@ class LatentEDMMLP(eqx.Module):
         )
 
     def _single(self, log_sigma: jnp.ndarray, x: jnp.ndarray) -> jnp.ndarray:
-        te = self.time_emb(log_sigma)
+        log_sigma = jnp.asarray(log_sigma).reshape(())  # scalar
+        x = jnp.asarray(x).reshape((-1,))  # (D,)
+        te = self.time_emb(log_sigma).reshape((-1,))  # (T,)
         inp = jnp.concatenate([x, te], axis=-1)
         return self.net(inp)
 
