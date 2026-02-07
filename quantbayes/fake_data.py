@@ -1,102 +1,166 @@
-import jax
-import jax.numpy as jnp
+"""
+synthetic_data.py
+
+Quick synthetic dataset generators for debugging models:
+- regression (tabular)
+- binary classification (tabular)
+- multiclass classification (tabular)
+- time series (sequence -> next-step target)
+- image classification (NCHW)
+- image segmentation (image + mask, both NCHW)
+
+Notes:
+- Uses local RNGs (np.random.default_rng) to avoid global seed side-effects.
+- Image/mask outputs are always [N, C, H, W].
+"""
+
+from __future__ import annotations
+
 import numpy as np
 import pandas as pd
+import jax
+import jax.numpy as jnp
 from sklearn.datasets import make_blobs, make_classification
 
 
-def generate_regression_data(
-    n_samples=1000, n_continuous=1, n_categorical=0, random_seed=None
+# -----------------------------------------------------------------------------
+# Helpers
+# -----------------------------------------------------------------------------
+def _np_rng(random_seed: int | None) -> np.random.Generator:
+    return np.random.default_rng(random_seed)
+
+
+def _to_backend(x, as_jax: bool):
+    return jnp.asarray(x) if as_jax else np.asarray(x)
+
+
+def df_to_arrays(
+    df: pd.DataFrame,
+    target_col: str = "target",
+    categorical: str = "integer",  # "integer" or "onehot"
+    float_dtype=np.float32,
+    as_jax: bool = False,
 ):
     """
-    Generate synthetic regression data with a mix of continuous and categorical features.
+    Convert a DataFrame produced by the generators into (X, y) arrays.
 
-    Parameters
-    ----------
-    n_samples : int
-        Number of samples (rows).
-    n_continuous : int
-        Number of continuous features.
-    n_categorical : int
-        Number of categorical features.
-    random_seed : int, optional
-        Random seed for reproducibility.
+    categorical="integer": categorical columns -> integer codes
+    categorical="onehot": categorical columns -> one-hot expansion via get_dummies
 
     Returns
     -------
-    pd.DataFrame
-        DataFrame containing continuous and categorical features and target variable.
+    X : (N, D) float array
+    y : (N,) array
     """
-    if random_seed is not None:
-        np.random.seed(random_seed)
+    if target_col not in df.columns:
+        raise ValueError(f"target_col='{target_col}' not found in df columns.")
 
+    y = df[target_col].to_numpy()
+    X_df = df.drop(columns=[target_col])
+
+    cat_cols = [c for c in X_df.columns if str(X_df[c].dtype) == "category"]
+
+    if categorical not in {"integer", "onehot"}:
+        raise ValueError("categorical must be 'integer' or 'onehot'.")
+
+    if categorical == "integer":
+        X_df2 = X_df.copy()
+        for c in cat_cols:
+            X_df2[c] = X_df2[c].cat.codes.astype(np.int32)
+        X = X_df2.to_numpy(dtype=float_dtype)
+    else:
+        X = pd.get_dummies(X_df, columns=cat_cols, drop_first=False).to_numpy(
+            dtype=float_dtype
+        )
+
+    return _to_backend(X, as_jax), _to_backend(y, as_jax)
+
+
+# -----------------------------------------------------------------------------
+# Tabular regression
+# -----------------------------------------------------------------------------
+def generate_regression_data(
+    n_samples: int = 1000,
+    n_continuous: int = 1,
+    n_categorical: int = 0,
+    n_categories: int = 3,
+    random_seed: int | None = None,
+) -> pd.DataFrame:
+    """
+    Synthetic regression data with continuous + categorical features.
+
+    Returns
+    -------
+    pd.DataFrame with columns:
+      cont_feature_*, cat_feature_*, target
+    """
+    rng = _np_rng(random_seed)
     df = pd.DataFrame()
 
-    # Generate continuous features (e.g., sinusoidal waves with noise)
-    t = np.linspace(0, 2 * np.pi * 10, n_samples)
+    # Continuous features: sinusoidal waves with noise
+    t = np.linspace(0, 2 * np.pi * 10, n_samples, dtype=np.float32)
     for i in range(n_continuous):
         freq = 0.1 * (i + 1)
-        phase = np.random.uniform(0, 2 * np.pi)
-        amplitude = 1 + 0.5 * i
-        noise = np.random.normal(scale=0.1, size=n_samples)
-        df[f"cont_feature_{i+1}"] = amplitude * np.sin(freq * t + phase) + noise
+        phase = rng.uniform(0, 2 * np.pi)
+        amplitude = 1.0 + 0.5 * i
+        noise = rng.normal(scale=0.1, size=n_samples).astype(np.float32)
+        df[f"cont_feature_{i+1}"] = (
+            amplitude * np.sin(freq * t + phase).astype(np.float32) + noise
+        )
 
-    # Generate categorical features (random discrete values)
+    # Categorical features
     for i in range(n_categorical):
-        # For simplicity, create categorical features with 3 levels (0, 1, 2)
-        df[f"cat_feature_{i+1}"] = np.random.choice([0, 1, 2], size=n_samples)
+        vals = rng.integers(0, n_categories, size=n_samples, dtype=np.int32)
+        col = f"cat_feature_{i+1}"
+        df[col] = pd.Series(vals).astype("category")
 
-    # Generate target as a combination of continuous features (weighted sum) plus noise.
+    # Target: average of continuous features + noise
     if n_continuous > 0:
-        target = sum(df[f"cont_feature_{i+1}"] for i in range(n_continuous))
-        target = target / n_continuous
+        target = np.zeros(n_samples, dtype=np.float32)
+        for i in range(n_continuous):
+            target += df[f"cont_feature_{i+1}"].to_numpy(dtype=np.float32)
+        target /= float(n_continuous)
     else:
-        target = 0
-    # Add some noise
-    target += np.random.normal(scale=0.2, size=n_samples)
+        target = np.zeros(n_samples, dtype=np.float32)
+
+    target += rng.normal(scale=0.2, size=n_samples).astype(np.float32)
     df["target"] = target
 
     return df
 
 
+# -----------------------------------------------------------------------------
+# Tabular binary classification
+# -----------------------------------------------------------------------------
 def generate_binary_classification_data(
-    n_samples=500,
-    n_continuous=3,
-    n_categorical=2,
-    class_sep=1.0,
-    random_seed=42,
-    n_categories=3,
-    n_clusters_per_class=None,  # allow user to override if desired
-):
+    n_samples: int = 500,
+    n_continuous: int = 3,
+    n_categorical: int = 2,
+    class_sep: float = 1.0,
+    random_seed: int = 42,
+    n_categories: int = 3,
+    n_clusters_per_class: int | None = None,
+) -> pd.DataFrame:
     """
-    Generate synthetic binary classification data with both continuous and categorical features.
+    Synthetic binary classification data with continuous + categorical features.
 
-    Args:
-        n_samples (int): Number of samples.
-        n_continuous (int): Number of continuous features.
-        n_categorical (int): Number of categorical features.
-        class_sep (float): Class separation parameter.
-        random_seed (int): Random seed for reproducibility.
-        n_categories (int): Number of categories for each categorical feature.
-        n_clusters_per_class (int, optional): Number of clusters per class for continuous features.
-                                              If not provided, it will be set based on n_continuous.
-
-    Returns:
-        pd.DataFrame: DataFrame with continuous features, categorical features, and target.
+    Returns
+    -------
+    pd.DataFrame with columns:
+      cont_feature_*, cat_feature_*, target
     """
-    np.random.seed(random_seed)
+    if n_continuous < 1:
+        raise ValueError("n_continuous must be >= 1 for make_classification.")
 
-    # Adjust n_informative: if n_continuous is very low, use all features as informative.
-    if n_continuous < 4:
-        n_informative = n_continuous
-    else:
-        n_informative = n_continuous // 2
+    rng = _np_rng(random_seed)
 
-    # Automatically adjust n_clusters_per_class if not provided.
+    # Informative features
+    n_informative = n_continuous if n_continuous < 4 else max(1, n_continuous // 2)
+
+    # Clusters
     if n_clusters_per_class is None:
         n_clusters_per_class = 1 if n_continuous == 1 else 2
 
-    # Generate continuous features.
     X_cont, y = make_classification(
         n_samples=n_samples,
         n_features=n_continuous,
@@ -108,55 +172,55 @@ def generate_binary_classification_data(
         random_state=random_seed,
     )
 
-    # Generate categorical features.
-    X_cat = np.random.randint(0, n_categories, size=(n_samples, n_categorical))
-
-    # Create DataFrames.
     df_cont = pd.DataFrame(
-        X_cont, columns=[f"cont_feature_{i+1}" for i in range(n_continuous)]
-    )
-    df_cat = pd.DataFrame(
-        X_cat, columns=[f"cat_feature_{i+1}" for i in range(n_categorical)]
+        X_cont.astype(np.float32),
+        columns=[f"cont_feature_{i+1}" for i in range(n_continuous)],
     )
 
-    # Convert categorical columns to type 'category'.
-    for col in df_cat.columns:
-        df_cat[col] = df_cat[col].astype("category")
+    if n_categorical > 0:
+        X_cat = rng.integers(
+            0, n_categories, size=(n_samples, n_categorical), dtype=np.int32
+        )
+        df_cat = pd.DataFrame(
+            X_cat, columns=[f"cat_feature_{i+1}" for i in range(n_categorical)]
+        )
+        for col in df_cat.columns:
+            df_cat[col] = df_cat[col].astype("category")
+        df = pd.concat([df_cont, df_cat], axis=1)
+    else:
+        df = df_cont
 
-    # Combine the features and add the target column.
-    df = pd.concat([df_cont, df_cat], axis=1)
-    df["target"] = y
-
+    df["target"] = y.astype(np.int32)
     return df
 
 
+# -----------------------------------------------------------------------------
+# Tabular multiclass classification
+# -----------------------------------------------------------------------------
 def generate_multiclass_classification_data(
-    n_samples=500,
-    n_continuous=2,
-    n_categorical=2,
-    n_classes=3,
-    cluster_std=2.0,
-    random_seed=42,
-    n_categories=3,
-):
+    n_samples: int = 500,
+    n_continuous: int = 2,
+    n_categorical: int = 2,
+    n_classes: int = 3,
+    cluster_std: float = 2.0,
+    random_seed: int = 42,
+    n_categories: int = 3,
+) -> pd.DataFrame:
     """
-    Generate synthetic multiclass classification data with both continuous and categorical features.
+    Synthetic multiclass classification data with continuous + categorical features.
 
-    Args:
-        n_samples (int): Number of samples (rows).
-        n_continuous (int): Number of continuous features.
-        n_categorical (int): Number of categorical features.
-        n_classes (int): Number of target classes.
-        cluster_std (float): Standard deviation of clusters (controls difficulty).
-        random_seed (int): Random seed for reproducibility.
-        n_categories (int): Number of distinct categories for each categorical feature.
-
-    Returns:
-        pd.DataFrame: DataFrame containing continuous features, categorical features, and target (y).
+    Returns
+    -------
+    pd.DataFrame with columns:
+      cont_feature_*, cat_feature_*, target
     """
-    np.random.seed(random_seed)
+    if n_continuous < 1:
+        raise ValueError("n_continuous must be >= 1 for make_blobs.")
+    if n_classes < 2:
+        raise ValueError("n_classes must be >= 2.")
 
-    # Generate continuous features using make_blobs.
+    rng = _np_rng(random_seed)
+
     X_cont, y = make_blobs(
         n_samples=n_samples,
         n_features=n_continuous,
@@ -165,76 +229,241 @@ def generate_multiclass_classification_data(
         random_state=random_seed,
     )
 
-    # Add noise to the continuous features.
-    noise = np.random.normal(0, 0.5, size=X_cont.shape)
-    X_cont = X_cont + noise
+    # Add a bit of extra noise
+    X_cont = (X_cont + rng.normal(0, 0.5, size=X_cont.shape)).astype(np.float32)
 
-    # Generate categorical features by sampling random integers.
-    X_cat = np.random.randint(0, n_categories, size=(n_samples, n_categorical))
-
-    # Create DataFrames.
     df_cont = pd.DataFrame(
         X_cont, columns=[f"cont_feature_{i+1}" for i in range(n_continuous)]
     )
-    df_cat = pd.DataFrame(
-        X_cat, columns=[f"cat_feature_{i+1}" for i in range(n_categorical)]
-    )
-    for col in df_cat.columns:
-        df_cat[col] = df_cat[col].astype("category")
 
-    # Combine continuous and categorical features and add the target.
-    df = pd.concat([df_cont, df_cat], axis=1)
-    df["target"] = y
+    if n_categorical > 0:
+        X_cat = rng.integers(
+            0, n_categories, size=(n_samples, n_categorical), dtype=np.int32
+        )
+        df_cat = pd.DataFrame(
+            X_cat, columns=[f"cat_feature_{i+1}" for i in range(n_categorical)]
+        )
+        for col in df_cat.columns:
+            df_cat[col] = df_cat[col].astype("category")
+        df = pd.concat([df_cont, df_cat], axis=1)
+    else:
+        df = df_cont
 
+    df["target"] = y.astype(np.int32)
     return df
 
 
+# -----------------------------------------------------------------------------
+# Time series (JAX)
+# -----------------------------------------------------------------------------
 def create_synthetic_time_series(
-    n_samples=1000, seq_len=10, num_features=1, train_split=0.8
+    n_samples: int = 1000,
+    seq_len: int = 10,
+    num_features: int = 1,
+    train_split: float = 0.8,
+    random_seed: int = 0,
+    noise_std: float = 0.1,
 ):
     """
-    Create synthetic time series data.
+    Create synthetic time series data (next-step prediction).
 
-    Parameters:
-    n_samples: Total number of time points
-    seq_len: Number of timesteps in a sequence
-    num_features: Number of features
-    train_split: Fraction of data used for training
-
-    Returns:
+    Returns
+    -------
     X_train, X_val, y_train, y_val
+      X_*: (N, seq_len, num_features)
+      y_*: (N,)
     """
-    # Time variable
-    t = jnp.linspace(0, 10, n_samples)
+    if seq_len >= n_samples:
+        raise ValueError("seq_len must be < n_samples.")
+    if not (0.0 < train_split < 1.0):
+        raise ValueError("train_split must be in (0, 1).")
 
-    # Random key
-    key = jax.random.PRNGKey(0)
+    key = jax.random.PRNGKey(random_seed)
+    t = jnp.linspace(0.0, 10.0, n_samples)
 
-    # Create a simple sine wave with added noise as target
     key, noise_key = jax.random.split(key)
-    y = jnp.sin(t) + 0.1 * jax.random.normal(noise_key, t.shape)
+    y = jnp.sin(t) + noise_std * jax.random.normal(noise_key, shape=t.shape)
 
-    # Features: Add some noise to the sine wave for feature inputs
-    sequences = []
-    for _ in range(num_features):
-        key, feature_key = jax.random.split(key)
-        feature = y + 0.1 * jax.random.normal(feature_key, y.shape)
-        sequences.append(feature)
-    X = jnp.stack(sequences, axis=-1)
+    # Features: noisy copies of y
+    keys = jax.random.split(key, num_features)
+    X = jnp.stack(
+        [y + noise_std * jax.random.normal(k, shape=y.shape) for k in keys], axis=-1
+    )  # (n_samples, num_features)
 
-    # Reshape into sequences
-    sequences_X = []
-    sequences_y = []
-    for i in range(n_samples - seq_len):
-        sequences_X.append(X[i : i + seq_len])
-        sequences_y.append(y[i + seq_len])
+    # Build sequences (vectorized)
+    idx = jnp.arange(n_samples - seq_len)[:, None] + jnp.arange(seq_len)[None, :]
+    sequences_X = X[idx]  # (n_samples-seq_len, seq_len, num_features)
+    sequences_y = y[seq_len:]  # (n_samples-seq_len,)
 
-    sequences_X = jnp.array(sequences_X)
-    sequences_y = jnp.array(sequences_y)
-
-    # Split into train and validation sets
-    split_idx = int(train_split * len(sequences_X))
+    split_idx = int(train_split * sequences_X.shape[0])
     X_train, X_val = sequences_X[:split_idx], sequences_X[split_idx:]
     y_train, y_val = sequences_y[:split_idx], sequences_y[split_idx:]
 
     return X_train, X_val, y_train, y_val
+
+
+# -----------------------------------------------------------------------------
+# Image classification (NCHW)
+# -----------------------------------------------------------------------------
+def generate_image_classification_data(
+    n_samples: int = 256,
+    n_classes: int = 4,
+    channels: int = 1,
+    height: int = 32,
+    width: int = 32,
+    noise_std: float = 0.15,
+    signal: float = 1.0,
+    random_seed: int | None = 0,
+    as_jax: bool = False,
+):
+    """
+    Synthetic image classification dataset.
+
+    Returns
+    -------
+    X : (N, C, H, W) float32
+    y : (N,) int64
+    """
+    if n_classes < 2:
+        raise ValueError("n_classes must be >= 2.")
+    if channels < 1:
+        raise ValueError("channels must be >= 1.")
+
+    rng = _np_rng(random_seed)
+
+    # Coordinate grid for patterns
+    yy, xx = np.meshgrid(
+        np.linspace(0, 2 * np.pi, height, dtype=np.float32),
+        np.linspace(0, 2 * np.pi, width, dtype=np.float32),
+        indexing="ij",
+    )
+
+    X = rng.normal(0.0, noise_std, size=(n_samples, channels, height, width)).astype(
+        np.float32
+    )
+    y = rng.integers(0, n_classes, size=(n_samples,), dtype=np.int64)
+
+    for i in range(n_samples):
+        k = int(y[i])
+        # class-dependent sinusoidal pattern (learnable but simple)
+        phase1, phase2 = rng.uniform(0.0, 2 * np.pi, size=2).astype(np.float32)
+        freq = float(k + 1)
+
+        pattern = np.sin(freq * xx + phase1) * np.cos(freq * yy + phase2)
+        # normalize-ish to roughly [-0.5, 0.5]
+        pattern = pattern.astype(np.float32)
+        pattern = pattern / (np.max(np.abs(pattern)) + 1e-8)
+        pattern = signal * pattern  # roughly [-signal, +signal]
+
+        X[i] += pattern[None, :, :]  # broadcast to all channels
+
+    return _to_backend(X, as_jax), _to_backend(y, as_jax)
+
+
+# -----------------------------------------------------------------------------
+# Image segmentation (image + mask, both NCHW)
+# -----------------------------------------------------------------------------
+def generate_image_and_mask_data(
+    n_samples: int = 128,
+    channels: int = 1,
+    height: int = 64,
+    width: int = 64,
+    n_classes: int = 2,
+    objects_per_image: tuple[int, int] = (1, 3),
+    shape_types: tuple[str, ...] = ("circle", "rectangle"),
+    noise_std: float = 0.10,
+    signal: float = 1.0,
+    random_seed: int | None = 0,
+    mask_mode: str = "label",  # "label" -> (N,1,H,W) int32, "one_hot" -> (N,K,H,W) float32
+    as_jax: bool = False,
+):
+    """
+    Synthetic segmentation dataset.
+
+    Outputs are always NCHW:
+      X    : (N, C, H, W) float32
+      mask : (N, 1, H, W) int32   if mask_mode="label"
+          or (N, K, H, W) float32 if mask_mode="one_hot"
+
+    Notes
+    -----
+    - Background is class 0.
+    - Foreground objects use classes 1..K-1 (if K>1).
+    - Objects may overlap; later objects overwrite earlier ones.
+    """
+    if channels < 1:
+        raise ValueError("channels must be >= 1.")
+    if n_classes < 2:
+        raise ValueError("n_classes must be >= 2 (include background).")
+    if objects_per_image[0] < 0 or objects_per_image[1] < objects_per_image[0]:
+        raise ValueError("objects_per_image must be (min,max) with 0 <= min <= max.")
+    if mask_mode not in {"label", "one_hot"}:
+        raise ValueError("mask_mode must be 'label' or 'one_hot'.")
+
+    rng = _np_rng(random_seed)
+
+    X = rng.normal(0.0, noise_std, size=(n_samples, channels, height, width)).astype(
+        np.float32
+    )
+    labels = np.zeros((n_samples, height, width), dtype=np.int32)
+
+    yy, xx = np.meshgrid(
+        np.arange(height, dtype=np.int32),
+        np.arange(width, dtype=np.int32),
+        indexing="ij",
+    )
+
+    min_obj = objects_per_image[0]
+    max_obj = objects_per_image[1]
+
+    # Object size ranges (rough heuristics)
+    min_r = max(2, min(height, width) // 10)
+    max_r = max(min_r + 1, min(height, width) // 4)
+    min_side = max(3, min(height, width) // 10)
+    max_side = max(min_side + 1, min(height, width) // 3)
+
+    for i in range(n_samples):
+        n_obj = int(rng.integers(min_obj, max_obj + 1)) if max_obj > 0 else 0
+        for _ in range(n_obj):
+            cls = int(rng.integers(1, n_classes))  # 1..K-1
+            shape = rng.choice(shape_types)
+
+            if shape == "circle":
+                r = int(rng.integers(min_r, max_r + 1))
+                # ensure valid center range
+                cy_low, cy_high = r, max(r + 1, height - r)
+                cx_low, cx_high = r, max(r + 1, width - r)
+                cy = int(rng.integers(cy_low, cy_high))
+                cx = int(rng.integers(cx_low, cx_high))
+
+                m = (yy - cy) ** 2 + (xx - cx) ** 2 <= r * r
+
+            elif shape == "rectangle":
+                h = int(rng.integers(min_side, max_side + 1))
+                w = int(rng.integers(min_side, max_side + 1))
+                y0 = int(rng.integers(0, max(1, height - h + 1)))
+                x0 = int(rng.integers(0, max(1, width - w + 1)))
+                y1 = min(height, y0 + h)
+                x1 = min(width, x0 + w)
+
+                m = np.zeros((height, width), dtype=bool)
+                m[y0:y1, x0:x1] = True
+
+            else:
+                raise ValueError(f"Unknown shape type: {shape}")
+
+            labels[i][m] = cls
+
+        # Inject class-dependent signal into the image
+        # background=0 -> 0 signal, class k -> (k/(K-1))*signal
+        scale = (labels[i].astype(np.float32) / float(n_classes - 1)) * signal
+        X[i] += scale[None, :, :]  # broadcast to channels
+
+    if mask_mode == "label":
+        mask = labels[:, None, :, :].astype(np.int32)  # (N,1,H,W)
+    else:
+        mask = np.zeros((n_samples, n_classes, height, width), dtype=np.float32)
+        for k in range(n_classes):
+            mask[:, k] = (labels == k).astype(np.float32)
+
+    return _to_backend(X, as_jax), _to_backend(mask, as_jax)

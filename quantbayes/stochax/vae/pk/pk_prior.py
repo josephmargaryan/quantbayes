@@ -43,8 +43,8 @@ class PKLatentPrior(eqx.Module):
 
     feature_map: FeatureMap
     evidence_score: LatentScoreNet
-    reference_score: Optional[LatentScoreNet] = None
     cfg: PKPriorConfig = eqx.field(static=True)
+    reference_score: Optional[LatentScoreNet] = None
 
     def _as_batch(self, z: jnp.ndarray):
         z = jnp.asarray(z)
