@@ -152,6 +152,7 @@ if __name__ == "__main__":
 
     # labels {0,1}->{-1,+1}
     y = y01.astype(jnp.float32) * 2.0 - 1.0
+    # To go back from {-1,1} -> {0,1} y01 = (y_pm1 + 1.0) / 2.0
 
     n_train = int(0.8 * X.shape[0])
     X_train, y_train = X[:n_train], y[:n_train]
