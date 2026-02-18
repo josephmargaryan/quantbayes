@@ -8,7 +8,6 @@ from typing import Dict, List, Tuple, Optional
 
 import numpy as np
 import jax
-import jax.numpy as jnp
 import jax.random as jr
 
 from quantbayes.ball_dp.api import (
@@ -53,6 +52,10 @@ from quantbayes.ball_dp.reconstruction.vision.train_decoder_eqx import (
 )
 
 
+def _print(s: str):
+    print(s, flush=True)
+
+
 def _mse(a: np.ndarray, b: np.ndarray) -> float:
     a = np.asarray(a, dtype=np.float32)
     b = np.asarray(b, dtype=np.float32)
@@ -64,35 +67,65 @@ def _mean_std(x: np.ndarray) -> Tuple[float, float]:
     return float(x.mean()), float(x.std() + 1e-12)
 
 
-def _print(s: str):
-    print(s, flush=True)
+def _grid4_save(
+    *,
+    orig: np.ndarray,
+    noiseless: np.ndarray,
+    dp_ball: np.ndarray,
+    dp_bounded: np.ndarray,
+    out_path: Path,
+    n: int,
+    title: str,
+):
+    """
+    Save 4-column grid using save_recon_grid twice (2 cols + 2 cols) and stitch vertically.
+    Keeps dependencies minimal.
+    """
+    import tempfile
+    from PIL import Image
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with tempfile.TemporaryDirectory() as td:
+        p1 = Path(td) / "a.png"
+        p2 = Path(td) / "b.png"
+        save_recon_grid(
+            orig, noiseless, p1, n=n, title=title + " | target vs noiseless"
+        )
+        save_recon_grid(
+            dp_ball, dp_bounded, p2, n=n, title=title + " | DP ball vs DP bounded"
+        )
+
+        im1 = Image.open(p1)
+        im2 = Image.open(p2)
+
+        w = max(im1.size[0], im2.size[0])
+        h = im1.size[1] + im2.size[1]
+        canvas = Image.new("RGB", (w, h), color=(255, 255, 255))
+        canvas.paste(im1.convert("RGB"), (0, 0))
+        canvas.paste(im2.convert("RGB"), (0, im1.size[1]))
+        canvas.save(out_path)
 
 
-def _prepare_data_pixel(args) -> Dict[str, object]:
-    # MNIST pixels in [0,1]
+def _prepare_pixel(args):
     Xchw, y = load_mnist_numpy(
         root=args.data_root, train=True, download=True, flatten=False
     )
     X = flatten_chw(Xchw)  # (N,784)
     K = int(np.max(y) + 1)
-    B_public = pixel_l2_bound_unit_box(784, 1.0)  # = 28
+    B_public = pixel_l2_bound_unit_box(784, 1.0)  # 28
+    return dict(
+        mode="pixel",
+        X=X,
+        X_img=Xchw,
+        y=y,
+        K=K,
+        B_public=B_public,
+        img_shape=(1, 28, 28),
+    )
 
-    return {
-        "mode": "pixel",
-        "X": X,
-        "X_img": Xchw,  # (N,1,28,28)
-        "y": y,
-        "K": K,
-        "B_public": B_public,
-        "img_shape": (1, 28, 28),
-    }
 
-
-def _prepare_data_embed(args) -> Dict[str, object]:
-    """
-    Public encoder φ: ResNet18(ImageNet) to 512-d embeddings.
-    Also returns target images in original MNIST resolution (1x28x28).
-    """
+def _prepare_embed(args):
     _print("[MNIST/embed] Building ResNet18 encoder...")
     enc = build_resnet18_embedder(device=args.torch_device)
 
@@ -106,7 +139,7 @@ def _prepare_data_embed(args) -> Dict[str, object]:
         shuffle=False,
     )
 
-    _print("[MNIST/embed] Extracting embeddings (this may take a bit)...")
+    _print("[MNIST/embed] Extracting embeddings (can take time on full MNIST)...")
     E, X_img, y = extract_embeddings_and_targets(
         loader=loader,
         encoder=enc,
@@ -115,61 +148,52 @@ def _prepare_data_embed(args) -> Dict[str, object]:
         max_batches=args.embed_max_batches if args.embed_max_batches > 0 else None,
     )
     K = int(np.max(y) + 1)
-    # If we L2-normalize, we can treat B=1 as public bound.
-    B_public = (
-        1.0 if args.embed_l2_normalize else float(np.max(np.linalg.norm(E, axis=1)))
+
+    if not args.embed_l2_normalize:
+        _print(
+            "[WARN] embed_l2_normalize is OFF. Baseline r_std=2B is not policy-clean unless you enforce a public bound."
+        )
+        B_public = float(np.max(np.linalg.norm(E, axis=1)))
+    else:
+        B_public = 1.0
+
+    _print(f"[MNIST/embed] E={E.shape}, B_public={B_public:.3f}")
+    return dict(
+        mode="embed",
+        X=E,
+        X_img=X_img,
+        y=y,
+        K=K,
+        B_public=B_public,
+        img_shape=(1, 28, 28),
     )
 
-    _print(
-        f"[MNIST/embed] got E={E.shape}, X_img={X_img.shape}, y={y.shape}, B_public≈{B_public:.3f}"
-    )
 
-    return {
-        "mode": "embed",
-        "X": E,  # treat embeddings as records
-        "X_img": X_img,  # true images (N,1,28,28) in [0,1]
-        "y": y,
-        "K": K,
-        "B_public": float(B_public),
-        "img_shape": (1, 28, 28),
-    }
-
-
-def _maybe_train_decoder(
+def _train_decoder_if_needed(
     args,
     E: np.ndarray,
     X_img: np.ndarray,
     out_dir: Path,
     img_shape: Tuple[int, int, int],
 ):
-    """
-    Train a public decoder g(e)->x_flat on (E, X_img).
-    This is post-processing only; does not affect DP.
-    """
     if not args.train_decoder:
         return None
-
     C, H, W = img_shape
     X_flat = X_img.reshape(X_img.shape[0], -1).astype(np.float32)
 
-    # optionally subsample to speed up
     if args.decoder_train_max > 0 and X_flat.shape[0] > args.decoder_train_max:
         rng = np.random.default_rng(args.seed)
         idx = rng.choice(
             X_flat.shape[0], size=int(args.decoder_train_max), replace=False
         )
-        E_tr = E[idx]
-        X_tr = X_flat[idx]
+        Etr, Xtr = E[idx], X_flat[idx]
     else:
-        E_tr = E
-        X_tr = X_flat
+        Etr, Xtr = E, X_flat
 
-    _print(
-        f"[decoder] training on {E_tr.shape[0]} pairs: E={E_tr.shape}, X={X_tr.shape}"
-    )
+    _print(f"[decoder] Training decoder on {Etr.shape[0]} pairs...")
     out = train_decoder_mlp(
-        E=E_tr,
-        X_target_flat=X_tr,
+        E=Etr,
+        X_target_flat=Xtr,
         hidden=tuple(int(x) for x in args.decoder_hidden.split(",") if x.strip()),
         act=args.decoder_act,
         out_act="sigmoid",
@@ -179,7 +203,6 @@ def _maybe_train_decoder(
         seed=args.seed,
         val_frac=args.decoder_val_frac,
     )
-    dec = out["decoder"]
     write_json(
         out_dir / "decoder_train_report.json",
         {
@@ -187,14 +210,12 @@ def _maybe_train_decoder(
             "decoder_epochs": args.decoder_epochs,
             "decoder_batch_size": args.decoder_batch_size,
             "decoder_lr": args.decoder_lr,
-            "train_hist_last": (
-                float(out["train_hist"][-1]) if out["train_hist"] else None
-            ),
-            "val_hist_last": float(out["val_hist"][-1]) if out["val_hist"] else None,
+            "train_last": float(out["train_hist"][-1]) if out["train_hist"] else None,
+            "val_last": float(out["val_hist"][-1]) if out["val_hist"] else None,
         },
     )
-    _print("[decoder] trained and saved decoder_train_report.json")
-    return dec
+    _print("[decoder] done.")
+    return out["decoder"]
 
 
 def main():
@@ -203,29 +224,27 @@ def main():
     ap.add_argument("--data_root", type=str, default="./data")
     ap.add_argument("--out_dir", type=str, default="mnist_recon_out")
 
-    # modes
     ap.add_argument("--mode", type=str, default="pixel", choices=["pixel", "embed"])
     ap.add_argument(
-        "--head", type=str, default="softmax", choices=["softmax", "prototypes"]
+        "--head", type=str, default="prototypes", choices=["prototypes", "softmax"]
     )
 
-    # global
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument(
         "--sigma_method", type=str, default="analytic", choices=["classic", "analytic"]
     )
     ap.add_argument("--delta", type=float, default=1e-5)
     ap.add_argument("--lam", type=float, default=0.2)
+
     ap.add_argument("--eps_list", type=str, default="0.1,0.2,0.5,1,2,5")
     ap.add_argument("--ball_percentiles", type=str, default="10,50,90")
 
-    # split
     ap.add_argument("--n_fixed_per_class", type=int, default=200)
     ap.add_argument("--n_shadow_per_class", type=int, default=200)
     ap.add_argument("--n_target_per_class", type=int, default=30)
     ap.add_argument("--max_targets", type=int, default=200)
 
-    # LBFGS/ERM solve knobs
+    # solver knobs (softmax)
     ap.add_argument("--max_iters", type=int, default=600)
     ap.add_argument("--grad_tol", type=float, default=1e-7)
     ap.add_argument("--stall_patience", type=int, default=50)
@@ -237,20 +256,28 @@ def main():
     ap.add_argument("--fit_verbose_first", action="store_true")
     ap.add_argument("--fit_print_every", type=int, default=25)
 
-    # example grids
+    # metrics
+    ap.add_argument(
+        "--metric_clip",
+        action="store_true",
+        help="Compute metrics after clipping recon to [0,1] in pixel mode.",
+    )
+    ap.set_defaults(metric_clip=True)
+
+    # examples
     ap.add_argument("--save_examples", action="store_true")
     ap.add_argument("--examples_eps", type=float, default=1.0)
     ap.add_argument("--examples_percentile", type=float, default=50.0)
     ap.add_argument("--examples_n", type=int, default=16)
 
-    # embed mode (torch)
+    # embed options
     ap.add_argument("--torch_device", type=str, default="cuda")
     ap.add_argument("--num_workers", type=int, default=2)
     ap.add_argument("--embed_batch_size", type=int, default=256)
-    ap.add_argument("--embed_max_batches", type=int, default=0, help="0 means no limit")
+    ap.add_argument("--embed_max_batches", type=int, default=0)
     ap.add_argument("--embed_l2_normalize", action="store_true")
 
-    # decoder (embed mode)
+    # decoder
     ap.add_argument("--train_decoder", action="store_true")
     ap.add_argument("--decoder_hidden", type=str, default="1024,1024")
     ap.add_argument("--decoder_act", type=str, default="relu")
@@ -268,20 +295,14 @@ def main():
 
     np.random.seed(args.seed)
 
-    # ------------------- data -------------------
-    if args.mode == "pixel":
-        data = _prepare_data_pixel(args)
-    else:
-        data = _prepare_data_embed(args)
-
-    X_all: np.ndarray = data["X"]
-    X_img_all: np.ndarray = data["X_img"]
-    y_all: np.ndarray = data["y"]
-    K: int = data["K"]
-    B_public: float = data["B_public"]
+    data = _prepare_pixel(args) if args.mode == "pixel" else _prepare_embed(args)
+    X_all = data["X"]
+    X_img_all = data["X_img"]
+    y_all = data["y"]
+    K = data["K"]
+    B_public = float(data["B_public"])
     img_shape = data["img_shape"]
 
-    # ------------------- split -------------------
     split = make_informed_split(
         y_all,
         n_fixed_per_class=int(args.n_fixed_per_class),
@@ -290,6 +311,7 @@ def main():
         num_classes=K,
         seed=int(args.seed),
     )
+
     X_fix, y_fix = X_all[split.fixed_idx], y_all[split.fixed_idx]
     X_sh, y_sh = X_all[split.shadow_idx], y_all[split.shadow_idx]
     X_tg, y_tg = X_all[split.target_idx], y_all[split.target_idx]
@@ -304,7 +326,6 @@ def main():
         f"[MNIST/{args.mode}/{args.head}] fixed={X_fix.shape[0]} shadow={X_sh.shape[0]} targets={X_tg.shape[0]}"
     )
 
-    # ------------------- radius policy -------------------
     rp = compute_radius_policy(
         X_fix,
         y_fix,
@@ -320,21 +341,15 @@ def main():
         (f"ball_p{int(p)}", r_ball[p]) for p in ball_ps
     ]
 
-    # ------------------- decoder (embed mode) -------------------
     decoder = None
     if args.mode == "embed" and args.train_decoder:
-        decoder = _maybe_train_decoder(args, X_all, X_img_all, out_dir, img_shape)
+        decoder = _train_decoder_if_needed(args, X_all, X_img_all, out_dir, img_shape)
 
-    # ------------------- precompute for prototypes -------------------
-    sums_fix, counts_fix = None, None
-    if args.head == "prototypes":
-        sums_fix, counts_fix = class_sums_counts_np(X_fix, y_fix, num_classes=K)
-
-    # ------------------- cache per-target trained objects -------------------
+    # ---------- caches ----------
     n_full = int(X_fix.shape[0] + 1)
 
     theta_cache: List[Tuple[np.ndarray, callable]] = []
-    proto_cache: List[Tuple[np.ndarray, np.ndarray]] = []  # (mus, counts_full)
+    proto_cache: List[Tuple[np.ndarray, np.ndarray]] = []
 
     if args.head == "softmax":
         Lz = float(
@@ -342,11 +357,9 @@ def main():
                 B=float(B_public), lam=float(args.lam), include_bias=True
             )
         )
-        _print(
-            f"[head=softmax] Lz_bound={Lz:.4f}  B_public={B_public:.4f}  n_full={n_full}"
-        )
+        _print(f"[softmax] Lz={Lz:.4f} B={B_public:.4f} n_full={n_full}")
 
-        _print(f"[MNIST] Fitting θ* for {X_tg.shape[0]} targets... (expensive)")
+        _print(f"[MNIST] Fitting θ* for {X_tg.shape[0]} targets...")
         for i in range(X_tg.shape[0]):
             t0 = time.time()
             x = X_tg[i]
@@ -372,25 +385,19 @@ def main():
                 print_every=int(args.fit_print_every),
                 warmup_compile=warmup,
             )
-
-            # force device sync
             _ = jax.block_until_ready(mdl.W)
-
             theta_hat, unflatten = eqx_flatten_adapter(mdl)
             theta_cache.append((theta_hat.astype(np.float32, copy=False), unflatten))
 
             dt = time.time() - t0
             if (i + 1) % int(args.progress_every) == 0 or (i + 1) == X_tg.shape[0]:
                 _print(
-                    f"  fitted {i+1}/{X_tg.shape[0]}  y={yc}  stop={info.get('stop_reason','?')} "
-                    f"iters={info.get('n_iters','?')}  g={info.get('grad_norm',0):.2e}  dt={dt:.2f}s"
+                    f"  fitted {i+1}/{X_tg.shape[0]} y={yc} stop={info.get('stop_reason','?')} iters={info.get('n_iters','?')} dt={dt:.2f}s"
                 )
 
     else:
-        # prototypes: cache mus/counts per target quickly using sums/counts
-        _print(
-            f"[head=prototypes] caching prototypes for {X_tg.shape[0]} targets... (fast)"
-        )
+        sums_fix, counts_fix = class_sums_counts_np(X_fix, y_fix, num_classes=K)
+        _print(f"[prototypes] caching mus for {X_tg.shape[0]} targets...")
         for i in range(X_tg.shape[0]):
             x = X_tg[i].astype(np.float64)
             yc = int(y_tg[i])
@@ -411,19 +418,15 @@ def main():
             if (i + 1) % int(args.progress_every) == 0 or (i + 1) == X_tg.shape[0]:
                 _print(f"  cached {i+1}/{X_tg.shape[0]}")
 
-    # ------------------- evaluation -------------------
+    # ---------- evaluation ----------
     curves_l2: Dict[str, Tuple[List[float], List[float]]] = {}
     curves_mse: Dict[str, Tuple[List[float], List[float]]] = {}
-
-    # optional image curves if embed+decoder
     curves_img_mse: Dict[str, Tuple[List[float], List[float]]] = {}
 
-    def evaluate_setting_softmax(
-        r: float, eps: float
-    ) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
+    def eval_softmax(r: float, eps: float):
         rng = np.random.default_rng(int(args.seed) + 999)
         errs_l2, errs_mse = [], []
-        errs_img = [] if (decoder is not None) else None
+        errs_img = [] if decoder is not None else None
 
         Delta = float(
             erm_sensitivity_l2(
@@ -452,11 +455,16 @@ def main():
             )
             x_hat = rec["x_hat"]
             x_true = X_tg[i]
-            errs_l2.append(float(np.linalg.norm(x_hat - x_true)))
-            errs_mse.append(_mse(x_hat, x_true))
+
+            if args.mode == "pixel" and args.metric_clip:
+                x_hat_eval = np.clip(x_hat, 0.0, 1.0)
+            else:
+                x_hat_eval = x_hat
+
+            errs_l2.append(float(np.linalg.norm(x_hat_eval - x_true)))
+            errs_mse.append(_mse(x_hat_eval, x_true))
 
             if errs_img is not None:
-                # decode embedding to image
                 img_hat = decode_images_from_embeddings(
                     decoder=decoder, E=x_hat[None, :], out_shape=img_shape
                 )[0]
@@ -469,14 +477,11 @@ def main():
             (np.asarray(errs_img, np.float32) if errs_img is not None else None),
         )
 
-    def evaluate_setting_prototypes(
-        r: float, eps: float
-    ) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
+    def eval_prototypes(r: float, eps: float):
         errs_l2, errs_mse = [], []
-        errs_img = [] if (decoder is not None) else None
+        errs_img = [] if decoder is not None else None
 
-        # fixed sums/counts for attacker
-        sums_minus, counts_minus = sums_fix, counts_fix
+        sums_minus, counts_minus = class_sums_counts_np(X_fix, y_fix, num_classes=K)
 
         for i in range(X_tg.shape[0]):
             mus, counts_full = proto_cache[i]
@@ -501,8 +506,14 @@ def main():
                 lam=float(args.lam),
             )
             x_true = X_tg[i]
-            errs_l2.append(float(np.linalg.norm(x_hat - x_true)))
-            errs_mse.append(_mse(x_hat, x_true))
+
+            if args.mode == "pixel" and args.metric_clip:
+                x_hat_eval = np.clip(x_hat, 0.0, 1.0)
+            else:
+                x_hat_eval = x_hat
+
+            errs_l2.append(float(np.linalg.norm(x_hat_eval - x_true)))
+            errs_mse.append(_mse(x_hat_eval, x_true))
 
             if errs_img is not None:
                 img_hat = decode_images_from_embeddings(
@@ -517,13 +528,9 @@ def main():
             (np.asarray(errs_img, np.float32) if errs_img is not None else None),
         )
 
-    eval_fn = (
-        evaluate_setting_softmax
-        if args.head == "softmax"
-        else evaluate_setting_prototypes
-    )
+    eval_fn = eval_softmax if args.head == "softmax" else eval_prototypes
 
-    _print("[MNIST] Evaluating DP recon curves...")
+    _print("[MNIST] Evaluating curves...")
     for name, r in radius_items:
         m_l2, s_l2 = [], []
         m_mse, s_mse = [], []
@@ -558,7 +565,7 @@ def main():
     save_errorbar_plot(
         x=eps_list,
         curves=curves_l2,
-        title=f"MNIST {args.mode} {args.head}: ||x̂-x||₂ vs ε",
+        title=f"MNIST {args.mode}/{args.head}: L2(recon,target) vs ε",
         xlabel="epsilon",
         ylabel="L2 error",
         out_path=out_dir / f"mnist_{args.mode}_{args.head}_l2_vs_eps.png",
@@ -567,7 +574,7 @@ def main():
     save_errorbar_plot(
         x=eps_list,
         curves=curves_mse,
-        title=f"MNIST {args.mode} {args.head}: MSE(x̂,x) vs ε",
+        title=f"MNIST {args.mode}/{args.head}: MSE(recon,target) vs ε",
         xlabel="epsilon",
         ylabel="MSE",
         out_path=out_dir / f"mnist_{args.mode}_{args.head}_mse_vs_eps.png",
@@ -577,7 +584,7 @@ def main():
         save_errorbar_plot(
             x=eps_list,
             curves=curves_img_mse,
-            title=f"MNIST embed+decoder {args.head}: MSE(decoded(x̂), img) vs ε",
+            title=f"MNIST embed+decoder/{args.head}: image MSE(decoded(recon),target) vs ε",
             xlabel="epsilon",
             ylabel="decoded image MSE",
             out_path=out_dir / f"mnist_embed_{args.head}_decoded_mse_vs_eps.png",
@@ -591,6 +598,7 @@ def main():
         "lam": float(args.lam),
         "delta": float(args.delta),
         "sigma_method": str(args.sigma_method),
+        "metric_clip": bool(args.metric_clip),
         "B_public": float(B_public),
         "n_fixed": int(X_fix.shape[0]),
         "n_shadow": int(X_sh.shape[0]),
@@ -604,14 +612,6 @@ def main():
     }
     if args.head == "softmax":
         report["Lz_bound"] = float(Lz)
-        report["n_full"] = int(n_full)
-        report["solver"] = {
-            "max_iters": int(args.max_iters),
-            "grad_tol": float(args.grad_tol),
-            "stall_patience": int(args.stall_patience),
-            "stall_grad_tol": float(args.stall_grad_tol),
-            "memory_size": int(args.memory_size),
-        }
     if decoder is not None:
         report["curves_img_mse"] = {
             k: {"mean": v[0], "std": v[1]} for k, v in curves_img_mse.items()
@@ -619,98 +619,58 @@ def main():
 
     write_json(out_dir / f"mnist_{args.mode}_{args.head}_report.json", report)
 
-    # ------------------- examples grid -------------------
+    # ---------- examples: 4-column compare ----------
     if args.save_examples:
         p = float(args.examples_percentile)
         eps_ex = float(args.examples_eps)
         r_ex = r_ball[p]
         Nshow = min(int(args.examples_n), X_tg.shape[0])
-        _print(f"[MNIST] Saving example grid: p{int(p)} eps={eps_ex:g} N={Nshow}")
 
-        if args.mode == "pixel":
+        _print(
+            f"[MNIST] Saving example comparisons: p{int(p)} eps={eps_ex:g} N={Nshow}"
+        )
+
+        if args.mode == "embed" and decoder is None:
+            _print("[MNIST/embed] Skipping examples: no decoder. Use --train_decoder.")
+        else:
+            # build four sets: target, noiseless, dp_ball, dp_bounded
             orig_imgs = X_img_tg[:Nshow]
-            recon_flat = []
 
-            # reconstruct with the chosen r,eps
+            noiseless_imgs = []
+            dp_ball_imgs = []
+            dp_bounded_imgs = []
+
             if args.head == "softmax":
-                Delta = float(
-                    erm_sensitivity_l2(
-                        lz=Lz, r=float(r_ex), lam=float(args.lam), n=n_full
-                    ).delta_l2
-                )
-                sigma = float(
-                    gaussian_sigma(
-                        Delta, eps_ex, float(args.delta), method=str(args.sigma_method)
-                    )
-                )
-                rng = np.random.default_rng(2026)
+                # noiseless: use theta_hat directly (sigma=0)
                 for i in range(Nshow):
                     theta_hat, unflatten = theta_cache[i]
-                    theta_noisy = add_gaussian_noise(theta_hat, sigma, rng=rng).astype(
-                        np.float32
-                    )
-                    mdl_priv = unflatten(theta_noisy)
-                    rec = reconstruct_missing_softmax_from_release(
-                        W_release=np.asarray(mdl_priv.W),
-                        b_release=np.asarray(mdl_priv.b),
+                    mdl0 = unflatten(theta_hat)
+                    rec0 = reconstruct_missing_softmax_from_release(
+                        W_release=np.asarray(mdl0.W),
+                        b_release=np.asarray(mdl0.b),
                         X_minus=X_fix,
                         y_minus=y_fix,
                         lam=float(args.lam),
                         n_total_full=n_full,
                     )
-                    recon_flat.append(rec["x_hat"])
-            else:
-                # prototypes DP release
-                sums_minus, counts_minus = sums_fix, counts_fix
-                for i in range(Nshow):
-                    mus, counts_full = proto_cache[i]
-                    dp = dp_release_ridge_prototypes_gaussian(
-                        mus=mus,
-                        counts=counts_full,
-                        r=float(r_ex),
-                        lam=float(args.lam),
-                        eps=float(eps_ex),
-                        delta=float(args.delta),
-                        sigma_method=str(args.sigma_method),
-                        rng=np.random.default_rng(int(args.seed) + 2222 + i),
-                    )
-                    mus_noisy = dp["mus_noisy"]
-                    yc = int(y_tg[i])
-                    x_hat = reconstruct_missing_from_prototypes_given_label(
-                        mu_y_release=mus_noisy[yc],
-                        sum_y_minus=sums_minus[yc],
-                        n_y_minus=int(counts_minus[yc]),
-                        n_total_full=n_full,
-                        lam=float(args.lam),
-                    )
-                    recon_flat.append(x_hat)
+                    x0 = rec0["x_hat"]
 
-            recon_flat = np.stack(recon_flat, axis=0).astype(np.float32)
-            recon_imgs = clip01(unflatten_mnist(recon_flat))
-            save_recon_grid(
-                orig=orig_imgs,
-                recon=recon_imgs,
-                out_path=out_dir
-                / f"mnist_{args.mode}_{args.head}_examples_eps{eps_ex:g}_p{int(p)}.png",
-                n=Nshow,
-                title=f"MNIST {args.mode}/{args.head} eps={eps_ex:g} p{int(p)}",
-            )
+                    if args.mode == "pixel":
+                        x0 = np.clip(x0, 0.0, 1.0)
+                        noiseless_imgs.append(unflatten_mnist(x0[None, :])[0])
+                    else:
+                        img0 = decode_images_from_embeddings(
+                            decoder=decoder, E=x0[None, :], out_shape=img_shape
+                        )[0]
+                        noiseless_imgs.append(img0)
 
-        else:
-            # embed mode: decode recon embeddings if decoder available
-            if decoder is None:
-                _print(
-                    "[MNIST/embed] No decoder trained; set --train_decoder to save image grids."
-                )
-            else:
-                orig_imgs = X_img_tg[:Nshow]
-                recon_imgs_list = []
-
-                # Build recon embeddings, then decode
-                if args.head == "softmax":
+                # DP ball and DP bounded
+                def _dp_img_for_r(r_use: float) -> List[np.ndarray]:
+                    rng = np.random.default_rng(2026)
+                    out = []
                     Delta = float(
                         erm_sensitivity_l2(
-                            lz=Lz, r=float(r_ex), lam=float(args.lam), n=n_full
+                            lz=Lz, r=float(r_use), lam=float(args.lam), n=n_full
                         ).delta_l2
                     )
                     sigma = float(
@@ -721,65 +681,115 @@ def main():
                             method=str(args.sigma_method),
                         )
                     )
-                    rng = np.random.default_rng(2026)
                     for i in range(Nshow):
                         theta_hat, unflatten = theta_cache[i]
                         theta_noisy = add_gaussian_noise(
                             theta_hat, sigma, rng=rng
                         ).astype(np.float32)
-                        mdl_priv = unflatten(theta_noisy)
+                        mdl = unflatten(theta_noisy)
                         rec = reconstruct_missing_softmax_from_release(
-                            W_release=np.asarray(mdl_priv.W),
-                            b_release=np.asarray(mdl_priv.b),
+                            W_release=np.asarray(mdl.W),
+                            b_release=np.asarray(mdl.b),
                             X_minus=X_fix,
                             y_minus=y_fix,
                             lam=float(args.lam),
                             n_total_full=n_full,
                         )
-                        e_hat = rec["x_hat"]
-                        img_hat = decode_images_from_embeddings(
-                            decoder=decoder, E=e_hat[None, :], out_shape=img_shape
-                        )[0]
-                        recon_imgs_list.append(img_hat)
-                else:
-                    sums_minus, counts_minus = sums_fix, counts_fix
+                        xh = rec["x_hat"]
+                        if args.mode == "pixel":
+                            xh = np.clip(xh, 0.0, 1.0)
+                            out.append(unflatten_mnist(xh[None, :])[0])
+                        else:
+                            out.append(
+                                decode_images_from_embeddings(
+                                    decoder=decoder, E=xh[None, :], out_shape=img_shape
+                                )[0]
+                            )
+                    return out
+
+                dp_ball_imgs = _dp_img_for_r(r_ex)
+                dp_bounded_imgs = _dp_img_for_r(r_std)
+
+            else:
+                # prototypes noiseless / dp
+                sums_minus, counts_minus = class_sums_counts_np(
+                    X_fix, y_fix, num_classes=K
+                )
+
+                # noiseless recon
+                for i in range(Nshow):
+                    mus, _ = proto_cache[i]
+                    yc = int(y_tg[i])
+                    x0 = reconstruct_missing_from_prototypes_given_label(
+                        mu_y_release=mus[yc],
+                        sum_y_minus=sums_minus[yc],
+                        n_y_minus=int(counts_minus[yc]),
+                        n_total_full=n_full,
+                        lam=float(args.lam),
+                    )
+                    if args.mode == "pixel":
+                        x0 = np.clip(x0, 0.0, 1.0)
+                        noiseless_imgs.append(unflatten_mnist(x0[None, :])[0])
+                    else:
+                        noiseless_imgs.append(
+                            decode_images_from_embeddings(
+                                decoder=decoder, E=x0[None, :], out_shape=img_shape
+                            )[0]
+                        )
+
+                def _dp_img_for_r(r_use: float) -> List[np.ndarray]:
+                    out = []
                     for i in range(Nshow):
                         mus, counts_full = proto_cache[i]
                         dp = dp_release_ridge_prototypes_gaussian(
                             mus=mus,
                             counts=counts_full,
-                            r=float(r_ex),
+                            r=float(r_use),
                             lam=float(args.lam),
                             eps=float(eps_ex),
                             delta=float(args.delta),
                             sigma_method=str(args.sigma_method),
-                            rng=np.random.default_rng(int(args.seed) + 2222 + i),
+                            rng=np.random.default_rng(3000 + i),
                         )
                         mus_noisy = dp["mus_noisy"]
                         yc = int(y_tg[i])
-                        e_hat = reconstruct_missing_from_prototypes_given_label(
+                        xh = reconstruct_missing_from_prototypes_given_label(
                             mu_y_release=mus_noisy[yc],
                             sum_y_minus=sums_minus[yc],
                             n_y_minus=int(counts_minus[yc]),
                             n_total_full=n_full,
                             lam=float(args.lam),
                         )
-                        img_hat = decode_images_from_embeddings(
-                            decoder=decoder, E=e_hat[None, :], out_shape=img_shape
-                        )[0]
-                        recon_imgs_list.append(img_hat)
+                        if args.mode == "pixel":
+                            xh = np.clip(xh, 0.0, 1.0)
+                            out.append(unflatten_mnist(xh[None, :])[0])
+                        else:
+                            out.append(
+                                decode_images_from_embeddings(
+                                    decoder=decoder, E=xh[None, :], out_shape=img_shape
+                                )[0]
+                            )
+                    return out
 
-                recon_imgs = clip01(
-                    np.stack(recon_imgs_list, axis=0).astype(np.float32)
-                )
-                save_recon_grid(
-                    orig=orig_imgs,
-                    recon=recon_imgs,
-                    out_path=out_dir
-                    / f"mnist_embed_{args.head}_decoded_examples_eps{eps_ex:g}_p{int(p)}.png",
-                    n=Nshow,
-                    title=f"MNIST embed+decoder {args.head} eps={eps_ex:g} p{int(p)}",
-                )
+                dp_ball_imgs = _dp_img_for_r(r_ex)
+                dp_bounded_imgs = _dp_img_for_r(r_std)
+
+            noiseless_imgs = clip01(np.stack(noiseless_imgs, axis=0).astype(np.float32))
+            dp_ball_imgs = clip01(np.stack(dp_ball_imgs, axis=0).astype(np.float32))
+            dp_bounded_imgs = clip01(
+                np.stack(dp_bounded_imgs, axis=0).astype(np.float32)
+            )
+
+            _grid4_save(
+                orig=clip01(orig_imgs[:Nshow]),
+                noiseless=noiseless_imgs,
+                dp_ball=dp_ball_imgs,
+                dp_bounded=dp_bounded_imgs,
+                out_path=out_dir
+                / f"mnist_{args.mode}_{args.head}_examples_eps{eps_ex:g}_p{int(p)}.png",
+                n=Nshow,
+                title=f"MNIST {args.mode}/{args.head} eps={eps_ex:g} p{int(p)}",
+            )
 
     _print(f"[OK] Done. Outputs in: {out_dir}")
 
