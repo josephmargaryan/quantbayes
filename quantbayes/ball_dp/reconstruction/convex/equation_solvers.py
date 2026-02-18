@@ -244,15 +244,38 @@ class SoftmaxEquationSolver:
 
 @dataclass
 class BinaryLogisticEquationSolver:
-    """
-    Implements Theorem: exact reconstruction from noiseless binary-logistic ERM release.
-
-    Labels must be in {-1,+1}. Bias augmentation is required for the clean sign rule.
-    """
-
     lam: float
     n_total: int
     batch_size: int = 16384
+
+    def factorize_missing_gradient(self, g: Array) -> ReconstructionResult:
+        g = np.asarray(g, dtype=np.float64).reshape(-1)
+        if g.ndim != 1:
+            return ReconstructionResult(
+                None, None, "invalid_input", {"reason": "g must be 1D"}
+            )
+        a = float(g[-1])
+        if abs(a) < 1e-15:
+            return ReconstructionResult(
+                None,
+                None,
+                "failed",
+                {"reason": "a~0; cannot factorize", "g_missing": g},
+            )
+
+        y_hat = -1 if a > 0 else +1  # sign(a) = -y
+        et_hat = (g / a).astype(np.float64)  # last coord becomes 1 exactly
+        e_hat = et_hat[:-1]
+
+        # useful diagnostic: for logistic, |a| should be in (0,1)
+        details = {
+            "a": a,
+            "abs_a": abs(a),
+            "a_in_(0,1)": (abs(a) < 1.0 + 1e-8),
+        }
+        return ReconstructionResult(
+            record_hat=e_hat, label_hat=int(y_hat), status="ok", details=details
+        )
 
     def _missing_gradient(
         self,
@@ -295,41 +318,13 @@ class BinaryLogisticEquationSolver:
         return g_missing
 
     def reconstruct(
-        self,
-        *,
-        w: Array,
-        b: float,
-        d_minus: DatasetMinus,
+        self, *, w: Array, b: float, d_minus: DatasetMinus
     ) -> ReconstructionResult:
         try:
             g = self._missing_gradient(w=w, b=b, d_minus=d_minus)
         except Exception as e:
             return ReconstructionResult(None, None, "failed", {"exception": repr(e)})
-
-        a = float(g[-1])
-        if abs(a) < 1e-15:
-            return ReconstructionResult(
-                None,
-                None,
-                "failed",
-                {"reason": "a ~ 0; cannot factorize", "g_missing": g},
-            )
-
-        y_hat = -1 if a > 0 else +1  # since sign(a) = -y in the theorem
-        et_hat = (g / a).astype(np.float64)
-        if abs(et_hat[-1]) < 1e-15:
-            return ReconstructionResult(
-                None, y_hat, "failed", {"reason": "augmented coord ~0"}
-            )
-        et_hat = et_hat / et_hat[-1]
-        e_hat = et_hat[:-1]
-
-        return ReconstructionResult(
-            record_hat=e_hat,
-            label_hat=int(y_hat),
-            status="ok",
-            details={"a": a, "g_missing": g},
-        )
+        return self.factorize_missing_gradient(g)
 
 
 # ============================================================
@@ -339,16 +334,46 @@ class BinaryLogisticEquationSolver:
 
 @dataclass
 class SquaredHingeEquationSolver:
-    """
-    Implements Theorem: conditional exact reconstruction for squared hinge SVM.
-
-    If missing record is not a support vector (margin >= 1), missing gradient is 0 and reconstruction is impossible.
-    """
-
     lam: float
     n_total: int
     batch_size: int = 16384
     zero_tol: float = 1e-12
+
+    def factorize_missing_gradient(self, g: Array) -> ReconstructionResult:
+        g = np.asarray(g, dtype=np.float64).reshape(-1)
+
+        if float(np.linalg.norm(g)) <= float(self.zero_tol):
+            return ReconstructionResult(
+                None,
+                None,
+                "no_support_vector",
+                {
+                    "reason": "missing gradient ~0 (margin>=1), cannot reconstruct",
+                    "g_missing": g,
+                },
+            )
+
+        a = float(g[-1])
+        if abs(a) < 1e-15:
+            return ReconstructionResult(
+                None,
+                None,
+                "failed",
+                {"reason": "a~0; cannot factorize", "g_missing": g},
+            )
+
+        y_hat = -1 if a > 0 else +1  # sign(a) = -y
+        et_hat = (g / a).astype(np.float64)
+        e_hat = et_hat[:-1]
+
+        # hinge diagnostic: inferred (approx) margin m = 1 - |a|/2  (only exact if g truly from hinge form)
+        m_hat = 1.0 - abs(a) / 2.0
+        return ReconstructionResult(
+            record_hat=e_hat,
+            label_hat=int(y_hat),
+            status="ok",
+            details={"a": a, "m_hat": m_hat},
+        )
 
     def _missing_gradient(
         self,
@@ -389,45 +414,10 @@ class SquaredHingeEquationSolver:
         return g_missing
 
     def reconstruct(
-        self,
-        *,
-        w: Array,
-        b: float,
-        d_minus: DatasetMinus,
+        self, *, w: Array, b: float, d_minus: DatasetMinus
     ) -> ReconstructionResult:
         try:
             g = self._missing_gradient(w=w, b=b, d_minus=d_minus)
         except Exception as e:
             return ReconstructionResult(None, None, "failed", {"exception": repr(e)})
-
-        if float(np.linalg.norm(g)) <= float(self.zero_tol):
-            return ReconstructionResult(
-                record_hat=None,
-                label_hat=None,
-                status="no_support_vector",
-                details={
-                    "reason": "missing gradient is ~0 (margin>=1), cannot reconstruct",
-                    "g_missing": g,
-                },
-            )
-
-        a = float(g[-1])
-        if abs(a) < 1e-15:
-            return ReconstructionResult(
-                None,
-                None,
-                "failed",
-                {"reason": "a ~ 0; cannot factorize", "g_missing": g},
-            )
-
-        y_hat = -1 if a > 0 else +1  # sign(a) = -y
-        et_hat = (g / a).astype(np.float64)
-        et_hat = et_hat / et_hat[-1]
-        e_hat = et_hat[:-1]
-
-        return ReconstructionResult(
-            record_hat=e_hat,
-            label_hat=int(y_hat),
-            status="ok",
-            details={"a": a, "g_missing": g},
-        )
+        return self.factorize_missing_gradient(g)
