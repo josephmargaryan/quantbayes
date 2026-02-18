@@ -153,3 +153,93 @@ def ridge_prototypes_release_distance_l2(
         n_total=n_total,
     )
     return float(np.linalg.norm(delta))
+
+
+if __name__ == "__main__":
+    rng = np.random.default_rng(0)
+
+    # ---- Toy data: K Gaussian clusters in R^d ----
+    N = 500
+    d = 8
+    K = 4
+    lam = 1.0
+
+    # true (unknown) class centers
+    true_centers = rng.normal(size=(K, d)).astype(np.float32)
+
+    # labels in {0, ..., K-1}
+    y = rng.integers(0, K, size=N, dtype=np.int64)
+
+    # embeddings: center + noise
+    Z = true_centers[y] + 0.5 * rng.normal(size=(N, d)).astype(np.float32)
+
+    # ---- Fit ridge prototypes ----
+    mus, counts = fit_ridge_prototypes(Z, y, num_classes=K, lam=lam)
+    print("counts per class:", counts)
+    print("mus shape:", mus.shape)  # (K, d)
+
+    # ---- Predict by nearest prototype ----
+    y_hat = predict_nearest_prototype(Z, mus)
+    acc = float(np.mean(y_hat == y))
+    print(f"train nearest-prototype accuracy: {acc:.3f}")
+
+    # ---- Sensitivity (ball adjacency) ----
+    # r is the max allowed change ||z - z'|| for one example under your adjacency notion
+    r = 1.0
+    nonzero = counts[counts > 0]
+    if nonzero.size == 0:
+        raise RuntimeError("All classes are empty (unexpected in this toy example).")
+
+    n_min = int(nonzero.min())
+    n_total = int(N)
+
+    sens = prototypes_sensitivity_l2(r=r, n_min=n_min, n_total=n_total, lam=lam)
+    print(f"prototypes L2 sensitivity (worst-case over classes): {sens:.6f}")
+
+    # ---- Single label-preserving replacement: z_old -> z_new ----
+    i = 0
+    c = int(y[i])
+    z_old = Z[i].copy()
+
+    # Construct a bounded replacement with ||z_new - z_old|| <= r
+    direction = rng.normal(size=(d,)).astype(np.float32)
+    direction /= np.linalg.norm(direction) + 1e-12
+    step = 0.8 * r  # keep margin below r
+    z_new = z_old + step * direction
+    print("||z_new - z_old||:", float(np.linalg.norm(z_new - z_old)))
+
+    delta_mu = ridge_prototypes_replacement_delta(
+        z_old=z_old,
+        z_new=z_new,
+        y=c,
+        counts=counts,
+        lam=lam,
+        n_total=n_total,
+    )
+    print(f"||delta_mu|| (closed-form): {float(np.linalg.norm(delta_mu)):.6f}")
+
+    # Verify delta_mu matches recomputing prototypes after replacement
+    Z2 = Z.copy()
+    Z2[i] = z_new
+    mus2, counts2 = fit_ridge_prototypes(Z2, y, num_classes=K, lam=lam)
+
+    # Only row c should change (up to floating error)
+    row_diff = mus2[c] - mus[c]
+    full_diff = mus2 - mus
+
+    print(f"||mus2[c] - mus[c]|| (recompute): {float(np.linalg.norm(row_diff)):.6f}")
+    print(f"||full mus2 - mus|| (recompute): {float(np.linalg.norm(full_diff)):.6f}")
+    print(
+        f"||row_diff - delta_mu|| (sanity error): {float(np.linalg.norm(row_diff - delta_mu)):.6e}"
+    )
+
+    # Release distance helper should equal the same row-diff norm
+    rel_dist = ridge_prototypes_release_distance_l2(
+        z_old=z_old,
+        z_new=z_new,
+        y=c,
+        counts=counts,
+        lam=lam,
+        n_total=n_total,
+    )
+    print(f"release distance L2 (helper): {rel_dist:.6f}")
