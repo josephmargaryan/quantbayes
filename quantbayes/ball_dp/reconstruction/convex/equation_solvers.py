@@ -122,15 +122,64 @@ class RidgePrototypesEquationSolver:
 @dataclass
 class SoftmaxEquationSolver:
     """
-    Implements Theorem: exact reconstruction from noiseless softmax-ERM release.
+    Exact reconstruction from noiseless softmax-ERM release (with bias augmentation).
 
-    Requires bias augmentation (include_bias=True) for exact identifiability.
+    Production-friendly extras:
+      - factorize_missing_gradient(G): lets the caller compute G efficiently
+        (e.g., reuse precomputed full gradient sums for many targets).
     """
 
     lam: float
     n_total: int
     include_bias: bool = True
     batch_size: int = 8192
+
+    def factorize_missing_gradient(self, G: Array) -> ReconstructionResult:
+        G = np.asarray(G, dtype=np.float64)
+        if G.ndim != 2:
+            return ReconstructionResult(
+                None, None, "invalid_input", {"reason": "G must be 2D (K,d+1)"}
+            )
+
+        a = G[:, -1].copy()  # last column equals a = p(e)-e_y in noiseless case
+        y_hat = int(np.argmin(a))
+
+        # pick stable row c != y_hat with the largest positive a_c
+        mask = np.ones_like(a, dtype=bool)
+        mask[y_hat] = False
+        a_pos = a.copy()
+        a_pos[~mask] = -np.inf
+        c = int(np.argmax(a_pos))
+
+        if not np.isfinite(a[c]) or abs(a[c]) < 1e-15:
+            return ReconstructionResult(
+                None,
+                y_hat,
+                "failed",
+                {"reason": "no stable non-y row to factorize", "a": a},
+            )
+
+        et_hat = (G[c, :] / a[c]).astype(np.float64)
+        if abs(et_hat[-1]) < 1e-15:
+            return ReconstructionResult(
+                None,
+                y_hat,
+                "failed",
+                {"reason": "augmented coord ~0; cannot rescale", "a": a},
+            )
+        et_hat = et_hat / et_hat[-1]
+        e_hat = et_hat[:-1]
+
+        # rank-1 residual diagnostic
+        G_hat = np.outer(a, et_hat)
+        resid = float(np.linalg.norm(G - G_hat) / (np.linalg.norm(G) + 1e-12))
+
+        return ReconstructionResult(
+            record_hat=e_hat,
+            label_hat=y_hat,
+            status="ok",
+            details={"a": a, "chosen_row": c, "rank1_resid": resid},
+        )
 
     def _missing_gradient(
         self,
@@ -145,7 +194,7 @@ class SoftmaxEquationSolver:
 
         if not self.include_bias:
             raise ValueError(
-                "SoftmaxEquationSolver requires include_bias=True for exact reconstruction (bias augmentation)."
+                "SoftmaxEquationSolver requires include_bias=True (bias augmentation)."
             )
 
         Xt = _augment_X(X_minus)  # (n-1, d+1)
@@ -157,11 +206,6 @@ class SoftmaxEquationSolver:
             axis=1,
         )
 
-        K, d1 = Wt.shape
-        if Xt.shape[1] != d1:
-            raise ValueError("Dimension mismatch between augmented X and augmented W.")
-
-        # Sum gradients over known records in batches:
         sum_grad = np.zeros_like(Wt)
         n = Xt.shape[0]
         bs = int(self.batch_size)
@@ -170,14 +214,10 @@ class SoftmaxEquationSolver:
             e = min(n, s + bs)
             Xb = Xt[s:e]
             yb = y_minus[s:e]
-
-            logits = Xb @ Wt.T  # (B,K)
-            p = _softmax_rows(logits)  # (B,K)
-
+            logits = Xb @ Wt.T
+            p = _softmax_rows(logits)
             diff = p
-            diff[np.arange(diff.shape[0]), yb] -= 1.0  # (B,K)
-
-            # sum_i (diff_i outer X_i) = diff^T @ X
+            diff[np.arange(diff.shape[0]), yb] -= 1.0
             sum_grad += diff.T @ Xb
 
         G_missing = -float(self.lam) * float(self.n_total) * Wt - sum_grad
@@ -194,46 +234,7 @@ class SoftmaxEquationSolver:
             G = self._missing_gradient(W=W, b=b, d_minus=d_minus)
         except Exception as e:
             return ReconstructionResult(None, None, "failed", {"exception": repr(e)})
-
-        a = G[:, -1].copy()  # last column = a = p(e) - e_y
-        y_hat = int(
-            np.argmin(a)
-        )  # in noiseless case, this is the unique negative entry
-
-        # pick a stable row c != y with largest positive a_c
-        mask = np.ones_like(a, dtype=bool)
-        mask[y_hat] = False
-        a_pos = a.copy()
-        a_pos[~mask] = -np.inf
-        c = int(np.argmax(a_pos))
-
-        if not np.isfinite(a[c]) or abs(a[c]) < 1e-15:
-            return ReconstructionResult(
-                None,
-                y_hat,
-                "failed",
-                {"reason": "could not find stable non-y row for factorization"},
-            )
-
-        et_hat = (G[c, :] / a[c]).astype(np.float64)
-
-        # enforce last coordinate 1 (scale ambiguity under noise)
-        if abs(et_hat[-1]) < 1e-15:
-            return ReconstructionResult(
-                None,
-                y_hat,
-                "failed",
-                {"reason": "augmented coord is ~0; cannot rescale"},
-            )
-        et_hat = et_hat / et_hat[-1]
-        e_hat = et_hat[:-1]
-
-        return ReconstructionResult(
-            record_hat=e_hat,
-            label_hat=y_hat,
-            status="ok",
-            details={"a": a, "chosen_row": c, "G_missing": G},
-        )
+        return self.factorize_missing_gradient(G)
 
 
 # ============================================================
