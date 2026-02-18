@@ -24,7 +24,7 @@ from quantbayes.ball_dp.reconstruction.nonconvex.trainers_eqx import (
     EqxNonPrivateTrainer,
 )
 from quantbayes.ball_dp.reconstruction.models import MLPClassifierEqx, multiclass_loss
-from quantbayes.ball_dp.reconstruction.experiments.mnist.common import (
+from quantbayes.ball_dp.reconstruction.experiments.mnist_experiments.common import (
     set_global_seed,
     load_mnist_numpy,
     flatten_pixels,

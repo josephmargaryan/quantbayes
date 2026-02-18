@@ -16,7 +16,7 @@ from quantbayes.ball_dp.reconstruction.reporting import (
     plot_image_grid,
     plot_curve,
 )
-from quantbayes.ball_dp.reconstruction.experiments.mnist.common import (
+from quantbayes.ball_dp.reconstruction.experiments.mnist_experiments.common import (
     set_global_seed,
     load_mnist_numpy,
     get_or_train_ae,

@@ -1,4 +1,4 @@
-# quantbayes/ball_dp/reconstruction/experiments/mnist/convex_softmax_pixel_erm.py
+# quantbayes/ball_dp/reconstruction/experiments/mnist/convex_softmax_pixel_dp.py
 from __future__ import annotations
 
 import argparse
@@ -15,7 +15,7 @@ from quantbayes.ball_dp.reconstruction.reporting import (
     plot_hist,
     plot_image_grid,
 )
-from quantbayes.ball_dp.reconstruction.experiments.mnist.common import (
+from quantbayes.ball_dp.reconstruction.experiments.mnist_experiments.common import (
     set_global_seed,
     load_mnist_numpy,
     flatten_pixels,
@@ -25,9 +25,10 @@ from quantbayes.ball_dp.reconstruction.experiments.mnist.common import (
     softmax_stationarity_norm,
     softmax_accuracy,
     mnist_img_mse_psnr,
+    calibrate_softmax_output_perturbation,
+    add_noise_softmax,
 )
 
-# robust run-as-file support
 if __package__ is None or __package__ == "":
     import sys, pathlib
 
@@ -44,11 +45,14 @@ def main():
     p.add_argument("--lbfgs-max-iter", type=int, default=800)
     p.add_argument("--lbfgs-tol-grad", type=float, default=1e-11)
 
+    p.add_argument("--epsilon", type=float, default=3.0)
+    p.add_argument("--delta", type=float, default=1e-5)
+
     p.add_argument("--n-targets", type=int, default=32)
     p.add_argument("--n-show", type=int, default=12)
 
     p.add_argument(
-        "--save-dir", type=str, default="./artifacts/mnist/convex_softmax_pixel_erm"
+        "--save-dir", type=str, default="./artifacts/mnist/convex_softmax_pixel_dp"
     )
     args = p.parse_args()
 
@@ -59,9 +63,14 @@ def main():
     Xtr, ytr, Xte, yte = load_mnist_numpy(
         n_train=args.n_train, n_test=args.n_test, seed=args.seed
     )
-    Xpix = flatten_pixels(Xtr)  # (N,784) float64
+    Xpix = flatten_pixels(Xtr)
 
-    W, b, stat = train_softmax_lbfgs_torch(
+    # public pixel bound for MNIST in [0,1]^784: ||x||2 <= sqrt(784)=28
+    B = 28.0
+    r_std = 2.0 * B  # bounded replacement special case
+
+    # Train noiseless ERM
+    W, b, _ = train_softmax_lbfgs_torch(
         X=Xpix,
         y=ytr,
         lam=args.lam,
@@ -69,20 +78,34 @@ def main():
         tol_grad=args.lbfgs_tol_grad,
     )
 
-    pre = softmax_precompute(W, b, Xpix, ytr)
-    stat2 = softmax_stationarity_norm(pre, args.lam)
+    # DP calibration + noise
+    cal = calibrate_softmax_output_perturbation(
+        epsilon=args.epsilon,
+        delta=args.delta,
+        lam=args.lam,
+        n=int(Xpix.shape[0]),
+        B=B,
+        r=r_std,
+        include_bias=True,
+    )
+    Wn, bn = add_noise_softmax(W, b, sigma=cal.sigma, rng=rng)
 
-    acc_tr = softmax_accuracy(W, b, Xpix, ytr)
-    acc_te = softmax_accuracy(W, b, flatten_pixels(Xte), yte)
+    pre = softmax_precompute(Wn, bn, Xpix, ytr)
+    stat = softmax_stationarity_norm(pre, args.lam)
 
-    print(f"[ERM pixel] stationarity_norm(train) = {stat:.4e}  recomputed={stat2:.4e}")
-    print(f"[ERM pixel] acc_train={acc_tr:.4f}  acc_test={acc_te:.4f}")
+    acc_tr = softmax_accuracy(Wn, bn, Xpix, ytr)
+    acc_te = softmax_accuracy(Wn, bn, flatten_pixels(Xte), yte)
+
+    print(
+        f"[DP pixel] eps={args.epsilon} delta={args.delta}  sigma={cal.sigma:.4e}  Δ={cal.delta2:.4e}  Lz={cal.Lz:.4e}"
+    )
+    print(f"[DP pixel] stationarity_norm(release)={stat:.4e}")
+    print(f"[DP pixel] acc_train={acc_tr:.4f}  acc_test={acc_te:.4f}")
 
     solver = SoftmaxEquationSolver(
         lam=float(args.lam), n_total=int(Xpix.shape[0]), include_bias=True
     )
 
-    # sample targets
     idx = rng.choice(
         np.arange(Xpix.shape[0]), size=min(args.n_targets, Xpix.shape[0]), replace=False
     )
@@ -102,7 +125,7 @@ def main():
         res = solver.factorize_missing_gradient(Gm)
 
         x_hat = res.record_hat.reshape(28, 28)
-        x_true = Xtr[j, 0]  # (28,28)
+        x_true = Xtr[j, 0]
 
         l2 = float(np.linalg.norm(x_hat.reshape(-1) - x_true.reshape(-1)))
         m, p = mnist_img_mse_psnr(x_hat, x_true)
@@ -124,17 +147,23 @@ def main():
             }
         )
 
-        # viz: orig / recon
         if t < args.n_show:
             viz_imgs.extend([x_true, x_hat])
-            viz_titles.extend([f"orig y={int(ytr[j])}", f"recon l2={l2:.2e}"])
+            viz_titles.extend([f"orig y={int(ytr[j])}", f"DP recon mse={m:.2e}"])
 
     save_csv(outdir / "metrics.csv", rows)
     summary = {
-        "setting": "convex_softmax_pixel_erm",
+        "setting": "convex_softmax_pixel_dp",
         "n_train": int(Xpix.shape[0]),
         "lam": float(args.lam),
-        "stationarity_norm": float(stat2),
+        "epsilon": float(args.epsilon),
+        "delta": float(args.delta),
+        "B": float(B),
+        "r_std": float(r_std),
+        "Lz": float(cal.Lz),
+        "Delta2": float(cal.delta2),
+        "sigma": float(cal.sigma),
+        "stationarity_norm_release": float(stat),
         "acc_train": float(acc_tr),
         "acc_test": float(acc_te),
         "mean_l2": float(np.mean(l2errs)),
@@ -151,16 +180,16 @@ def main():
 
     plot_hist(
         l2errs,
-        title="Pixel L2 recon error (ERM)",
+        title="Pixel L2 recon error (DP)",
         xlabel="||x_hat-x||2",
         save_path=outdir / "hist_l2.png",
     )
     plot_hist(
-        mses, title="Pixel MSE (ERM)", xlabel="MSE", save_path=outdir / "hist_mse.png"
+        mses, title="Pixel MSE (DP)", xlabel="MSE", save_path=outdir / "hist_mse.png"
     )
     plot_hist(
         resid,
-        title="Rank-1 residual (ERM)",
+        title="Rank-1 residual (DP)",
         xlabel="||G-ae^T||/||G||",
         save_path=outdir / "hist_rank1.png",
     )
