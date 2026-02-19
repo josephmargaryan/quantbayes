@@ -1,9 +1,9 @@
-# scripts/mnist_nonconvex_shadow_reconstruction.py
+# quantbayes/ball_dp/reconstruction/experiments/mnist_nonconvex_shadow_reconstruction.py
 from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 
 import numpy as np
 
@@ -11,10 +11,8 @@ from quantbayes.ball_dp.api import compute_radius_policy
 from quantbayes.ball_dp.privacy.rdp_wor_gaussian import calibrate_noise_multiplier
 from quantbayes.ball_dp.privacy.dpsgd import DPSGDConfig
 from quantbayes.ball_dp.privacy.ball_dpsgd import BallDPSGDConfig
-from quantbayes.ball_dp.reconstruction.informed import (
-    sample_candidate_set_from_ball_prior,
-    nearest_neighbor_oracle,
-)
+
+from quantbayes.ball_dp.reconstruction.types import Candidate
 from quantbayes.ball_dp.reconstruction.priors import PoolBallPrior
 from quantbayes.ball_dp.reconstruction.reporting import (
     ensure_dir,
@@ -38,9 +36,13 @@ from quantbayes.ball_dp.reconstruction.models.mlp_eqx import (
 )
 
 
-# ---- MNIST + optional VAE (same helpers as convex script; keep simple by importing torchvision) ----
-def load_mnist_numpy(root: str):
-    import torch
+# -------------------------
+# MNIST + utils
+# -------------------------
+def load_mnist_numpy(
+    root: str,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    import torch  # noqa: F401
     from torchvision import datasets, transforms
 
     tfm = transforms.ToTensor()
@@ -54,13 +56,25 @@ def load_mnist_numpy(root: str):
             y.append(int(yy))
         return np.stack(X, 0).astype(np.float32), np.asarray(y, dtype=np.int64)
 
-    return *_to_numpy(tr), *_to_numpy(te)
+    Xtr, ytr = _to_numpy(tr)
+    Xte, yte = _to_numpy(te)
+    return Xtr, ytr, Xte, yte
 
 
 def flatten_nchw(X: np.ndarray) -> np.ndarray:
     return X.reshape(X.shape[0], -1)
 
 
+def clip_l2_rows(Z: np.ndarray, B: float) -> np.ndarray:
+    Z = np.asarray(Z, dtype=np.float32)
+    norms = np.linalg.norm(Z, axis=1, keepdims=True) + 1e-12
+    scale = np.minimum(1.0, float(B) / norms)
+    return Z * scale
+
+
+# -------------------------
+# Optional VAE for embedding mode
+# -------------------------
 def train_or_load_vae_mnist(
     *,
     ckpt_path: Path,
@@ -71,9 +85,10 @@ def train_or_load_vae_mnist(
 ):
     import jax.random as jr
     import equinox as eqx
+    import jax.numpy as jnp
+
     from quantbayes.stochax.vae.components import ConvVAE
     from quantbayes.stochax.vae.train_vae import train_vae, TrainConfig
-    import jax.numpy as jnp
 
     ckpt_path = Path(ckpt_path)
     ckpt_path.parent.mkdir(parents=True, exist_ok=True)
@@ -138,6 +153,9 @@ def vae_decode(model, Z: np.ndarray) -> np.ndarray:
     return np.asarray(jax.device_get(out), dtype=np.float32)
 
 
+# -------------------------
+# Main
+# -------------------------
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data_root", type=str, default="./data")
@@ -147,7 +165,7 @@ def main():
     )
 
     ap.add_argument("--fixed_size", type=int, default=2000)
-    ap.add_argument("--candidate_m", type=int, default=50)
+    ap.add_argument("--candidate_m", type=int, default=40)
     ap.add_argument("--n_trials", type=int, default=5)
 
     # training
@@ -158,19 +176,20 @@ def main():
     ap.add_argument("--target_eps", type=float, default=8.0)
     ap.add_argument("--delta", type=float, default=1e-5)
 
-    # DP-SGD
+    # DP-SGD baseline
     ap.add_argument("--clip_C", type=float, default=1.0)
 
     # Ball-DP-SGD
     ap.add_argument(
         "--ball_lz", type=float, default=5.0
-    )  # ASSUMED/certified Lz for nonconvex (see your thesis)
+    )  # assumed/certified Lz for nonconvex
     ap.add_argument("--radius_percentile", type=float, default=50.0)
 
-    # VAE
+    # VAE (embedding mode)
     ap.add_argument("--vae_latent_dim", type=int, default=16)
     ap.add_argument("--vae_epochs", type=int, default=10)
     ap.add_argument("--vae_seed", type=int, default=0)
+    ap.add_argument("--embed_B_public", type=float, default=5.0)
 
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
@@ -184,7 +203,11 @@ def main():
         Ztr = flatten_nchw(Xtr).astype(np.float32)
         Zte = flatten_nchw(Xte).astype(np.float32)
         B_public = float(np.sqrt(Ztr.shape[1]))
-        decode_to_img = lambda z: z.reshape(-1, 1, 28, 28).astype(np.float32)
+
+        def decode_to_img(Z: np.ndarray) -> np.ndarray:
+            Z = np.asarray(Z, dtype=np.float32)
+            return Z.reshape(Z.shape[0], 1, 28, 28)
+
     else:
         ckpt = Path(out_dir) / f"mnist_convvae_lat{args.vae_latent_dim}.eqx"
         vae = train_or_load_vae_mnist(
@@ -197,13 +220,14 @@ def main():
         Ztr = vae_encode_mu(vae, Xtr)
         Zte = vae_encode_mu(vae, Xte)
 
-        # enforce public bound via L2 normalization
-        Ztr = Ztr / (np.linalg.norm(Ztr, axis=1, keepdims=True) + 1e-12)
-        Zte = Zte / (np.linalg.norm(Zte, axis=1, keepdims=True) + 1e-12)
-        B_public = 1.0
-        decode_to_img = lambda z: vae_decode(vae, np.asarray(z, dtype=np.float32))
+        B_public = float(args.embed_B_public)
+        Ztr = clip_l2_rows(Ztr, B_public)
+        Zte = clip_l2_rows(Zte, B_public)
 
-    # radius policy
+        def decode_to_img(Z: np.ndarray) -> np.ndarray:
+            return vae_decode(vae, np.asarray(Z, dtype=np.float32))
+
+    # radius policy on TRAIN
     policy = compute_radius_policy(
         Ztr,
         ytr,
@@ -219,21 +243,20 @@ def main():
         f"[radius] r_ball(p={args.radius_percentile})={r_ball:.4f}, r_std={policy.r_std:.4f}"
     )
 
-    # Candidate prior (label-preserving)
     prior = PoolBallPrior(
         pool_X=Ztr, pool_y=ytr, radius=float(r_ball), label_fixed=None
     )
 
-    # Training configs
+    # training config (IMPORTANT: trainers_eqx.py trains on ALL points)
     train_cfg = EqxTrainerConfig(
         batch_size=int(args.batch_size),
         num_epochs=int(args.epochs),
-        patience=int(args.epochs) + 1,  # effectively no early stop
+        patience=int(args.epochs) + 1,
         shuffle=True,
         val_fraction=0.0,
     )
 
-    # Build model factory + optimizer factory
+    # model/optimizer factories
     def make_model(seed: int):
         import jax.random as jr
 
@@ -262,41 +285,63 @@ def main():
     rows: List[Dict[str, Any]] = []
 
     for trial in range(int(args.n_trials)):
-        # choose target from test
-        t = int(rng.integers(0, Zte.shape[0]))
-        y_target = int(yte[t])
-        z_target = Zte[t].astype(np.float64)
+        # choose target from TEST with at least one candidate in the ball
+        max_attempts = 200
+        chosen = False
+        z_target = None
+        y_target = None
+        for _ in range(max_attempts):
+            t = int(rng.integers(0, Zte.shape[0]))
+            y_try = int(yte[t])
+            z_try = Zte[t].astype(np.float64)
+            prior.label_fixed = y_try
+            if prior.candidate_indices(center=z_try).size > 0:
+                z_target = z_try
+                y_target = y_try
+                chosen = True
+                break
+        if not chosen:
+            raise RuntimeError(
+                f"Failed to find a test target with any training candidates inside r_ball={r_ball:.4f} "
+                f"after {max_attempts} attempts. Increase --radius_percentile or use pixel mode."
+            )
 
-        # fixed D- from train
+        assert z_target is not None and y_target is not None
+
+        # D^- from TRAIN, target from TEST
         fixed_idx = rng.choice(
             np.arange(Ztr.shape[0]), size=int(args.fixed_size), replace=False
         )
         X_minus = Ztr[fixed_idx].astype(np.float64)
         y_minus = ytr[fixed_idx].astype(np.int64)
 
-        # dataset D = D- ∪ {target}
         X_full = np.concatenate([X_minus, z_target.reshape(1, -1)], axis=0)
         y_full = np.concatenate(
             [y_minus, np.asarray([y_target], dtype=np.int64)], axis=0
         )
 
-        # candidates inside ball around target (evaluation prior)
-        prior.label_fixed = y_target
-        candidates = sample_candidate_set_from_ball_prior(
-            prior=prior,
-            center=z_target,
-            target_label=y_target,
-            m=int(args.candidate_m),
-            rng=rng,
-            include_target=True,
+        # candidate set from ball (label-preserving)
+        prior.label_fixed = int(y_target)
+        candidates = list(
+            prior.sample(center=z_target, m=max(1, int(args.candidate_m) - 1), rng=rng)
         )
-
-        # NN oracle baseline
-        nn = nearest_neighbor_oracle(
-            center=z_target, pool_X=Ztr, pool_y=ytr, label_fixed=y_target
+        candidates.append(
+            Candidate(
+                record=z_target.copy(),
+                label=int(y_target),
+                meta={"is_target": True, "id": "TARGET"},
+            )
         )
+        rng.shuffle(candidates)
 
-        # --- calibrate nm to hit target eps (shared across DP-SGD and Ball-DP-SGD) ---
+        # NN oracle for viz
+        train_same = np.where(ytr == int(y_target))[0]
+        P = Ztr[train_same].astype(np.float64)
+        nn_dists = np.linalg.norm(P - z_target.reshape(1, -1), axis=1)
+        nn_idx = train_same[int(np.argmin(nn_dists))]
+        nn_rec = Ztr[nn_idx].astype(np.float64)
+
+        # calibrate nm to hit target_eps (same nm used for DP-SGD and Ball-DP-SGD)
         N = int(X_full.shape[0])
         q = min(1.0, float(args.batch_size) / max(1, N))
         steps = int(args.epochs) * int(np.ceil(N / int(args.batch_size)))
@@ -306,11 +351,8 @@ def main():
             q=q,
             steps=steps,
         )
-        print(
-            f"[trial {trial}] calibrated nm≈{nm:.3f} for eps≈{args.target_eps} (δ={args.delta})"
-        )
+        print(f"[trial {trial}] nm≈{nm:.3f} for eps≈{args.target_eps} (δ={args.delta})")
 
-        # ---------- Train releases ----------
         # (1) ERM (non-private)
         trainer_np = EqxNonPrivateTrainer(
             make_model=make_model,
@@ -351,14 +393,14 @@ def main():
         )
         mdl_ball, st_ball = trainer_ball.fit(X_full, y_full, seed=int(args.seed))
 
-        # ---------- Shadow identification attack ----------
+        # Shadow identification helper
         def run_shadow_attack(release_model, release_state, trainer, tag: str):
             ident = ShadowModelIdentifier(
                 trainer=trainer,
                 vectorizer=lambda m, state=None: vectorize_eqx_model(
                     m, state=state, include_state=False
                 ),
-                shadows_per_candidate=4 if tag != "ERM" else 1,
+                shadows_per_candidate=4,
                 score_mode="nearest_mean",
                 include_state_in_vector=False,
                 cache_dir=str(Path(out_dir) / "shadow_cache" / tag),
@@ -381,36 +423,44 @@ def main():
             mdl_ball, st_ball, trainer_ball, "BallDP"
         )
 
+        # record results
         rows.append(
             dict(
                 trial=trial,
                 mode=args.mode,
-                y_target=y_target,
+                y_target=int(y_target),
                 r_ball=r_ball,
-                target_eps=args.target_eps,
-                delta=args.delta,
-                nm=nm,
+                target_eps=float(args.target_eps),
+                delta=float(args.delta),
+                nm=float(nm),
+                clip_C=float(args.clip_C),
+                ball_lz=float(args.ball_lz),
+                sigma_sum_dp=float(nm) * float(args.clip_C),
+                sigma_sum_ball=float(nm) * float(args.ball_lz) * float(r_ball),
                 mse_erm=mse_np,
                 mse_dp=mse_dp,
                 mse_ball=mse_ball,
-                mse_nn=float(np.mean((nn.record - z_target) ** 2)),
             )
         )
 
-        # ---------- visualize ----------
-        tgt_img = decode_to_img(
-            z_target.reshape(1, -1) if args.mode == "pixel" else z_target.reshape(1, -1)
+        # visualize
+        tgt_img = decode_to_img(z_target.reshape(1, -1))[0]
+        nn_img = decode_to_img(nn_rec.reshape(1, -1))[0]
+        np_img = decode_to_img(
+            np.asarray(cand_np.record, dtype=np.float64).reshape(1, -1)
         )[0]
-        nn_img = decode_to_img(nn.record.reshape(1, -1))[0]
-        np_img = decode_to_img(cand_np.record.reshape(1, -1))[0]
-        dp_img = decode_to_img(cand_dp.record.reshape(1, -1))[0]
-        ball_img = decode_to_img(cand_ball.record.reshape(1, -1))[0]
+        dp_img = decode_to_img(
+            np.asarray(cand_dp.record, dtype=np.float64).reshape(1, -1)
+        )[0]
+        ball_img = decode_to_img(
+            np.asarray(cand_ball.record, dtype=np.float64).reshape(1, -1)
+        )[0]
 
         plot_image_grid(
             images=[tgt_img, nn_img, np_img, dp_img, ball_img],
             titles=[
                 "target",
-                "NN oracle",
+                "NN (train, same y)",
                 "ERM (shadow-id)",
                 "DP-SGD (shadow-id)",
                 "Ball-DP-SGD (shadow-id)",
