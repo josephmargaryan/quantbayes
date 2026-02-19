@@ -7,7 +7,6 @@ from typing import List, Dict, Any, Tuple
 
 import numpy as np
 
-# ---- quantbayes.ball_dp ----
 from quantbayes.ball_dp.api import (
     compute_radius_policy,
     dp_release_eqx_model_gaussian,
@@ -34,29 +33,18 @@ from quantbayes.ball_dp.reconstruction.convex.equation_solvers import (
     SoftmaxEquationSolver,
 )
 from quantbayes.ball_dp.reconstruction.convex.eqx_trainers import (
-    EqxFullBatchGDTrainer,
-    FullBatchGDConfig,
+    EqxFullBatchLBFGSTrainer,
+    FullBatchLBFGSConfig,
     softmax_params_numpy,
 )
 
-# ---- heads ----
 from quantbayes.ball_dp.heads.prototypes import fit_ridge_prototypes
 from quantbayes.ball_dp.heads.softmax_eqx import SoftmaxLinearEqx, softmax_objective
 
 
-# -------------------------
-# Utilities
-# -------------------------
 def load_mnist_numpy(
     root: str,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Returns:
-      Xtr: (N,1,28,28) float32 in [0,1]
-      ytr: (N,) int64
-      Xte: (M,1,28,28) float32
-      yte: (M,) int64
-    """
     import torch  # noqa: F401
     from torchvision import datasets, transforms
 
@@ -67,7 +55,7 @@ def load_mnist_numpy(
     def _to_numpy(ds):
         X, y = [], []
         for x, yy in ds:
-            X.append(x.numpy())  # (1,28,28)
+            X.append(x.numpy())
             y.append(int(yy))
         return np.stack(X, 0).astype(np.float32), np.asarray(y, dtype=np.int64)
 
@@ -80,117 +68,14 @@ def flatten_nchw(X: np.ndarray) -> np.ndarray:
     return X.reshape(X.shape[0], -1)
 
 
-def clip_l2_rows(Z: np.ndarray, B: float) -> np.ndarray:
-    Z = np.asarray(Z, dtype=np.float32)
-    norms = np.linalg.norm(Z, axis=1, keepdims=True) + 1e-12
-    scale = np.minimum(1.0, float(B) / norms)
-    return Z * scale
-
-
-# -------------------------
-# Optional VAE for embedding mode
-# -------------------------
-def train_or_load_vae_mnist(
-    *,
-    ckpt_path: Path,
-    X_train_nchw: np.ndarray,
-    latent_dim: int,
-    epochs: int,
-    seed: int,
-):
-    """
-    Trains a public ConvVAE (Bernoulli likelihood) and caches it with eqx serialization.
-    """
-    import jax.random as jr
-    import equinox as eqx
-    import jax.numpy as jnp
-
-    from quantbayes.stochax.vae.components import ConvVAE
-    from quantbayes.stochax.vae.train_vae import train_vae, TrainConfig
-
-    ckpt_path = Path(ckpt_path)
-    ckpt_path.parent.mkdir(parents=True, exist_ok=True)
-
-    key = jr.PRNGKey(int(seed))
-    model_template = ConvVAE(
-        image_size=28,
-        channels=1,
-        hidden_channels=32,
-        latent_dim=int(latent_dim),
-        key=key,
-    )
-
-    if ckpt_path.exists():
-        return eqx.tree_deserialise_leaves(str(ckpt_path), model_template)
-
-    data = jnp.asarray(X_train_nchw.astype(np.float32))
-    cfg = TrainConfig(
-        epochs=int(epochs),
-        batch_size=128,
-        learning_rate=1e-3,
-        weight_decay=1e-4,
-        seed=int(seed),
-        verbose=True,
-        likelihood="bernoulli",
-        drop_last=True,
-    )
-    model = train_vae(model_template, data, cfg)
-    eqx.tree_serialise_leaves(str(ckpt_path), model)
-    return model
-
-
-def vae_encode_mu(model, X_nchw: np.ndarray) -> np.ndarray:
-    """
-    Encode images -> latent mean mu (as embeddings).
-    """
-    import jax
-    import jax.numpy as jnp
-    import equinox as eqx
-
-    X = jnp.asarray(X_nchw.astype(np.float32))
-
-    @eqx.filter_jit
-    def _enc(xb):
-        mu, _logvar = model.encoder(xb, train=False)
-        return mu
-
-    mu = _enc(X)
-    return np.asarray(jax.device_get(mu), dtype=np.float32)
-
-
-def vae_decode(model, Z: np.ndarray) -> np.ndarray:
-    """
-    Decode latents -> images (N,1,28,28) in [0,1] via sigmoid(Bernoulli logits).
-    """
-    import jax
-    import jax.numpy as jnp
-    import equinox as eqx
-
-    Zj = jnp.asarray(Z.astype(np.float32))
-
-    @eqx.filter_jit
-    def _dec(zb):
-        logits = model.decoder(zb, train=False)
-        return jax.nn.sigmoid(logits)
-
-    out = _dec(Zj)
-    return np.asarray(jax.device_get(out), dtype=np.float32)
-
-
-# -------------------------
-# Main experiment
-# -------------------------
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data_root", type=str, default="./data")
     ap.add_argument("--out_dir", type=str, default="./_out_convex")
-    ap.add_argument("--mode", type=str, choices=["pixel", "embedding"], default="pixel")
-
     ap.add_argument("--fixed_size", type=int, default=2000)
     ap.add_argument("--n_trials", type=int, default=10)
     ap.add_argument("--candidate_m", type=int, default=30)
 
-    # ERM + DP
     ap.add_argument("--lam", type=float, default=1e-2)
     ap.add_argument("--eps", type=float, default=2.0)
     ap.add_argument("--delta", type=float, default=1e-5)
@@ -198,20 +83,11 @@ def main():
         "--sigma_method", type=str, choices=["classic", "analytic"], default="analytic"
     )
 
-    # Ball radius selection
     ap.add_argument("--radius_percentile", type=float, default=50.0)
 
-    # VAE settings (embedding mode)
-    ap.add_argument("--vae_latent_dim", type=int, default=16)
-    ap.add_argument("--vae_epochs", type=int, default=10)
-    ap.add_argument("--vae_seed", type=int, default=0)
-
-    # Public embedding bound (embedding mode) enforced by clipping
-    ap.add_argument("--embed_B_public", type=float, default=5.0)
-
-    # softmax ERM trainer
-    ap.add_argument("--softmax_steps", type=int, default=1200)
-    ap.add_argument("--softmax_lr", type=float, default=0.15)
+    # LBFGS for softmax ERM
+    ap.add_argument("--softmax_lbfgs_epochs", type=int, default=80)
+    ap.add_argument("--softmax_lbfgs_patience", type=int, default=20)
 
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
@@ -220,41 +96,14 @@ def main():
     rng = np.random.default_rng(int(args.seed))
 
     Xtr, ytr, Xte, yte = load_mnist_numpy(args.data_root)
+    Ztr = flatten_nchw(Xtr).astype(np.float32)
+    Zte = flatten_nchw(Xte).astype(np.float32)
 
-    # Build feature space Z
-    if args.mode == "pixel":
-        Ztr = flatten_nchw(Xtr).astype(np.float32)
-        Zte = flatten_nchw(Xte).astype(np.float32)
+    # Public bound for pixels in [0,1]: ||x||_2 <= sqrt(784)=28
+    B_public = float(np.sqrt(Ztr.shape[1]))
+    r_std = 2.0 * B_public
 
-        # Public bound for pixels in [0,1]: ||x||_2 <= sqrt(d)=28
-        B_public = float(np.sqrt(Ztr.shape[1]))
-
-        def decode_to_img(Z: np.ndarray) -> np.ndarray:
-            Z = np.asarray(Z, dtype=np.float32)
-            return Z.reshape(Z.shape[0], 1, 28, 28)
-
-    else:
-        ckpt = Path(out_dir) / f"mnist_convvae_lat{args.vae_latent_dim}.eqx"
-        vae = train_or_load_vae_mnist(
-            ckpt_path=ckpt,
-            X_train_nchw=Xtr,
-            latent_dim=int(args.vae_latent_dim),
-            epochs=int(args.vae_epochs),
-            seed=int(args.vae_seed),
-        )
-
-        Ztr = vae_encode_mu(vae, Xtr)
-        Zte = vae_encode_mu(vae, Xte)
-
-        # Enforce public bound by clipping to embed_B_public (keeps decoding meaningful)
-        B_public = float(args.embed_B_public)
-        Ztr = clip_l2_rows(Ztr, B_public)
-        Zte = clip_l2_rows(Zte, B_public)
-
-        def decode_to_img(Z: np.ndarray) -> np.ndarray:
-            return vae_decode(vae, np.asarray(Z, dtype=np.float32))
-
-    # Compute radius policy on train embeddings
+    # compute Ball radius from within-class NN distances (train set)
     policy = compute_radius_policy(
         Ztr,
         ytr,
@@ -266,61 +115,38 @@ def main():
         check_public_bound=True,
     )
     r_ball = float(policy.r_values[float(args.radius_percentile)])
-    r_std = float(policy.r_std)
 
-    print(f"[radius] B_public={policy.B:.4f} -> r_std=2B={r_std:.4f}")
+    print(f"[radius] B_public={policy.B:.4f} -> r_std=2B={float(policy.r_std):.4f}")
     print(f"[radius] r_ball(p={args.radius_percentile})={r_ball:.4f}")
 
-    # Prior pool over TRAIN points; we will set label_fixed per target
     prior = PoolBallPrior(pool_X=Ztr, pool_y=ytr, radius=r_ball, label_fixed=None)
+
+    def decode_to_img(Z: np.ndarray) -> np.ndarray:
+        Z = np.asarray(Z, dtype=np.float32)
+        return Z.reshape(Z.shape[0], 1, 28, 28)
 
     rows: List[Dict[str, Any]] = []
 
-    # Share caches across std vs ball identification to avoid recomputing means twice
-    proto_ident_cache: Dict[str, np.ndarray] = {}
-    softmax_ident_cache: Dict[str, np.ndarray] = {}
-
-    # Helper: stable candidate meta id for caching
-    def _ensure_candidate_ids(cands: List[Candidate]) -> None:
-        for i, c in enumerate(cands):
-            if "id" not in c.meta:
-                # prefer pool_index if present; else fallback to loop id
-                if "pool_index" in c.meta:
-                    c.meta["id"] = f"pool_{int(c.meta['pool_index'])}"
-                elif c.meta.get("is_target", False):
-                    c.meta["id"] = "TARGET"
-                else:
-                    c.meta["id"] = f"cand_{i}"
-
     for trial in range(int(args.n_trials)):
-        # ---- choose a target from TEST with at least one candidate in the ball ----
+        # pick a target from test such that at least one train point lies in the ball
         max_attempts = 200
-        chosen = False
         z_target = None
         y_target = None
         for _ in range(max_attempts):
             t = int(rng.integers(0, Zte.shape[0]))
             y_try = int(yte[t])
             z_try = Zte[t].astype(np.float64)
-
             prior.label_fixed = y_try
-            idx = prior.candidate_indices(center=z_try)
-
-            if idx.size > 0:
+            if prior.candidate_indices(center=z_try).size > 0:
                 z_target = z_try
                 y_target = y_try
-                chosen = True
                 break
-
-        if not chosen:
+        if z_target is None:
             raise RuntimeError(
-                f"Failed to find a test target with any training candidates inside radius r_ball={r_ball:.4f} "
-                f"after {max_attempts} attempts. Increase --radius_percentile or use embedding mode."
+                "Could not find a target with any candidates inside the ball; increase radius_percentile."
             )
 
-        assert z_target is not None and y_target is not None
-
-        # ---- D^- from TRAIN (known to adversary), target is from TEST (missing record) ----
+        # D^- from train
         fixed_idx = rng.choice(
             np.arange(Ztr.shape[0]), size=int(args.fixed_size), replace=False
         )
@@ -336,12 +162,11 @@ def main():
         X_full, y_full = dset.full_dataset()
         n_total = int(X_full.shape[0])
 
-        # ---- candidates sampled from the ball around the true target (label-preserving) ----
+        # candidate set from ball + include true target
         prior.label_fixed = int(y_target)
         candidates = list(
             prior.sample(center=z_target, m=max(1, int(args.candidate_m) - 1), rng=rng)
         )
-        # include the true target as one candidate
         candidates.append(
             Candidate(
                 record=z_target.copy(),
@@ -350,19 +175,17 @@ def main():
             )
         )
         rng.shuffle(candidates)
-        _ensure_candidate_ids(candidates)
 
-        # ---- Simple NN oracle baseline (not DP-related; for visualization only) ----
-        # We search within TRAIN, same label
+        # nearest neighbor baseline (train, same label)
         train_same = np.where(ytr == int(y_target))[0]
         P = Ztr[train_same].astype(np.float64)
         dists = np.linalg.norm(P - z_target.reshape(1, -1), axis=1)
         nn_idx = train_same[int(np.argmin(dists))]
         nn_rec = Ztr[nn_idx].astype(np.float64)
 
-        # =========================================================
-        # (A) Ridge prototypes (closed-form convex ERM)
-        # =========================================================
+        # ----------------------------
+        # Ridge prototypes (closed-form)
+        # ----------------------------
         mus, counts = fit_ridge_prototypes(
             Z=np.asarray(X_full, dtype=np.float32),
             y=np.asarray(y_full, dtype=np.int64),
@@ -370,24 +193,22 @@ def main():
             lam=float(args.lam),
         )
 
-        # ERM exact equation solve
         proto_solver = RidgePrototypesEquationSolver(
             lam=float(args.lam), n_total=n_total
         )
         proto_rec = proto_solver.reconstruct(
-            release_mus=mus, d_minus=dset.d_minus, label_known=None
+            release_mus=mus, d_minus=dset.d_minus, label_known=int(y_target)
         )
-        proto_erm_mse = (
+        proto_eq_mse = (
             float(np.mean((proto_rec.record_hat - z_target) ** 2))
             if proto_rec.record_hat is not None
             else float("nan")
         )
 
-        # DP releases (std baseline r_std and ball r_ball)
         dp_proto_std = dp_release_ridge_prototypes_gaussian(
             mus,
             counts,
-            r=r_std,
+            r=float(policy.r_std),
             lam=float(args.lam),
             eps=float(args.eps),
             delta=float(args.delta),
@@ -397,7 +218,7 @@ def main():
         dp_proto_ball = dp_release_ridge_prototypes_gaussian(
             mus,
             counts,
-            r=r_ball,
+            r=float(r_ball),
             lam=float(args.lam),
             eps=float(args.eps),
             delta=float(args.delta),
@@ -405,66 +226,69 @@ def main():
             rng=rng,
         )
 
-        # Gaussian identification (reuse cache across std/ball by reusing one identifier object)
         class ProtoTrainer:
             def fit(self, X, y):
-                mus2, _ = fit_ridge_prototypes(
+                mu2, _ = fit_ridge_prototypes(
                     Z=np.asarray(X, dtype=np.float32),
                     y=np.asarray(y, dtype=np.int64),
                     num_classes=10,
                     lam=float(args.lam),
                 )
-                return mus2
+                return mu2
 
-        proto_ident = GaussianOutputIdentifier(
+        ident_proto_std = GaussianOutputIdentifier(
             trainer=ProtoTrainer(),
             vectorizer=vectorize_prototypes,
             sigma=float(dp_proto_std["sigma"]),
             cache=True,
         )
-        # manually inject a shared cache
-        proto_ident._cache = proto_ident_cache  # type: ignore[attr-defined]
-
-        out_std = proto_ident.identify(
+        out_p_std = ident_proto_std.identify(
             release_params=dp_proto_std["mus_noisy"],
             X_minus=dset.X_minus,
             y_minus=dset.y_minus,
             candidates=candidates,
         )
-        cand_std = candidates[int(out_std.best_idx)]
-        proto_std_mse = float(np.mean((cand_std.record - z_target) ** 2))
+        cand_p_std = candidates[int(out_p_std.best_idx)]
+        p_std_hit = bool(cand_p_std.meta.get("is_target", False))
+        p_std_mse = float(np.mean((cand_p_std.record - z_target) ** 2))
 
-        proto_ident.sigma = float(dp_proto_ball["sigma"])
-        out_ball = proto_ident.identify(
+        ident_proto_ball = GaussianOutputIdentifier(
+            trainer=ProtoTrainer(),
+            vectorizer=vectorize_prototypes,
+            sigma=float(dp_proto_ball["sigma"]),
+            cache=True,
+        )
+        out_p_ball = ident_proto_ball.identify(
             release_params=dp_proto_ball["mus_noisy"],
             X_minus=dset.X_minus,
             y_minus=dset.y_minus,
             candidates=candidates,
         )
-        cand_ball = candidates[int(out_ball.best_idx)]
-        proto_ball_mse = float(np.mean((cand_ball.record - z_target) ** 2))
+        cand_p_ball = candidates[int(out_p_ball.best_idx)]
+        p_ball_hit = bool(cand_p_ball.meta.get("is_target", False))
+        p_ball_mse = float(np.mean((cand_p_ball.record - z_target) ** 2))
 
         rows.append(
             dict(
                 trial=trial,
-                mode=args.mode,
                 head="ridge_prototypes",
                 y_target=int(y_target),
                 n_total=n_total,
-                r_ball=r_ball,
-                r_std=r_std,
-                mse_erm=proto_erm_mse,
-                mse_dp_std=proto_std_mse,
-                mse_dp_ball=proto_ball_mse,
+                r_ball=float(r_ball),
+                r_std=float(policy.r_std),
+                mse_eqsolve=float(proto_eq_mse),
+                mse_dp_std=float(p_std_mse),
+                mse_dp_ball=float(p_ball_mse),
+                hit_dp_std=int(p_std_hit),
+                hit_dp_ball=int(p_ball_hit),
                 sigma_std=float(dp_proto_std["sigma"]),
                 sigma_ball=float(dp_proto_ball["sigma"]),
-                candidate_count=len(candidates),
             )
         )
 
-        # =========================================================
-        # (B) Softmax linear (multiclass convex ERM)
-        # =========================================================
+        # ----------------------------
+        # Softmax linear (convex ERM) — train with LBFGS
+        # ----------------------------
         d_in = int(X_full.shape[1])
         lam = float(args.lam)
 
@@ -474,47 +298,51 @@ def main():
         def loss_fn(m, state, xb, yb, key):
             return softmax_objective(m, state, xb, yb, key, lam=lam)
 
-        trainer = EqxFullBatchGDTrainer(
+        trainer_sm = EqxFullBatchLBFGSTrainer(
             make_model=make_softmax,
             loss_fn=loss_fn,
-            cfg=FullBatchGDConfig(
-                steps=int(args.softmax_steps),
-                learning_rate=float(args.softmax_lr),
-                grad_clip_norm=None,
+            cfg=FullBatchLBFGSConfig(
+                num_epochs=int(args.softmax_lbfgs_epochs),
+                patience=int(args.softmax_lbfgs_patience),
+                batch_size_full=True,
                 seed=int(args.seed),
-                jit=True,
             ),
         )
 
-        softmax_model = trainer.fit(
-            np.asarray(X_full, dtype=np.float32),
-            np.asarray(y_full, dtype=np.int64),
+        sm_model = trainer_sm.fit(
+            np.asarray(X_full, dtype=np.float32), np.asarray(y_full, dtype=np.int64)
         )
 
-        # ERM equation solve (exact in theory; approximate if optimizer not fully converged)
-        W, b = softmax_params_numpy(softmax_model)
+        # equation solve
+        W, b = softmax_params_numpy(sm_model)
         sm_solver = SoftmaxEquationSolver(
-            lam=lam,
-            n_total=n_total,
-            include_bias=True,
-            batch_size=8192,
+            lam=lam, n_total=n_total, include_bias=True, batch_size=8192
         )
         sm_rec = sm_solver.reconstruct(W=W, b=b, d_minus=dset.d_minus)
-        sm_erm_mse = (
+
+        sm_status = str(sm_rec.status)
+        sm_rank1_resid = (
+            float(sm_rec.details.get("rank1_resid", np.nan))
+            if sm_rec.details
+            else float("nan")
+        )
+        sm_eq_mse = (
             float(np.mean((sm_rec.record_hat - z_target) ** 2))
             if sm_rec.record_hat is not None
             else float("nan")
         )
 
-        # Lz bound for softmax head (uses B_public)
+        # DP releases (std vs ball)
         Lz = float(
-            lz_softmax_linear_bound(B=float(B_public), lam=lam, include_bias=True)
+            lz_softmax_linear_bound(
+                B=float(B_public), lam=float(lam), include_bias=True
+            )
         )
 
         sm_dp_std = dp_release_eqx_model_gaussian(
-            softmax_model,
+            sm_model,
             lz=Lz,
-            r=r_std,
+            r=float(policy.r_std),
             lam=lam,
             n=n_total,
             eps=float(args.eps),
@@ -523,9 +351,9 @@ def main():
             rng=rng,
         )
         sm_dp_ball = dp_release_eqx_model_gaussian(
-            softmax_model,
+            sm_model,
             lz=Lz,
-            r=r_ball,
+            r=float(r_ball),
             lam=lam,
             n=n_total,
             eps=float(args.eps),
@@ -534,108 +362,107 @@ def main():
             rng=rng,
         )
 
-        # Gaussian identification on model objects; reuse cache across std/ball
-        sm_ident = GaussianOutputIdentifier(
-            trainer=trainer,
+        ident_sm_std = GaussianOutputIdentifier(
+            trainer=trainer_sm,
             vectorizer=lambda mdl: vectorize_eqx_model(mdl, include_state=False),
             sigma=float(sm_dp_std["dp_report"]["sigma"]),
             cache=True,
         )
-        sm_ident._cache = softmax_ident_cache  # type: ignore[attr-defined]
-
-        out_sm_std = sm_ident.identify(
+        out_s_std = ident_sm_std.identify(
             release_params=sm_dp_std["model_private"],
             X_minus=dset.X_minus,
             y_minus=dset.y_minus,
             candidates=candidates,
         )
-        cand_sm_std = candidates[int(out_sm_std.best_idx)]
-        sm_std_mse = float(np.mean((cand_sm_std.record - z_target) ** 2))
+        cand_s_std = candidates[int(out_s_std.best_idx)]
+        s_std_hit = bool(cand_s_std.meta.get("is_target", False))
+        s_std_mse = float(np.mean((cand_s_std.record - z_target) ** 2))
 
-        sm_ident.sigma = float(sm_dp_ball["dp_report"]["sigma"])
-        out_sm_ball = sm_ident.identify(
+        ident_sm_ball = GaussianOutputIdentifier(
+            trainer=trainer_sm,
+            vectorizer=lambda mdl: vectorize_eqx_model(mdl, include_state=False),
+            sigma=float(sm_dp_ball["dp_report"]["sigma"]),
+            cache=True,
+        )
+        out_s_ball = ident_sm_ball.identify(
             release_params=sm_dp_ball["model_private"],
             X_minus=dset.X_minus,
             y_minus=dset.y_minus,
             candidates=candidates,
         )
-        cand_sm_ball = candidates[int(out_sm_ball.best_idx)]
-        sm_ball_mse = float(np.mean((cand_sm_ball.record - z_target) ** 2))
+        cand_s_ball = candidates[int(out_s_ball.best_idx)]
+        s_ball_hit = bool(cand_s_ball.meta.get("is_target", False))
+        s_ball_mse = float(np.mean((cand_s_ball.record - z_target) ** 2))
 
         rows.append(
             dict(
                 trial=trial,
-                mode=args.mode,
                 head="softmax_linear",
                 y_target=int(y_target),
                 n_total=n_total,
-                r_ball=r_ball,
-                r_std=r_std,
-                Lz=Lz,
-                mse_erm=sm_erm_mse,
-                mse_dp_std=sm_std_mse,
-                mse_dp_ball=sm_ball_mse,
+                r_ball=float(r_ball),
+                r_std=float(policy.r_std),
+                Lz=float(Lz),
+                softmax_eq_status=sm_status,
+                softmax_rank1_resid=float(sm_rank1_resid),
+                mse_eqsolve=float(sm_eq_mse),
+                mse_dp_std=float(s_std_mse),
+                mse_dp_ball=float(s_ball_mse),
+                hit_dp_std=int(s_std_hit),
+                hit_dp_ball=int(s_ball_hit),
                 sigma_std=float(sm_dp_std["dp_report"]["sigma"]),
                 sigma_ball=float(sm_dp_ball["dp_report"]["sigma"]),
-                candidate_count=len(candidates),
             )
         )
 
-        # =========================================================
-        # Visualization (one grid per trial)
-        # =========================================================
+        # ----------------------------
+        # Visualization
+        # ----------------------------
         tgt_img = decode_to_img(z_target.reshape(1, -1))[0]
         nn_img = decode_to_img(nn_rec.reshape(1, -1))[0]
 
-        # prototypes
-        proto_erm_img = (
+        proto_eq_img = (
             decode_to_img(proto_rec.record_hat.reshape(1, -1))[0]
             if proto_rec.record_hat is not None
             else nn_img
         )
-        proto_std_img = decode_to_img(
-            np.asarray(cand_std.record, dtype=np.float64).reshape(1, -1)
-        )[0]
-        proto_ball_img = decode_to_img(
-            np.asarray(cand_ball.record, dtype=np.float64).reshape(1, -1)
-        )[0]
+        proto_std_img = decode_to_img(np.asarray(cand_p_std.record).reshape(1, -1))[0]
+        proto_ball_img = decode_to_img(np.asarray(cand_p_ball.record).reshape(1, -1))[0]
 
-        # softmax
-        sm_erm_img = (
+        sm_eq_img = (
             decode_to_img(sm_rec.record_hat.reshape(1, -1))[0]
             if sm_rec.record_hat is not None
             else nn_img
         )
-        sm_std_img = decode_to_img(
-            np.asarray(cand_sm_std.record, dtype=np.float64).reshape(1, -1)
-        )[0]
-        sm_ball_img = decode_to_img(
-            np.asarray(cand_sm_ball.record, dtype=np.float64).reshape(1, -1)
-        )[0]
+        sm_std_img = decode_to_img(np.asarray(cand_s_std.record).reshape(1, -1))[0]
+        sm_ball_img = decode_to_img(np.asarray(cand_s_ball.record).reshape(1, -1))[0]
 
-        grid_imgs = [
+        def _hitmark(x: bool) -> str:
+            return "✓" if x else "✗"
+
+        titles = [
+            "target",
+            "NN (train,same y)",
+            "proto eq-solve",
+            f"proto DP std {_hitmark(p_std_hit)}",
+            f"proto Ball-DP {_hitmark(p_ball_hit)}",
+            f"softmax eq-solve ({sm_status})",
+            f"softmax DP std {_hitmark(s_std_hit)}",
+            f"softmax Ball-DP {_hitmark(s_ball_hit)}",
+        ]
+        imgs = [
             tgt_img,
             nn_img,
-            proto_erm_img,
+            proto_eq_img,
             proto_std_img,
             proto_ball_img,
-            sm_erm_img,
+            sm_eq_img,
             sm_std_img,
             sm_ball_img,
         ]
-        titles = [
-            "target",
-            "NN (train, same y)",
-            "proto ERM (eq-solve)",
-            "proto DP std (identify)",
-            "proto Ball-DP (identify)",
-            "softmax ERM (eq-solve)",
-            "softmax DP std (identify)",
-            "softmax Ball-DP (identify)",
-        ]
 
         plot_image_grid(
-            images=grid_imgs,
+            images=imgs,
             titles=titles,
             nrows=2,
             ncols=4,
@@ -643,7 +470,7 @@ def main():
             show=False,
         )
 
-        print(f"[trial {trial}] done. saved grid.")
+        print(f"[trial {trial}] done (softmax rank1_resid={sm_rank1_resid:.4g})")
 
     save_csv(Path(out_dir) / "results.csv", rows)
     print(f"[done] wrote {Path(out_dir)/'results.csv'}")
