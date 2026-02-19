@@ -22,16 +22,57 @@ def save_json(path: str | pathlib.Path, obj: Any) -> None:
         json.dump(obj, f, indent=2)
 
 
+def _to_jsonable(v: Any) -> Any:
+    """
+    Convert numpy scalars/arrays to python types so CSV/JSON writing doesn't break.
+    """
+    try:
+        import numpy as _np
+
+        if isinstance(v, (_np.integer, _np.floating, _np.bool_)):
+            return v.item()
+        if isinstance(v, _np.ndarray):
+            if v.ndim == 0:
+                return v.item()
+            return v.tolist()
+    except Exception:
+        pass
+    return v
+
+
+def _stable_union_keys(rows: List[Dict[str, Any]]) -> List[str]:
+    """
+    Stable key union across rows (order = first appearance across the list of rows).
+    """
+    keys: List[str] = []
+    seen = set()
+    for r in rows:
+        for k in r.keys():
+            if k not in seen:
+                seen.add(k)
+                keys.append(k)
+    return keys
+
+
 def save_csv(path: str | pathlib.Path, rows: List[Dict[str, Any]]) -> None:
+    """
+    Robust CSV writer:
+      - Supports rows with different key sets (union of keys is used)
+      - Converts numpy scalars/arrays to python types
+      - Missing keys get empty string values
+    """
     path = pathlib.Path(path)
     if not rows:
         return
-    keys = list(rows[0].keys())
+
+    keys = _stable_union_keys(rows)
+
     with path.open("w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=keys)
+        w = csv.DictWriter(f, fieldnames=keys, extrasaction="ignore")
         w.writeheader()
         for r in rows:
-            w.writerow(r)
+            row_out = {k: _to_jsonable(r.get(k, "")) for k in keys}
+            w.writerow(row_out)
 
 
 def mse(a: np.ndarray, b: np.ndarray) -> float:
