@@ -1,7 +1,6 @@
 # quantbayes/ball_dp/reconstruction/models/mlp_eqx.py
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any, Dict, Tuple
 
 import equinox as eqx
@@ -10,7 +9,6 @@ import jax.numpy as jnp
 import jax.random as jr
 
 
-@dataclass
 class MLPClassifierEqx(eqx.Module):
     mlp: eqx.nn.MLP
 
