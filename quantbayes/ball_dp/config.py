@@ -1,0 +1,261 @@
+# quantbayes/ball_dp/config.py
+from __future__ import annotations
+
+import dataclasses as dc
+import json
+from pathlib import Path
+from typing import (
+    Any,
+    Dict,
+    List,
+    Literal,
+    Optional,
+    Sequence,
+    Tuple,
+    Type,
+    TypeVar,
+    Union,
+    get_args,
+    get_origin,
+)
+
+
+def _load_text_config(path: Union[str, Path]) -> Dict[str, Any]:
+    path = Path(path)
+    suffix = path.suffix.lower()
+    if suffix in {".json", ".js"}:
+        return json.loads(path.read_text())
+    if suffix in {".yaml", ".yml"}:
+        try:
+            import yaml  # type: ignore
+        except Exception as e:
+            raise RuntimeError(
+                "YAML config requested but PyYAML is not installed."
+            ) from e
+        return yaml.safe_load(path.read_text())
+    raise ValueError(f"Unsupported config suffix: {suffix}")
+
+
+def _save_text_config(obj: Dict[str, Any], path: Union[str, Path]) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    suffix = path.suffix.lower()
+    if suffix in {".json", ".js"}:
+        path.write_text(json.dumps(obj, indent=2, sort_keys=True))
+        return
+    if suffix in {".yaml", ".yml"}:
+        try:
+            import yaml  # type: ignore
+        except Exception as e:
+            raise RuntimeError(
+                "YAML config requested but PyYAML is not installed."
+            ) from e
+        path.write_text(yaml.safe_dump(obj, sort_keys=False))
+        return
+    raise ValueError(f"Unsupported config suffix: {suffix}")
+
+
+T = TypeVar("T")
+
+
+def _convert_value(tp: Any, value: Any) -> Any:
+    origin = get_origin(tp)
+    args = get_args(tp)
+    if value is None:
+        return None
+    if origin is Union:
+        non_none = [a for a in args if a is not type(None)]
+        for cand in non_none:
+            try:
+                return _convert_value(cand, value)
+            except Exception:
+                continue
+        return value
+    if dc.is_dataclass(tp):
+        return from_dict(tp, value)
+    if origin in {list, List, Sequence, tuple, Tuple}:
+        inner = args[0] if args else Any
+        if origin in {tuple, Tuple} and len(args) > 1 and args[1] is not Ellipsis:
+            return tuple(_convert_value(t, v) for t, v in zip(args, value))
+        seq = [_convert_value(inner, v) for v in value]
+        return tuple(seq) if origin in {tuple, Tuple} else seq
+    if origin is Literal:
+        return value
+    if tp in {int, float, str, bool, dict, Dict, list, List}:
+        return tp(value)
+    return value
+
+
+def from_dict(cls: Type[T], data: Dict[str, Any]) -> T:
+    kwargs = {}
+    for field in dc.fields(cls):
+        if field.name not in data:
+            continue
+        kwargs[field.name] = _convert_value(field.type, data[field.name])
+    return cls(**kwargs)  # type: ignore[arg-type]
+
+
+def to_dict(obj: Any) -> Any:
+    if dc.is_dataclass(obj):
+        return {k: to_dict(v) for k, v in dc.asdict(obj).items()}
+    if isinstance(obj, dict):
+        return {k: to_dict(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [to_dict(v) for v in obj]
+    return obj
+
+
+@dc.dataclass
+class GaussianCalibrationConfig:
+    method: Literal["classic", "analytic"] = "analytic"
+    tol: float = 1e-12
+
+
+@dc.dataclass
+class ConvexOptimizationConfig:
+    solver: Literal[
+        "lbfgs_fullbatch",
+        "gd_fullbatch",
+        "stochax_lbfgs",
+        "stochax_zoom",
+        "stochax_backtrack",
+    ] = "lbfgs_fullbatch"
+    max_iter: int = 500
+    learning_rate: float = 1e-1
+    grad_tol: float = 1e-8
+    param_tol: float = 1e-10
+    objective_tol: float = 1e-12
+    certify_approximation: bool = True
+    approximation_mode: Literal["optimality_residual", "none"] = "optimality_residual"
+    theorem_backed_only: bool = True
+    line_search_steps: int = 15
+
+
+@dc.dataclass
+class ConvexReleaseConfig:
+    model_family: Literal[
+        "softmax_logistic", "binary_logistic", "squared_hinge", "ridge_prototype"
+    ]
+    radius: float
+    lam: float
+    gaussian: GaussianCalibrationConfig = dc.field(
+        default_factory=GaussianCalibrationConfig
+    )
+    optimization: ConvexOptimizationConfig = dc.field(
+        default_factory=ConvexOptimizationConfig
+    )
+    epsilon: Optional[float] = None
+    delta: Optional[float] = None
+    sigma: Optional[float] = None
+    orders: Tuple[float, ...] = (2, 3, 4, 5, 8, 16, 32, 64, 128)
+    dp_deltas_for_rdp: Tuple[float, ...] = (1e-6,)
+    embedding_bound: Optional[float] = None
+    standard_radius: Optional[float] = None
+    num_classes: Optional[int] = None
+    lz_mode: Literal[
+        "paper_default",
+        "provided",
+        "glm_bound",
+    ] = "paper_default"
+    provided_lz: Optional[float] = None
+    use_exact_sensitivity_if_available: bool = True
+    seed: int = 0
+    store_nonprivate_reference: bool = False
+
+
+@dc.dataclass
+class ArchitectureConstantConfig:
+    lz: Optional[float] = None
+    B: Optional[float] = None
+    G: Optional[float] = None
+    H: Optional[float] = None
+    s: Tuple[float, ...] = ()
+    c: Tuple[float, ...] = ()
+    chi: Tuple[float, ...] = ()
+    m: Tuple[float, ...] = ()
+    beta: Tuple[float, ...] = ()
+
+
+@dc.dataclass
+class BallSGDConfig:
+    """Minimal configuration for Ball-SGD / standard DP-SGD training.
+
+    This configuration intentionally does *not* contain any model-building fields.
+    The caller must always supply the Equinox model, state, optimizer, and loss.
+
+    Notes
+    -----
+    - `noise_multipliers` follow the standard DP-SGD convention used by production
+      libraries: the Gaussian noise added to the *summed clipped gradient* at step t
+      has standard deviation `noise_multipliers[t] * clip_norms[t]`.
+    - `lz` is a user-supplied theorem-backed constant. The library does not attempt
+      to derive it automatically.
+    - Public checkpoint selection should only use a non-private evaluation set.
+    """
+
+    radius: float = 1.0
+    lz: Optional[float] = None
+    num_steps: int = 1000
+    batch_sizes: Union[int, Tuple[int, ...]] = 128
+    clip_norms: Union[float, Tuple[float, ...]] = 1.0
+    noise_multipliers: Union[float, Tuple[float, ...]] = 1.0
+    orders: Tuple[int, ...] = (2, 3, 4, 5, 8, 16, 32, 64, 128)
+    epsilon: Optional[float] = None
+    delta: Optional[float] = None
+    loss_name: Literal["softmax_cross_entropy", "binary_logistic"] = (
+        "softmax_cross_entropy"
+    )
+    normalize_noisy_sum_by: Literal["batch_size", "none"] = "batch_size"
+
+    # Optional built-in parameter-only penalties added *after* DP sanitization.
+    frobenius_reg_strength: float = 0.0
+    spectral_reg_strength: float = 0.0
+    spectral_reg_kwargs: Dict[str, Any] = dc.field(default_factory=dict)
+
+    # Public evaluation / checkpointing.
+    eval_every: int = 250
+    eval_batch_size: int = 1024
+    checkpoint_selection: Literal[
+        "last",
+        "best_public_eval_loss",
+        "best_public_eval_accuracy",
+    ] = "last"
+
+    # Public model-only diagnostics.
+    record_operator_norms: bool = False
+    operator_norms_every: int = 250
+    store_full_operator_norm_history: bool = False
+    operator_norm_kwargs: Dict[str, Any] = dc.field(default_factory=dict)
+
+    warn_if_ball_equals_standard: bool = True
+    seed: int = 0
+
+
+# Backward-compatible alias for code that still imports the old name.
+NonconvexReleaseConfig = BallSGDConfig
+
+
+@dc.dataclass
+class ShadowCorpusConfig:
+    num_trials: int
+    train_frac: float = 0.7
+    val_frac: float = 0.15
+    seed: int = 0
+    side_info_regime: Literal["none", "known_label"] = "none"
+    store_releases: bool = False
+
+
+@dc.dataclass
+class ReconstructorTrainingConfig:
+    hidden_dims: Tuple[int, ...] = (256, 256)
+    activation: Literal["relu"] = "relu"
+    loss: Literal["mse_ce", "l1_ce", "huber_ce"] = "mse_ce"
+    feature_loss_weight: float = 1.0
+    label_loss_weight: float = 1.0
+    batch_size: int = 128
+    num_epochs: int = 100
+    patience: int = 10
+    learning_rate: float = 1e-3
+    weight_decay: float = 0.0
+    trainer: Literal["stochax_sgd"] = "stochax_sgd"
+    seed: int = 0
