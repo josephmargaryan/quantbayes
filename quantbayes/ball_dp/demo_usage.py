@@ -15,8 +15,10 @@ from __future__ import annotations
 #   1) final-model access   -> demo_nonconvex_model_based_attack(...)
 #   2) retained trace access -> demo_nonconvex_trace_attacks(...)
 #
-# That is why there are two main nonconvex attack demos even though the attack
-# package has multiple files.
+# The nonconvex attack demos below are the stable paper-faithful attacks:
+#   - Balle/Cherubin/Hayes informed-adversary model-based attack (RecoNN style),
+#   - Hayes/Mahloujifar/Balle prior-aware DP-SGD trace attack (Algorithm 2 / 3),
+#   - Hayes/Mahloujifar/Balle DP-SGD trace optimization attack (Equation (1)).
 
 import equinox as eqx
 import jax
@@ -28,7 +30,6 @@ import optax
 
 from quantbayes.ball_dp.api import (
     attack_convex,
-    attack_nonconvex_gradient_baseline,
     attack_nonconvex_model_based,
     attack_nonconvex_prior_aware_trace,
     attack_nonconvex_trace_optimization,
@@ -41,7 +42,6 @@ from quantbayes.ball_dp.api import (
     get_public_curve_history,
     get_release_step_table,
     make_empirical_ball_prior,
-    make_gradient_observation,
 )
 from quantbayes.ball_dp.attacks import (
     DPSGDTraceRecorder,
@@ -53,7 +53,6 @@ from quantbayes.ball_dp.attacks import (
 from quantbayes.ball_dp.config import ReconstructorTrainingConfig, ShadowCorpusConfig
 from quantbayes.ball_dp.plots import (
     plot_attack_candidates,
-    plot_attack_label_logits,
     plot_attack_result,
     plot_attack_result_with_reference,
     plot_attack_score_histogram,
@@ -64,6 +63,7 @@ from quantbayes.ball_dp.plots import (
     plot_rero_report,
 )
 from quantbayes.ball_dp.types import ArrayDataset, Record
+
 
 # -----------------------------------------------------------------------------
 # Small helpers
@@ -85,49 +85,44 @@ def _box_bounds_from_data(X: np.ndarray) -> tuple[float, float]:
     return float(np.min(X)), float(np.max(X))
 
 
-def _same_label_records(
-    X: np.ndarray,
-    y: np.ndarray,
-    *,
-    label: int,
-    max_count: int,
-) -> list[Record]:
-    X = np.asarray(X, dtype=np.float32)
-    y = np.asarray(y)
-    idx = np.where(y == int(label))[0][: int(max_count)]
-    return [
-        Record(features=np.asarray(X[i]).reshape(-1), label=int(y[i]))
-        for i in idx.tolist()
-    ]
-
-
-def _make_aux_pool(
+def _random_record_pool(
     X_train: np.ndarray,
     y_train: np.ndarray,
     X_test: np.ndarray,
     y_test: np.ndarray,
     *,
-    label: int,
     max_count: int,
     exclude_train_index: int | None = None,
+    seed: int = 0,
 ) -> list[Record]:
-    out = _same_label_records(X_test, y_test, label=label, max_count=max_count)
-    if len(out) >= max_count:
-        return out[:max_count]
-
-    X_train = np.asarray(X_train, dtype=np.float32)
-    y_train = np.asarray(y_train)
-    idx = np.where(y_train == int(label))[0]
+    rng = np.random.default_rng(int(seed))
+    train_ids = np.arange(len(X_train), dtype=np.int64)
     if exclude_train_index is not None:
-        idx = idx[idx != int(exclude_train_index)]
+        train_ids = train_ids[train_ids != int(exclude_train_index)]
 
-    for i in idx.tolist():
-        out.append(
-            Record(features=np.asarray(X_train[i]).reshape(-1), label=int(y_train[i]))
-        )
-        if len(out) >= max_count:
+    candidates = [("test", int(i)) for i in range(len(X_test))] + [
+        ("train", int(i)) for i in train_ids.tolist()
+    ]
+    rng.shuffle(candidates)
+    out: list[Record] = []
+    for src, idx in candidates:
+        if src == "test":
+            out.append(
+                Record(
+                    features=np.asarray(X_test[idx], dtype=np.float32).reshape(-1),
+                    label=int(y_test[idx]),
+                )
+            )
+        else:
+            out.append(
+                Record(
+                    features=np.asarray(X_train[idx], dtype=np.float32).reshape(-1),
+                    label=int(y_train[idx]),
+                )
+            )
+        if len(out) >= int(max_count):
             break
-    return out[:max_count]
+    return out
 
 
 def _nearest_neighbor_record(
@@ -157,24 +152,37 @@ def _trace_seen_indices(trace) -> list[int]:
 
 def _choose_trace_target_index(
     trace,
+    *,
+    seed: int = 0,
+) -> int:
+    seen = _trace_seen_indices(trace)
+    rng = np.random.default_rng(int(seed))
+    return int(rng.choice(np.asarray(seen, dtype=np.int64)))
+
+
+def _paper_prior_with_truth(
+    true_record: Record,
+    X_train: np.ndarray,
     y_train: np.ndarray,
+    X_test: np.ndarray,
     y_test: np.ndarray,
     *,
-    min_aux_pool: int = 16,
-) -> int:
-    """Choose an index that definitely appears in the retained trace."""
-    y_train = np.asarray(y_train)
-    y_test = np.asarray(y_test)
-    seen = _trace_seen_indices(trace)
-
-    def pool_size(idx: int) -> int:
-        label = int(y_train[int(idx)])
-        return int(np.sum(y_test == label) + np.sum(y_train == label) - 1)
-
-    viable = [idx for idx in seen if pool_size(idx) >= int(min_aux_pool)]
-    if viable:
-        return int(viable[0])
-    return int(seen[0])
+    size: int,
+    exclude_train_index: int,
+    seed: int = 0,
+) -> list[Record]:
+    if int(size) < 2:
+        raise ValueError("Paper prior size must be at least 2.")
+    others = _random_record_pool(
+        X_train,
+        y_train,
+        X_test,
+        y_test,
+        max_count=int(size) - 1,
+        exclude_train_index=exclude_train_index,
+        seed=seed,
+    )
+    return [true_record] + others
 
 
 # -----------------------------------------------------------------------------
@@ -490,12 +498,12 @@ def demo_nonconvex_model_based_attack(
     r = float(0.5 * B)
     L_z = 2.0
 
-    model = build_example_model(input_dim, num_classes, seed=seed)
-    optimizer = optax.adam(1e-3)
-
+    # Victim release.
+    victim_model = build_example_model(input_dim, num_classes, seed=seed)
+    victim_opt = optax.adam(1e-3)
     release = fit_ball_sgd(
-        model,
-        optimizer,
+        victim_model,
+        victim_opt,
         X_train_flat,
         y_train,
         X_eval=X_test_flat,
@@ -515,20 +523,28 @@ def demo_nonconvex_model_based_attack(
     ds = ArrayDataset(X_train_flat, y_train, name="train")
     d_minus, true_record = ds.remove_index(int(target_index))
 
-    aux_points = _make_aux_pool(
+    # Auxiliary points available to the informed adversary.
+    aux_points = _random_record_pool(
         X_train_flat,
         y_train,
         X_test_flat,
         y_test,
-        label=int(true_record.label),
         max_count=max(32, shadow_trials * 2),
         exclude_train_index=int(target_index),
+        seed=seed,
     )
     if len(aux_points) < 8:
         raise ValueError("Need a reasonable auxiliary pool for the model-based demo.")
 
-    def victim_train_fn(shadow_ds: ArrayDataset, seed_one: int):
-        shadow_model = build_example_model(input_dim, num_classes, seed=seed_one)
+    def victim_train_fn(shadow_ds: ArrayDataset, fixed_init_seed: int):
+        # Important for the informed-adversary attack: all shadow models share the
+        # same initialization seed as the attacked model, mirroring the public
+        # DeepMind implementation.
+        shadow_model = build_example_model(
+            input_dim,
+            num_classes,
+            seed=fixed_init_seed,
+        )
         shadow_opt = optax.adam(1e-3)
         return fit_ball_sgd(
             shadow_model,
@@ -546,15 +562,10 @@ def demo_nonconvex_model_based_attack(
             noise_multiplier=noise_multiplier,
             checkpoint_selection="best_public_eval_accuracy",
             eval_every=max(25, shadow_steps // 4),
-            seed=seed_one,
+            seed=fixed_init_seed,
         )
 
-    feature_map = make_attack_feature_map(
-        "parameters_plus_dataset_stats",
-        random_projection_dim=1024,
-        projection_seed=seed,
-        label_values=tuple(int(v) for v in np.unique(y_train).tolist()),
-    )
+    feature_map = make_attack_feature_map("parameters_only")
 
     corpus = build_nonconvex_shadow_corpus(
         d_minus=d_minus,
@@ -565,21 +576,24 @@ def demo_nonconvex_model_based_attack(
             num_trials=min(int(shadow_trials), len(aux_points)),
             train_frac=0.7,
             val_frac=0.15,
-            side_info_regime="known_label",
             seed=seed,
         ),
-        record_codec=FlatRecordCodec(feature_shape=orig_feature_shape),
+        record_codec=FlatRecordCodec(
+            feature_shape=orig_feature_shape,
+            box_bounds=_box_bounds_from_data(X_train),
+        ),
+        seed_policy="fixed",
+        fixed_seed=seed,
     )
 
     reconstructor = fit_shadow_reconstructor(
         corpus,
         ReconstructorTrainingConfig(
-            hidden_dims=(512, 512),
-            batch_size=64,
+            hidden_dims=(1000, 1000),
+            batch_size=32,
             num_epochs=200,
-            patience=20,
-            learning_rate=1e-3,
-            weight_decay=1e-5,
+            patience=25,
+            learning_rate=3e-4,
             seed=seed,
         ),
     )
@@ -592,7 +606,7 @@ def demo_nonconvex_model_based_attack(
         true_record=true_record,
         known_label=int(true_record.label),
         eta_grid=(0.1, 0.2, 0.5, 1.0),
-        box_bounds=_box_bounds_from_data(X_train_flat),
+        box_bounds=_box_bounds_from_data(X_train),
     )
 
     nn_ref = _nearest_neighbor_record(true_record, aux_points)
@@ -607,13 +621,6 @@ def demo_nonconvex_model_based_attack(
         reference_title="NN baseline",
         out_path="artifacts/nonconvex_model_based_triplet.png",
     )
-
-    logits = np.asarray(attack.diagnostics.get("label_logits", []))
-    if logits.size > 0 and logits.size <= 20 and float(np.std(logits)) > 1e-8:
-        plot_attack_label_logits(
-            attack,
-            out_path="artifacts/nonconvex_model_based_label_logits.png",
-        )
 
     prior = make_empirical_ball_prior(
         X_train_flat,
@@ -636,7 +643,7 @@ def demo_nonconvex_model_based_attack(
 
 
 # -----------------------------------------------------------------------------
-# Nonconvex trace / gradient-access demo
+# Nonconvex DP-SGD trace-access demo
 # -----------------------------------------------------------------------------
 
 
@@ -652,9 +659,10 @@ def demo_nonconvex_trace_attacks(
     clip_norm: float = 1.0,
     noise_multiplier: float = 1.1,
     target_index: int | None = None,
+    paper_prior_size: int = 10,
     seed: int = 0,
 ):
-    """Gradient baseline, finite-prior ranking, and continuous trace optimization."""
+    """Prior-aware ranking and Equation (1) trace optimization."""
     X_train = np.asarray(X_train, dtype=np.float32)
     X_test = np.asarray(X_test, dtype=np.float32)
     y_train = np.asarray(y_train)
@@ -711,12 +719,7 @@ def demo_nonconvex_trace_attacks(
 
     seen = _trace_seen_indices(trace)
     if target_index is None:
-        target_index = _choose_trace_target_index(
-            trace,
-            y_train,
-            y_test,
-            min_aux_pool=16,
-        )
+        target_index = _choose_trace_target_index(trace, seed=seed)
     else:
         target_index = int(target_index)
         if target_index not in seen:
@@ -738,69 +741,28 @@ def demo_nonconvex_trace_attacks(
         trace,
         ds,
         target_index=target_index,
+        seed=seed,
     )
 
-    present_steps = [
-        s
-        for s in residual_trace.steps
-        if int(target_index)
-        in set(np.asarray(s.batch_indices, dtype=np.int64).tolist())
-    ]
-    if not present_steps:
-        raise RuntimeError(
-            "Residualized trace contains no retained step with the target index."
-        )
-
-    step0 = present_steps[0]
-    observation = make_gradient_observation(
-        step0.model_before,
-        step0.observed_private_gradient,
-        state=None,
-        batch_size=int(len(step0.batch_indices)),
-        reduction="mean",
-        metadata={"feature_shape": orig_feature_shape},
-    )
-
-    baseline = attack_nonconvex_gradient_baseline(
-        observation,
-        method="geiping",
-        known_label=int(true_record.label),
-        clip_norm=float(step0.clip_norm),
-        box_bounds=_box_bounds_from_data(X_train_flat),
-        true_record=true_record,
-    )
-    print("Gradient baseline:", baseline.status, baseline.metrics)
-    plot_attack_result(
-        baseline,
+    paper_prior = _paper_prior_with_truth(
         true_record,
-        feature_shape=orig_feature_shape,
-        out_path="artifacts/nonconvex_gradient_baseline_pair.png",
-    )
-
-    prior_same_label = _make_aux_pool(
         X_train_flat,
         y_train,
         X_test_flat,
         y_test,
-        label=int(true_record.label),
-        max_count=256,
+        size=paper_prior_size,
         exclude_train_index=target_index,
+        seed=seed,
     )
-    if len(prior_same_label) < 8:
-        raise ValueError(
-            "Need a reasonable same-label prior pool for the trace attacks."
-        )
-
-    nn_ref = _nearest_neighbor_record(true_record, prior_same_label)
+    nn_ref = _nearest_neighbor_record(true_record, paper_prior[1:])
 
     trace_rank = attack_nonconvex_prior_aware_trace(
         trace,
-        prior_same_label,
+        paper_prior,
         dataset=ds,
         target_index=target_index,
-        known_label=int(true_record.label),
         true_record=true_record,
-        score_mode="present_steps",
+        algorithm="auto",
     )
     print("Trace ranking attack:", trace_rank.status, trace_rank.metrics)
 
@@ -816,7 +778,7 @@ def demo_nonconvex_trace_attacks(
         trace_rank,
         feature_shape=orig_feature_shape,
         true_record=true_record,
-        top_k=6,
+        top_k=min(6, len(paper_prior)),
         out_path="artifacts/nonconvex_trace_rank_candidates.png",
     )
     plot_attack_score_histogram(
@@ -825,18 +787,15 @@ def demo_nonconvex_trace_attacks(
     )
 
     trace_opt = attack_nonconvex_trace_optimization(
-        trace,
+        residual_trace,
         cfg=TraceOptimizationAttackConfig(
-            objective="guo2023",
-            step_mode="present_steps",
-            num_steps=2000,
-            learning_rate=1e-2,
-            num_restarts=3,
-            box_bounds=_box_bounds_from_data(X_train_flat),
+            step_mode="all",
+            num_steps=2000,  # smaller than the paper for a fast demo
+            learning_rate=1e-2,  # paper default
+            num_restarts=2,  # smaller than the paper for a fast demo
+            box_bounds=_box_bounds_from_data(X_train),
             seed=seed,
         ),
-        dataset=ds,
-        target_index=target_index,
         known_label=int(true_record.label),
         true_record=true_record,
         feature_shape=orig_feature_shape,
@@ -873,4 +832,4 @@ def demo_nonconvex_trace_attacks(
         out_path="artifacts/nonconvex_trace_rero.png",
     )
 
-    return release, baseline, trace_rank, trace_opt, true_record, report
+    return release, trace_rank, trace_opt, true_record, report
