@@ -1,3 +1,5 @@
+# quantbayes/ball_dp/api.py
+
 from __future__ import annotations
 
 from typing import Any, Callable, Optional, Sequence
@@ -246,6 +248,7 @@ def make_empirical_ball_prior(
     *,
     label: Optional[int] = None,
     max_samples: Optional[int] = None,
+    safe_kappa_mode: str = "raise",
 ) -> EmpiricalBallPrior:
     X = np.asarray(X, dtype=np.float32).reshape(len(X), -1)
     if y is not None and label is not None:
@@ -253,7 +256,7 @@ def make_empirical_ball_prior(
         X = X[y == int(label)]
     if max_samples is not None and len(X) > int(max_samples):
         X = X[: int(max_samples)]
-    return EmpiricalBallPrior(X)
+    return EmpiricalBallPrior(X, safe_kappa_mode=safe_kappa_mode)
 
 
 def ball_rero(

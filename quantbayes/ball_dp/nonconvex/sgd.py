@@ -761,6 +761,19 @@ def _run_training(
         )
 
         if trace_recorder is not None:
+            # `sanitized_grad` is what gets stored in the trace.
+            # If we normalize the noisy sum by batch size, the stored Gaussian noise
+            # standard deviation must be scaled the same way.
+            observed_noise_std = float(effective_noise_stds[t])
+            if str(cfg.normalize_noisy_sum_by) == "batch_size":
+                observed_noise_std /= float(m_t)
+            elif str(cfg.normalize_noisy_sum_by) == "none":
+                observed_noise_std = float(effective_noise_stds[t])
+            else:
+                raise ValueError(
+                    "normalize_noisy_sum_by must be one of {'batch_size', 'none'}."
+                )
+
             trace_recorder(
                 step=int(t + 1),
                 model_before=model_before_step,
@@ -768,7 +781,7 @@ def _run_training(
                 batch_indices=np.asarray(idx),
                 clip_norm=float(clip_schedule[t]),
                 noise_multiplier=float(noise_multiplier_schedule[t]),
-                effective_noise_std=float(effective_noise_stds[t]),
+                effective_noise_std=float(observed_noise_std),
             )
 
         current_model = eqx.combine(params, static)

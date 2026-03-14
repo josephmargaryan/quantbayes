@@ -40,18 +40,69 @@ class UniformL2BallPrior:
 
 
 class EmpiricalBallPrior:
-    def __init__(self, samples: np.ndarray):
+    """Uniform prior on a finite empirical support set.
+
+    This class is useful for exploratory attacker-prior experiments, but it is
+    NOT theorem-faithful for Ball-ReRo by default.
+
+    Why:
+      The Ball-ReRo theorem needs
+          kappa(eta) = sup_{z0} P[d(Z, z0) <= eta].
+      A common empirical shortcut is to test only centers z0 drawn from the
+      sample support itself. That can strictly *underestimate* the true
+      supremum, which would make the reported Ball-ReRo upper bound
+      spuriously optimistic.
+
+    Therefore:
+      - safe_kappa_mode="raise"        -> default, refuse certified Ball-ReRo
+      - safe_kappa_mode="trivial_upper"-> return kappa = 1.0 (sound but vacuous)
+
+    For exploratory work only, call `sample_point_kappa_lower_bound(eta)`.
+    """
+
+    def __init__(self, samples: np.ndarray, *, safe_kappa_mode: str = "raise"):
         self.samples = np.asarray(samples, dtype=np.float32)
         if self.samples.ndim != 2:
             raise ValueError("EmpiricalBallPrior expects shape (n_samples, dim).")
 
-    def kappa(self, eta: float) -> float:
+        mode = str(safe_kappa_mode).lower()
+        if mode not in {"raise", "trivial_upper"}:
+            raise ValueError(
+                "safe_kappa_mode must be one of {'raise', 'trivial_upper'}."
+            )
+        self.safe_kappa_mode = mode
+
+    def sample_point_kappa_lower_bound(self, eta: float) -> float:
+        """Exploratory only: lower bound on the true kappa.
+
+        This searches only centers located at empirical support points, so it can
+        be strictly smaller than the theorem-required supremum over all centers.
+        Do NOT use this quantity inside a certified Ball-ReRo bound.
+        """
         eta = float(eta)
+        if eta <= 0.0:
+            return 0.0
+
         dists = np.linalg.norm(
             self.samples[:, None, :] - self.samples[None, :, :], axis=-1
         )
         mass = (dists <= eta).mean(axis=1)
         return float(np.max(mass))
+
+    def kappa(self, eta: float) -> float:
+        """Theorem-safe kappa interface used by Ball-ReRo."""
+        if self.safe_kappa_mode == "raise":
+            raise ValueError(
+                "EmpiricalBallPrior does not provide a theorem-faithful kappa by default. "
+                "The Ball-ReRo theorem requires kappa(eta) = sup_{z0} P[d(Z, z0) <= eta], "
+                "and the common empirical support-point shortcut can underestimate it. "
+                "Use UniformL2BallPrior for certified Ball-ReRo, or set "
+                "safe_kappa_mode='trivial_upper' if you explicitly want the vacuous but "
+                "sound bound kappa=1."
+            )
+
+        # Sound for the theorem, but usually vacuous.
+        return 1.0
 
     def sample(self, n: int, rng: np.random.Generator) -> np.ndarray:
         idx = rng.choice(self.samples.shape[0], size=int(n), replace=True)

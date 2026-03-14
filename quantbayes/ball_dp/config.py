@@ -19,42 +19,6 @@ from typing import (
     get_origin,
 )
 
-
-def _load_text_config(path: Union[str, Path]) -> Dict[str, Any]:
-    path = Path(path)
-    suffix = path.suffix.lower()
-    if suffix in {".json", ".js"}:
-        return json.loads(path.read_text())
-    if suffix in {".yaml", ".yml"}:
-        try:
-            import yaml  # type: ignore
-        except Exception as e:
-            raise RuntimeError(
-                "YAML config requested but PyYAML is not installed."
-            ) from e
-        return yaml.safe_load(path.read_text())
-    raise ValueError(f"Unsupported config suffix: {suffix}")
-
-
-def _save_text_config(obj: Dict[str, Any], path: Union[str, Path]) -> None:
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    suffix = path.suffix.lower()
-    if suffix in {".json", ".js"}:
-        path.write_text(json.dumps(obj, indent=2, sort_keys=True))
-        return
-    if suffix in {".yaml", ".yml"}:
-        try:
-            import yaml  # type: ignore
-        except Exception as e:
-            raise RuntimeError(
-                "YAML config requested but PyYAML is not installed."
-            ) from e
-        path.write_text(yaml.safe_dump(obj, sort_keys=False))
-        return
-    raise ValueError(f"Unsupported config suffix: {suffix}")
-
-
 T = TypeVar("T")
 
 

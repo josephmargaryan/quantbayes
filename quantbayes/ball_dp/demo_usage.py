@@ -62,6 +62,12 @@ from quantbayes.ball_dp.plots import (
     plot_release_curves,
     plot_rero_report,
 )
+from quantbayes.ball_dp.attacks.spear import (
+    SpearAttackConfig,
+    run_spear_model_batch_attack,
+    run_spear_trace_step_attack,
+)
+
 from quantbayes.ball_dp.types import ArrayDataset, Record
 
 
@@ -833,3 +839,314 @@ def demo_nonconvex_trace_attacks(
     )
 
     return release, trace_rank, trace_opt, true_record, report
+
+
+############### Extra demos for the SPEAR attacks ###############
+
+
+def _plot_spear_batch_grid(
+    true_batch: np.ndarray,
+    recon_batch: np.ndarray,
+    *,
+    feature_shape: tuple[int, ...],
+    title: str,
+    out_path: str,
+    max_items: int = 8,
+) -> None:
+    true_batch = np.asarray(true_batch, dtype=np.float32)
+    recon_batch = np.asarray(recon_batch, dtype=np.float32)
+    if true_batch.shape != recon_batch.shape:
+        raise ValueError(
+            f"true_batch.shape={true_batch.shape} must match recon_batch.shape={recon_batch.shape}."
+        )
+
+    n_show = min(int(max_items), int(true_batch.shape[0]))
+    ncols = n_show
+    fig, axes = plt.subplots(2, ncols, figsize=(1.9 * ncols, 4.0))
+    axes = np.asarray(axes)
+    if axes.ndim == 1:
+        axes = axes[:, None]
+
+    for j in range(n_show):
+        true_img = np.asarray(true_batch[j]).reshape(feature_shape)
+        recon_img = np.asarray(recon_batch[j]).reshape(feature_shape)
+
+        ax_true = axes[0, j]
+        ax_rec = axes[1, j]
+
+        if true_img.ndim == 2:
+            ax_true.imshow(true_img, cmap="gray")
+            ax_rec.imshow(recon_img, cmap="gray")
+        elif true_img.ndim == 3 and true_img.shape[0] in {1, 3}:
+            ax_true.imshow(np.transpose(true_img, (1, 2, 0)))
+            ax_rec.imshow(np.transpose(recon_img, (1, 2, 0)))
+        else:
+            ax_true.imshow(true_img)
+            ax_rec.imshow(recon_img)
+
+        ax_true.set_title(f"true[{j}]")
+        ax_rec.set_title(f"recon[{j}]")
+        ax_true.axis("off")
+        ax_rec.axis("off")
+
+    fig.suptitle(title)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=160, bbox_inches="tight")
+    plt.close(fig)
+
+
+def demo_nonconvex_spear_exact_batch_attack(
+    X_train,
+    y_train,
+    *,
+    batch_size: int = 8,
+    layer_path: tuple[object, ...] = ("layers", 0),
+    max_samples: int = 20_000,
+    false_rejection_rate: float = 1e-5,
+    zero_tol: float = 1e-10,
+    seed: int = 0,
+):
+    """Paper-faithful SPEAR demo on exact raw gradients of the first linear+ReLU block.
+
+    This does *not* use DP-SGD. It computes the exact batch gradient on the chosen batch,
+    exactly as required by the SPEAR paper.
+    """
+    X_train = np.asarray(X_train, dtype=np.float32)
+    y_train = np.asarray(y_train)
+    orig_feature_shape = _feature_shape(X_train)
+    X_train_flat = _flatten_X(X_train)
+
+    input_dim = int(X_train_flat.shape[1])
+    num_classes = int(np.max(y_train)) + 1
+    model = build_example_model(input_dim, num_classes, seed=seed)
+
+    rng = np.random.default_rng(int(seed))
+    batch_indices = rng.choice(len(X_train_flat), size=int(batch_size), replace=False)
+    xb = np.asarray(X_train_flat[batch_indices], dtype=np.float32)
+    yb = np.asarray(y_train[batch_indices])
+
+    attack = run_spear_model_batch_attack(
+        model,
+        xb,
+        yb,
+        layer_path=layer_path,
+        loss_name="softmax_cross_entropy",
+        reduction="mean",
+        cfg=SpearAttackConfig(
+            max_samples=int(max_samples),
+            batch_size=None,  # exact paper mode: infer batch size from rank(dL/dW)
+            false_rejection_rate=float(false_rejection_rate),
+            zero_tol=float(zero_tol),
+            random_seed=int(seed),
+            greedy_swap_rule="best_improvement",
+            noisy_mode=False,
+        ),
+        true_batch=xb,
+        eta_grid=(0.1, 0.2, 0.5, 1.0),
+        seed=seed,
+    )
+
+    print("SPEAR exact batch status:", attack.status)
+    print("SPEAR exact batch metrics:", attack.metrics)
+    print("SPEAR exact diagnostics: gamma=", attack.diagnostics.get("best_gamma"))
+
+    recon = attack.x_hat_aligned if attack.x_hat_aligned is not None else attack.x_hat
+    if recon is None:
+        raise RuntimeError("SPEAR exact attack failed to return a reconstruction.")
+
+    _plot_spear_batch_grid(
+        xb,
+        recon,
+        feature_shape=orig_feature_shape,
+        title=f"SPEAR exact batch attack ({attack.status})",
+        out_path="artifacts/spear_exact_batch.png",
+        max_items=min(8, int(batch_size)),
+    )
+
+    return attack, np.asarray(batch_indices, dtype=np.int64)
+
+
+def demo_nonconvex_spear_private_step_comparison(
+    X_train,
+    y_train,
+    X_test,
+    y_test,
+    *,
+    privacy: str = "ball_rdp",
+    epsilon: float | None = None,
+    delta: float | None = None,
+    batch_size: int = 8,
+    clip_norm: float = 1.0,
+    noise_multiplier: float = 0.5,
+    layer_path: tuple[object, ...] = ("layers", 0),
+    max_samples_exact: int = 20_000,
+    max_samples_private: int = 20_000,
+    zero_tol_exact: float = 1e-10,
+    zero_tol_private: float = 1e-4,
+    seed: int = 0,
+):
+    """Compare exact SPEAR to SPEAR run on one privatized Ball-SGD trace step.
+
+    Workflow:
+      1. Train for exactly one Ball-SGD step while recording the sanitized gradient transcript.
+      2. Reconstruct the *same* minibatch exactly from the raw gradient of `model_before`.
+      3. Reconstruct the batch again from the privatized observed gradient stored in the trace.
+      4. Compute the Ball-ReRo certificate on the resulting private release.
+
+    Important:
+      - `exact_attack` is the paper-faithful SPEAR attack.
+      - `private_attack` is the paper-inspired noisy-gradient adaptation.
+    """
+    X_train = np.asarray(X_train, dtype=np.float32)
+    X_test = np.asarray(X_test, dtype=np.float32)
+    y_train = np.asarray(y_train)
+    y_test = np.asarray(y_test)
+    orig_feature_shape = _feature_shape(X_train)
+
+    X_train_flat = _flatten_X(X_train)
+    X_test_flat = _flatten_X(X_test)
+    input_dim = int(X_train_flat.shape[1])
+    num_classes = int(np.max(y_train)) + 1
+
+    B = float(np.max(np.linalg.norm(X_train_flat, axis=1)))
+    r = float(0.5 * B)
+    L_z = 2.0  # replace by your theorem-backed constant for the chosen architecture
+
+    model = build_example_model(input_dim, num_classes, seed=seed)
+    optimizer = optax.adam(1e-3)
+    recorder = DPSGDTraceRecorder(
+        capture_every=1,
+        keep_models=True,
+        keep_batch_indices=True,
+    )
+
+    release = fit_ball_sgd(
+        model,
+        optimizer,
+        X_train_flat,
+        y_train,
+        X_eval=X_test_flat,
+        y_eval=y_test,
+        radius=r,
+        lz=L_z,
+        privacy=privacy,
+        epsilon=epsilon,
+        delta=delta,
+        num_steps=1,
+        batch_size=batch_size,
+        clip_norm=clip_norm,
+        noise_multiplier=noise_multiplier,
+        loss_name="softmax_cross_entropy",
+        checkpoint_selection="last",
+        eval_every=1,
+        seed=seed,
+        trace_recorder=recorder,
+    )
+
+    trace = recorder.to_trace(
+        state=None,
+        loss_name="softmax_cross_entropy",
+        reduction="mean",
+        metadata={
+            "dataset_size": int(len(X_train_flat)),
+            "sample_rate": float(batch_size) / float(len(X_train_flat)),
+            "feature_shape": orig_feature_shape,
+        },
+    )
+    if not trace.steps:
+        raise RuntimeError("Trace recorder did not capture any step.")
+    step = trace.steps[0]
+
+    batch_indices = np.asarray(step.batch_indices, dtype=np.int64)
+    xb = np.asarray(X_train_flat[batch_indices], dtype=np.float32)
+    yb = np.asarray(y_train[batch_indices])
+
+    exact_attack = run_spear_model_batch_attack(
+        step.model_before,
+        xb,
+        yb,
+        layer_path=layer_path,
+        loss_name="softmax_cross_entropy",
+        reduction="mean",
+        cfg=SpearAttackConfig(
+            max_samples=int(max_samples_exact),
+            batch_size=None,
+            false_rejection_rate=1e-5,
+            zero_tol=float(zero_tol_exact),
+            random_seed=int(seed),
+            greedy_swap_rule="best_improvement",
+            noisy_mode=False,
+        ),
+        true_batch=xb,
+        eta_grid=(0.1, 0.2, 0.5, 1.0),
+        seed=seed,
+    )
+
+    private_attack = run_spear_trace_step_attack(
+        step,
+        layer_path=layer_path,
+        cfg=SpearAttackConfig(
+            max_samples=int(max_samples_private),
+            batch_size=int(batch_size),
+            false_rejection_rate=1e-5,
+            zero_tol=float(zero_tol_private),
+            random_seed=int(seed),
+            greedy_swap_rule="best_improvement",
+            noisy_mode=True,
+            noisy_gamma_target=0.98,
+            noisy_submatrix_rows=int(batch_size + 1),
+        ),
+        true_batch=xb,
+        eta_grid=(0.1, 0.2, 0.5, 1.0),
+    )
+
+    print("SPEAR exact status:", exact_attack.status)
+    print("SPEAR exact metrics:", exact_attack.metrics)
+    print("SPEAR private status:", private_attack.status)
+    print("SPEAR private metrics:", private_attack.metrics)
+    print("Private release kind:", release.release_kind)
+    print("Primary privacy view:", release.attack_metadata.get("primary_privacy_view"))
+
+    exact_recon = (
+        exact_attack.x_hat_aligned
+        if exact_attack.x_hat_aligned is not None
+        else exact_attack.x_hat
+    )
+    private_recon = (
+        private_attack.x_hat_aligned
+        if private_attack.x_hat_aligned is not None
+        else private_attack.x_hat
+    )
+    if exact_recon is None or private_recon is None:
+        raise RuntimeError("SPEAR demo attack failed to return a reconstruction.")
+
+    _plot_spear_batch_grid(
+        xb,
+        exact_recon,
+        feature_shape=orig_feature_shape,
+        title=f"SPEAR exact baseline ({exact_attack.status})",
+        out_path="artifacts/spear_exact_baseline.png",
+        max_items=min(8, int(batch_size)),
+    )
+    _plot_spear_batch_grid(
+        xb,
+        private_recon,
+        feature_shape=orig_feature_shape,
+        title=f"SPEAR on privatized step ({private_attack.status})",
+        out_path="artifacts/spear_private_step.png",
+        max_items=min(8, int(batch_size)),
+    )
+
+    prior = make_empirical_ball_prior(
+        X_train_flat,
+        max_samples=2048,
+    )
+    report = ball_rero(
+        release,
+        prior=prior,
+        eta_grid=(0.1, 0.2, 0.5, 1.0, 2.0, 5.0),
+        mode="auto",
+    )
+    plot_rero_report(report, out_path="artifacts/spear_private_rero.png")
+
+    return release, exact_attack, private_attack, report

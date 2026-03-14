@@ -1,3 +1,5 @@
+# quantbayes/ball_dp/attacks/model_based.py
+
 from __future__ import annotations
 
 import dataclasses as dc
@@ -364,12 +366,7 @@ def train_shadow_reconstructor(
     )
 
     hidden_dims = (
-        tuple(int(v) for v in cfg.hidden_dims)
-        if cfg.hidden_dims
-        else (
-            1000,
-            1000,
-        )
+        tuple(int(v) for v in cfg.hidden_dims) if cfg.hidden_dims else (1000, 1000)
     )
     key = jr.PRNGKey(int(cfg.seed))
     model = _RecoNN(
@@ -404,8 +401,37 @@ def train_shadow_reconstructor(
         return model, opt_state, loss, aux
 
     @eqx.filter_jit
-    def _evaluate(model, xb, yb_feat):
+    def _evaluate_batch(model, xb, yb_feat):
         return _loss_fn(model, xb, yb_feat)
+
+    def _evaluate_split(model, x_arr, y_arr, *, batch_size_eval=1024):
+        n = int(x_arr.shape[0])
+        if n == 0:
+            return {
+                "total_loss": float("nan"),
+                "mae": float("nan"),
+                "mse": float("nan"),
+            }
+
+        total_sum = 0.0
+        mae_sum = 0.0
+        mse_sum = 0.0
+
+        for lo in range(0, n, int(batch_size_eval)):
+            hi = min(lo + int(batch_size_eval), n)
+            xb = jnp.asarray(x_arr[lo:hi], dtype=jnp.float32)
+            yb = jnp.asarray(y_arr[lo:hi], dtype=jnp.float32)
+            loss_b, (mae_b, mse_b) = _evaluate_batch(model, xb, yb)
+            m = hi - lo
+            total_sum += float(loss_b) * m
+            mae_sum += float(mae_b) * m
+            mse_sum += float(mse_b) * m
+
+        return {
+            "total_loss": total_sum / float(n),
+            "mae": mae_sum / float(n),
+            "mse": mse_sum / float(n),
+        }
 
     rng = np.random.default_rng(int(cfg.seed))
     best_model = model
@@ -417,22 +443,71 @@ def train_shadow_reconstructor(
     num_epochs = max(1, int(cfg.num_epochs))
     patience = max(1, int(cfg.patience))
 
+    train_curve_history: list[dict[str, float]] = []
+    val_curve_history: list[dict[str, float]] = []
+    update_loss_history: list[dict[str, float]] = []
+
+    used_val_split = x_val_n.shape[0] > 0
+
     for epoch in range(1, num_epochs + 1):
         perm = rng.permutation(len(x_train_n))
-        for lo in range(0, len(perm), batch_size):
+
+        # Per-minibatch train losses.
+        for step_in_epoch, lo in enumerate(range(0, len(perm), batch_size), start=1):
             idx = perm[lo : lo + batch_size]
             xb = jnp.asarray(x_train_n[idx], dtype=jnp.float32)
             yb_feat = jnp.asarray(y_feat_train[idx], dtype=jnp.float32)
-            model, opt_state, _, _ = _step(model, opt_state, xb, yb_feat)
+            model, opt_state, step_loss, (step_mae, step_mse) = _step(
+                model, opt_state, xb, yb_feat
+            )
 
-        eval_x = x_val_n if x_val_n.shape[0] > 0 else x_train_n
-        eval_feat = y_feat_val if x_val_n.shape[0] > 0 else y_feat_train
-        val_loss, _ = _evaluate(
+            update_loss_history.append(
+                {
+                    "epoch": int(epoch),
+                    "step_in_epoch": int(step_in_epoch),
+                    "global_step": int(len(update_loss_history) + 1),
+                    "train_total_loss": float(step_loss),
+                    "train_mae": float(step_mae),
+                    "train_mse": float(step_mse),
+                    "batch_size": int(len(idx)),
+                }
+            )
+
+        # Full-train epoch metrics.
+        train_metrics = _evaluate_split(
             model,
-            jnp.asarray(eval_x, dtype=jnp.float32),
-            jnp.asarray(eval_feat, dtype=jnp.float32),
+            x_train_n,
+            y_feat_train,
+            batch_size_eval=max(256, batch_size),
         )
-        current_val = float(val_loss)
+        train_curve_history.append(
+            {
+                "epoch": int(epoch),
+                "train_total_loss": float(train_metrics["total_loss"]),
+                "train_mae": float(train_metrics["mae"]),
+                "train_mse": float(train_metrics["mse"]),
+            }
+        )
+
+        # Full-val epoch metrics (or train metrics if no val split exists).
+        eval_x = x_val_n if used_val_split else x_train_n
+        eval_feat = y_feat_val if used_val_split else y_feat_train
+        val_metrics = _evaluate_split(
+            model,
+            eval_x,
+            eval_feat,
+            batch_size_eval=max(256, batch_size),
+        )
+        val_curve_history.append(
+            {
+                "epoch": int(epoch),
+                "val_total_loss": float(val_metrics["total_loss"]),
+                "val_mae": float(val_metrics["mae"]),
+                "val_mse": float(val_metrics["mse"]),
+            }
+        )
+
+        current_val = float(val_metrics["total_loss"])
 
         if current_val + 1e-12 < best_val:
             best_val = current_val
@@ -444,17 +519,36 @@ def train_shadow_reconstructor(
             if epochs_without_improvement >= patience:
                 break
 
+    # Final metrics on the selected best model.
+    final_train_metrics = _evaluate_split(
+        best_model,
+        x_train_n,
+        y_feat_train,
+        batch_size_eval=max(256, batch_size),
+    )
+
+    if used_val_split:
+        final_val_metrics = _evaluate_split(
+            best_model,
+            x_val_n,
+            y_feat_val,
+            batch_size_eval=max(256, batch_size),
+        )
+    else:
+        final_val_metrics = dict(final_train_metrics)
+
     test_metrics: dict[str, float] = {}
     if x_test_n.shape[0] > 0:
-        test_loss, (test_mae, test_mse) = _evaluate(
+        test_eval = _evaluate_split(
             best_model,
-            jnp.asarray(x_test_n, dtype=jnp.float32),
-            jnp.asarray(y_feat_test, dtype=jnp.float32),
+            x_test_n,
+            y_feat_test,
+            batch_size_eval=max(256, batch_size),
         )
         test_metrics = {
-            "test_total_loss": float(test_loss),
-            "test_mae": float(test_mae),
-            "test_mse": float(test_mse),
+            "test_total_loss": float(test_eval["total_loss"]),
+            "test_mae": float(test_eval["mae"]),
+            "test_mse": float(test_eval["mse"]),
         }
 
     return ReconstructorArtifact(
@@ -468,6 +562,12 @@ def train_shadow_reconstructor(
         validation_metrics={
             "best_val_total_loss": float(best_val),
             "best_epoch": int(best_epoch),
+            "final_train_total_loss": float(final_train_metrics["total_loss"]),
+            "final_train_mae": float(final_train_metrics["mae"]),
+            "final_train_mse": float(final_train_metrics["mse"]),
+            "final_val_total_loss": float(final_val_metrics["total_loss"]),
+            "final_val_mae": float(final_val_metrics["mae"]),
+            "final_val_mse": float(final_val_metrics["mse"]),
             **test_metrics,
         },
         feature_dim=int(input_dim),
@@ -487,6 +587,10 @@ def train_shadow_reconstructor(
                 corpus.feature_metadata.get("attack_feature_map", {})
             ),
             "use_sigmoid_output": bool(use_sigmoid_output),
+            "used_validation_split": bool(used_val_split),
+            "train_curve_history": list(train_curve_history),
+            "val_curve_history": list(val_curve_history),
+            "update_loss_history": list(update_loss_history),
         },
     )
 
