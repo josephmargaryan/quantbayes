@@ -217,6 +217,7 @@ def _make_train_step(
     per_example_grad_fn,
     regularizer_grad_fn,
     normalize_noisy_sum_by: str,
+    param_projector=None,
 ):
     @eqx.filter_jit
     def _step(
@@ -261,6 +262,9 @@ def _make_train_step(
 
         updates, opt_state = optimizer.update(total_grad, opt_state, params)
         params = optax.apply_updates(params, updates)
+
+        if param_projector is not None:
+            params = param_projector(params)
 
         mean_norm = jnp.mean(norms)
         max_norm = jnp.max(norms)
@@ -596,6 +600,7 @@ def _run_training(
     force_noiseless: bool = False,
     return_debug_history: bool = False,
     trace_recorder=None,
+    param_projector: Optional[Callable[[Any], Any]] = None,
 ):
     if accounting_view not in {"ball", "standard", "none"}:
         raise ValueError("accounting_view must be one of {'ball', 'standard', 'none'}.")
@@ -694,6 +699,7 @@ def _run_training(
         per_example_grad_fn=per_example_grad_fn,
         regularizer_grad_fn=regularizer_grad_fn,
         normalize_noisy_sum_by=str(cfg.normalize_noisy_sum_by),
+        param_projector=param_projector,
     )
 
     eval_predict_fn = None if predict_fn is None else predict_fn
@@ -979,6 +985,7 @@ def run_ball_sgd_rdp(
     key: Optional[jax.Array] = None,
     return_debug_history: bool = False,
     trace_recorder=None,
+    param_projector: Optional[Callable[[Any], Any]] = None,
 ):
     return _run_training(
         dataset,
@@ -995,6 +1002,7 @@ def run_ball_sgd_rdp(
         force_noiseless=False,
         return_debug_history=return_debug_history,
         trace_recorder=trace_recorder,
+        param_projector=param_projector,
     )
 
 
@@ -1012,6 +1020,7 @@ def run_ball_sgd_dp(
     key: Optional[jax.Array] = None,
     return_debug_history: bool = False,
     trace_recorder=None,
+    param_projector: Optional[Callable[[Any], Any]] = None,
 ):
     if cfg.epsilon is None or cfg.delta is None:
         raise ValueError("Ball-SGD-DP requires both cfg.epsilon and cfg.delta.")
@@ -1029,6 +1038,7 @@ def run_ball_sgd_dp(
         key=key,
         return_debug_history=return_debug_history,
         trace_recorder=trace_recorder,
+        param_projector=param_projector,
     )
     if return_debug_history:
         artifact, debug = out
@@ -1066,6 +1076,7 @@ def run_standard_sgd_rdp(
     key: Optional[jax.Array] = None,
     return_debug_history: bool = False,
     trace_recorder=None,
+    param_projector: Optional[Callable[[Any], Any]] = None,
 ):
     return _run_training(
         dataset,
@@ -1082,6 +1093,7 @@ def run_standard_sgd_rdp(
         force_noiseless=False,
         return_debug_history=return_debug_history,
         trace_recorder=trace_recorder,
+        param_projector=param_projector,
     )
 
 
@@ -1099,6 +1111,7 @@ def run_standard_sgd_dp(
     key: Optional[jax.Array] = None,
     return_debug_history: bool = False,
     trace_recorder=None,
+    param_projector: Optional[Callable[[Any], Any]] = None,
 ):
     if cfg.epsilon is None or cfg.delta is None:
         raise ValueError("Standard DP-SGD requires both cfg.epsilon and cfg.delta.")
@@ -1116,6 +1129,7 @@ def run_standard_sgd_dp(
         key=key,
         return_debug_history=return_debug_history,
         trace_recorder=trace_recorder,
+        param_projector=param_projector,
     )
     if return_debug_history:
         artifact, debug = out
@@ -1153,6 +1167,7 @@ def run_noiseless_sgd_release(
     key: Optional[jax.Array] = None,
     return_debug_history: bool = False,
     trace_recorder=None,
+    param_projector: Optional[Callable[[Any], Any]] = None,
 ):
     return _run_training(
         dataset,
@@ -1169,6 +1184,7 @@ def run_noiseless_sgd_release(
         force_noiseless=True,
         return_debug_history=return_debug_history,
         trace_recorder=trace_recorder,
+        param_projector=param_projector,
     )
 
 
