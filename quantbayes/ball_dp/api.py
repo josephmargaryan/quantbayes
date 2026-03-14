@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, Optional, Sequence
+from typing import Any, Callable, Optional, Sequence, Dict
 
+import math
+import equinox as eqx
 import jax
+import jax.numpy as jnp
 import jax.random as jr
 import numpy as np
 import optax
@@ -17,6 +20,7 @@ from .config import (
     ReconstructorTrainingConfig,
     ShadowCorpusConfig,
 )
+from .metrics import accuracy_from_logits
 from .convex.attacks import run_convex_attack
 from .convex.releases import (
     run_convex_ball_erm_dp,
@@ -338,6 +342,151 @@ def get_release_step_table(release: ReleaseArtifact) -> list[dict[str, Any]]:
     return rows
 
 
+def extract_privacy_epsilon(
+    release: ReleaseArtifact,
+    *,
+    accounting_view: str = "primary",
+) -> float:
+    view = str(accounting_view).lower()
+    if view == "primary":
+        view = str(release.attack_metadata.get("primary_privacy_view", "ball")).lower()
+
+    if view not in {"ball", "standard"}:
+        raise ValueError(
+            "accounting_view must be one of {'primary', 'ball', 'standard'}."
+        )
+
+    ledger = release.privacy.ball if view == "ball" else release.privacy.standard
+    if not ledger.dp_certificates:
+        raise ValueError(
+            f"Release does not carry a DP certificate for accounting_view={view!r}."
+        )
+    return float(ledger.dp_certificates[0].epsilon)
+
+
+def calibrate_privacy_parameter(
+    make_release: Callable[[float], ReleaseArtifact],
+    *,
+    target_epsilon: float,
+    accounting_view: str = "primary",
+    lower: float = 1e-3,
+    upper: float = 0.25,
+    max_upper: float = 128.0,
+    num_bisection_steps: int = 10,
+) -> tuple[float, ReleaseArtifact]:
+    """Calibrate a monotone scalar parameter (typically a noise multiplier) so that
+    the resulting release satisfies epsilon <= target_epsilon.
+
+    Assumes the parameter is privacy-improving when increased, e.g. larger Gaussian
+    noise multiplier => smaller epsilon.
+    """
+    target_epsilon = float(target_epsilon)
+    lower = float(lower)
+    upper = float(upper)
+    max_upper = float(max_upper)
+    num_bisection_steps = int(num_bisection_steps)
+
+    if target_epsilon <= 0.0:
+        raise ValueError("target_epsilon must be > 0.")
+    if not (0.0 < lower < upper):
+        raise ValueError("Require 0 < lower < upper.")
+    if max_upper <= upper:
+        raise ValueError("max_upper must exceed upper.")
+    if num_bisection_steps < 0:
+        raise ValueError("num_bisection_steps must be >= 0.")
+
+    lo = lower
+    hi = upper
+
+    while True:
+        release_hi = make_release(hi)
+        eps_hi = extract_privacy_epsilon(release_hi, accounting_view=accounting_view)
+        if eps_hi <= target_epsilon:
+            best_release = release_hi
+            break
+        lo = hi
+        hi *= 2.0
+        if hi > max_upper:
+            raise RuntimeError(
+                "Failed to bracket a privacy-feasible parameter value. "
+                f"Last tried upper={hi:.6g}, target_epsilon={target_epsilon:.6g}."
+            )
+
+    for _ in range(num_bisection_steps):
+        mid = 0.5 * (lo + hi)
+        release_mid = make_release(mid)
+        eps_mid = extract_privacy_epsilon(release_mid, accounting_view=accounting_view)
+        if eps_mid <= target_epsilon:
+            hi = mid
+            best_release = release_mid
+        else:
+            lo = mid
+
+    return float(hi), best_release
+
+
+def evaluate_release_classifier(
+    release: ReleaseArtifact,
+    X: np.ndarray,
+    y: np.ndarray,
+    *,
+    key: Optional[jax.Array] = None,
+    batch_size: int = 1024,
+    state: Any = None,
+) -> Dict[str, float]:
+    """Evaluate a nonconvex release carrying an Equinox classifier model."""
+    if key is None:
+        key = jr.PRNGKey(0)
+
+    model = release.payload
+    if not callable(model):
+        raise ValueError(
+            "evaluate_release_classifier expects release.payload to be a callable "
+            "model, as produced by the nonconvex Ball-SGD / standard DP-SGD path."
+        )
+
+    model_eval = eqx.nn.inference_mode(model, value=True)
+    if state is None:
+        state = release.extra.get("model_state", None)
+
+    Xj = jnp.asarray(X, dtype=jnp.float32)
+    y_np = np.asarray(y)
+
+    n = int(Xj.shape[0])
+    if n == 0:
+        return {"accuracy": float("nan"), "n_eval": 0.0}
+
+    num_batches = math.ceil(n / int(batch_size))
+    keys = jr.split(key, num_batches)
+    logits_chunks = []
+
+    for i in range(num_batches):
+        lo = i * int(batch_size)
+        hi = min((i + 1) * int(batch_size), n)
+        xb = Xj[lo:hi]
+        batch_keys = jr.split(keys[i], xb.shape[0])
+
+        logits = jax.vmap(
+            lambda x_one, k_one: model_eval(x_one, key=k_one, state=state)[0],
+            in_axes=(0, 0),
+        )(xb, batch_keys)
+        logits_chunks.append(np.asarray(logits))
+
+    logits_all = np.concatenate(logits_chunks, axis=0)
+
+    y_eval = np.asarray(y_np, dtype=np.int64)
+    if logits_all.ndim == 1 or (logits_all.ndim > 1 and logits_all.shape[-1] == 1):
+        uniq = set(np.unique(y_eval).tolist())
+        if uniq.issubset({-1, 1}):
+            y_eval = (y_eval > 0).astype(np.int64)
+
+    acc = accuracy_from_logits(logits_all, y_eval)
+    return {
+        "accuracy": float(acc),
+        "n_eval": float(n),
+    }
+
+
 def fit_ball_sgd(
     model: Any,
     optimizer: optax.GradientTransformation,
@@ -375,6 +524,7 @@ def fit_ball_sgd(
     key: Optional[jax.Array] = None,
     return_debug_history: bool = False,
     trace_recorder=None,
+    param_projector: Optional[Callable[[Any], Any]] = None,
 ):
     privacy_kind = _normalize_privacy_kind(privacy)
 
@@ -435,6 +585,7 @@ def fit_ball_sgd(
         key=key,
         return_debug_history=bool(return_debug_history),
         trace_recorder=trace_recorder,
+        param_projector=param_projector,
     )
 
     if privacy_kind == "ball_dp":

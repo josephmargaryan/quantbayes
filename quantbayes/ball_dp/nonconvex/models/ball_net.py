@@ -186,189 +186,35 @@ def check_input_bound(X: jnp.ndarray, *, B: float, atol: float = 1e-6) -> None:
 
 
 if __name__ == "__main__":
-    import math
     import numpy as np
-    import matplotlib.pyplot as plt
-    import equinox as eqx
+    import jax.numpy as jnp
+    import jax.random as jr
     import optax
     from sklearn.datasets import make_moons
     from sklearn.model_selection import train_test_split
 
-    from quantbayes.ball_dp.config import NonconvexReleaseConfig
-    from quantbayes.ball_dp.types import ArrayDataset
-    from quantbayes.ball_dp.nonconvex.sgd import (
-        run_ball_sgd_rdp,
-        run_ball_sgd_dp,
-        run_standard_sgd_rdp,
-        run_standard_sgd_dp,
+    from quantbayes.ball_dp.api import (
+        fit_ball_sgd,
+        extract_privacy_epsilon,
+        calibrate_privacy_parameter,
+        evaluate_release_classifier,
+        get_release_step_table,
     )
+    from quantbayes.ball_dp.plots import plot_release_comparison
 
-    # ----------------------------
-    # Small helpers
-    # ----------------------------
-
-    def _extract_epsilon(artifact, view: str) -> float:
-        ledger = artifact.privacy.ball if view == "ball" else artifact.privacy.standard
-        if not ledger.dp_certificates:
-            return math.inf
-        return float(ledger.dp_certificates[0].epsilon)
-
-    def _extract_history(artifact, key: str):
-        hist = artifact.extra.get("public_curve_history", [])
-        xs, ys = [], []
-        for row in hist:
-            if key in row:
-                xs.append(int(row["step"]))
-                ys.append(float(row[key]))
-        return xs, ys
-
-    def _test_accuracy(model, X, y, *, key):
-        model_eval = eqx.nn.inference_mode(model, value=True)
-        Xj = jnp.asarray(X, dtype=jnp.float32)
-        keys = jr.split(key, Xj.shape[0])
-
-        logits = jax.vmap(
-            lambda x, k: model_eval(x, key=k, state=None)[0],
-            in_axes=(0, 0),
-        )(Xj, keys)
-        preds = (np.asarray(logits) > 0.0).astype(np.int32)
-        return float(np.mean(preds == np.asarray(y, dtype=np.int32)))
-
-    def _make_cfg(*, noise_multiplier: float, lz_value, epsilon_value=None, seed=0):
-        # Keep Ball and standard runs identical except for the accounting view and lz.
-        return NonconvexReleaseConfig(
-            epsilon=epsilon_value,
-            delta=delta,
-            radius=r,
-            lz=lz_value,
-            num_steps=num_steps,
-            batch_sizes=batch_size,
-            clip_norms=clip_norm,
-            noise_multipliers=noise_multiplier,
-            orders=orders,
-            loss_name="binary_logistic",
-            normalize_noisy_sum_by="batch_size",
-            eval_every=eval_every,
-            eval_batch_size=eval_batch_size,
-            checkpoint_selection="best_public_eval_accuracy",
-            warn_if_ball_equals_standard=True,
-            seed=seed,
-        )
-
-    def _fresh_model():
-        # Same initialization every time for a fair comparison.
-        return make_ball_tanh_net(
-            d_in=X_train.shape[1],
-            hidden_dim=H,
-            key=jr.PRNGKey(model_seed),
-            init_project=True,
-            S=S,
-            A=A,
-        )
-
-    def _run_rdp(view: str, noise_multiplier: float):
-        cfg = _make_cfg(
-            noise_multiplier=noise_multiplier,
-            lz_value=(lz if view == "ball" else None),
-            epsilon_value=None,
-        )
-        model = _fresh_model()
-        if view == "ball":
-            return run_ball_sgd_rdp(
-                dataset=train_ds,
-                cfg=cfg,
-                model=model,
-                optimizer=optax.adam(learning_rate),
-                public_eval_dataset=public_eval_ds,
-                key=jr.PRNGKey(train_seed),
-                param_projector=projector,
-            )
-        elif view == "standard":
-            return run_standard_sgd_rdp(
-                dataset=train_ds,
-                cfg=cfg,
-                model=model,
-                optimizer=optax.adam(learning_rate),
-                public_eval_dataset=public_eval_ds,
-                key=jr.PRNGKey(train_seed),
-                param_projector=projector,
-            )
-        else:
-            raise ValueError(f"Unknown view={view!r}")
-
-    def _run_dp(view: str, noise_multiplier: float):
-        cfg = _make_cfg(
-            noise_multiplier=noise_multiplier,
-            lz_value=(lz if view == "ball" else None),
-            epsilon_value=epsilon_target,
-        )
-        model = _fresh_model()
-        if view == "ball":
-            return run_ball_sgd_dp(
-                dataset=train_ds,
-                cfg=cfg,
-                model=model,
-                optimizer=optax.adam(learning_rate),
-                public_eval_dataset=public_eval_ds,
-                key=jr.PRNGKey(train_seed),
-                param_projector=projector,
-            )
-        elif view == "standard":
-            return run_standard_sgd_dp(
-                dataset=train_ds,
-                cfg=cfg,
-                model=model,
-                optimizer=optax.adam(learning_rate),
-                public_eval_dataset=public_eval_ds,
-                key=jr.PRNGKey(train_seed),
-                param_projector=projector,
-            )
-        else:
-            raise ValueError(f"Unknown view={view!r}")
-
-    def _calibrate_noise_multiplier(view: str, target_epsilon: float):
-        # Privacy epsilon depends only on the accountant inputs, not on optimization
-        # outcomes, but we use the actual trainer here as a simple tutorial path.
-        lo, hi = 1e-3, 0.25
-
-        # Expand upper bracket until epsilon <= target.
-        while True:
-            art = _run_rdp(view, hi)
-            eps = _extract_epsilon(art, view)
-            if eps <= target_epsilon:
-                break
-            hi *= 2.0
-            if hi > 128.0:
-                raise RuntimeError(
-                    f"Could not bracket a noise multiplier for view={view!r}."
-                )
-
-        # Bisection for a reasonably tight calibration.
-        for _ in range(10):
-            mid = 0.5 * (lo + hi)
-            art = _run_rdp(view, mid)
-            eps = _extract_epsilon(art, view)
-            if eps <= target_epsilon:
-                hi = mid
-            else:
-                lo = mid
-
-        return float(hi)
-
-    # ----------------------------
-    # Synthetic binary dataset
-    # ----------------------------
+    # ------------------------------------------------------------
+    # 1) Synthetic binary dataset with a public input bound ||x||_2 <= 1
+    # ------------------------------------------------------------
     X, y = make_moons(n_samples=2500, noise=0.18, random_state=0)
     X = X.astype(np.float32)
     y = y.astype(np.int32)
 
-    # Public preprocessing to enforce ||x||_2 <= 1.
+    # Public preprocessing to enforce the theorem assumption ||x||_2 <= B.
     X_norms = np.linalg.norm(X, axis=1, keepdims=True)
     X = X / np.maximum(X_norms, 1e-12)
     B = 1.0
     check_input_bound(jnp.asarray(X), B=B)
 
-    # Train / public-eval / held-out test split.
     X_train, X_tmp, y_train, y_tmp = train_test_split(
         X, y, test_size=0.4, random_state=0, stratify=y
     )
@@ -376,33 +222,16 @@ if __name__ == "__main__":
         X_tmp, y_tmp, test_size=0.5, random_state=0, stratify=y_tmp
     )
 
-    train_ds = ArrayDataset(X_train, y_train)
-    public_eval_ds = ArrayDataset(X_public, y_public)
-
-    # ----------------------------
-    # Theorem / training hyperparameters
-    # ----------------------------
+    # ------------------------------------------------------------
+    # 2) Theorem-backed Ball-tanh model constants
+    # ------------------------------------------------------------
     H = 64
     A = 1.0
     S = 1.0
     r = 1.0
     clip_norm = 1.0
 
-    # This is the theorem-backed Ball constant for THIS model family.
     lz = certified_tanh_mlp_lz(A=A, S=S, B=B, H=H)
-
-    learning_rate = 3e-2
-    num_steps = 250
-    batch_size = 64
-    eval_every = 25
-    eval_batch_size = 512
-    orders = tuple(range(2, 65))
-    delta = 1e-5
-    epsilon_target = 3.0
-
-    model_seed = 0
-    train_seed = 123
-
     projector = make_ball_tanh_projector(S=S, A=A)
 
     print("=" * 80)
@@ -416,17 +245,87 @@ if __name__ == "__main__":
     print(f"Strict Ball sensitivity improvement? {(lz * r) < (2.0 * clip_norm)}")
     print()
 
-    # ------------------------------------------------------------------
-    # 1) Same-noise comparison: identical training mechanism, different
-    #    privacy accounting. This shows the certificate gain directly.
-    # ------------------------------------------------------------------
+    # ------------------------------------------------------------
+    # 3) Shared training hyperparameters
+    # ------------------------------------------------------------
+    learning_rate = 3e-2
+    num_steps = 250
+    batch_size = 64
+    eval_every = 25
+    eval_batch_size = 512
+    delta = 1e-5
+    epsilon_target = 3.0
+    seed = 123
+
+    optimizer = optax.adam(learning_rate)
+
+    def make_model():
+        # Fresh model each time; projected at init so the theorem starts valid.
+        return make_ball_tanh_net(
+            d_in=X_train.shape[1],
+            hidden_dim=H,
+            key=jr.PRNGKey(0),
+            init_project=True,
+            S=S,
+            A=A,
+        )
+
+    def fit_release(
+        *,
+        privacy: str,
+        noise_multiplier: float,
+        epsilon: float | None,
+    ):
+        # do use privacy="standard_dp" / "standard_rdp" to compare with normal DP/RDP
+        return fit_ball_sgd(
+            model=make_model(),
+            optimizer=optimizer,
+            X_train=X_train,
+            y_train=y_train,
+            X_eval=X_public,
+            y_eval=y_public,
+            radius=r,
+            lz=(lz if privacy.startswith("ball") else None),
+            privacy=privacy,
+            epsilon=epsilon,
+            delta=delta,
+            num_steps=num_steps,
+            batch_size=batch_size,
+            clip_norm=clip_norm,
+            noise_multiplier=noise_multiplier,
+            loss_name="binary_logistic",
+            checkpoint_selection="best_public_eval_accuracy",
+            eval_every=eval_every,
+            eval_batch_size=eval_batch_size,
+            warn_if_ball_equals_standard=True,
+            seed=seed,
+            key=jr.PRNGKey(seed),
+            param_projector=projector,
+        )
+
+    # ------------------------------------------------------------
+    # 4) Same-noise comparison
+    #    Same mechanism, same seed, same model family, different accountant.
+    # ------------------------------------------------------------
     shared_noise_multiplier = 1.0
 
-    artifact_ball_same_noise = _run_rdp("ball", shared_noise_multiplier)
-    artifact_std_same_noise = _run_rdp("standard", shared_noise_multiplier)
+    release_ball_same_noise = fit_release(
+        privacy="ball_rdp",
+        noise_multiplier=shared_noise_multiplier,
+        epsilon=None,
+    )
+    release_std_same_noise = fit_release(
+        privacy="standard_rdp",
+        noise_multiplier=shared_noise_multiplier,
+        epsilon=None,
+    )
 
-    eps_ball_same_noise = _extract_epsilon(artifact_ball_same_noise, "ball")
-    eps_std_same_noise = _extract_epsilon(artifact_std_same_noise, "standard")
+    eps_ball_same_noise = extract_privacy_epsilon(
+        release_ball_same_noise, accounting_view="ball"
+    )
+    eps_std_same_noise = extract_privacy_epsilon(
+        release_std_same_noise, accounting_view="standard"
+    )
 
     print("=" * 80)
     print("Same-noise comparison")
@@ -437,30 +336,65 @@ if __name__ == "__main__":
     print("At the same noise, Ball should certify a smaller (or equal) epsilon.")
     print()
 
-    # ------------------------------------------------------------------
-    # 2) Matched-epsilon comparison: calibrate noise separately for Ball
-    #    and standard, then compare utility at the same target epsilon.
-    # ------------------------------------------------------------------
-    nm_ball = _calibrate_noise_multiplier("ball", epsilon_target)
-    nm_std = _calibrate_noise_multiplier("standard", epsilon_target)
-
-    artifact_ball = _run_dp("ball", nm_ball)
-    artifact_std = _run_dp("standard", nm_std)
-
-    eps_ball = _extract_epsilon(artifact_ball, "ball")
-    eps_std = _extract_epsilon(artifact_std, "standard")
-
-    acc_test_ball = _test_accuracy(
-        artifact_ball.payload,
-        X_test,
-        y_test,
-        key=jr.PRNGKey(999),
+    # ------------------------------------------------------------
+    # 5) Matched-epsilon comparison
+    #    Calibrate separate noise multipliers, then compare utility.
+    # ------------------------------------------------------------
+    nm_ball, _ = calibrate_privacy_parameter(
+        lambda nm: fit_release(
+            privacy="ball_rdp",
+            noise_multiplier=nm,
+            epsilon=None,
+        ),
+        target_epsilon=epsilon_target,
+        accounting_view="ball",
+        lower=1e-3,
+        upper=0.25,
+        max_upper=128.0,
+        num_bisection_steps=10,
     )
-    acc_test_std = _test_accuracy(
-        artifact_std.payload,
+
+    nm_std, _ = calibrate_privacy_parameter(
+        lambda nm: fit_release(
+            privacy="standard_rdp",
+            noise_multiplier=nm,
+            epsilon=None,
+        ),
+        target_epsilon=epsilon_target,
+        accounting_view="standard",
+        lower=1e-3,
+        upper=0.25,
+        max_upper=128.0,
+        num_bisection_steps=10,
+    )
+
+    release_ball = fit_release(
+        privacy="ball_dp",
+        noise_multiplier=nm_ball,
+        epsilon=epsilon_target,
+    )
+    release_std = fit_release(
+        privacy="standard_dp",
+        noise_multiplier=nm_std,
+        epsilon=epsilon_target,
+    )
+
+    eps_ball = extract_privacy_epsilon(release_ball, accounting_view="ball")
+    eps_std = extract_privacy_epsilon(release_std, accounting_view="standard")
+
+    test_ball = evaluate_release_classifier(
+        release_ball,
         X_test,
         y_test,
         key=jr.PRNGKey(999),
+        batch_size=eval_batch_size,
+    )
+    test_std = evaluate_release_classifier(
+        release_std,
+        X_test,
+        y_test,
+        key=jr.PRNGKey(999),
+        batch_size=eval_batch_size,
     )
 
     print("=" * 80)
@@ -472,61 +406,33 @@ if __name__ == "__main__":
     print(f"Ball achieved epsilon     = {eps_ball:.6f}")
     print(f"Standard achieved epsilon = {eps_std:.6f}")
     print(
-        f"Ball public-eval accuracy = {artifact_ball.utility_metrics.get('public_eval_accuracy', float('nan')):.6f}"
+        f"Ball public-eval accuracy = "
+        f"{release_ball.utility_metrics.get('public_eval_accuracy', float('nan')):.6f}"
     )
     print(
-        f"Std  public-eval accuracy = {artifact_std.utility_metrics.get('public_eval_accuracy', float('nan')):.6f}"
+        f"Std  public-eval accuracy = "
+        f"{release_std.utility_metrics.get('public_eval_accuracy', float('nan')):.6f}"
     )
-    print(f"Ball test accuracy        = {acc_test_ball:.6f}")
-    print(f"Std  test accuracy        = {acc_test_std:.6f}")
+    print(f"Ball test accuracy        = {test_ball['accuracy']:.6f}")
+    print(f"Std  test accuracy        = {test_std['accuracy']:.6f}")
     print()
 
-    # do use run_standard_sgd_* to compare with normal dp/rdp
-    # Do NOT compare to "normal DP" by setting lz = 2*C inside the Ball runner.
-    # The standard baseline is run_standard_sgd_dp / run_standard_sgd_rdp.
+    # ------------------------------------------------------------
+    # 6) Internal release diagnostics
+    # ------------------------------------------------------------
+    print("=" * 80)
+    print("First 3 Ball release step rows")
+    print("=" * 80)
+    for row in get_release_step_table(release_ball)[:3]:
+        print(row)
+    print()
 
-    # ----------------------------
-    # Visualizations
-    # ----------------------------
-    steps_ball_acc, ball_acc_curve = _extract_history(
-        artifact_ball, "public_eval_accuracy"
+    # ------------------------------------------------------------
+    # 7) Visual comparison of matched-epsilon runs
+    # ------------------------------------------------------------
+    plot_release_comparison(
+        release_ball,
+        release_std,
+        labels=("Ball-DP (matched ε)", "Standard DP (matched ε)"),
+        metric_keys=("public_eval_accuracy", "public_eval_loss"),
     )
-    steps_std_acc, std_acc_curve = _extract_history(
-        artifact_std, "public_eval_accuracy"
-    )
-    steps_ball_loss, ball_loss_curve = _extract_history(
-        artifact_ball, "public_eval_loss"
-    )
-    steps_std_loss, std_loss_curve = _extract_history(artifact_std, "public_eval_loss")
-
-    fig, axes = plt.subplots(1, 2, figsize=(12, 4))
-
-    axes[0].plot(steps_ball_acc, ball_acc_curve, label="Ball-DP (matched ε)")
-    axes[0].plot(steps_std_acc, std_acc_curve, label="Standard DP (matched ε)")
-    axes[0].set_title("Public-eval accuracy")
-    axes[0].set_xlabel("Step")
-    axes[0].set_ylabel("Accuracy")
-    axes[0].grid(True, alpha=0.3)
-    axes[0].legend()
-
-    axes[1].plot(steps_ball_loss, ball_loss_curve, label="Ball-DP (matched ε)")
-    axes[1].plot(steps_std_loss, std_loss_curve, label="Standard DP (matched ε)")
-    axes[1].set_title("Public-eval loss")
-    axes[1].set_xlabel("Step")
-    axes[1].set_ylabel("Loss")
-    axes[1].grid(True, alpha=0.3)
-    axes[1].legend()
-
-    plt.tight_layout()
-    plt.show()
-
-    # Optional extra plot: same-noise certificate comparison.
-    plt.figure(figsize=(5, 4))
-    plt.bar(
-        ["Ball\n(same noise)", "Standard\n(same noise)"],
-        [eps_ball_same_noise, eps_std_same_noise],
-    )
-    plt.ylabel("Certified epsilon")
-    plt.title("Same-noise privacy certificates")
-    plt.tight_layout()
-    plt.show()

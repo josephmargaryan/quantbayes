@@ -380,6 +380,61 @@ def plot_release_curves(
     _save_or_show(fig, out_path)
 
 
+def plot_release_comparison(
+    release_a: ReleaseArtifact,
+    release_b: ReleaseArtifact,
+    *,
+    labels: Sequence[str] = ("release_a", "release_b"),
+    metric_keys: Sequence[str] = ("public_eval_accuracy", "public_eval_loss"),
+    out_path: Optional[str] = None,
+) -> None:
+    """Plot public evaluation curves for two releases side-by-side."""
+    history_a = release_a.extra.get("public_curve_history", None)
+    history_b = release_b.extra.get("public_curve_history", None)
+    if not history_a:
+        raise ValueError("release_a.extra['public_curve_history'] is missing or empty.")
+    if not history_b:
+        raise ValueError("release_b.extra['public_curve_history'] is missing or empty.")
+
+    metric_keys = tuple(str(k) for k in metric_keys)
+    if len(metric_keys) == 0:
+        raise ValueError("metric_keys must be non-empty.")
+
+    ncols = len(metric_keys)
+    fig, axes = plt.subplots(1, ncols, figsize=(6 * ncols, 4))
+    axes = np.asarray(axes).reshape(-1)
+
+    label_a = str(labels[0]) if len(labels) >= 1 else "release_a"
+    label_b = str(labels[1]) if len(labels) >= 2 else "release_b"
+
+    for ax, key in zip(axes, metric_keys):
+        steps_a = np.asarray(
+            [row["step"] for row in history_a if key in row], dtype=np.int64
+        )
+        vals_a = np.asarray(
+            [row[key] for row in history_a if key in row], dtype=np.float32
+        )
+        steps_b = np.asarray(
+            [row["step"] for row in history_b if key in row], dtype=np.int64
+        )
+        vals_b = np.asarray(
+            [row[key] for row in history_b if key in row], dtype=np.float32
+        )
+
+        if len(steps_a) > 0:
+            ax.plot(steps_a, vals_a, label=label_a)
+        if len(steps_b) > 0:
+            ax.plot(steps_b, vals_b, label=label_b)
+
+        ax.set_xlabel("step")
+        ax.set_title(key.replace("_", " "))
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+
+    fig.tight_layout()
+    _save_or_show(fig, out_path)
+
+
 def plot_operator_norm_history(
     release: ReleaseArtifact,
     *,
