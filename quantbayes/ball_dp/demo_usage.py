@@ -1086,7 +1086,7 @@ def demo_nonconvex_spear_exact_batch_attack(
         reduction="mean",
         cfg=SpearAttackConfig(
             max_samples=int(max_samples),
-            batch_size=None,  # exact paper mode: infer b as rank(dL/dW)
+            batch_size=int(batch_size),
             false_rejection_rate=float(false_rejection_rate),
             zero_tol=float(zero_tol),
             random_seed=int(seed),

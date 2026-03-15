@@ -553,9 +553,9 @@ def run_spear_batch_attack(
 ) -> SpearAttackResult:
     """Run SPEAR on a single linear+ReLU layer from observed weight/bias gradients.
 
-    Exact mode (paper-faithful):
-      - cfg.noisy_mode=False
-      - cfg.batch_size=None to infer b as rank(grad_W)
+    Exact mode:
+      - if cfg.batch_size is None, b is inferred numerically as rank(grad_W)
+      - if cfg.batch_size is provided, the top-b truncated SVD is used instead
 
     Noisy / DP-SGD adaptation:
       - cfg.noisy_mode=True
@@ -587,18 +587,6 @@ def run_spear_batch_attack(
         batch_size=cfg.batch_size,
         rank_tol=cfg.rank_tol,
     )
-
-    if (
-        not bool(cfg.noisy_mode)
-        and cfg.batch_size is not None
-        and int(cfg.batch_size) != int(inferred_rank)
-    ):
-        raise ValueError(
-            "Exact SPEAR mode requires cfg.batch_size to match rank(grad_W). "
-            f"Got cfg.batch_size={cfg.batch_size}, inferred_rank={inferred_rank}. "
-            "Use cfg.batch_size=None for paper-faithful exact mode."
-        )
-
     if batch_size < 2:
         raise ValueError("SPEAR is intended for batch size >= 2.")
 
@@ -681,7 +669,6 @@ def run_spear_batch_attack(
             continue
 
         if candidate_pool_rank < int(batch_size):
-            # Keep sampling until the pool contains b independent directions.
             continue
 
         gamma, x_hat, dLdZ, Q, scales, selected, passes = _greedy_filter(
@@ -727,6 +714,9 @@ def run_spear_batch_attack(
             "inferred_rank": int(inferred_rank),
             "requested_batch_size": (
                 None if cfg.batch_size is None else int(cfg.batch_size)
+            ),
+            "numerical_rank_mismatch": bool(
+                cfg.batch_size is not None and int(cfg.batch_size) != int(inferred_rank)
             ),
             "tau": float(tau),
             "tau_zero_count_threshold": int(threshold_count),
@@ -781,6 +771,9 @@ def run_spear_batch_attack(
         "batch_size": int(batch_size),
         "inferred_rank": int(inferred_rank),
         "requested_batch_size": None if cfg.batch_size is None else int(cfg.batch_size),
+        "numerical_rank_mismatch": bool(
+            cfg.batch_size is not None and int(cfg.batch_size) != int(inferred_rank)
+        ),
         "tau": float(tau),
         "tau_zero_count_threshold": int(threshold_count),
         "false_rejection_rate_target": float(cfg.false_rejection_rate),
@@ -793,7 +786,7 @@ def run_spear_batch_attack(
         "n_duplicates": int(n_duplicate),
         "n_samples_run": int(sample_idx),
         "best_gamma": float(best_gamma),
-        "best_lambda": float(best_gamma),  # backward-compatible name
+        "best_lambda": float(best_gamma),
         "selected_candidate_indices": (
             None if best_selected is None else list(best_selected)
         ),
@@ -966,8 +959,9 @@ def run_spear_model_batch_attack(
 ) -> SpearAttackResult:
     """Run SPEAR on an exact batch gradient computed from a model and batch.
 
-    This is the paper-faithful wrapper: it computes the exact gradient of the attacked
-    linear layer on the supplied batch, then runs SPEAR on that layer.
+    For this high-level exact wrapper, the attacked batch size is known from xb.
+    Using that known batch size is numerically much more stable than inferring it
+    from np.linalg.matrix_rank(grad_W) in float64.
     """
     xb = np.asarray(xb, dtype=np.float64)
     yb = np.asarray(yb)
@@ -975,6 +969,10 @@ def run_spear_model_batch_attack(
         raise ValueError("xb must have shape (batch, ...).")
     if len(xb) != len(yb):
         raise ValueError("xb and yb must have the same batch size.")
+
+    cfg = SpearAttackConfig() if cfg is None else dc.replace(cfg)
+    if not bool(cfg.noisy_mode) and cfg.batch_size is None:
+        cfg.batch_size = int(len(xb))
 
     resolved_loss = resolve_loss_fn(loss_name)
     params, static = partition_model(model)
