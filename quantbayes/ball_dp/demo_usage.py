@@ -944,6 +944,34 @@ def _plot_spear_batch_grid(
             f"true_batch.shape={true_batch.shape} must match recon_batch.shape={recon_batch.shape}."
         )
 
+    def _resolve_display_shape(
+        flat_dim: int, shape: tuple[int, ...]
+    ) -> tuple[int, ...]:
+        shape = tuple(int(v) for v in shape)
+
+        # Already a valid image/tensor shape.
+        prod = 1
+        for v in shape:
+            prod *= v
+        if prod == flat_dim:
+            if len(shape) == 2:
+                return shape
+            if len(shape) == 3 and shape[0] in {1, 3, 4}:
+                return shape
+            if len(shape) == 3 and shape[-1] in {1, 3, 4}:
+                return shape
+
+        # Common flattened grayscale case, e.g. 784 -> 28x28.
+        side = int(round(np.sqrt(flat_dim)))
+        if side * side == flat_dim:
+            return (side, side)
+
+        # Fallback: display as a 1 x D row image.
+        return (1, flat_dim)
+
+    flat_dim = int(true_batch.shape[1])
+    display_shape = _resolve_display_shape(flat_dim, feature_shape)
+
     n_show = min(int(max_items), int(true_batch.shape[0]))
     ncols = n_show
     fig, axes = plt.subplots(2, ncols, figsize=(1.9 * ncols, 4.0))
@@ -952,8 +980,8 @@ def _plot_spear_batch_grid(
         axes = axes[:, None]
 
     for j in range(n_show):
-        true_img = np.asarray(true_batch[j]).reshape(feature_shape)
-        recon_img = np.asarray(recon_batch[j]).reshape(feature_shape)
+        true_img = np.asarray(true_batch[j]).reshape(display_shape)
+        recon_img = np.asarray(recon_batch[j]).reshape(display_shape)
 
         ax_true = axes[0, j]
         ax_rec = axes[1, j]
@@ -961,12 +989,16 @@ def _plot_spear_batch_grid(
         if true_img.ndim == 2:
             ax_true.imshow(true_img, cmap="gray")
             ax_rec.imshow(recon_img, cmap="gray")
-        elif true_img.ndim == 3 and true_img.shape[0] in {1, 3}:
+        elif true_img.ndim == 3 and true_img.shape[0] in {1, 3, 4}:
             ax_true.imshow(np.transpose(true_img, (1, 2, 0)))
             ax_rec.imshow(np.transpose(recon_img, (1, 2, 0)))
-        else:
+        elif true_img.ndim == 3 and true_img.shape[-1] in {1, 3, 4}:
             ax_true.imshow(true_img)
             ax_rec.imshow(recon_img)
+        else:
+            raise ValueError(
+                f"Could not interpret display shape {true_img.shape} as image data."
+            )
 
         ax_true.set_title(f"true[{j}]")
         ax_rec.set_title(f"recon[{j}]")
@@ -985,6 +1017,7 @@ def demo_nonconvex_spear_exact_batch_attack(
     *,
     batch_size: int = 8,
     target_index=None,
+    feature_shape_override=None,
     layer_path: tuple[object, ...] = ("layers", 0),
     max_samples: int = 20_000,
     false_rejection_rate: float = 1e-5,
@@ -1001,7 +1034,12 @@ def demo_nonconvex_spear_exact_batch_attack(
     """
     X_train = np.asarray(X_train)
     y_train = np.asarray(y_train)
-    orig_feature_shape = _feature_shape(X_train)
+
+    if feature_shape_override is not None:
+        orig_feature_shape = tuple(int(v) for v in feature_shape_override)
+    else:
+        orig_feature_shape = tuple(int(v) for v in _feature_shape(X_train))
+
     X_train_flat = _flatten_X(X_train).astype(np.float64)
 
     if int(batch_size) < 2:
