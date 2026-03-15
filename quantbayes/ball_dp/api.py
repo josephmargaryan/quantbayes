@@ -610,15 +610,15 @@ def _spear_target_attack_result(
     )
 
 
-def fit_targeted_ball_sgd_trace(
+def fit_targeted_sgd_trace(
     model: Any,
     optimizer: optax.GradientTransformation,
     X_train: np.ndarray,
     y_train: np.ndarray,
     *,
     target_index: int,
-    radius: float,
-    lz: Optional[float],
+    radius: Optional[float] = None,
+    lz: Optional[float] = None,
     X_eval: Optional[np.ndarray] = None,
     y_eval: Optional[np.ndarray] = None,
     privacy: BallPrivacyKind = "ball_rdp",
@@ -650,8 +650,28 @@ def fit_targeted_ball_sgd_trace(
     seed: int = 0,
     key: Optional[jax.Array] = None,
 ) -> tuple[ReleaseArtifact, DPSGDTrace, Record, np.ndarray]:
+    """Train with deterministic target inclusion and return the traced SGD transcript.
+
+    `radius` and `lz` are required only for Ball-accounted modes:
+        {'ball_dp', 'ball_rdp'} and aliases {'dp', 'rdp'}.
+
+    For `standard_dp`, `standard_rdp`, and `noiseless`, they are optional.
+    """
     if int(num_steps) <= 0:
         raise ValueError("num_steps must be positive.")
+
+    privacy_kind = _normalize_privacy_kind(privacy)
+    if privacy_kind in {"ball_dp", "ball_rdp"}:
+        if radius is None or lz is None:
+            raise ValueError(
+                f"privacy={privacy!r} uses Ball accounting, so both radius and lz must be provided. "
+                "Note: the aliases 'dp' and 'rdp' map to Ball accounting in this codebase."
+            )
+        radius_use = float(radius)
+        lz_use = float(lz)
+    else:
+        radius_use = 1.0 if radius is None else float(radius)
+        lz_use = None if lz is None else float(lz)
 
     X_orig, X_attack, feature_shape = _prepare_attack_arrays(
         X_train, flatten_inputs=bool(flatten_inputs)
@@ -697,8 +717,8 @@ def fit_targeted_ball_sgd_trace(
         optimizer,
         X_attack,
         y_np,
-        radius=float(radius),
-        lz=None if lz is None else float(lz),
+        radius=float(radius_use),
+        lz=lz_use,
         X_eval=X_eval_attack,
         y_eval=None if y_eval is None else np.asarray(y_eval),
         privacy=str(privacy),
@@ -742,6 +762,9 @@ def fit_targeted_ball_sgd_trace(
             "target_position": 0,
             "selected_batch_indices": selected_batch_indices.astype(np.int64).tolist(),
             "privacy": str(privacy),
+            "privacy_kind": str(privacy_kind),
+            "radius": float(radius_use),
+            "lz": None if lz_use is None else float(lz_use),
         },
     )
     if not trace.steps:
@@ -757,6 +780,10 @@ def fit_targeted_ball_sgd_trace(
         true_record,
         np.asarray(selected_batch_indices, dtype=np.int64),
     )
+
+
+# Backward-compatible alias.
+fit_targeted_ball_sgd_trace = fit_targeted_sgd_trace
 
 
 def attack_nonconvex_spear_exact_batch(
@@ -866,8 +893,8 @@ def attack_nonconvex_spear_private_step(
     y_train: np.ndarray,
     *,
     target_index: int,
-    radius: float,
-    lz: Optional[float],
+    radius: Optional[float] = None,
+    lz: Optional[float] = None,
     X_eval: Optional[np.ndarray] = None,
     y_eval: Optional[np.ndarray] = None,
     privacy: BallPrivacyKind = "ball_rdp",
@@ -897,14 +924,14 @@ def attack_nonconvex_spear_private_step(
     pair_out_path: Optional[str] = None,
     grid_out_path: Optional[str] = None,
 ) -> tuple[AttackResult, SpearAttackResult, ReleaseArtifact, DPSGDTrace, np.ndarray]:
-    release, trace, true_record, batch_idx = fit_targeted_ball_sgd_trace(
+    release, trace, true_record, batch_idx = fit_targeted_sgd_trace(
         model,
         optimizer,
         X_train,
         y_train,
         target_index=int(target_index),
-        radius=float(radius),
-        lz=None if lz is None else float(lz),
+        radius=radius,
+        lz=lz,
         X_eval=X_eval,
         y_eval=y_eval,
         privacy=str(privacy),
@@ -931,7 +958,6 @@ def attack_nonconvex_spear_private_step(
     X_orig, X_attack, feature_shape_default = _prepare_attack_arrays(
         X_train, flatten_inputs=bool(flatten_inputs)
     )
-    y_np = np.asarray(y_train)
     feature_shape_use = (
         tuple(int(v) for v in feature_shape)
         if feature_shape is not None
@@ -1182,6 +1208,105 @@ def attack_nonconvex_model_based(
         ball_radius=ball_radius,
         box_bounds=box_bounds,
     )
+
+
+def attack_nonconvex_model_based_target(
+    release: ReleaseArtifact,
+    X_train: Optional[np.ndarray] = None,
+    y_train: Optional[np.ndarray] = None,
+    *,
+    target_index: Optional[int] = None,
+    d_minus: Optional[ArrayDataset] = None,
+    true_record: Optional[Record] = None,
+    reconstructor: ReconstructorArtifact,
+    feature_map: AttackFeatureMap,
+    known_label: Optional[int] = None,
+    use_true_label_as_side_info: bool = False,
+    eta_grid: Sequence[float] = (0.1, 0.2, 0.5, 1.0),
+    ball_center: Optional[np.ndarray] = None,
+    ball_radius: Optional[float] = None,
+    box_bounds: Optional[tuple[float, float]] = None,
+    flatten_inputs: bool = True,
+    feature_shape: Optional[Sequence[int]] = None,
+    out_path: Optional[str] = None,
+) -> tuple[AttackResult, Record, ArrayDataset]:
+    """User-friendly targeted wrapper for the informed-adversary model-based attack.
+
+    Two usage modes are supported.
+
+    Simple mode:
+        provide X_train, y_train, target_index
+        -> wrapper constructs d_minus = D \\ {target}
+
+    Advanced mode:
+        provide d_minus and true_record explicitly
+        -> use this when the victim/shadow setup was built from a custom fixed base set
+           (e.g. base_train_size is not None)
+    """
+    user_supplied_split = (d_minus is not None) or (true_record is not None)
+    if user_supplied_split:
+        if d_minus is None or true_record is None:
+            raise ValueError(
+                "If either d_minus or true_record is supplied, both must be supplied."
+            )
+        feature_shape_use = (
+            tuple(int(v) for v in feature_shape)
+            if feature_shape is not None
+            else tuple(int(v) for v in np.asarray(true_record.features).shape)
+        )
+    else:
+        if X_train is None or y_train is None or target_index is None:
+            raise ValueError(
+                "Provide either (X_train, y_train, target_index) or (d_minus, true_record)."
+            )
+
+        X_orig, X_attack, feature_shape_default = _prepare_attack_arrays(
+            X_train, flatten_inputs=bool(flatten_inputs)
+        )
+        y_np = np.asarray(y_train)
+        ds_attack = _as_dataset(X_attack, y_np, name="train")
+        d_minus, _ = ds_attack.remove_index(int(target_index))
+        true_record = Record(
+            features=np.asarray(X_orig[int(target_index)]),
+            label=int(y_np[int(target_index)]),
+        )
+        feature_shape_use = (
+            tuple(int(v) for v in feature_shape)
+            if feature_shape is not None
+            else feature_shape_default
+        )
+
+    resolved_known_label = known_label
+    if resolved_known_label is None and bool(use_true_label_as_side_info):
+        resolved_known_label = int(true_record.label)
+
+    attack = attack_nonconvex_model_based(
+        release,
+        d_minus,
+        reconstructor=reconstructor,
+        feature_map=feature_map,
+        true_record=true_record,
+        known_label=resolved_known_label,
+        eta_grid=eta_grid,
+        ball_center=ball_center,
+        ball_radius=ball_radius,
+        box_bounds=box_bounds,
+    )
+    attack.diagnostics["target_index"] = (
+        None if target_index is None else int(target_index)
+    )
+    attack.diagnostics["d_minus_size"] = int(len(d_minus))
+    attack.diagnostics["used_user_supplied_d_minus"] = bool(user_supplied_split)
+
+    if out_path is not None and attack.z_hat is not None:
+        plot_attack_result(
+            attack,
+            true_record,
+            feature_shape=feature_shape_use,
+            out_path=out_path,
+        )
+
+    return attack, true_record, d_minus
 
 
 def attack_nonconvex_prior_aware_trace(
