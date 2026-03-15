@@ -99,17 +99,29 @@ def _random_record_pool(
     *,
     max_count: int,
     exclude_train_index: int | None = None,
+    exclude_train_indices: np.ndarray | list[int] | None = None,
     seed: int = 0,
 ) -> list[Record]:
     rng = np.random.default_rng(int(seed))
     train_ids = np.arange(len(X_train), dtype=np.int64)
+
+    excluded: set[int] = set()
     if exclude_train_index is not None:
-        train_ids = train_ids[train_ids != int(exclude_train_index)]
+        excluded.add(int(exclude_train_index))
+    if exclude_train_indices is not None:
+        excluded.update(
+            int(i) for i in np.asarray(exclude_train_indices, dtype=np.int64).tolist()
+        )
+
+    if excluded:
+        keep_mask = ~np.isin(train_ids, np.asarray(sorted(excluded), dtype=np.int64))
+        train_ids = train_ids[keep_mask]
 
     candidates = [("test", int(i)) for i in range(len(X_test))] + [
         ("train", int(i)) for i in train_ids.tolist()
     ]
     rng.shuffle(candidates)
+
     out: list[Record] = []
     for src, idx in candidates:
         if src == "test":
@@ -129,6 +141,56 @@ def _random_record_pool(
         if len(out) >= int(max_count):
             break
     return out
+
+
+def _make_fixed_base_dataset(
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    *,
+    target_index: int,
+    base_train_size: int,
+    seed: int = 0,
+) -> tuple[ArrayDataset, np.ndarray]:
+    """Sample a fixed smaller D^- from the training set, excluding the target."""
+    X_train = np.asarray(X_train, dtype=np.float32)
+    y_train = np.asarray(y_train)
+
+    if not (1 <= int(base_train_size) < len(X_train)):
+        raise ValueError(
+            f"base_train_size must be in [1, {len(X_train)-1}], got {base_train_size}."
+        )
+
+    rng = np.random.default_rng(int(seed))
+    pool = np.arange(len(X_train), dtype=np.int64)
+    pool = pool[pool != int(target_index)]
+    chosen = rng.choice(pool, size=int(base_train_size), replace=False)
+
+    base_ds = ArrayDataset(
+        X_train[chosen],
+        y_train[chosen],
+        name=f"train_base_{int(base_train_size)}",
+    )
+    return base_ds, np.asarray(chosen, dtype=np.int64)
+
+
+def _append_record_to_dataset(
+    ds: ArrayDataset,
+    record: Record,
+    *,
+    name: str | None = None,
+) -> ArrayDataset:
+    x = np.concatenate(
+        [np.asarray(ds.X), np.asarray(record.features, dtype=np.float32)[None, ...]],
+        axis=0,
+    )
+    y = np.concatenate(
+        [
+            np.asarray(ds.y),
+            np.asarray([int(record.label)], dtype=np.asarray(ds.y).dtype),
+        ],
+        axis=0,
+    )
+    return ArrayDataset(x, y, name=(ds.name if name is None else name))
 
 
 def _nearest_neighbor_record(
@@ -485,10 +547,16 @@ def demo_nonconvex_model_based_attack(
     batch_size: int = 40,
     shadow_trials: int = 64,
     noise_multiplier: float = 1.1,
+    clip_norm: float = 1.0,
+    base_train_size: int | None = None,  # NEW
     target_index: int = 1,
     seed: int = 0,
 ):
-    """End-to-end informed-adversary final-model attack demo."""
+    """End-to-end informed-adversary final-model attack demo.
+
+    If base_train_size is not None, the victim and every shadow are trained on
+    the same fixed smaller base set D^- plus one target/example record.
+    """
     X_train = np.asarray(X_train, dtype=np.float32)
     X_test = np.asarray(X_test, dtype=np.float32)
     y_train = np.asarray(y_train)
@@ -504,30 +572,55 @@ def demo_nonconvex_model_based_attack(
     r = float(0.5 * B)
     L_z = 2.0
 
+    full_ds = ArrayDataset(X_train_flat, y_train, name="train_full")
+    true_record = full_ds.record(int(target_index))
+
+    # Choose the attacker-known fixed base set D^-.
+    if base_train_size is None:
+        d_minus, _ = full_ds.remove_index(int(target_index))
+        excluded_train_indices = np.asarray([int(target_index)], dtype=np.int64)
+    else:
+        d_minus, base_indices = _make_fixed_base_dataset(
+            X_train_flat,
+            y_train,
+            target_index=int(target_index),
+            base_train_size=int(base_train_size),
+            seed=seed,
+        )
+        excluded_train_indices = np.concatenate(
+            [base_indices, np.asarray([int(target_index)], dtype=np.int64)],
+            axis=0,
+        )
+
+    victim_ds = _append_record_to_dataset(
+        d_minus,
+        true_record,
+        name="victim_train",
+    )
+
     # Victim release.
     victim_model = build_example_model(input_dim, num_classes, seed=seed)
     victim_opt = optax.adam(1e-3)
+
+    victim_batch_size = min(int(batch_size), len(victim_ds))
     release = fit_ball_sgd(
         victim_model,
         victim_opt,
-        X_train_flat,
-        y_train,
+        np.asarray(victim_ds.X, dtype=np.float32),
+        np.asarray(victim_ds.y),
         X_eval=X_test_flat,
         y_eval=y_test,
         radius=r,
         lz=L_z,
         privacy=privacy,
         num_steps=train_steps,
-        batch_size=batch_size,
-        clip_norm=1.0,
+        batch_size=victim_batch_size,
+        clip_norm=float(clip_norm),
         noise_multiplier=noise_multiplier,
         checkpoint_selection="best_public_eval_accuracy",
         eval_every=max(25, train_steps // 6),
         seed=seed,
     )
-
-    ds = ArrayDataset(X_train_flat, y_train, name="train")
-    d_minus, true_record = ds.remove_index(int(target_index))
 
     # Auxiliary points available to the informed adversary.
     aux_points = _random_record_pool(
@@ -536,22 +629,22 @@ def demo_nonconvex_model_based_attack(
         X_test_flat,
         y_test,
         max_count=max(32, shadow_trials * 2),
-        exclude_train_index=int(target_index),
+        exclude_train_indices=excluded_train_indices,
         seed=seed,
     )
     if len(aux_points) < 8:
         raise ValueError("Need a reasonable auxiliary pool for the model-based demo.")
 
     def victim_train_fn(shadow_ds: ArrayDataset, fixed_init_seed: int):
-        # Important for the informed-adversary attack: all shadow models share the
-        # same initialization seed as the attacked model, mirroring the public
-        # DeepMind implementation.
+        # All shadows share the same initialization seed as the victim.
         shadow_model = build_example_model(
             input_dim,
             num_classes,
             seed=fixed_init_seed,
         )
         shadow_opt = optax.adam(1e-3)
+
+        shadow_batch_size = min(int(batch_size), len(shadow_ds))
         return fit_ball_sgd(
             shadow_model,
             shadow_opt,
@@ -563,8 +656,8 @@ def demo_nonconvex_model_based_attack(
             lz=L_z,
             privacy=privacy,
             num_steps=shadow_steps,
-            batch_size=batch_size,
-            clip_norm=1.0,
+            batch_size=shadow_batch_size,
+            clip_norm=float(clip_norm),
             noise_multiplier=noise_multiplier,
             checkpoint_selection="best_public_eval_accuracy",
             eval_every=max(25, shadow_steps // 4),
@@ -618,6 +711,14 @@ def demo_nonconvex_model_based_attack(
     nn_ref = _nearest_neighbor_record(true_record, aux_points)
 
     print("Model-based nonconvex attack:", attack.status, attack.metrics)
+    print(
+        "Victim/shadow base size:",
+        len(d_minus),
+        "| Victim train size:",
+        len(victim_ds),
+        "| Victim batch size used:",
+        victim_batch_size,
+    )
 
     plot_attack_result_with_reference(
         attack,
@@ -628,24 +729,7 @@ def demo_nonconvex_model_based_attack(
         out_path="artifacts/nonconvex_model_based_triplet.png",
     )
 
-    prior = make_empirical_ball_prior(
-        X_train_flat,
-        y_train,
-        label=int(true_record.label),
-        max_samples=2048,
-    )
-    report = ball_rero(
-        release,
-        prior=prior,
-        eta_grid=(0.1, 0.2, 0.5, 1.0, 2.0, 5.0),
-        mode="auto",
-    )
-    plot_rero_report(
-        report,
-        out_path="artifacts/nonconvex_model_based_rero.png",
-    )
-
-    return release, attack, true_record, report
+    return release, attack, true_record
 
 
 # -----------------------------------------------------------------------------
