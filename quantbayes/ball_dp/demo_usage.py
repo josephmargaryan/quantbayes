@@ -984,29 +984,59 @@ def demo_nonconvex_spear_exact_batch_attack(
     y_train,
     *,
     batch_size: int = 8,
+    target_index=None,
     layer_path: tuple[object, ...] = ("layers", 0),
     max_samples: int = 20_000,
     false_rejection_rate: float = 1e-5,
-    zero_tol: float = 1e-10,
+    zero_tol: float = 1e-7,
     seed: int = 0,
 ):
     """Paper-faithful SPEAR demo on exact raw gradients of the first linear+ReLU block.
 
     This does *not* use DP-SGD. It computes the exact batch gradient on the chosen batch,
     exactly as required by the SPEAR paper.
+
+    If target_index is provided, that record is forced into the attacked batch and placed
+    first in the returned batch order.
     """
-    X_train = np.asarray(X_train, dtype=np.float32)
+    X_train = np.asarray(X_train)
     y_train = np.asarray(y_train)
     orig_feature_shape = _feature_shape(X_train)
-    X_train_flat = _flatten_X(X_train)
+    X_train_flat = _flatten_X(X_train).astype(np.float64)
+
+    if int(batch_size) < 2:
+        raise ValueError("SPEAR demo requires batch_size >= 2.")
+    if int(batch_size) > len(X_train_flat):
+        raise ValueError(
+            f"Requested batch_size={batch_size} exceeds dataset size={len(X_train_flat)}."
+        )
 
     input_dim = int(X_train_flat.shape[1])
     num_classes = int(np.max(y_train)) + 1
     model = build_example_model(input_dim, num_classes, seed=seed)
 
     rng = np.random.default_rng(int(seed))
-    batch_indices = rng.choice(len(X_train_flat), size=int(batch_size), replace=False)
-    xb = np.asarray(X_train_flat[batch_indices], dtype=np.float32)
+    if target_index is None:
+        batch_indices = rng.choice(
+            len(X_train_flat), size=int(batch_size), replace=False
+        )
+    else:
+        target_index = int(target_index)
+        if target_index < 0 or target_index >= len(X_train_flat):
+            raise IndexError(
+                f"target_index={target_index} is out of range for dataset of size {len(X_train_flat)}."
+            )
+        pool = np.arange(len(X_train_flat), dtype=np.int64)
+        pool = pool[pool != target_index]
+        others = rng.choice(pool, size=int(batch_size) - 1, replace=False)
+        batch_indices = np.concatenate(
+            [
+                np.asarray([target_index], dtype=np.int64),
+                np.asarray(others, dtype=np.int64),
+            ]
+        )
+
+    xb = np.asarray(X_train_flat[batch_indices], dtype=np.float64)
     yb = np.asarray(y_train[batch_indices])
 
     attack = run_spear_model_batch_attack(
@@ -1018,7 +1048,7 @@ def demo_nonconvex_spear_exact_batch_attack(
         reduction="mean",
         cfg=SpearAttackConfig(
             max_samples=int(max_samples),
-            batch_size=None,  # exact paper mode: infer batch size from rank(dL/dW)
+            batch_size=None,  # exact paper mode: infer b as rank(dL/dW)
             false_rejection_rate=float(false_rejection_rate),
             zero_tol=float(zero_tol),
             random_seed=int(seed),
@@ -1032,11 +1062,42 @@ def demo_nonconvex_spear_exact_batch_attack(
 
     print("SPEAR exact batch status:", attack.status)
     print("SPEAR exact batch metrics:", attack.metrics)
-    print("SPEAR exact diagnostics: gamma=", attack.diagnostics.get("best_gamma"))
+    print(
+        "SPEAR exact diagnostics:",
+        {
+            k: attack.diagnostics.get(k)
+            for k in [
+                "batch_size",
+                "inferred_rank",
+                "requested_batch_size",
+                "tau_zero_count_threshold",
+                "candidate_pool_size",
+                "candidate_pool_rank",
+                "max_candidate_pool_rank",
+                "n_rank_b_minus_1_submatrices",
+                "n_sparse_enough",
+                "n_duplicates",
+                "best_gamma",
+                "failure_reason",
+                "true_batch_shape_mismatch",
+                "metrics_skipped_reason",
+            ]
+        },
+    )
 
     recon = attack.x_hat_aligned if attack.x_hat_aligned is not None else attack.x_hat
     if recon is None:
-        raise RuntimeError("SPEAR exact attack failed to return a reconstruction.")
+        print("SPEAR exact attack did not return a reconstruction; skipping plot.")
+        return attack, np.asarray(batch_indices, dtype=np.int64)
+
+    recon = np.asarray(recon, dtype=np.float64)
+    if recon.shape != xb.shape:
+        print(
+            "SPEAR returned a reconstruction with shape different from the attacked batch; "
+            "skipping plot.",
+            {"recovered_shape": tuple(recon.shape), "true_shape": tuple(xb.shape)},
+        )
+        return attack, np.asarray(batch_indices, dtype=np.int64)
 
     _plot_spear_batch_grid(
         xb,

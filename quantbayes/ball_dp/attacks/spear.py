@@ -587,6 +587,18 @@ def run_spear_batch_attack(
         batch_size=cfg.batch_size,
         rank_tol=cfg.rank_tol,
     )
+
+    if (
+        not bool(cfg.noisy_mode)
+        and cfg.batch_size is not None
+        and int(cfg.batch_size) != int(inferred_rank)
+    ):
+        raise ValueError(
+            "Exact SPEAR mode requires cfg.batch_size to match rank(grad_W). "
+            f"Got cfg.batch_size={cfg.batch_size}, inferred_rank={inferred_rank}. "
+            "Use cfg.batch_size=None for paper-faithful exact mode."
+        )
+
     if batch_size < 2:
         raise ValueError("SPEAR is intended for batch size >= 2.")
 
@@ -610,6 +622,9 @@ def run_spear_batch_attack(
     n_rank_b_minus_1 = 0
     n_sparse_enough = 0
     n_duplicate = 0
+
+    candidate_pool_rank = 0
+    max_candidate_pool_rank = 0
 
     best_gamma = -float("inf")
     best_x_hat = None
@@ -658,7 +673,15 @@ def run_spear_batch_attack(
             )
         )
 
+        cand_mat = np.stack([c.vector for c in candidates], axis=1)
+        candidate_pool_rank = _matrix_rank(cand_mat, cfg.rank_tol)
+        max_candidate_pool_rank = max(max_candidate_pool_rank, candidate_pool_rank)
+
         if len(candidates) < batch_size:
+            continue
+
+        if candidate_pool_rank < int(batch_size):
+            # Keep sampling until the pool contains b independent directions.
             continue
 
         gamma, x_hat, dLdZ, Q, scales, selected, passes = _greedy_filter(
@@ -692,14 +715,26 @@ def run_spear_batch_attack(
             break
 
     if best_x_hat is None:
+        if len(candidates) == 0:
+            failure_reason = "no_candidates_survived_filter"
+        elif max_candidate_pool_rank < int(batch_size):
+            failure_reason = "candidate_pool_rank_below_batch_size"
+        else:
+            failure_reason = "no_valid_candidate_basis"
+
         diagnostics = {
             "batch_size": int(batch_size),
             "inferred_rank": int(inferred_rank),
+            "requested_batch_size": (
+                None if cfg.batch_size is None else int(cfg.batch_size)
+            ),
             "tau": float(tau),
             "tau_zero_count_threshold": int(threshold_count),
             "false_rejection_rate_target": float(cfg.false_rejection_rate),
             "achieved_false_rejection_rate": float(achieved_pfr),
             "candidate_pool_size": int(len(candidates)),
+            "candidate_pool_rank": int(candidate_pool_rank),
+            "max_candidate_pool_rank": int(max_candidate_pool_rank),
             "n_rank_b_minus_1_submatrices": int(n_rank_b_minus_1),
             "n_sparse_enough": int(n_sparse_enough),
             "n_duplicates": int(n_duplicate),
@@ -709,6 +744,7 @@ def run_spear_batch_attack(
             "noisy_mode": bool(cfg.noisy_mode),
             "sampled_row_count": int(row_count),
             "gamma_stop_threshold": gamma_stop_threshold,
+            "failure_reason": str(failure_reason),
         }
         return SpearAttackResult(
             attack_family="spear_batch_gradient",
@@ -720,28 +756,38 @@ def run_spear_batch_attack(
     metrics: Dict[str, float] = {}
     x_hat_aligned = None
     permutation_to_truth = None
+    true_batch_shape_mismatch = None
+    metrics_skipped_reason = None
+
     if true_batch is not None:
         true_batch = _as_float64_array(true_batch, name="true_batch")
         if true_batch.ndim != 2:
             raise ValueError("true_batch must have shape (batch, input_dim).")
-        if true_batch.shape != best_x_hat.shape:
-            raise ValueError(
-                f"true_batch.shape={true_batch.shape} must equal recovered shape {best_x_hat.shape}."
+
+        if true_batch.shape == best_x_hat.shape:
+            metrics, x_hat_aligned, permutation_to_truth = batch_reconstruction_metrics(
+                true_batch,
+                best_x_hat,
+                eta_grid=eta_grid,
             )
-        metrics, x_hat_aligned, permutation_to_truth = batch_reconstruction_metrics(
-            true_batch,
-            best_x_hat,
-            eta_grid=eta_grid,
-        )
+        else:
+            true_batch_shape_mismatch = {
+                "provided_true_batch_shape": tuple(int(v) for v in true_batch.shape),
+                "recovered_batch_shape": tuple(int(v) for v in best_x_hat.shape),
+            }
+            metrics_skipped_reason = "true_batch_shape_mismatch"
 
     diagnostics = {
         "batch_size": int(batch_size),
         "inferred_rank": int(inferred_rank),
+        "requested_batch_size": None if cfg.batch_size is None else int(cfg.batch_size),
         "tau": float(tau),
         "tau_zero_count_threshold": int(threshold_count),
         "false_rejection_rate_target": float(cfg.false_rejection_rate),
         "achieved_false_rejection_rate": float(achieved_pfr),
         "candidate_pool_size": int(len(candidates)),
+        "candidate_pool_rank": int(candidate_pool_rank),
+        "max_candidate_pool_rank": int(max_candidate_pool_rank),
         "n_rank_b_minus_1_submatrices": int(n_rank_b_minus_1),
         "n_sparse_enough": int(n_sparse_enough),
         "n_duplicates": int(n_duplicate),
@@ -769,6 +815,8 @@ def run_spear_batch_attack(
         "singular_values": np.asarray(singular_values, dtype=np.float64),
         "noisy_mode": bool(cfg.noisy_mode),
         "sampled_row_count": int(row_count),
+        "true_batch_shape_mismatch": true_batch_shape_mismatch,
+        "metrics_skipped_reason": metrics_skipped_reason,
     }
 
     if bool(cfg.noisy_mode):
@@ -921,7 +969,7 @@ def run_spear_model_batch_attack(
     This is the paper-faithful wrapper: it computes the exact gradient of the attacked
     linear layer on the supplied batch, then runs SPEAR on that layer.
     """
-    xb = np.asarray(xb)
+    xb = np.asarray(xb, dtype=np.float64)
     yb = np.asarray(yb)
     if xb.ndim < 2:
         raise ValueError("xb must have shape (batch, ...).")
@@ -934,7 +982,7 @@ def run_spear_model_batch_attack(
 
     def _batch_loss_of_params(p: Any) -> jnp.ndarray:
         mdl = combine_model(p, static)
-        x_j = jnp.asarray(xb, dtype=jnp.float32)
+        x_j = jnp.asarray(xb)
         y_j = jnp.asarray(yb)
         keys = jr.split(key, x_j.shape[0])
         losses = jax.vmap(
