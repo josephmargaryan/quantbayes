@@ -68,6 +68,20 @@ from quantbayes.ball_dp.attacks.spear import (
     run_spear_model_batch_attack,
     run_spear_trace_step_attack,
 )
+from quantbayes.ball_dp.nonconvex.per_example import (
+    partition_model,
+    resolve_loss_fn,
+    make_per_example_grad_fn,
+    clip_and_aggregate_per_example_grads,
+    add_gaussian_noise,
+    tree_scalar_mul,
+)
+from quantbayes.ball_dp.attacks.spear import (
+    SpearAttackConfig,
+    run_spear_batch_attack,
+    run_spear_model_batch_attack,
+    extract_linear_layer_arrays,
+)
 
 from quantbayes.ball_dp.types import ArrayDataset, Record
 
@@ -947,9 +961,7 @@ def _plot_spear_batch_grid(
 
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
 
-    def _resolve_display_shape(
-        flat_dim: int, shape: tuple[int, ...]
-    ) -> tuple[int, ...]:
+    def _resolve_display_shape(flat_dim: int, shape: tuple[int, ...]) -> tuple[int, ...]:
         shape = tuple(int(v) for v in shape)
 
         prod = 1
@@ -1010,7 +1022,6 @@ def _plot_spear_batch_grid(
     fig.savefig(out_path, dpi=160, bbox_inches="tight")
     plt.close(fig)
 
-
 def _plot_spear_single_pair(
     true_x: np.ndarray,
     recon_x: np.ndarray,
@@ -1028,9 +1039,7 @@ def _plot_spear_single_pair(
 
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
 
-    def _resolve_display_shape(
-        flat_dim: int, shape: tuple[int, ...]
-    ) -> tuple[int, ...]:
+    def _resolve_display_shape(flat_dim: int, shape: tuple[int, ...]) -> tuple[int, ...]:
         shape = tuple(int(v) for v in shape)
 
         prod = 1
@@ -1080,7 +1089,6 @@ def _plot_spear_single_pair(
     fig.tight_layout()
     fig.savefig(out_path, dpi=180, bbox_inches="tight")
     plt.close(fig)
-
 
 def demo_nonconvex_spear_exact_batch_attack(
     X_train,
@@ -1229,103 +1237,62 @@ def demo_nonconvex_spear_exact_batch_attack(
     return attack, np.asarray(batch_indices, dtype=np.int64)
 
 
-def demo_nonconvex_spear_private_step_comparison(
+def demo_nonconvex_spear_noisy_batch_attack(
     X_train,
     y_train,
-    X_test,
-    y_test,
     *,
-    privacy: str = "ball_rdp",
-    epsilon: float | None = None,
-    delta: float | None = None,
     batch_size: int = 8,
+    target_index: int = 40579,
+    feature_shape_override=None,
+    layer_path: tuple[object, ...] = ("layers", 0),
     clip_norm: float = 1.0,
     noise_multiplier: float = 0.5,
-    layer_path: tuple[object, ...] = ("layers", 0),
     max_samples_exact: int = 20_000,
-    max_samples_private: int = 20_000,
-    zero_tol_exact: float = 1e-10,
-    zero_tol_private: float = 1e-4,
+    max_samples_noisy: int = 20_000,
+    zero_tol_exact: float = 1e-7,
+    zero_tol_noisy: float = 1e-4,
+    noisy_gamma_target: float = 0.98,
     seed: int = 0,
+    save_dir: str = "artifacts",
 ):
-    """Compare exact SPEAR to SPEAR run on one privatized Ball-SGD trace step.
-
-    Workflow:
-      1. Train for exactly one Ball-SGD step while recording the sanitized gradient transcript.
-      2. Reconstruct the *same* minibatch exactly from the raw gradient of `model_before`.
-      3. Reconstruct the batch again from the privatized observed gradient stored in the trace.
-      4. Compute the Ball-ReRo certificate on the resulting private release.
-
-    Important:
-      - `exact_attack` is the paper-faithful SPEAR attack.
-      - `private_attack` is the paper-inspired noisy-gradient adaptation.
-    """
-    X_train = np.asarray(X_train, dtype=np.float32)
-    X_test = np.asarray(X_test, dtype=np.float32)
+    X_train = np.asarray(X_train)
     y_train = np.asarray(y_train)
-    y_test = np.asarray(y_test)
-    orig_feature_shape = _feature_shape(X_train)
 
-    X_train_flat = _flatten_X(X_train)
-    X_test_flat = _flatten_X(X_test)
-    input_dim = int(X_train_flat.shape[1])
-    num_classes = int(np.max(y_train)) + 1
+    if feature_shape_override is not None:
+        orig_feature_shape = tuple(int(v) for v in feature_shape_override)
+    else:
+        orig_feature_shape = tuple(int(v) for v in _feature_shape(X_train))
 
-    B = float(np.max(np.linalg.norm(X_train_flat, axis=1)))
-    r = float(0.5 * B)
-    L_z = 2.0  # replace by your theorem-backed constant for the chosen architecture
+    X_train_flat = _flatten_X(X_train).astype(np.float64)
+    if int(batch_size) < 2:
+        raise ValueError("SPEAR noisy demo requires batch_size >= 2.")
 
-    model = build_example_model(input_dim, num_classes, seed=seed)
-    optimizer = optax.adam(1e-3)
-    recorder = DPSGDTraceRecorder(
-        capture_every=1,
-        keep_models=True,
-        keep_batch_indices=True,
+    target_index = int(target_index)
+    if target_index < 0 or target_index >= len(X_train_flat):
+        raise IndexError(
+            f"target_index={target_index} is out of range for dataset size {len(X_train_flat)}."
+        )
+
+    rng = np.random.default_rng(int(seed))
+    pool = np.arange(len(X_train_flat), dtype=np.int64)
+    pool = pool[pool != target_index]
+    others = rng.choice(pool, size=int(batch_size) - 1, replace=False)
+    batch_indices = np.concatenate(
+        [
+            np.asarray([target_index], dtype=np.int64),
+            np.asarray(others, dtype=np.int64),
+        ]
     )
 
-    release = fit_ball_sgd(
-        model,
-        optimizer,
-        X_train_flat,
-        y_train,
-        X_eval=X_test_flat,
-        y_eval=y_test,
-        radius=r,
-        lz=L_z,
-        privacy=privacy,
-        epsilon=epsilon,
-        delta=delta,
-        num_steps=1,
-        batch_size=batch_size,
-        clip_norm=clip_norm,
-        noise_multiplier=noise_multiplier,
-        loss_name="softmax_cross_entropy",
-        checkpoint_selection="last",
-        eval_every=1,
-        seed=seed,
-        trace_recorder=recorder,
-    )
-
-    trace = recorder.to_trace(
-        state=None,
-        loss_name="softmax_cross_entropy",
-        reduction="mean",
-        metadata={
-            "dataset_size": int(len(X_train_flat)),
-            "sample_rate": float(batch_size) / float(len(X_train_flat)),
-            "feature_shape": orig_feature_shape,
-        },
-    )
-    if not trace.steps:
-        raise RuntimeError("Trace recorder did not capture any step.")
-    step = trace.steps[0]
-
-    batch_indices = np.asarray(step.batch_indices, dtype=np.int64)
-    xb = np.asarray(X_train_flat[batch_indices], dtype=np.float32)
+    xb = np.asarray(X_train_flat[batch_indices], dtype=np.float64)
     yb = np.asarray(y_train[batch_indices])
 
+    input_dim = int(X_train_flat.shape[1])
+    num_classes = int(np.max(y_train)) + 1
+    model = build_example_model(input_dim, num_classes, seed=seed)
+
     exact_attack = run_spear_model_batch_attack(
-        step.model_before,
+        model,
         xb,
         yb,
         layer_path=layer_path,
@@ -1333,7 +1300,7 @@ def demo_nonconvex_spear_private_step_comparison(
         reduction="mean",
         cfg=SpearAttackConfig(
             max_samples=int(max_samples_exact),
-            batch_size=None,
+            batch_size=int(batch_size),
             false_rejection_rate=1e-5,
             zero_tol=float(zero_tol_exact),
             random_seed=int(seed),
@@ -1345,71 +1312,144 @@ def demo_nonconvex_spear_private_step_comparison(
         seed=seed,
     )
 
-    private_attack = run_spear_trace_step_attack(
-        step,
+    resolved_loss = resolve_loss_fn("softmax_cross_entropy")
+    params, static = partition_model(model)
+    per_example_grad_fn = make_per_example_grad_fn(
+        static=static,
+        state=None,
+        loss_fn=resolved_loss,
+    )
+
+    xb_j = jnp.asarray(xb)
+    yb_j = jnp.asarray(yb)
+    key = jr.PRNGKey(int(seed))
+    grad_key, noise_key = jr.split(key)
+
+    per_example_grads = per_example_grad_fn(params, xb_j, yb_j, grad_key)
+    summed_clipped, norms, clip_frac = clip_and_aggregate_per_example_grads(
+        per_example_grads,
+        float(clip_norm),
+    )
+
+    noise_std_on_sum = float(clip_norm) * float(noise_multiplier)
+    noisy_sum = add_gaussian_noise(summed_clipped, noise_std_on_sum, noise_key)
+
+    sanitized_grad = tree_scalar_mul(
+        noisy_sum,
+        1.0 / float(batch_size),
+    )
+    observed_noise_std = noise_std_on_sum / float(batch_size)
+
+    W, bias = extract_linear_layer_arrays(model, layer_path=layer_path)
+    grad_W_noisy, grad_b_noisy = extract_linear_layer_arrays(
+        sanitized_grad,
         layer_path=layer_path,
+    )
+
+    noisy_attack = run_spear_batch_attack(
+        W,
+        bias,
+        grad_W_noisy,
+        grad_b_noisy,
         cfg=SpearAttackConfig(
-            max_samples=int(max_samples_private),
+            max_samples=int(max_samples_noisy),
             batch_size=int(batch_size),
             false_rejection_rate=1e-5,
-            zero_tol=float(zero_tol_private),
+            zero_tol=float(zero_tol_noisy),
             random_seed=int(seed),
             greedy_swap_rule="best_improvement",
             noisy_mode=True,
-            noisy_gamma_target=0.98,
+            noisy_gamma_target=float(noisy_gamma_target),
             noisy_submatrix_rows=int(batch_size + 1),
         ),
         true_batch=xb,
         eta_grid=(0.1, 0.2, 0.5, 1.0),
     )
+    noisy_attack.attack_family = "spear_noisy_fixed_batch"
+    noisy_attack.diagnostics["target_index"] = int(target_index)
+    noisy_attack.diagnostics["clip_norm"] = float(clip_norm)
+    noisy_attack.diagnostics["noise_multiplier"] = float(noise_multiplier)
+    noisy_attack.diagnostics["observed_noise_std"] = float(observed_noise_std)
+    noisy_attack.diagnostics["mean_per_example_grad_norm"] = float(jnp.mean(norms))
+    noisy_attack.diagnostics["max_per_example_grad_norm"] = float(jnp.max(norms))
+    noisy_attack.diagnostics["clip_fraction"] = float(clip_frac)
 
     print("SPEAR exact status:", exact_attack.status)
     print("SPEAR exact metrics:", exact_attack.metrics)
-    print("SPEAR private status:", private_attack.status)
-    print("SPEAR private metrics:", private_attack.metrics)
-    print("Private release kind:", release.release_kind)
-    print("Primary privacy view:", release.attack_metadata.get("primary_privacy_view"))
+    print("SPEAR noisy status:", noisy_attack.status)
+    print("SPEAR noisy metrics:", noisy_attack.metrics)
+    print(
+        "SPEAR noisy diagnostics:",
+        {
+            k: noisy_attack.diagnostics.get(k)
+            for k in [
+                "batch_size",
+                "inferred_rank",
+                "candidate_pool_size",
+                "candidate_pool_rank",
+                "max_candidate_pool_rank",
+                "n_rank_b_minus_1_submatrices",
+                "n_sparse_enough",
+                "n_duplicates",
+                "best_gamma",
+                "gamma_stop_threshold",
+                "observed_noise_std",
+                "clip_fraction",
+            ]
+        },
+    )
 
     exact_recon = (
         exact_attack.x_hat_aligned
         if exact_attack.x_hat_aligned is not None
         else exact_attack.x_hat
     )
-    private_recon = (
-        private_attack.x_hat_aligned
-        if private_attack.x_hat_aligned is not None
-        else private_attack.x_hat
-    )
-    if exact_recon is None or private_recon is None:
-        raise RuntimeError("SPEAR demo attack failed to return a reconstruction.")
-
-    _plot_spear_batch_grid(
-        xb,
-        exact_recon,
-        feature_shape=orig_feature_shape,
-        title=f"SPEAR exact baseline ({exact_attack.status})",
-        out_path="artifacts/spear_exact_baseline.png",
-        max_items=min(8, int(batch_size)),
-    )
-    _plot_spear_batch_grid(
-        xb,
-        private_recon,
-        feature_shape=orig_feature_shape,
-        title=f"SPEAR on privatized step ({private_attack.status})",
-        out_path="artifacts/spear_private_step.png",
-        max_items=min(8, int(batch_size)),
+    noisy_recon = (
+        noisy_attack.x_hat_aligned
+        if noisy_attack.x_hat_aligned is not None
+        else noisy_attack.x_hat
     )
 
-    prior = make_empirical_ball_prior(
-        X_train_flat,
-        max_samples=2048,
-    )
-    report = ball_rero(
-        release,
-        prior=prior,
-        eta_grid=(0.1, 0.2, 0.5, 1.0, 2.0, 5.0),
-        mode="auto",
-    )
-    plot_rero_report(report, out_path="artifacts/spear_private_rero.png")
+    os.makedirs(save_dir, exist_ok=True)
 
-    return release, exact_attack, private_attack, report
+    if exact_recon is not None:
+        _plot_spear_batch_grid(
+            xb,
+            exact_recon,
+            feature_shape=orig_feature_shape,
+            title=f"SPEAR exact baseline ({exact_attack.status})",
+            out_path=os.path.join(save_dir, "spear_exact_baseline.png"),
+            max_items=min(8, int(batch_size)),
+        )
+        _plot_spear_single_pair(
+            xb[0],
+            exact_recon[0],
+            feature_shape=orig_feature_shape,
+            title=f"SPEAR exact target {int(target_index)}",
+            out_path=os.path.join(
+                save_dir,
+                f"spear_exact_target_{int(target_index)}.png",
+            ),
+        )
+
+    if noisy_recon is not None:
+        _plot_spear_batch_grid(
+            xb,
+            noisy_recon,
+            feature_shape=orig_feature_shape,
+            title=f"SPEAR noisy fixed-batch ({noisy_attack.status})",
+            out_path=os.path.join(save_dir, "spear_noisy_batch.png"),
+            max_items=min(8, int(batch_size)),
+        )
+        _plot_spear_single_pair(
+            xb[0],
+            noisy_recon[0],
+            feature_shape=orig_feature_shape,
+            title=f"SPEAR noisy target {int(target_index)}",
+            out_path=os.path.join(
+                save_dir,
+                f"spear_noisy_target_{int(target_index)}.png",
+            ),
+        )
+
+    return exact_attack, noisy_attack, np.asarray(batch_indices, dtype=np.int64)
