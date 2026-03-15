@@ -20,7 +20,7 @@ class SpearAttackConfig:
 
     Exact-theorem mode:
       - noisy_mode=False
-      - batch_size=None so b is inferred as rank(dL/dW)
+      - batch_size may be supplied when known by the wrapper
       - sample submatrices of size (b-1) x b
       - early stop only when gamma reaches 1
 
@@ -28,7 +28,7 @@ class SpearAttackConfig:
       - noisy_mode=True
       - batch_size should be known
       - sample larger submatrices of size (b+1) x b by default
-      - keep only candidates whose sampled L_A has rank exactly b-1
+      - use the smallest-singular-vector direction of sampled L_A
       - early stop when gamma reaches `noisy_gamma_target` < 1
       - use a looser zero_tol
     """
@@ -50,6 +50,7 @@ class SpearAttackConfig:
     noisy_mode: bool = False
     noisy_gamma_target: Optional[float] = None
     noisy_submatrix_rows: Optional[int] = None
+    noisy_use_approximate_null: bool = True
 
 
 @dc.dataclass
@@ -179,14 +180,25 @@ def _null_vector_of_rank_b_minus_1_submatrix(
     expected_rank: int,
     rank_tol: Optional[float],
     zero_tol: float,
+    allow_approximate: bool = False,
 ) -> tuple[Optional[np.ndarray], int]:
-    """Return a normalized null vector when rank(la) == expected_rank."""
+    """Return a normalized null / approximate-null vector from a sampled submatrix.
+
+    Exact mode:
+        return a null vector only when rank(la) == expected_rank.
+
+    Noisy mode:
+        return the smallest right-singular-vector direction even when la is full
+        column rank, since exact rank deficiency is generically destroyed by noise.
+    """
     la = np.asarray(la, dtype=np.float64)
     rank = _matrix_rank(la, rank_tol)
-    if rank != int(expected_rank):
-        return None, int(rank)
 
     _, _, vh = np.linalg.svd(la, full_matrices=True)
+
+    if (not allow_approximate) and rank != int(expected_rank):
+        return None, int(rank)
+
     q = vh[-1, :]
     return _normalize_direction(q, zero_tol), int(rank)
 
@@ -551,19 +563,7 @@ def run_spear_batch_attack(
     true_batch: Optional[np.ndarray] = None,
     eta_grid: Sequence[float] = (0.1, 0.2, 0.5, 1.0),
 ) -> SpearAttackResult:
-    """Run SPEAR on a single linear+ReLU layer from observed weight/bias gradients.
-
-    Exact mode:
-      - if cfg.batch_size is None, b is inferred numerically as rank(grad_W)
-      - if cfg.batch_size is provided, the top-b truncated SVD is used instead
-
-    Noisy / DP-SGD adaptation:
-      - cfg.noisy_mode=True
-      - cfg.batch_size should be known
-      - larger sampled matrices L_A are used by default
-      - candidates are kept only when rank(L_A) == b - 1
-      - early stopping occurs when gamma reaches a user-chosen value below 1
-    """
+    """Run SPEAR on a single linear+ReLU layer from observed weight/bias gradients."""
     cfg = SpearAttackConfig() if cfg is None else cfg
 
     W = _as_float64_array(W, name="W")
@@ -608,6 +608,7 @@ def run_spear_batch_attack(
 
     candidates: list[_CandidateDirection] = []
     n_rank_b_minus_1 = 0
+    n_directional_submatrices = 0
     n_sparse_enough = 0
     n_duplicate = 0
 
@@ -624,21 +625,27 @@ def run_spear_batch_attack(
     early_stop = False
     sample_idx = 0
 
+    allow_approximate_null = bool(cfg.noisy_mode and cfg.noisy_use_approximate_null)
+
     for sample_idx in range(1, int(cfg.max_samples) + 1):
         rows = tuple(
             sorted(rng.choice(out_dim, size=int(row_count), replace=False).tolist())
         )
         LA = L[np.asarray(rows, dtype=np.int64), :]
 
-        q, _sampled_rank = _null_vector_of_rank_b_minus_1_submatrix(
+        q, sampled_rank = _null_vector_of_rank_b_minus_1_submatrix(
             LA,
             expected_rank=int(batch_size - 1),
             rank_tol=cfg.rank_tol,
             zero_tol=cfg.zero_tol,
+            allow_approximate=allow_approximate_null,
         )
         if q is None:
             continue
-        n_rank_b_minus_1 += 1
+
+        n_directional_submatrices += 1
+        if sampled_rank == int(batch_size - 1):
+            n_rank_b_minus_1 += 1
 
         col = L @ q
         sparsity_count = _count_relative_zeros(col, cfg.zero_tol)
@@ -702,7 +709,9 @@ def run_spear_batch_attack(
             break
 
     if best_x_hat is None:
-        if len(candidates) == 0:
+        if n_directional_submatrices == 0:
+            failure_reason = "no_directional_submatrices"
+        elif len(candidates) == 0:
             failure_reason = "no_candidates_survived_filter"
         elif max_candidate_pool_rank < int(batch_size):
             failure_reason = "candidate_pool_rank_below_batch_size"
@@ -726,12 +735,14 @@ def run_spear_batch_attack(
             "candidate_pool_rank": int(candidate_pool_rank),
             "max_candidate_pool_rank": int(max_candidate_pool_rank),
             "n_rank_b_minus_1_submatrices": int(n_rank_b_minus_1),
+            "n_directional_submatrices": int(n_directional_submatrices),
             "n_sparse_enough": int(n_sparse_enough),
             "n_duplicates": int(n_duplicate),
             "max_samples": int(cfg.max_samples),
             "used_truncated_svd": bool(cfg.batch_size is not None),
             "singular_values": np.asarray(singular_values, dtype=np.float64),
             "noisy_mode": bool(cfg.noisy_mode),
+            "noisy_use_approximate_null": bool(allow_approximate_null),
             "sampled_row_count": int(row_count),
             "gamma_stop_threshold": gamma_stop_threshold,
             "failure_reason": str(failure_reason),
@@ -782,6 +793,7 @@ def run_spear_batch_attack(
         "candidate_pool_rank": int(candidate_pool_rank),
         "max_candidate_pool_rank": int(max_candidate_pool_rank),
         "n_rank_b_minus_1_submatrices": int(n_rank_b_minus_1),
+        "n_directional_submatrices": int(n_directional_submatrices),
         "n_sparse_enough": int(n_sparse_enough),
         "n_duplicates": int(n_duplicate),
         "n_samples_run": int(sample_idx),
@@ -807,6 +819,7 @@ def run_spear_batch_attack(
         "gamma_stop_threshold": gamma_stop_threshold,
         "singular_values": np.asarray(singular_values, dtype=np.float64),
         "noisy_mode": bool(cfg.noisy_mode),
+        "noisy_use_approximate_null": bool(allow_approximate_null),
         "sampled_row_count": int(row_count),
         "true_batch_shape_mismatch": true_batch_shape_mismatch,
         "metrics_skipped_reason": metrics_skipped_reason,
@@ -887,15 +900,7 @@ def run_spear_trace_step_attack(
     true_batch: Optional[np.ndarray] = None,
     eta_grid: Sequence[float] = (0.1, 0.2, 0.5, 1.0),
 ) -> SpearAttackResult:
-    """Run SPEAR on the gradients stored in a DPSGDTraceStep.
-
-    Exact only when the observed gradient is noiseless and satisfies SPEAR's assumptions.
-    When additive Gaussian noise is present, this becomes the paper-inspired noisy adaptation:
-      - looser sparsity threshold via zero_tol,
-      - early stop below gamma=1,
-      - larger sampled L_A by default,
-      - keep only candidates from submatrices with rank exactly b-1.
-    """
+    """Run SPEAR on the gradients stored in a DPSGDTraceStep."""
     if getattr(step, "model_before", None) is None:
         raise ValueError("Trace step is missing model_before.")
     if getattr(step, "observed_private_gradient", None) is None:
@@ -918,6 +923,12 @@ def run_spear_trace_step_attack(
     trace_sigma = float(getattr(step, "effective_noise_std", 0.0))
     if trace_sigma > 0.0:
         cfg.noisy_mode = True
+        if cfg.noisy_gamma_target is None:
+            cfg.noisy_gamma_target = 0.98
+        if cfg.noisy_submatrix_rows is None and cfg.batch_size is not None:
+            cfg.noisy_submatrix_rows = int(cfg.batch_size + 1)
+        if float(cfg.zero_tol) <= 1e-10:
+            cfg.zero_tol = 1e-4
 
     result = run_spear_batch_attack(
         W,
@@ -959,9 +970,9 @@ def run_spear_model_batch_attack(
 ) -> SpearAttackResult:
     """Run SPEAR on an exact batch gradient computed from a model and batch.
 
-    For this high-level exact wrapper, the attacked batch size is known from xb.
-    Using that known batch size is numerically much more stable than inferring it
-    from np.linalg.matrix_rank(grad_W) in float64.
+    This high-level wrapper uses the known attacked batch size for numerical stability.
+    If you want raw numerical rank inference instead, call run_spear_batch_attack(...)
+    directly with cfg.batch_size=None.
     """
     xb = np.asarray(xb, dtype=np.float64)
     yb = np.asarray(yb)
@@ -971,7 +982,7 @@ def run_spear_model_batch_attack(
         raise ValueError("xb and yb must have the same batch size.")
 
     cfg = SpearAttackConfig() if cfg is None else dc.replace(cfg)
-    if not bool(cfg.noisy_mode) and cfg.batch_size is None:
+    if cfg.batch_size is None:
         cfg.batch_size = int(len(xb))
 
     resolved_loss = resolve_loss_fn(loss_name)

@@ -961,7 +961,9 @@ def _plot_spear_batch_grid(
 
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
 
-    def _resolve_display_shape(flat_dim: int, shape: tuple[int, ...]) -> tuple[int, ...]:
+    def _resolve_display_shape(
+        flat_dim: int, shape: tuple[int, ...]
+    ) -> tuple[int, ...]:
         shape = tuple(int(v) for v in shape)
 
         prod = 1
@@ -1022,6 +1024,7 @@ def _plot_spear_batch_grid(
     fig.savefig(out_path, dpi=160, bbox_inches="tight")
     plt.close(fig)
 
+
 def _plot_spear_single_pair(
     true_x: np.ndarray,
     recon_x: np.ndarray,
@@ -1039,7 +1042,9 @@ def _plot_spear_single_pair(
 
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
 
-    def _resolve_display_shape(flat_dim: int, shape: tuple[int, ...]) -> tuple[int, ...]:
+    def _resolve_display_shape(
+        flat_dim: int, shape: tuple[int, ...]
+    ) -> tuple[int, ...]:
         shape = tuple(int(v) for v in shape)
 
         prod = 1
@@ -1089,6 +1094,7 @@ def _plot_spear_single_pair(
     fig.tight_layout()
     fig.savefig(out_path, dpi=180, bbox_inches="tight")
     plt.close(fig)
+
 
 def demo_nonconvex_spear_exact_batch_attack(
     X_train,

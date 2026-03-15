@@ -147,6 +147,54 @@ def plot_reconstruction_pair(
     _save_or_show(fig, out_path)
 
 
+def plot_batch_reconstruction_grid(
+    true_batch: np.ndarray,
+    reconstructed_batch: np.ndarray,
+    *,
+    feature_shape: Optional[Sequence[int]] = None,
+    title: Optional[str] = None,
+    metric_text: Optional[str] = None,
+    max_items: int = 8,
+    out_path: Optional[str] = None,
+) -> None:
+    """Plot a 2 x B grid of target / reconstruction samples for a batch attack."""
+    true_batch = np.asarray(true_batch)
+    reconstructed_batch = np.asarray(reconstructed_batch)
+
+    if true_batch.shape[0] != reconstructed_batch.shape[0]:
+        raise ValueError(
+            f"true_batch.shape[0]={true_batch.shape[0]} must equal reconstructed_batch.shape[0]={reconstructed_batch.shape[0]}."
+        )
+
+    n_show = min(int(max_items), int(true_batch.shape[0]))
+    fig, axes = plt.subplots(2, n_show, figsize=(1.9 * n_show, 4.0))
+    axes = np.asarray(axes)
+    if axes.ndim == 1:
+        axes = axes[:, None]
+
+    for j in range(n_show):
+        true_img = _as_image(np.asarray(true_batch[j]), feature_shape=feature_shape)
+        recon_img = _as_image(
+            np.asarray(reconstructed_batch[j]), feature_shape=feature_shape
+        )
+
+        _imshow_array(axes[0, j], true_img)
+        _imshow_array(axes[1, j], recon_img)
+        axes[0, j].set_title(f"Target[{j}]")
+        axes[1, j].set_title(f"Reconstruction[{j}]")
+
+    text_parts = []
+    if title is not None:
+        text_parts.append(str(title))
+    if metric_text is not None:
+        text_parts.append(str(metric_text))
+    if text_parts:
+        fig.suptitle(" | ".join(text_parts))
+
+    fig.tight_layout()
+    _save_or_show(fig, out_path)
+
+
 def plot_reconstruction_triplet(
     true_features: np.ndarray,
     reconstructed_features: np.ndarray,

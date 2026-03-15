@@ -44,6 +44,38 @@ def reconstruction_metrics(
     return out
 
 
+def feature_reconstruction_metrics(
+    true_features: np.ndarray,
+    pred_features: Optional[np.ndarray],
+    eta_grid: Sequence[float],
+) -> Dict[str, float]:
+    true_flat = np.asarray(true_features, dtype=np.float32).reshape(-1)
+
+    if pred_features is None:
+        out = {
+            "distance": float("inf"),
+            "feature_l2": float("inf"),
+        }
+        for eta in eta_grid:
+            out[f"success@{eta:g}"] = 0.0
+        return out
+
+    pred_flat = np.asarray(pred_features, dtype=np.float32).reshape(-1)
+    if true_flat.shape != pred_flat.shape:
+        raise ValueError(
+            f"true_features.shape={true_flat.shape} must match pred_features.shape={pred_flat.shape} after flattening."
+        )
+
+    d = float(np.linalg.norm(true_flat - pred_flat, ord=2))
+    out = {
+        "distance": float(d),
+        "feature_l2": float(d),
+    }
+    for eta in eta_grid:
+        out[f"success@{eta:g}"] = float(d <= float(eta))
+    return out
+
+
 def accuracy_from_logits(logits: np.ndarray, y_true: np.ndarray) -> float:
     if logits.ndim == 1 or logits.shape[-1] == 1:
         preds = (np.ravel(logits) >= 0.0).astype(np.int64)

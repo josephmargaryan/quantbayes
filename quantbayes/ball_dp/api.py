@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, Optional, Sequence, Dict
+from typing import Any, Callable, Optional, Sequence, Dict, Literal
 
 import math
 import equinox as eqx
@@ -20,7 +20,7 @@ from .config import (
     ReconstructorTrainingConfig,
     ShadowCorpusConfig,
 )
-from .metrics import accuracy_from_logits
+from .metrics import accuracy_from_logits, feature_reconstruction_metrics
 from .convex.attacks import run_convex_attack
 from .convex.releases import (
     run_convex_ball_erm_dp,
@@ -65,6 +65,14 @@ from .attacks.gradient_based import (
     run_trace_optimization_attack,
     subtract_known_batch_gradients,
 )
+
+from .attacks.spear import (
+    SpearAttackConfig,
+    SpearAttackResult,
+    run_spear_model_batch_attack,
+    run_spear_trace_step_attack,
+)
+from .plots import plot_attack_result, plot_batch_reconstruction_grid
 
 ConvexModelFamily = str
 BallPrivacyKind = str
@@ -487,6 +495,514 @@ def evaluate_release_classifier(
     }
 
 
+def _prepare_attack_arrays(
+    X: np.ndarray,
+    *,
+    flatten_inputs: bool,
+) -> tuple[np.ndarray, np.ndarray, tuple[int, ...]]:
+    X_np = np.asarray(X)
+    if X_np.ndim < 2:
+        raise ValueError("X must have shape (n, ...).")
+    feature_shape = tuple(int(v) for v in X_np.shape[1:])
+    if flatten_inputs:
+        X_attack = np.asarray(X_np.reshape(len(X_np), -1), dtype=np.float64)
+    else:
+        X_attack = np.asarray(X_np, dtype=np.float64)
+    return X_np, X_attack, feature_shape
+
+
+def _resolve_target_batch_indices(
+    *,
+    n_total: int,
+    target_index: int,
+    batch_size: int,
+    seed: int,
+    batch_indices: Optional[Sequence[int]] = None,
+) -> np.ndarray:
+    target_index = int(target_index)
+    batch_size = int(batch_size)
+
+    if target_index < 0 or target_index >= int(n_total):
+        raise IndexError(
+            f"target_index={target_index} is out of range for dataset size {n_total}."
+        )
+    if batch_size < 2:
+        raise ValueError("batch_size must be >= 2 for SPEAR.")
+    if batch_size > int(n_total):
+        raise ValueError(f"batch_size={batch_size} exceeds dataset size {n_total}.")
+
+    if batch_indices is not None:
+        idx = np.asarray(batch_indices, dtype=np.int64).reshape(-1)
+        if idx.size != batch_size:
+            raise ValueError(
+                f"Provided batch_indices has length {idx.size}, expected batch_size={batch_size}."
+            )
+        if np.any(idx < 0) or np.any(idx >= int(n_total)):
+            raise ValueError("batch_indices contains an out-of-range index.")
+        if len(np.unique(idx)) != len(idx):
+            raise ValueError("batch_indices must not contain duplicates.")
+        if not np.any(idx == target_index):
+            raise ValueError(
+                f"Provided batch_indices does not contain target_index={target_index}."
+            )
+        others = idx[idx != target_index]
+        return np.concatenate(
+            [
+                np.asarray([target_index], dtype=np.int64),
+                np.asarray(others, dtype=np.int64),
+            ]
+        )
+
+    rng = np.random.default_rng(int(seed))
+    pool = np.arange(int(n_total), dtype=np.int64)
+    pool = pool[pool != target_index]
+    others = rng.choice(pool, size=int(batch_size) - 1, replace=False)
+    return np.concatenate(
+        [
+            np.asarray([target_index], dtype=np.int64),
+            np.asarray(others, dtype=np.int64),
+        ]
+    )
+
+
+def _spear_batch_reconstruction(
+    batch_result: SpearAttackResult,
+) -> Optional[np.ndarray]:
+    recon = (
+        batch_result.x_hat_aligned
+        if batch_result.x_hat_aligned is not None
+        else batch_result.x_hat
+    )
+    return None if recon is None else np.asarray(recon, dtype=np.float32)
+
+
+def _spear_target_attack_result(
+    batch_result: SpearAttackResult,
+    *,
+    true_features_flat: np.ndarray,
+    eta_grid: Sequence[float],
+    attack_family: str,
+) -> AttackResult:
+    recon_batch = _spear_batch_reconstruction(batch_result)
+    z_hat = None
+    if recon_batch is not None and recon_batch.shape[0] >= 1:
+        z_hat = np.asarray(recon_batch[0], dtype=np.float32)
+
+    metrics = feature_reconstruction_metrics(
+        np.asarray(true_features_flat, dtype=np.float32).reshape(-1),
+        None if z_hat is None else np.asarray(z_hat, dtype=np.float32).reshape(-1),
+        eta_grid=eta_grid,
+    )
+    for k, v in batch_result.metrics.items():
+        if np.isscalar(v):
+            metrics[f"batch_{k}"] = float(v)
+
+    diagnostics = dict(batch_result.diagnostics)
+    diagnostics["target_position_in_batch"] = 0
+
+    return AttackResult(
+        attack_family=str(attack_family),
+        z_hat=None if z_hat is None else np.asarray(z_hat, dtype=np.float32),
+        y_hat=None,
+        status=str(batch_result.status),
+        diagnostics=diagnostics,
+        metrics=metrics,
+    )
+
+
+def fit_targeted_ball_sgd_trace(
+    model: Any,
+    optimizer: optax.GradientTransformation,
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    *,
+    target_index: int,
+    radius: float,
+    lz: Optional[float],
+    X_eval: Optional[np.ndarray] = None,
+    y_eval: Optional[np.ndarray] = None,
+    privacy: BallPrivacyKind = "ball_rdp",
+    epsilon: Optional[float] = None,
+    delta: Optional[float] = None,
+    num_steps: int = 1,
+    batch_size: int = 8,
+    clip_norm: float = 1.0,
+    noise_multiplier: float = 1.0,
+    loss_name: str = "softmax_cross_entropy",
+    state: Any = None,
+    loss_fn: Optional[ExampleLossFn] = None,
+    predict_fn: Optional[PredictFn] = default_predict_fn,
+    parameter_regularizer: Optional[Callable[[Any, Any], jax.Array]] = None,
+    normalize_noisy_sum_by: str = "batch_size",
+    frobenius_reg_strength: float = 0.0,
+    spectral_reg_strength: float = 0.0,
+    spectral_reg_kwargs: Optional[dict[str, Any]] = None,
+    record_operator_norms: bool = False,
+    operator_norms_every: int = 250,
+    operator_norm_kwargs: Optional[dict[str, Any]] = None,
+    checkpoint_selection: str = "last",
+    eval_every: int = 250,
+    eval_batch_size: int = 1024,
+    warn_if_ball_equals_standard: bool = True,
+    batch_indices: Optional[Sequence[int]] = None,
+    fixed_target_steps: Literal["first", "all"] = "first",
+    flatten_inputs: bool = True,
+    seed: int = 0,
+    key: Optional[jax.Array] = None,
+) -> tuple[ReleaseArtifact, DPSGDTrace, Record, np.ndarray]:
+    if int(num_steps) <= 0:
+        raise ValueError("num_steps must be positive.")
+
+    X_orig, X_attack, feature_shape = _prepare_attack_arrays(
+        X_train, flatten_inputs=bool(flatten_inputs)
+    )
+    y_np = np.asarray(y_train)
+    if len(X_attack) != len(y_np):
+        raise ValueError("X_train and y_train must have the same length.")
+
+    selected_batch_indices = _resolve_target_batch_indices(
+        n_total=len(X_attack),
+        target_index=int(target_index),
+        batch_size=int(batch_size),
+        seed=int(seed),
+        batch_indices=batch_indices,
+    )
+
+    mode = str(fixed_target_steps).lower()
+    if mode not in {"first", "all"}:
+        raise ValueError("fixed_target_steps must be one of {'first', 'all'}.")
+
+    fixed_schedule: list[Optional[tuple[int, ...]]] = []
+    batch_tuple = tuple(int(v) for v in selected_batch_indices.tolist())
+    for t in range(int(num_steps)):
+        if mode == "all" or t == 0:
+            fixed_schedule.append(batch_tuple)
+        else:
+            fixed_schedule.append(None)
+
+    recorder = DPSGDTraceRecorder(
+        capture_every=1,
+        keep_models=True,
+        keep_batch_indices=True,
+    )
+
+    X_eval_attack = None
+    if X_eval is not None:
+        _, X_eval_attack, _ = _prepare_attack_arrays(
+            X_eval, flatten_inputs=bool(flatten_inputs)
+        )
+
+    release = fit_ball_sgd(
+        model,
+        optimizer,
+        X_attack,
+        y_np,
+        radius=float(radius),
+        lz=None if lz is None else float(lz),
+        X_eval=X_eval_attack,
+        y_eval=None if y_eval is None else np.asarray(y_eval),
+        privacy=str(privacy),
+        epsilon=None if epsilon is None else float(epsilon),
+        delta=None if delta is None else float(delta),
+        num_steps=int(num_steps),
+        batch_size=int(batch_size),
+        clip_norm=float(clip_norm),
+        noise_multiplier=float(noise_multiplier),
+        loss_name=str(loss_name),
+        state=state,
+        loss_fn=loss_fn,
+        predict_fn=predict_fn,
+        parameter_regularizer=parameter_regularizer,
+        normalize_noisy_sum_by=str(normalize_noisy_sum_by),
+        frobenius_reg_strength=float(frobenius_reg_strength),
+        spectral_reg_strength=float(spectral_reg_strength),
+        spectral_reg_kwargs=dict(spectral_reg_kwargs or {}),
+        record_operator_norms=bool(record_operator_norms),
+        operator_norms_every=int(operator_norms_every),
+        operator_norm_kwargs=dict(operator_norm_kwargs or {}),
+        checkpoint_selection=str(checkpoint_selection),
+        eval_every=int(eval_every),
+        eval_batch_size=int(eval_batch_size),
+        warn_if_ball_equals_standard=bool(warn_if_ball_equals_standard),
+        fixed_batch_indices_schedule=tuple(fixed_schedule),
+        seed=int(seed),
+        key=key,
+        trace_recorder=recorder,
+    )
+
+    trace = recorder.to_trace(
+        state=state,
+        loss_name=str(loss_name),
+        reduction="mean",
+        metadata={
+            "dataset_size": int(len(X_attack)),
+            "sample_rate": float(batch_size) / float(len(X_attack)),
+            "feature_shape": tuple(int(v) for v in feature_shape),
+            "target_index": int(target_index),
+            "target_position": 0,
+            "selected_batch_indices": selected_batch_indices.astype(np.int64).tolist(),
+            "privacy": str(privacy),
+        },
+    )
+    if not trace.steps:
+        raise RuntimeError("Trace recorder did not capture any step.")
+
+    true_record = Record(
+        features=np.asarray(X_orig[int(target_index)]),
+        label=int(y_np[int(target_index)]),
+    )
+    return (
+        release,
+        trace,
+        true_record,
+        np.asarray(selected_batch_indices, dtype=np.int64),
+    )
+
+
+def attack_nonconvex_spear_exact_batch(
+    model: Any,
+    X: np.ndarray,
+    y: np.ndarray,
+    *,
+    target_index: int,
+    batch_size: int = 8,
+    batch_indices: Optional[Sequence[int]] = None,
+    flatten_inputs: bool = True,
+    feature_shape: Optional[Sequence[int]] = None,
+    layer_path: Sequence[Any] = ("layers", 0),
+    loss_name: str = "softmax_cross_entropy",
+    state: Any = None,
+    reduction: str = "mean",
+    max_samples: int = 20_000,
+    false_rejection_rate: float = 1e-5,
+    zero_tol: float = 1e-7,
+    eta_grid: Sequence[float] = (0.1, 0.2, 0.5, 1.0),
+    seed: int = 0,
+    pair_out_path: Optional[str] = None,
+    grid_out_path: Optional[str] = None,
+) -> tuple[AttackResult, SpearAttackResult, np.ndarray]:
+    X_orig, X_attack, feature_shape_default = _prepare_attack_arrays(
+        X, flatten_inputs=bool(flatten_inputs)
+    )
+    y_np = np.asarray(y)
+    feature_shape_use = (
+        tuple(int(v) for v in feature_shape)
+        if feature_shape is not None
+        else feature_shape_default
+    )
+
+    batch_idx = _resolve_target_batch_indices(
+        n_total=len(X_attack),
+        target_index=int(target_index),
+        batch_size=int(batch_size),
+        seed=int(seed),
+        batch_indices=batch_indices,
+    )
+
+    xb_attack = np.asarray(X_attack[batch_idx], dtype=np.float64)
+    yb = np.asarray(y_np[batch_idx])
+
+    batch_result = run_spear_model_batch_attack(
+        model,
+        xb_attack,
+        yb,
+        layer_path=layer_path,
+        loss_name=str(loss_name),
+        state=state,
+        reduction=str(reduction),
+        cfg=SpearAttackConfig(
+            max_samples=int(max_samples),
+            batch_size=int(batch_size),
+            false_rejection_rate=float(false_rejection_rate),
+            zero_tol=float(zero_tol),
+            random_seed=int(seed),
+            greedy_swap_rule="best_improvement",
+            noisy_mode=False,
+        ),
+        true_batch=xb_attack,
+        eta_grid=eta_grid,
+        seed=int(seed),
+    )
+
+    target_attack = _spear_target_attack_result(
+        batch_result,
+        true_features_flat=xb_attack[0],
+        eta_grid=eta_grid,
+        attack_family="spear_exact_batch_target",
+    )
+    target_attack.diagnostics["batch_indices"] = np.asarray(batch_idx, dtype=np.int64)
+    target_attack.diagnostics["target_index"] = int(target_index)
+
+    true_record = Record(
+        features=np.asarray(X_orig[int(target_index)]),
+        label=int(y_np[int(target_index)]),
+    )
+
+    if pair_out_path is not None and target_attack.z_hat is not None:
+        plot_attack_result(
+            target_attack,
+            true_record,
+            feature_shape=feature_shape_use,
+            out_path=pair_out_path,
+        )
+
+    recon_batch = _spear_batch_reconstruction(batch_result)
+    if grid_out_path is not None and recon_batch is not None:
+        plot_batch_reconstruction_grid(
+            np.asarray(X_orig[batch_idx]),
+            np.asarray(recon_batch),
+            feature_shape=feature_shape_use,
+            title=f"{batch_result.attack_family} ({batch_result.status})",
+            out_path=grid_out_path,
+        )
+
+    return target_attack, batch_result, np.asarray(batch_idx, dtype=np.int64)
+
+
+def attack_nonconvex_spear_private_step(
+    model: Any,
+    optimizer: optax.GradientTransformation,
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    *,
+    target_index: int,
+    radius: float,
+    lz: Optional[float],
+    X_eval: Optional[np.ndarray] = None,
+    y_eval: Optional[np.ndarray] = None,
+    privacy: BallPrivacyKind = "ball_rdp",
+    epsilon: Optional[float] = None,
+    delta: Optional[float] = None,
+    batch_size: int = 8,
+    batch_indices: Optional[Sequence[int]] = None,
+    clip_norm: float = 1.0,
+    noise_multiplier: float = 1.0,
+    loss_name: str = "softmax_cross_entropy",
+    state: Any = None,
+    loss_fn: Optional[ExampleLossFn] = None,
+    predict_fn: Optional[PredictFn] = default_predict_fn,
+    parameter_regularizer: Optional[Callable[[Any, Any], jax.Array]] = None,
+    normalize_noisy_sum_by: str = "batch_size",
+    flatten_inputs: bool = True,
+    feature_shape: Optional[Sequence[int]] = None,
+    layer_path: Sequence[Any] = ("layers", 0),
+    max_samples: int = 20_000,
+    false_rejection_rate: float = 1e-5,
+    zero_tol_exact: float = 1e-7,
+    zero_tol_noisy: float = 1e-4,
+    noisy_gamma_target: float = 0.98,
+    noisy_submatrix_rows: Optional[int] = None,
+    eta_grid: Sequence[float] = (0.1, 0.2, 0.5, 1.0),
+    seed: int = 0,
+    pair_out_path: Optional[str] = None,
+    grid_out_path: Optional[str] = None,
+) -> tuple[AttackResult, SpearAttackResult, ReleaseArtifact, DPSGDTrace, np.ndarray]:
+    release, trace, true_record, batch_idx = fit_targeted_ball_sgd_trace(
+        model,
+        optimizer,
+        X_train,
+        y_train,
+        target_index=int(target_index),
+        radius=float(radius),
+        lz=None if lz is None else float(lz),
+        X_eval=X_eval,
+        y_eval=y_eval,
+        privacy=str(privacy),
+        epsilon=None if epsilon is None else float(epsilon),
+        delta=None if delta is None else float(delta),
+        num_steps=1,
+        batch_size=int(batch_size),
+        clip_norm=float(clip_norm),
+        noise_multiplier=float(noise_multiplier),
+        loss_name=str(loss_name),
+        state=state,
+        loss_fn=loss_fn,
+        predict_fn=predict_fn,
+        parameter_regularizer=parameter_regularizer,
+        normalize_noisy_sum_by=str(normalize_noisy_sum_by),
+        batch_indices=batch_indices,
+        fixed_target_steps="first",
+        flatten_inputs=bool(flatten_inputs),
+        seed=int(seed),
+    )
+
+    step = trace.steps[0]
+
+    X_orig, X_attack, feature_shape_default = _prepare_attack_arrays(
+        X_train, flatten_inputs=bool(flatten_inputs)
+    )
+    y_np = np.asarray(y_train)
+    feature_shape_use = (
+        tuple(int(v) for v in feature_shape)
+        if feature_shape is not None
+        else feature_shape_default
+    )
+
+    xb_attack = np.asarray(X_attack[batch_idx], dtype=np.float64)
+
+    is_noisy = float(getattr(step, "effective_noise_std", 0.0)) > 0.0
+    cfg = SpearAttackConfig(
+        max_samples=int(max_samples),
+        batch_size=int(batch_size),
+        false_rejection_rate=float(false_rejection_rate),
+        zero_tol=float(zero_tol_noisy if is_noisy else zero_tol_exact),
+        random_seed=int(seed),
+        greedy_swap_rule="best_improvement",
+        noisy_mode=bool(is_noisy),
+        noisy_gamma_target=(float(noisy_gamma_target) if is_noisy else None),
+        noisy_submatrix_rows=(
+            None if noisy_submatrix_rows is None else int(noisy_submatrix_rows)
+        ),
+    )
+
+    batch_result = run_spear_trace_step_attack(
+        step,
+        layer_path=layer_path,
+        cfg=cfg,
+        true_batch=xb_attack,
+        eta_grid=eta_grid,
+    )
+
+    target_attack = _spear_target_attack_result(
+        batch_result,
+        true_features_flat=xb_attack[0],
+        eta_grid=eta_grid,
+        attack_family="spear_private_step_target",
+    )
+    target_attack.diagnostics["batch_indices"] = np.asarray(batch_idx, dtype=np.int64)
+    target_attack.diagnostics["target_index"] = int(target_index)
+    target_attack.diagnostics["release_kind"] = str(release.release_kind)
+    target_attack.diagnostics["primary_privacy_view"] = str(
+        release.attack_metadata.get("primary_privacy_view", "ball")
+    )
+
+    if pair_out_path is not None and target_attack.z_hat is not None:
+        plot_attack_result(
+            target_attack,
+            true_record,
+            feature_shape=feature_shape_use,
+            out_path=pair_out_path,
+        )
+
+    recon_batch = _spear_batch_reconstruction(batch_result)
+    if grid_out_path is not None and recon_batch is not None:
+        plot_batch_reconstruction_grid(
+            np.asarray(X_orig[batch_idx]),
+            np.asarray(recon_batch),
+            feature_shape=feature_shape_use,
+            title=f"{batch_result.attack_family} ({batch_result.status})",
+            out_path=grid_out_path,
+        )
+
+    return (
+        target_attack,
+        batch_result,
+        release,
+        trace,
+        np.asarray(batch_idx, dtype=np.int64),
+    )
+
+
 def fit_ball_sgd(
     model: Any,
     optimizer: optax.GradientTransformation,
@@ -520,6 +1036,7 @@ def fit_ball_sgd(
     eval_every: int = 250,
     eval_batch_size: int = 1024,
     warn_if_ball_equals_standard: bool = True,
+    fixed_batch_indices_schedule: Optional[Sequence[Optional[Sequence[int]]]] = None,
     seed: int = 0,
     key: Optional[jax.Array] = None,
     return_debug_history: bool = False,
@@ -559,6 +1076,14 @@ def fit_ball_sgd(
         delta=None if delta is None else float(delta),
         loss_name=str(loss_name),
         normalize_noisy_sum_by=str(normalize_noisy_sum_by),
+        fixed_batch_indices_schedule=(
+            None
+            if fixed_batch_indices_schedule is None
+            else tuple(
+                None if step_idx is None else tuple(int(v) for v in step_idx)
+                for step_idx in fixed_batch_indices_schedule
+            )
+        ),
         frobenius_reg_strength=float(frobenius_reg_strength),
         spectral_reg_strength=float(spectral_reg_strength),
         spectral_reg_kwargs=dict(spectral_reg_kwargs or {}),

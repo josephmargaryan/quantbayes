@@ -2,8 +2,6 @@
 from __future__ import annotations
 
 import dataclasses as dc
-import json
-from pathlib import Path
 from typing import (
     Any,
     Dict,
@@ -155,6 +153,11 @@ class BallSGDConfig:
     - `lz` is a user-supplied theorem-backed constant. The library does not attempt
       to derive it automatically.
     - Public checkpoint selection should only use a non-private evaluation set.
+    - `fixed_batch_indices_schedule`, when supplied, allows deterministic batch
+      selection for specific steps. Each entry is either:
+          * None   -> sample that step randomly as usual
+          * tuple of indices -> force that exact minibatch at that step
+      This is intended for controlled attack experiments, not public release metadata.
     """
 
     radius: float = 1.0
@@ -170,6 +173,8 @@ class BallSGDConfig:
         "softmax_cross_entropy"
     )
     normalize_noisy_sum_by: Literal["batch_size", "none"] = "batch_size"
+
+    fixed_batch_indices_schedule: Optional[Tuple[Optional[Tuple[int, ...]], ...]] = None
 
     # Optional built-in parameter-only penalties added *after* DP sanitization.
     frobenius_reg_strength: float = 0.0

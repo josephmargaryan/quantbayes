@@ -584,6 +584,45 @@ def _make_release_artifact(
     )
 
 
+def _normalize_fixed_batch_schedule(
+    fixed_batch_indices_schedule: Sequence[Optional[Sequence[int]]] | None,
+    *,
+    T: int,
+    n_total: int,
+    batch_schedule: Sequence[int],
+) -> list[Optional[np.ndarray]] | None:
+    if fixed_batch_indices_schedule is None:
+        return None
+
+    if len(fixed_batch_indices_schedule) != int(T):
+        raise ValueError(
+            f"Expected fixed_batch_indices_schedule of length {T}, got {len(fixed_batch_indices_schedule)}."
+        )
+
+    out: list[Optional[np.ndarray]] = []
+    for t, entry in enumerate(fixed_batch_indices_schedule):
+        if entry is None:
+            out.append(None)
+            continue
+
+        idx = np.asarray(entry, dtype=np.int64).reshape(-1)
+        if idx.size != int(batch_schedule[t]):
+            raise ValueError(
+                f"fixed_batch_indices_schedule[{t}] has length {idx.size}, expected batch size {batch_schedule[t]}."
+            )
+        if np.any(idx < 0) or np.any(idx >= int(n_total)):
+            raise ValueError(
+                f"fixed_batch_indices_schedule[{t}] contains an index outside [0, {int(n_total) - 1}]."
+            )
+        if len(np.unique(idx)) != len(idx):
+            raise ValueError(
+                f"fixed_batch_indices_schedule[{t}] contains duplicate indices."
+            )
+        out.append(idx.copy())
+
+    return out
+
+
 def _run_training(
     dataset: ArrayDataset,
     cfg: BallSGDConfig,
@@ -639,6 +678,12 @@ def _run_training(
     )
     effective_noise_stds = _effective_noise_stds(
         clip_schedule, noise_multiplier_schedule
+    )
+    fixed_batch_schedule = _normalize_fixed_batch_schedule(
+        getattr(cfg, "fixed_batch_indices_schedule", None),
+        T=T,
+        n_total=n_total,
+        batch_schedule=batch_schedule,
     )
 
     if any(m <= 0 for m in batch_schedule):
@@ -746,7 +791,10 @@ def _run_training(
         train_key, sample_key, step_key = jr.split(train_key, 3)
 
         m_t = int(batch_schedule[t])
-        idx = jr.choice(sample_key, n_total, shape=(m_t,), replace=False)
+        if fixed_batch_schedule is not None and fixed_batch_schedule[t] is not None:
+            idx = jnp.asarray(fixed_batch_schedule[t], dtype=jnp.int32)
+        else:
+            idx = jr.choice(sample_key, n_total, shape=(m_t,), replace=False)
         xb = x_train[idx]
         yb = y_train[idx]
 
