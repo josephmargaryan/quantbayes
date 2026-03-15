@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any, Callable, Optional, Sequence, Dict, Literal
+import dataclasses as dc
 
 import math
 import equinox as eqx
@@ -52,6 +53,7 @@ from .types import (
     ShadowCorpus,
 )
 from .attacks.model_based import (
+    FlatRecordCodec,
     build_shadow_corpus,
     make_attack_feature_map,
     run_model_based_attack,
@@ -73,6 +75,19 @@ from .attacks.spear import (
     run_spear_trace_step_attack,
 )
 from .plots import plot_attack_result, plot_batch_reconstruction_grid
+
+__all__ = [
+    "fit_convex",
+    "attack_convex",
+    "make_uniform_ball_prior",
+    "ball_rero",
+    "fit_targeted_sgd_trace",
+    "attack_nonconvex_spear_exact_batch",
+    "attack_nonconvex_spear_private_step",
+    "fit_ball_sgd",
+    "run_nonconvex_model_based_attack",
+    "attack_nonconvex_prior_aware_trace" "attack_nonconvex_trace_optimization",
+]
 
 ConvexModelFamily = str
 BallPrivacyKind = str
@@ -1307,6 +1322,646 @@ def attack_nonconvex_model_based_target(
         )
 
     return attack, true_record, d_minus
+
+
+@dc.dataclass
+class NonconvexModelBasedTargetWorkflowResult:
+    release: ReleaseArtifact
+    attack: AttackResult
+    reconstructor: ReconstructorArtifact
+    corpus: ShadowCorpus
+    feature_map: AttackFeatureMap
+    d_minus: ArrayDataset
+    victim_dataset: ArrayDataset
+    true_record: Record
+    shadow_targets: list[Record]
+    nearest_neighbor_reference: Optional[Record]
+    feature_shape: tuple[int, ...]
+    flatten_inputs: bool
+    metadata: Dict[str, Any] = dc.field(default_factory=dict)
+
+
+def _infer_box_bounds_from_data(X: np.ndarray) -> tuple[float, float]:
+    X = np.asarray(X, dtype=np.float32)
+    return float(np.min(X)), float(np.max(X))
+
+
+def _cap_batch_size_spec(
+    batch_size: int | Sequence[int],
+    *,
+    n_total: int,
+) -> int | tuple[int, ...]:
+    if isinstance(batch_size, (tuple, list)):
+        return tuple(min(int(v), int(n_total)) for v in batch_size)
+    return min(int(batch_size), int(n_total))
+
+
+def _coerce_features_to_attack_space(
+    features: np.ndarray,
+    *,
+    flatten_inputs: bool,
+    feature_shape: Sequence[int],
+) -> np.ndarray:
+    arr = np.asarray(features, dtype=np.float32)
+    feature_shape = tuple(int(v) for v in feature_shape)
+    flat_dim = int(np.prod(feature_shape))
+
+    if flatten_inputs:
+        if arr.shape == (flat_dim,):
+            return arr.astype(np.float32, copy=False)
+        if arr.shape == feature_shape:
+            return arr.reshape(-1).astype(np.float32, copy=False)
+        if arr.size == flat_dim:
+            return arr.reshape(-1).astype(np.float32, copy=False)
+        raise ValueError(
+            "Could not coerce features into flattened attack space. "
+            f"Expected shape {feature_shape} or flat shape ({flat_dim},), got {arr.shape}."
+        )
+
+    if arr.shape == feature_shape:
+        return arr.astype(np.float32, copy=False)
+    if arr.shape == (flat_dim,):
+        return arr.reshape(feature_shape).astype(np.float32, copy=False)
+    if arr.size == flat_dim:
+        return arr.reshape(feature_shape).astype(np.float32, copy=False)
+    raise ValueError(
+        "Could not coerce features into unflattened attack space. "
+        f"Expected shape {feature_shape} or flat shape ({flat_dim},), got {arr.shape}."
+    )
+
+
+def _coerce_record_to_attack_space(
+    record: Record,
+    *,
+    flatten_inputs: bool,
+    feature_shape: Sequence[int],
+) -> Record:
+    return Record(
+        features=_coerce_features_to_attack_space(
+            np.asarray(record.features),
+            flatten_inputs=bool(flatten_inputs),
+            feature_shape=feature_shape,
+        ),
+        label=int(record.label),
+    )
+
+
+def _append_record_to_dataset(
+    ds: ArrayDataset,
+    record: Record,
+    *,
+    name: Optional[str] = None,
+) -> ArrayDataset:
+    x_arr = np.asarray(ds.X)
+    y_arr = np.asarray(ds.y)
+    rec_x = np.asarray(record.features, dtype=x_arr.dtype)
+
+    expected_shape = tuple(int(v) for v in x_arr.shape[1:])
+    got_shape = tuple(int(v) for v in rec_x.shape)
+    if got_shape != expected_shape:
+        raise ValueError(
+            "record.features shape does not match dataset feature shape: "
+            f"expected {expected_shape}, got {got_shape}."
+        )
+
+    x_out = np.concatenate([x_arr, rec_x[None, ...]], axis=0)
+    y_out = np.concatenate(
+        [y_arr, np.asarray([int(record.label)], dtype=y_arr.dtype)],
+        axis=0,
+    )
+    return ArrayDataset(
+        np.asarray(x_out),
+        np.asarray(y_out),
+        name=(ds.name if name is None else name),
+    )
+
+
+def _build_base_dataset_for_targeted_attack(
+    X_attack: np.ndarray,
+    y: np.ndarray,
+    *,
+    target_index: int,
+    base_train_size: Optional[int],
+    seed: int,
+) -> tuple[ArrayDataset, np.ndarray]:
+    X_attack = np.asarray(X_attack, dtype=np.float32)
+    y = np.asarray(y)
+
+    n_total = int(len(X_attack))
+    if target_index < 0 or target_index >= n_total:
+        raise IndexError(
+            f"target_index={target_index} is out of range for dataset size {n_total}."
+        )
+
+    pool = np.arange(n_total, dtype=np.int64)
+    pool = pool[pool != int(target_index)]
+
+    if base_train_size is None:
+        chosen = pool
+        ds_name = f"train_minus_{int(target_index)}"
+    else:
+        base_train_size = int(base_train_size)
+        if not (1 <= base_train_size < n_total):
+            raise ValueError(
+                f"base_train_size must be in [1, {n_total - 1}], got {base_train_size}."
+            )
+        rng = np.random.default_rng(int(seed))
+        chosen = np.sort(
+            rng.choice(pool, size=int(base_train_size), replace=False)
+        ).astype(np.int64)
+        ds_name = f"train_base_{int(base_train_size)}"
+
+    return (
+        ArrayDataset(X_attack[chosen], y[chosen], name=ds_name),
+        np.asarray(chosen, dtype=np.int64),
+    )
+
+
+def _auto_shadow_target_pool(
+    X_train_attack: np.ndarray,
+    y_train: np.ndarray,
+    *,
+    X_test_attack: Optional[np.ndarray],
+    y_test: Optional[np.ndarray],
+    max_count: int,
+    exclude_train_indices: Sequence[int],
+    seed: int,
+) -> list[Record]:
+    X_train_attack = np.asarray(X_train_attack, dtype=np.float32)
+    y_train = np.asarray(y_train)
+
+    excluded = {
+        int(i)
+        for i in np.asarray(tuple(exclude_train_indices), dtype=np.int64)
+        .reshape(-1)
+        .tolist()
+    }
+
+    candidates: list[tuple[str, int]] = []
+    if X_test_attack is not None and y_test is not None:
+        candidates.extend([("test", int(i)) for i in range(len(X_test_attack))])
+
+    for i in range(len(X_train_attack)):
+        if int(i) not in excluded:
+            candidates.append(("train", int(i)))
+
+    rng = np.random.default_rng(int(seed))
+    rng.shuffle(candidates)
+
+    out: list[Record] = []
+    for src, idx in candidates:
+        if src == "test":
+            out.append(
+                Record(
+                    features=np.asarray(X_test_attack[idx], dtype=np.float32),
+                    label=int(np.asarray(y_test)[idx]),
+                )
+            )
+        else:
+            out.append(
+                Record(
+                    features=np.asarray(X_train_attack[idx], dtype=np.float32),
+                    label=int(y_train[idx]),
+                )
+            )
+        if len(out) >= int(max_count):
+            break
+
+    return out
+
+
+def _nearest_neighbor_record(
+    true_record: Record,
+    pool: Sequence[Record],
+) -> Optional[Record]:
+    if not pool:
+        return None
+
+    x = np.asarray(true_record.features, dtype=np.float32).reshape(-1)
+    dists = [
+        float(np.linalg.norm(np.asarray(r.features, dtype=np.float32).reshape(-1) - x))
+        for r in pool
+    ]
+    return pool[int(np.argmin(np.asarray(dists, dtype=np.float32)))]
+
+
+def _merge_workflow_fit_kwargs(
+    shared: Optional[dict[str, Any]],
+    specific: Optional[dict[str, Any]],
+) -> dict[str, Any]:
+    forbidden = {
+        "X_train",
+        "y_train",
+        "X_eval",
+        "y_eval",
+        "model",
+        "optimizer",
+        "privacy",
+        "radius",
+        "lz",
+        "num_steps",
+        "batch_size",
+        "clip_norm",
+        "noise_multiplier",
+        "seed",
+        "key",
+    }
+
+    merged: dict[str, Any] = {}
+    for block in (shared, specific):
+        if block is None:
+            continue
+        overlap = forbidden.intersection(block.keys())
+        if overlap:
+            raise ValueError(
+                "The workflow owns these fit_ball_sgd arguments and they may not appear "
+                f"in fit_kwargs / victim_fit_kwargs / shadow_fit_kwargs: {sorted(overlap)}."
+            )
+        merged.update(block)
+    return merged
+
+
+def run_nonconvex_model_based_attack(
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    *,
+    model_factory: Callable[[int], Any],
+    optimizer_factory: Callable[[], optax.GradientTransformation],
+    X_test: Optional[np.ndarray] = None,
+    y_test: Optional[np.ndarray] = None,
+    privacy: BallPrivacyKind = "ball_rdp",
+    radius: Optional[float] = None,
+    lz: Optional[float] = None,
+    train_steps: int = 300,
+    shadow_steps: int = 150,
+    batch_size: int | Sequence[int] = 40,
+    shadow_batch_size: Optional[int | Sequence[int]] = None,
+    shadow_trials: int = 64,
+    noise_multiplier: float | Sequence[float] = 1.1,
+    shadow_noise_multiplier: Optional[float | Sequence[float]] = None,
+    clip_norm: float | Sequence[float] = 1.0,
+    shadow_clip_norm: Optional[float | Sequence[float]] = None,
+    base_train_size: Optional[int] = None,
+    target_index: int = 1,
+    seed: int = 0,
+    flatten_inputs: bool = True,
+    feature_shape: Optional[Sequence[int]] = None,
+    box_bounds: Optional[tuple[float, float]] = None,
+    shadow_targets: Optional[Sequence[Record]] = None,
+    shadow_pool_size: Optional[int] = None,
+    feature_map: str | AttackFeatureMap = "parameters_only",
+    parameter_selector: Optional[Callable[[Any], Any]] = None,
+    record_codec: Optional[RecordCodec] = None,
+    shadow_seed_policy: Literal["vary", "fixed"] = "fixed",
+    fixed_shadow_seed: Optional[int] = None,
+    shadow_corpus_cfg: Optional[ShadowCorpusConfig] = None,
+    reconstructor_cfg: Optional[ReconstructorTrainingConfig] = None,
+    fit_kwargs: Optional[dict[str, Any]] = None,
+    victim_fit_kwargs: Optional[dict[str, Any]] = None,
+    shadow_fit_kwargs: Optional[dict[str, Any]] = None,
+    known_label: Optional[int] = None,
+    use_true_label_as_side_info: bool = True,
+    eta_grid: Sequence[float] = (0.1, 0.2, 0.5, 1.0),
+) -> NonconvexModelBasedTargetWorkflowResult:
+    """End-to-end targeted model-based attack workflow for nonconvex releases.
+
+    This function owns the workflow invariants that currently leak into demo code:
+      - attack-space representation (flattened or not),
+      - base-set construction D^-,
+      - victim vs shadow training config reuse,
+      - default shadow-target pool construction,
+      - reconstructor training,
+      - final targeted attack evaluation.
+
+    Explicit contracts
+    ------------------
+    - `model_factory(seed)` must return a fresh untrained model.
+    - `optimizer_factory()` must return a fresh Optax optimizer transformation.
+    - For Ball-accounted modes ('ball_dp', 'ball_rdp', and aliases 'dp', 'rdp'),
+      both `radius` and `lz` must be provided.
+    - If `base_train_size is None`, then D^- = D \\ {target}. In that case the
+      automatic shadow-target pool needs `X_test, y_test`, because there are no
+      unused training records left outside D^-.
+    """
+    if int(train_steps) <= 0:
+        raise ValueError("train_steps must be positive.")
+    if int(shadow_steps) <= 0:
+        raise ValueError("shadow_steps must be positive.")
+    if int(shadow_trials) <= 0:
+        raise ValueError("shadow_trials must be positive.")
+
+    if (X_test is None) ^ (y_test is None):
+        raise ValueError("Provide both X_test and y_test, or neither.")
+
+    privacy_kind = _normalize_privacy_kind(privacy)
+    if privacy_kind in {"ball_dp", "ball_rdp"}:
+        if radius is None or lz is None:
+            raise ValueError(
+                f"privacy={privacy!r} uses Ball accounting, so both radius and lz must be provided."
+            )
+        radius_use = float(radius)
+        lz_use = float(lz)
+    else:
+        radius_use = 1.0 if radius is None else float(radius)
+        lz_use = None if lz is None else float(lz)
+
+    X_train_orig, X_train_attack, inferred_feature_shape = _prepare_attack_arrays(
+        X_train,
+        flatten_inputs=bool(flatten_inputs),
+    )
+    y_train_np = np.asarray(y_train)
+    if len(X_train_attack) != len(y_train_np):
+        raise ValueError("X_train and y_train must have the same length.")
+
+    if X_test is not None and y_test is not None:
+        _, X_test_attack, _ = _prepare_attack_arrays(
+            X_test,
+            flatten_inputs=bool(flatten_inputs),
+        )
+        y_test_np = np.asarray(y_test)
+        if len(X_test_attack) != len(y_test_np):
+            raise ValueError("X_test and y_test must have the same length.")
+    else:
+        X_test_attack = None
+        y_test_np = None
+
+    feature_shape_use = (
+        tuple(int(v) for v in feature_shape)
+        if feature_shape is not None
+        else inferred_feature_shape
+    )
+
+    inferred_flat_dim = int(np.prod(inferred_feature_shape))
+    provided_flat_dim = int(np.prod(feature_shape_use))
+    if provided_flat_dim != inferred_flat_dim:
+        raise ValueError(
+            "feature_shape must preserve the input flat dimension: "
+            f"inferred product={inferred_flat_dim}, provided product={provided_flat_dim}."
+        )
+    if not flatten_inputs and tuple(feature_shape_use) != tuple(inferred_feature_shape):
+        raise ValueError(
+            "When flatten_inputs=False, feature_shape must equal the actual input feature shape: "
+            f"expected {tuple(inferred_feature_shape)}, got {tuple(feature_shape_use)}."
+        )
+
+    box_bounds_use = (
+        _infer_box_bounds_from_data(X_train_orig)
+        if box_bounds is None
+        else (float(box_bounds[0]), float(box_bounds[1]))
+    )
+
+    d_minus, base_indices = _build_base_dataset_for_targeted_attack(
+        X_train_attack,
+        y_train_np,
+        target_index=int(target_index),
+        base_train_size=base_train_size,
+        seed=int(seed),
+    )
+
+    true_record = Record(
+        features=np.asarray(X_train_attack[int(target_index)], dtype=np.float32),
+        label=int(y_train_np[int(target_index)]),
+    )
+    victim_dataset = _append_record_to_dataset(
+        d_minus,
+        true_record,
+        name="victim_train",
+    )
+
+    excluded_train_indices = np.concatenate(
+        [
+            np.asarray(base_indices, dtype=np.int64).reshape(-1),
+            np.asarray([int(target_index)], dtype=np.int64),
+        ],
+        axis=0,
+    )
+
+    if shadow_targets is None:
+        shadow_trials_use = (
+            int(shadow_trials)
+            if shadow_corpus_cfg is None
+            else int(shadow_corpus_cfg.num_trials)
+        )
+        shadow_pool_size_use = (
+            max(32, 2 * shadow_trials_use)
+            if shadow_pool_size is None
+            else int(shadow_pool_size)
+        )
+
+        shadow_targets_use = _auto_shadow_target_pool(
+            X_train_attack,
+            y_train_np,
+            X_test_attack=X_test_attack,
+            y_test=y_test_np,
+            max_count=shadow_pool_size_use,
+            exclude_train_indices=excluded_train_indices,
+            seed=int(seed),
+        )
+        if not shadow_targets_use:
+            raise ValueError(
+                "Automatic shadow-target pool is empty. This usually happens when "
+                "base_train_size=None and no X_test/y_test were provided. "
+                "Supply X_test/y_test, choose a smaller base_train_size, or pass shadow_targets explicitly."
+            )
+    else:
+        shadow_targets_use = [
+            _coerce_record_to_attack_space(
+                record,
+                flatten_inputs=bool(flatten_inputs),
+                feature_shape=feature_shape_use,
+            )
+            for record in shadow_targets
+        ]
+        if not shadow_targets_use:
+            raise ValueError("shadow_targets must be non-empty.")
+
+    if isinstance(feature_map, str):
+        feature_map_use = make_attack_feature_map(
+            feature_map,
+            parameter_selector=parameter_selector,
+        )
+    else:
+        if parameter_selector is not None:
+            raise ValueError(
+                "parameter_selector may be used only when feature_map is a string name."
+            )
+        feature_map_use = feature_map
+
+    if record_codec is None:
+        record_codec_use = FlatRecordCodec(
+            feature_shape=feature_shape_use,
+            box_bounds=box_bounds_use,
+        )
+    else:
+        record_codec_use = record_codec
+
+    shadow_corpus_cfg_use = (
+        shadow_corpus_cfg
+        if shadow_corpus_cfg is not None
+        else ShadowCorpusConfig(
+            num_trials=int(shadow_trials),
+            train_frac=0.7,
+            val_frac=0.15,
+            seed=int(seed),
+        )
+    )
+
+    reconstructor_cfg_use = (
+        reconstructor_cfg
+        if reconstructor_cfg is not None
+        else ReconstructorTrainingConfig(
+            hidden_dims=(1000, 1000),
+            batch_size=32,
+            num_epochs=200,
+            patience=25,
+            learning_rate=3e-4,
+            seed=int(seed),
+        )
+    )
+
+    def _fit_release(
+        ds: ArrayDataset,
+        *,
+        init_seed: int,
+        num_steps_use: int,
+        batch_size_use: int | Sequence[int],
+        clip_norm_use: float | Sequence[float],
+        noise_multiplier_use: float | Sequence[float],
+        extra_kwargs: Optional[dict[str, Any]],
+    ) -> ReleaseArtifact:
+        model = model_factory(int(init_seed))
+        optimizer = optimizer_factory()
+
+        merged_kwargs = _merge_workflow_fit_kwargs(fit_kwargs, extra_kwargs)
+        batch_spec = _cap_batch_size_spec(batch_size_use, n_total=len(ds))
+
+        return fit_ball_sgd(
+            model,
+            optimizer,
+            np.asarray(ds.X, dtype=np.float32),
+            np.asarray(ds.y),
+            X_eval=(
+                None
+                if X_test_attack is None
+                else np.asarray(X_test_attack, dtype=np.float32)
+            ),
+            y_eval=(None if y_test_np is None else np.asarray(y_test_np)),
+            privacy=str(privacy),
+            radius=float(radius_use),
+            lz=lz_use,
+            num_steps=int(num_steps_use),
+            batch_size=batch_spec,
+            clip_norm=clip_norm_use,
+            noise_multiplier=noise_multiplier_use,
+            seed=int(init_seed),
+            **merged_kwargs,
+        )
+
+    release = _fit_release(
+        victim_dataset,
+        init_seed=int(seed),
+        num_steps_use=int(train_steps),
+        batch_size_use=batch_size,
+        clip_norm_use=clip_norm,
+        noise_multiplier_use=noise_multiplier,
+        extra_kwargs=victim_fit_kwargs,
+    )
+
+    def victim_train_fn(shadow_ds: ArrayDataset, init_seed: int) -> ReleaseArtifact:
+        return _fit_release(
+            shadow_ds,
+            init_seed=int(init_seed),
+            num_steps_use=int(shadow_steps),
+            batch_size_use=(
+                batch_size if shadow_batch_size is None else shadow_batch_size
+            ),
+            clip_norm_use=(clip_norm if shadow_clip_norm is None else shadow_clip_norm),
+            noise_multiplier_use=(
+                noise_multiplier
+                if shadow_noise_multiplier is None
+                else shadow_noise_multiplier
+            ),
+            extra_kwargs=shadow_fit_kwargs,
+        )
+
+    corpus = build_nonconvex_shadow_corpus(
+        d_minus=d_minus,
+        shadow_targets=shadow_targets_use,
+        victim_train_fn=victim_train_fn,
+        feature_map=feature_map_use,
+        cfg=shadow_corpus_cfg_use,
+        record_codec=record_codec_use,
+        seed_policy=str(shadow_seed_policy),
+        fixed_seed=(None if fixed_shadow_seed is None else int(fixed_shadow_seed)),
+    )
+
+    reconstructor = fit_shadow_reconstructor(
+        corpus,
+        reconstructor_cfg_use,
+    )
+
+    resolved_known_label = (
+        int(true_record.label)
+        if (known_label is None and bool(use_true_label_as_side_info))
+        else (None if known_label is None else int(known_label))
+    )
+
+    attack, _, _ = attack_nonconvex_model_based_target(
+        release,
+        d_minus=d_minus,
+        true_record=true_record,
+        reconstructor=reconstructor,
+        feature_map=feature_map_use,
+        known_label=resolved_known_label,
+        eta_grid=tuple(float(v) for v in eta_grid),
+        box_bounds=box_bounds_use,
+        feature_shape=feature_shape_use,
+    )
+
+    nn_reference = _nearest_neighbor_record(true_record, shadow_targets_use)
+
+    return NonconvexModelBasedTargetWorkflowResult(
+        release=release,
+        attack=attack,
+        reconstructor=reconstructor,
+        corpus=corpus,
+        feature_map=feature_map_use,
+        d_minus=d_minus,
+        victim_dataset=victim_dataset,
+        true_record=true_record,
+        shadow_targets=list(shadow_targets_use),
+        nearest_neighbor_reference=nn_reference,
+        feature_shape=tuple(int(v) for v in feature_shape_use),
+        flatten_inputs=bool(flatten_inputs),
+        metadata={
+            "privacy_kind": str(privacy_kind),
+            "radius": float(radius_use),
+            "lz": None if lz_use is None else float(lz_use),
+            "target_index": int(target_index),
+            "base_train_size": (
+                None if base_train_size is None else int(base_train_size)
+            ),
+            "base_indices": np.asarray(base_indices, dtype=np.int64),
+            "excluded_train_indices": np.asarray(
+                excluded_train_indices, dtype=np.int64
+            ),
+            "train_steps": int(train_steps),
+            "shadow_steps": int(shadow_steps),
+            "shadow_seed_policy": str(shadow_seed_policy),
+            "fixed_shadow_seed": (
+                None if fixed_shadow_seed is None else int(fixed_shadow_seed)
+            ),
+            "shadow_target_pool_size": int(len(shadow_targets_use)),
+            "flatten_inputs": bool(flatten_inputs),
+            "feature_shape": tuple(int(v) for v in feature_shape_use),
+            "box_bounds": tuple(float(v) for v in box_bounds_use),
+            "victim_train_size": int(len(victim_dataset)),
+            "shadow_base_size": int(len(d_minus)),
+            "shadow_corpus_cfg": dc.asdict(shadow_corpus_cfg_use),
+            "reconstructor_cfg": dc.asdict(reconstructor_cfg_use),
+            "feature_map_metadata": dict(feature_map_use.metadata()),
+        },
+    )
 
 
 def attack_nonconvex_prior_aware_trace(
