@@ -20,6 +20,7 @@ from __future__ import annotations
 #   - Hayes/Mahloujifar/Balle prior-aware DP-SGD trace attack (Algorithm 2 / 3),
 #   - Hayes/Mahloujifar/Balle DP-SGD trace optimization attack (Equation (1)).
 
+import os
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -944,12 +945,13 @@ def _plot_spear_batch_grid(
             f"true_batch.shape={true_batch.shape} must match recon_batch.shape={recon_batch.shape}."
         )
 
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+
     def _resolve_display_shape(
         flat_dim: int, shape: tuple[int, ...]
     ) -> tuple[int, ...]:
         shape = tuple(int(v) for v in shape)
 
-        # Already a valid image/tensor shape.
         prod = 1
         for v in shape:
             prod *= v
@@ -961,12 +963,10 @@ def _plot_spear_batch_grid(
             if len(shape) == 3 and shape[-1] in {1, 3, 4}:
                 return shape
 
-        # Common flattened grayscale case, e.g. 784 -> 28x28.
         side = int(round(np.sqrt(flat_dim)))
         if side * side == flat_dim:
             return (side, side)
 
-        # Fallback: display as a 1 x D row image.
         return (1, flat_dim)
 
     flat_dim = int(true_batch.shape[1])
@@ -1011,6 +1011,77 @@ def _plot_spear_batch_grid(
     plt.close(fig)
 
 
+def _plot_spear_single_pair(
+    true_x: np.ndarray,
+    recon_x: np.ndarray,
+    *,
+    feature_shape: tuple[int, ...],
+    title: str,
+    out_path: str,
+) -> None:
+    true_x = np.asarray(true_x, dtype=np.float32).reshape(-1)
+    recon_x = np.asarray(recon_x, dtype=np.float32).reshape(-1)
+    if true_x.shape != recon_x.shape:
+        raise ValueError(
+            f"true_x.shape={true_x.shape} must match recon_x.shape={recon_x.shape}."
+        )
+
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+
+    def _resolve_display_shape(
+        flat_dim: int, shape: tuple[int, ...]
+    ) -> tuple[int, ...]:
+        shape = tuple(int(v) for v in shape)
+
+        prod = 1
+        for v in shape:
+            prod *= v
+        if prod == flat_dim:
+            if len(shape) == 2:
+                return shape
+            if len(shape) == 3 and shape[0] in {1, 3, 4}:
+                return shape
+            if len(shape) == 3 and shape[-1] in {1, 3, 4}:
+                return shape
+
+        side = int(round(np.sqrt(flat_dim)))
+        if side * side == flat_dim:
+            return (side, side)
+
+        return (1, flat_dim)
+
+    display_shape = _resolve_display_shape(int(true_x.size), feature_shape)
+    true_img = true_x.reshape(display_shape)
+    recon_img = recon_x.reshape(display_shape)
+
+    fig, axes = plt.subplots(1, 2, figsize=(4.2, 2.4))
+    ax_true, ax_rec = axes
+
+    if true_img.ndim == 2:
+        ax_true.imshow(true_img, cmap="gray")
+        ax_rec.imshow(recon_img, cmap="gray")
+    elif true_img.ndim == 3 and true_img.shape[0] in {1, 3, 4}:
+        ax_true.imshow(np.transpose(true_img, (1, 2, 0)))
+        ax_rec.imshow(np.transpose(recon_img, (1, 2, 0)))
+    elif true_img.ndim == 3 and true_img.shape[-1] in {1, 3, 4}:
+        ax_true.imshow(true_img)
+        ax_rec.imshow(recon_img)
+    else:
+        raise ValueError(
+            f"Could not interpret display shape {true_img.shape} as image data."
+        )
+
+    ax_true.set_title("true")
+    ax_rec.set_title("recon")
+    ax_true.axis("off")
+    ax_rec.axis("off")
+
+    fig.suptitle(title)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=180, bbox_inches="tight")
+    plt.close(fig)
+
+
 def demo_nonconvex_spear_exact_batch_attack(
     X_train,
     y_train,
@@ -1023,15 +1094,8 @@ def demo_nonconvex_spear_exact_batch_attack(
     false_rejection_rate: float = 1e-5,
     zero_tol: float = 1e-7,
     seed: int = 0,
+    save_dir: str = "artifacts",
 ):
-    """Paper-faithful SPEAR demo on exact raw gradients of the first linear+ReLU block.
-
-    This does *not* use DP-SGD. It computes the exact batch gradient on the chosen batch,
-    exactly as required by the SPEAR paper.
-
-    If target_index is provided, that record is forced into the attacked batch and placed
-    first in the returned batch order.
-    """
     X_train = np.asarray(X_train)
     y_train = np.asarray(y_train)
 
@@ -1137,14 +1201,30 @@ def demo_nonconvex_spear_exact_batch_attack(
         )
         return attack, np.asarray(batch_indices, dtype=np.int64)
 
+    os.makedirs(save_dir, exist_ok=True)
+
+    grid_path = os.path.join(save_dir, "spear_exact_batch.png")
     _plot_spear_batch_grid(
         xb,
         recon,
         feature_shape=orig_feature_shape,
         title=f"SPEAR exact batch attack ({attack.status})",
-        out_path="artifacts/spear_exact_batch.png",
+        out_path=grid_path,
         max_items=min(8, int(batch_size)),
     )
+
+    if target_index is not None:
+        single_path = os.path.join(
+            save_dir,
+            f"spear_exact_target_{int(target_index)}.png",
+        )
+        _plot_spear_single_pair(
+            xb[0],
+            recon[0],
+            feature_shape=orig_feature_shape,
+            title=f"SPEAR exact target {int(target_index)}",
+            out_path=single_path,
+        )
 
     return attack, np.asarray(batch_indices, dtype=np.int64)
 
