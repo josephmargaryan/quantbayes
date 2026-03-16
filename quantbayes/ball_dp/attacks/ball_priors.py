@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses as dc
 from typing import Dict, Optional, Protocol, Tuple
 
+from jax import lax
 import jax.numpy as jnp
 import numpy as np
 
@@ -89,13 +90,83 @@ def _box_ball_intersection_nonempty(
     center: np.ndarray,
     radius: float,
     box_bounds: Optional[Tuple[float, float]],
+    *,
+    atol: float = 1e-8,
 ) -> bool:
     if box_bounds is None:
         return True
-    ctr = np.asarray(center, dtype=np.float32)
-    closest = _project_box_np(ctr, box_bounds)
+    ctr = np.asarray(center, dtype=np.float64)
+    lo, hi = float(box_bounds[0]), float(box_bounds[1])
+    closest = np.clip(ctr, lo, hi)
     dist = float(np.linalg.norm((closest - ctr).reshape(-1), ord=2))
-    return dist <= float(radius) + 1e-6
+    return dist <= float(radius) + float(atol)
+
+
+def _project_box_ball_intersection_np(
+    x: np.ndarray,
+    center: np.ndarray,
+    radius: float,
+    box_bounds: Optional[Tuple[float, float]],
+    *,
+    max_iters: int = 100,
+    tol: float = 1e-8,
+) -> np.ndarray:
+    out = np.asarray(x, dtype=np.float64)
+    ctr = np.asarray(center, dtype=np.float64).reshape(out.shape)
+    r = float(radius)
+
+    if r < 0.0:
+        raise ValueError("radius must be >= 0.")
+
+    if box_bounds is None:
+        return _project_ball_np(out, ctr, r)
+
+    if not _box_ball_intersection_nonempty(ctr, r, box_bounds, atol=tol):
+        raise ValueError("The feasible set box ∩ ball is empty.")
+
+    if r == 0.0:
+        return ctr.astype(np.float32, copy=False)
+
+    lo, hi = float(box_bounds[0]), float(box_bounds[1])
+
+    # Step 1: exact projection onto the box.
+    y = np.clip(out, lo, hi)
+    if float(np.linalg.norm((y - ctr).reshape(-1), ord=2)) <= r + float(tol):
+        return y.astype(np.float32, copy=False)
+
+    # Step 2: active-ball case.
+    # KKT form:
+    #   z_i(lambda) = clip((x_i + lambda * c_i) / (1 + lambda), lo, hi)
+    # Use the numerically stable convex-combination form to avoid overflow.
+    def z_of_lambda(lam: float) -> np.ndarray:
+        beta = 1.0 / (1.0 + lam)
+        alpha = 1.0 - beta
+        base = beta * out + alpha * ctr
+        return np.clip(base, lo, hi)
+
+    # Bracket the unique root.
+    lam_lo = 0.0
+    lam_hi = 1.0
+    for _ in range(int(max_iters)):
+        z_hi = z_of_lambda(lam_hi)
+        if float(np.linalg.norm((z_hi - ctr).reshape(-1), ord=2)) <= r:
+            break
+        lam_hi *= 2.0
+    else:
+        raise RuntimeError(
+            "Failed to bracket the KKT multiplier for box ∩ ball projection."
+        )
+
+    # Fixed-iteration bisection.
+    for _ in range(int(max_iters)):
+        lam_mid = 0.5 * (lam_lo + lam_hi)
+        z_mid = z_of_lambda(lam_mid)
+        if float(np.linalg.norm((z_mid - ctr).reshape(-1), ord=2)) > r:
+            lam_lo = lam_mid
+        else:
+            lam_hi = lam_mid
+
+    return z_of_lambda(lam_hi).astype(np.float32, copy=False)
 
 
 def _project_box_ball_intersection_jax(
@@ -108,64 +179,77 @@ def _project_box_ball_intersection_jax(
     tol: float = 1e-6,
 ) -> jnp.ndarray:
     out = jnp.asarray(x, dtype=jnp.float32)
+    ctr = jnp.asarray(center, dtype=out.dtype).reshape(out.shape)
+    r = float(radius)
+
+    if r < 0.0:
+        raise ValueError("radius must be >= 0.")
 
     if box_bounds is None:
-        return _project_ball_jax(out, center, radius)
+        return _project_ball_jax(out, ctr, r)
 
-    xk = out
-    p = jnp.zeros_like(xk)
-    q = jnp.zeros_like(xk)
-    prev = xk
+    # Safe here because center/radius/box_bounds are static prior parameters
+    # in the current code path.
+    if not _box_ball_intersection_nonempty(np.asarray(center), r, box_bounds, atol=tol):
+        raise ValueError("The feasible set box ∩ ball is empty.")
 
-    for _ in range(int(max_iters)):
-        y = _project_box_jax(xk + p, box_bounds)
-        p = xk + p - y
+    if r == 0.0:
+        return ctr
 
-        x_next = _project_ball_jax(y + q, center, radius)
-        q = y + q - x_next
+    lo, hi = float(box_bounds[0]), float(box_bounds[1])
 
-        if float(jnp.linalg.norm(jnp.ravel(x_next - prev))) <= float(tol):
-            return x_next
+    # Step 1: exact projection onto the box.
+    y0 = jnp.clip(out, lo, hi)
+    r_j = jnp.asarray(r, dtype=out.dtype)
+    tol_j = jnp.asarray(tol, dtype=out.dtype)
 
-        prev = x_next
-        xk = x_next
+    def radius_from_center(z: jnp.ndarray) -> jnp.ndarray:
+        return jnp.linalg.norm(jnp.ravel(z - ctr))
 
-    return xk
+    inside0 = radius_from_center(y0) <= r_j + tol_j
 
+    def solve_active(_: None) -> jnp.ndarray:
+        # Numerically stable version of
+        # (out + lam * ctr) / (1 + lam)
+        def z_of_lambda(lam: jnp.ndarray) -> jnp.ndarray:
+            one = jnp.asarray(1.0, dtype=out.dtype)
+            beta = one / (one + lam)
+            alpha = one - beta
+            base = beta * out + alpha * ctr
+            return jnp.clip(base, lo, hi)
 
-def _project_box_ball_intersection_np(
-    x: np.ndarray,
-    center: np.ndarray,
-    radius: float,
-    box_bounds: Optional[Tuple[float, float]],
-    *,
-    max_iters: int = 100,
-    tol: float = 1e-6,
-) -> np.ndarray:
-    out = np.asarray(x, dtype=np.float32)
+        # Fixed-iteration bracketing.
+        def bracket_body(_: int, lam_hi: jnp.ndarray) -> jnp.ndarray:
+            z_hi = z_of_lambda(lam_hi)
+            need_more = radius_from_center(z_hi) > r_j
+            return jnp.where(need_more, lam_hi * 2.0, lam_hi)
 
-    if box_bounds is None:
-        return _project_ball_np(out, center, radius)
+        lam_hi0 = jnp.asarray(1.0, dtype=out.dtype)
+        lam_hi = lax.fori_loop(0, int(max_iters), bracket_body, lam_hi0)
 
-    xk = out.astype(np.float32, copy=True)
-    p = np.zeros_like(xk, dtype=np.float32)
-    q = np.zeros_like(xk, dtype=np.float32)
-    prev = xk.copy()
+        # Fixed-iteration bisection.
+        def bisect_body(
+            _: int,
+            state: tuple[jnp.ndarray, jnp.ndarray],
+        ) -> tuple[jnp.ndarray, jnp.ndarray]:
+            lam_lo, lam_hi = state
+            lam_mid = 0.5 * (lam_lo + lam_hi)
+            z_mid = z_of_lambda(lam_mid)
+            too_far = radius_from_center(z_mid) > r_j
+            new_lam_lo = jnp.where(too_far, lam_mid, lam_lo)
+            new_lam_hi = jnp.where(too_far, lam_hi, lam_mid)
+            return (new_lam_lo, new_lam_hi)
 
-    for _ in range(int(max_iters)):
-        y = _project_box_np(xk + p, box_bounds)
-        p = (xk + p - y).astype(np.float32, copy=False)
+        lam_lo0 = jnp.asarray(0.0, dtype=out.dtype)
+        _, lam_hi = lax.fori_loop(
+            0,
+            int(max_iters),
+            bisect_body,
+            (lam_lo0, lam_hi),
+        )
+        return z_of_lambda(lam_hi)
 
-        x_next = _project_ball_np(y + q, center, radius)
-        q = (y + q - x_next).astype(np.float32, copy=False)
-
-        if float(np.linalg.norm((x_next - prev).reshape(-1), ord=2)) <= float(tol):
-            return x_next.astype(np.float32, copy=False)
-
-        prev = x_next
-        xk = x_next
-
-    return xk.astype(np.float32, copy=False)
+    return lax.cond(inside0, lambda _: y0, solve_active, operand=None)
 
 
 def _sample_uniform_l2_ball(
@@ -269,7 +353,7 @@ class UniformBallAttackPrior:
             "name": "uniform_l2_ball",
             "radius": float(self.radius),
             "center_shape": tuple(int(v) for v in self.center.shape),
-            "projection": "exact_box_intersection_ball_via_dykstra",
+            "projection": "box_intersection_ball_kkt_bisection",
             "box_bounds": (
                 None
                 if self.box_bounds is None
@@ -361,7 +445,7 @@ class TruncatedGaussianBallAttackPrior:
             "radius": float(self.radius),
             "sigma": float(self.sigma),
             "center_shape": tuple(int(v) for v in self.center.shape),
-            "projection": "exact_box_intersection_ball_via_dykstra",
+            "projection": "box_intersection_ball_kkt_bisection",
             "box_bounds": (
                 None
                 if self.box_bounds is None
