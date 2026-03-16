@@ -84,9 +84,17 @@ class ConvexOptimizationConfig:
     ] = "lbfgs_fullbatch"
     max_iter: int = 500
     learning_rate: float = 1e-1
-    grad_tol: float = 1e-8
-    param_tol: float = 1e-10
-    objective_tol: float = 1e-12
+
+    # Stopping criteria. Set any of these to None to disable that criterion.
+    grad_tol: Optional[float] = 1e-8
+    param_tol: Optional[float] = 1e-10
+    objective_tol: Optional[float] = 1e-12
+
+    # Early-stopping control.
+    early_stop: bool = True
+    stop_rule: Literal["any", "all", "grad_only"] = "any"
+    min_iter: int = 0
+
     certify_approximation: bool = True
     approximation_mode: Literal["optimality_residual", "none"] = "optimality_residual"
     theorem_backed_only: bool = True

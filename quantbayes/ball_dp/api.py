@@ -187,9 +187,12 @@ def fit_convex(
     solver: str = "lbfgs_fullbatch",
     max_iter: int = 500,
     learning_rate: float = 1e-1,
-    grad_tol: float = 1e-8,
-    param_tol: float = 1e-10,
-    objective_tol: float = 1e-12,
+    grad_tol: Optional[float] = 1e-8,
+    param_tol: Optional[float] = 1e-10,
+    objective_tol: Optional[float] = 1e-12,
+    early_stop: bool = True,
+    stop_rule: Literal["any", "all", "grad_only"] = "any",
+    min_iter: int = 0,
     line_search_steps: int = 15,
     seed: int = 0,
 ) -> ReleaseArtifact:
@@ -199,9 +202,11 @@ def fit_convex(
     if solver not in {"lbfgs_fullbatch", "gd_fullbatch"}:
         raise ValueError(
             "fit_convex exposes only {'lbfgs_fullbatch', 'gd_fullbatch'} in the "
-            "stable public API. If you need experimental external solvers, call the "
-            "low-level convex release functions directly."
+            "stable public API."
         )
+
+    if stop_rule not in {"any", "all", "grad_only"}:
+        raise ValueError("stop_rule must be one of {'any', 'all', 'grad_only'}.")
 
     train_ds = _as_dataset(X_train, y_train, name="train")
     eval_ds = None
@@ -212,9 +217,12 @@ def fit_convex(
         solver=solver,
         max_iter=int(max_iter),
         learning_rate=float(learning_rate),
-        grad_tol=float(grad_tol),
-        param_tol=float(param_tol),
-        objective_tol=float(objective_tol),
+        grad_tol=None if grad_tol is None else float(grad_tol),
+        param_tol=None if param_tol is None else float(param_tol),
+        objective_tol=None if objective_tol is None else float(objective_tol),
+        early_stop=bool(early_stop),
+        stop_rule=str(stop_rule),
+        min_iter=int(min_iter),
         certify_approximation=True,
         approximation_mode="optimality_residual",
         theorem_backed_only=True,

@@ -30,6 +30,79 @@ def _fullbatch_objective(
     return obj
 
 
+def _tree_l2_norm(tree: Any) -> float:
+    leaves = [leaf for leaf in jax.tree_util.tree_leaves(tree) if leaf is not None]
+    if not leaves:
+        return 0.0
+    sq = sum(jnp.sum(jnp.square(jnp.asarray(leaf))) for leaf in leaves)
+    return float(jnp.sqrt(sq))
+
+
+def _tree_diff_l2_norm(tree_a: Any, tree_b: Any) -> float:
+    leaves_a = jax.tree_util.tree_leaves(tree_a)
+    leaves_b = jax.tree_util.tree_leaves(tree_b)
+    if len(leaves_a) != len(leaves_b):
+        raise ValueError("Pytrees do not have the same number of leaves.")
+    sq_terms = []
+    for a, b in zip(leaves_a, leaves_b):
+        if a is None or b is None:
+            continue
+        sq_terms.append(jnp.sum(jnp.square(jnp.asarray(a) - jnp.asarray(b))))
+    if not sq_terms:
+        return 0.0
+    return float(jnp.sqrt(sum(sq_terms)))
+
+
+def _should_stop(
+    cfg: ConvexOptimizationConfig,
+    *,
+    it: int,
+    grad_norm: float,
+    delta_param: float,
+    delta_obj: float,
+) -> tuple[bool, str]:
+    if not bool(cfg.early_stop):
+        return False, ""
+    if int(it) < int(cfg.min_iter):
+        return False, ""
+
+    rule = str(cfg.stop_rule).lower()
+
+    grad_hit = False if cfg.grad_tol is None else grad_norm <= float(cfg.grad_tol)
+    param_hit = False if cfg.param_tol is None else delta_param <= float(cfg.param_tol)
+    obj_hit = (
+        False if cfg.objective_tol is None else delta_obj <= float(cfg.objective_tol)
+    )
+
+    if rule == "grad_only":
+        if cfg.grad_tol is None:
+            raise ValueError("stop_rule='grad_only' requires grad_tol to be set.")
+        return (grad_hit, "grad_tol" if grad_hit else "")
+
+    active = []
+    if cfg.grad_tol is not None:
+        active.append(("grad_tol", grad_hit))
+    if cfg.param_tol is not None:
+        active.append(("param_tol", param_hit))
+    if cfg.objective_tol is not None:
+        active.append(("objective_tol", obj_hit))
+
+    if not active:
+        return False, ""
+
+    if rule == "any":
+        for name, hit in active:
+            if hit:
+                return True, name
+        return False, ""
+
+    if rule == "all":
+        hit = all(flag for _, flag in active)
+        return (hit, "all_active_tolerances" if hit else "")
+
+    raise ValueError("cfg.stop_rule must be one of {'any', 'all', 'grad_only'}.")
+
+
 def solve_lbfgs_fullbatch(
     model: Any,
     *,
@@ -50,75 +123,78 @@ def solve_lbfgs_fullbatch(
     solver = optax.lbfgs(
         memory_size=10,
         linesearch=optax.scale_by_zoom_linesearch(
-            max_linesearch_steps=cfg.line_search_steps
+            max_linesearch_steps=int(cfg.line_search_steps)
         ),
     )
+    value_and_grad = optax.value_and_grad_from_state(flat_obj)
     opt_state = solver.init(params)
+
     prev_params = params
     prev_obj = float(flat_obj(params))
+
     converged = False
+    termination_reason = "max_iter"
     grad_norm = float("inf")
+    delta_param = float("inf")
+    delta_obj = float("inf")
     n_iter = 0
 
     for it in range(1, int(cfg.max_iter) + 1):
-        value_and_grad = optax.value_and_grad_from_state(flat_obj)
         value, grad = value_and_grad(params, state=opt_state)
-        leaves = jax.tree_util.tree_leaves(grad)
-        grad_norm = float(
-            jnp.sqrt(sum(jnp.sum(jnp.square(g)) for g in leaves if g is not None))
-        )
+        grad_norm = _tree_l2_norm(grad)
+
         updates, opt_state = solver.update(
             grad, opt_state, params, value=value, grad=grad, value_fn=flat_obj
         )
-        params = optax.apply_updates(params, updates)
-        curr_obj = float(flat_obj(params))
+        params_next = optax.apply_updates(params, updates)
+        curr_obj = float(flat_obj(params_next))
+
         delta_obj = abs(curr_obj - prev_obj)
-        delta_param = float(
-            jnp.sqrt(
-                sum(
-                    jnp.sum(jnp.square(a - b))
-                    for a, b in zip(
-                        jax.tree_util.tree_leaves(params),
-                        jax.tree_util.tree_leaves(prev_params),
-                    )
-                )
-            )
-        )
+        delta_param = _tree_diff_l2_norm(params_next, prev_params)
+
+        params = params_next
         prev_params = params
         prev_obj = curr_obj
         n_iter = it
-        if (
-            grad_norm <= cfg.grad_tol
-            or delta_param <= cfg.param_tol
-            or delta_obj <= cfg.objective_tol
-        ):
+
+        stop, reason = _should_stop(
+            cfg,
+            it=it,
+            grad_norm=grad_norm,
+            delta_param=delta_param,
+            delta_obj=delta_obj,
+        )
+        if stop:
             converged = True
+            termination_reason = reason
             break
 
-    param_error_bound = (
-        float(grad_norm / lam)
-        if cfg.certify_approximation and cfg.approximation_mode == "optimality_residual"
-        else float("nan")
-    )
-    sensitivity_addon = (
-        2.0 * param_error_bound
-        if cfg.certify_approximation and cfg.approximation_mode == "optimality_residual"
-        else 0.0
-    )
+    if (
+        bool(cfg.certify_approximation)
+        and cfg.approximation_mode == "optimality_residual"
+    ):
+        param_error_bound = float(grad_norm / lam)
+        sensitivity_addon = float(2.0 * param_error_bound)
+    else:
+        param_error_bound = 0.0
+        sensitivity_addon = 0.0
+
     cert = OptimizationCertificate(
         solver="lbfgs_fullbatch",
         exact_solution=False,
         converged=converged,
-        n_iter=n_iter,
+        n_iter=int(n_iter),
         objective_value=float(prev_obj),
         grad_norm=float(grad_norm),
-        parameter_error_bound=(
-            float(param_error_bound) if param_error_bound == param_error_bound else 0.0
-        ),
+        parameter_error_bound=float(param_error_bound),
         sensitivity_addon=float(sensitivity_addon),
+        termination_reason=str(termination_reason),
+        final_delta_param=float(delta_param),
+        final_delta_obj=float(delta_obj),
         notes=[
             "Deterministic iterative solver. exact_solution=False because this path does not provide a theorem-backed global certificate of exact ERM optimality.",
-            "parameter_error_bound=||grad F_D(theta)||/lambda and sensitivity_addon=2*parameter_error_bound are local residual heuristics for the realized dataset only; they are not neighboring-dataset-uniform privacy certificates.",
+            "parameter_error_bound=||grad F_D(theta)||/lambda and sensitivity_addon=2*parameter_error_bound are local residual bounds for the realized dataset only; they are not neighboring-dataset-uniform privacy certificates.",
+            f"Stopping configuration: early_stop={bool(cfg.early_stop)}, stop_rule={str(cfg.stop_rule)}, min_iter={int(cfg.min_iter)}, grad_tol={cfg.grad_tol}, param_tol={cfg.param_tol}, objective_tol={cfg.objective_tol}.",
         ],
     )
     return SolverResult(model=eqx.combine(params, static), cert=cert)
@@ -136,65 +212,78 @@ def solve_gd_fullbatch(
 ) -> SolverResult:
     objective = _fullbatch_objective(loss_fn, lam, x, y, key)
     value_and_grad = eqx.filter_value_and_grad(objective)
-    opt = optax.sgd(cfg.learning_rate)
+    opt = optax.sgd(float(cfg.learning_rate))
+
     params, static = eqx.partition(model, eqx.is_inexact_array)
     opt_state = opt.init(params)
+
     prev_params = params
     prev_obj = float(objective(model))
+
     grad_norm = float("inf")
+    delta_param = float("inf")
+    delta_obj = float("inf")
     converged = False
+    termination_reason = "max_iter"
     n_iter = 0
+
     for it in range(1, int(cfg.max_iter) + 1):
         mdl = eqx.combine(params, static)
         value, grads = value_and_grad(mdl)
-        leaves = jax.tree_util.tree_leaves(grads)
-        grad_norm = float(
-            jnp.sqrt(sum(jnp.sum(jnp.square(g)) for g in leaves if g is not None))
-        )
+        grad_norm = _tree_l2_norm(grads)
+
         updates, opt_state = opt.update(
             eqx.filter(grads, eqx.is_inexact_array), opt_state, params
         )
-        params = eqx.apply_updates(params, updates)
-        curr_obj = float(objective(eqx.combine(params, static)))
+        params_next = eqx.apply_updates(params, updates)
+        curr_obj = float(objective(eqx.combine(params_next, static)))
+
         delta_obj = abs(curr_obj - prev_obj)
-        delta_param = float(
-            jnp.sqrt(
-                sum(
-                    jnp.sum(jnp.square(a - b))
-                    for a, b in zip(
-                        jax.tree_util.tree_leaves(params),
-                        jax.tree_util.tree_leaves(prev_params),
-                    )
-                )
-            )
-        )
+        delta_param = _tree_diff_l2_norm(params_next, prev_params)
+
+        params = params_next
         prev_params = params
         prev_obj = curr_obj
         n_iter = it
-        if (
-            grad_norm <= cfg.grad_tol
-            or delta_param <= cfg.param_tol
-            or delta_obj <= cfg.objective_tol
-        ):
+
+        stop, reason = _should_stop(
+            cfg,
+            it=it,
+            grad_norm=grad_norm,
+            delta_param=delta_param,
+            delta_obj=delta_obj,
+        )
+        if stop:
             converged = True
+            termination_reason = reason
             break
-    param_error_bound = (
-        float(grad_norm / lam)
-        if cfg.certify_approximation and cfg.approximation_mode == "optimality_residual"
-        else 0.0
-    )
+
+    if (
+        bool(cfg.certify_approximation)
+        and cfg.approximation_mode == "optimality_residual"
+    ):
+        param_error_bound = float(grad_norm / lam)
+        sensitivity_addon = float(2.0 * param_error_bound)
+    else:
+        param_error_bound = 0.0
+        sensitivity_addon = 0.0
+
     cert = OptimizationCertificate(
         solver="gd_fullbatch",
         exact_solution=False,
         converged=converged,
-        n_iter=n_iter,
+        n_iter=int(n_iter),
         objective_value=float(prev_obj),
         grad_norm=float(grad_norm),
         parameter_error_bound=float(param_error_bound),
-        sensitivity_addon=float(2.0 * param_error_bound),
+        sensitivity_addon=float(sensitivity_addon),
+        termination_reason=str(termination_reason),
+        final_delta_param=float(delta_param),
+        final_delta_obj=float(delta_obj),
         notes=[
             "Deterministic iterative solver. exact_solution=False because this path does not provide a theorem-backed global certificate of exact ERM optimality.",
-            "parameter_error_bound=||grad F_D(theta)||/lambda and sensitivity_addon=2*parameter_error_bound are local residual heuristics for the realized dataset only; they are not neighboring-dataset-uniform privacy certificates.",
+            "parameter_error_bound=||grad F_D(theta)||/lambda and sensitivity_addon=2*parameter_error_bound are local residual bounds for the realized dataset only; they are not neighboring-dataset-uniform privacy certificates.",
+            f"Stopping configuration: early_stop={bool(cfg.early_stop)}, stop_rule={str(cfg.stop_rule)}, min_iter={int(cfg.min_iter)}, grad_tol={cfg.grad_tol}, param_tol={cfg.param_tol}, objective_tol={cfg.objective_tol}.",
         ],
     )
     return SolverResult(model=eqx.combine(params, static), cert=cert)
@@ -251,6 +340,9 @@ def solve_convex_model(
             grad_norm=float("nan"),
             parameter_error_bound=0.0,
             sensitivity_addon=0.0,
+            termination_reason="external_trainer",
+            final_delta_param=float("nan"),
+            final_delta_obj=float("nan"),
             notes=[
                 "Convenience adapter to an external trainer. This path is not theorem-backed and does not provide a global optimality or privacy certificate."
             ],

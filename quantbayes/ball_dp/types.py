@@ -137,6 +137,9 @@ class OptimizationCertificate:
     grad_norm: float
     parameter_error_bound: float
     sensitivity_addon: float
+    termination_reason: str = ""
+    final_delta_param: float = float("nan")
+    final_delta_obj: float = float("nan")
     notes: List[str] = dc.field(default_factory=list)
 
 
