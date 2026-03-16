@@ -18,19 +18,19 @@ from ..nonconvex.per_example import combine_model, partition_model, resolve_loss
 class SpearAttackConfig:
     """Configuration for SPEAR.
 
-    Exact-theorem mode:
+    Exact / theorem-backed mode:
       - noisy_mode=False
-      - batch_size may be supplied when known by the wrapper
       - sample submatrices of size (b-1) x b
+      - accept a candidate only when rank(L_A) == b-1
       - early stop only when gamma reaches 1
 
     Noisy / DP-SGD adaptation mode:
       - noisy_mode=True
-      - batch_size should be known
       - sample larger submatrices of size (b+1) x b by default
-      - use the smallest-singular-vector direction of sampled L_A
-      - early stop when gamma reaches `noisy_gamma_target` < 1
-      - use a looser zero_tol
+      - compute the smallest right-singular-vector direction of sampled L_A
+      - keep only candidates whose sampled L_A is numerically rank b-1
+      - use looser sparsity thresholds (tau / zero_tol)
+      - early stop when gamma reaches noisy_gamma_target < 1
     """
 
     max_samples: int = 50_000
@@ -51,6 +51,8 @@ class SpearAttackConfig:
     noisy_gamma_target: Optional[float] = None
     noisy_submatrix_rows: Optional[int] = None
     noisy_use_approximate_null: bool = True
+    noisy_rank_rel_tol: float = 5e-2
+    noisy_rank_abs_tol: float = 0.0
 
 
 @dc.dataclass
@@ -181,26 +183,83 @@ def _null_vector_of_rank_b_minus_1_submatrix(
     rank_tol: Optional[float],
     zero_tol: float,
     allow_approximate: bool = False,
-) -> tuple[Optional[np.ndarray], int]:
+    noisy_rank_rel_tol: float = 5e-2,
+    noisy_rank_abs_tol: float = 0.0,
+) -> tuple[Optional[np.ndarray], int, Dict[str, Any]]:
     """Return a normalized null / approximate-null vector from a sampled submatrix.
 
     Exact mode:
-        return a null vector only when rank(la) == expected_rank.
+        Return a null vector only when rank(la) == expected_rank.
 
     Noisy mode:
-        return the smallest right-singular-vector direction even when la is full
-        column rank, since exact rank deficiency is generically destroyed by noise.
+        Return the smallest right-singular-vector direction only when la is
+        numerically rank expected_rank. This is the practical interpretation of
+        the paper's 'keep only q_i whose sampled L_A has rank exactly b-1'
+        instruction once additive noise destroys exact algebraic rank deficiency.
     """
     la = np.asarray(la, dtype=np.float64)
-    rank = _matrix_rank(la, rank_tol)
+    _, singular_values, vh = np.linalg.svd(la, full_matrices=True)
 
-    _, _, vh = np.linalg.svd(la, full_matrices=True)
+    diagnostics: Dict[str, Any] = {
+        "smallest_signal_singular_value": None,
+        "null_singular_value": None,
+        "null_to_signal_ratio": None,
+        "numerical_rank_tol": None,
+        "accepted_by_rank_filter": False,
+        "used_approximate_null": bool(allow_approximate),
+    }
 
-    if (not allow_approximate) and rank != int(expected_rank):
-        return None, int(rank)
+    if not allow_approximate:
+        rank = _matrix_rank(la, rank_tol)
+        if rank != int(expected_rank):
+            return None, int(rank), diagnostics
+        q = vh[-1, :]
+        diagnostics["accepted_by_rank_filter"] = True
+        return _normalize_direction(q, zero_tol), int(rank), diagnostics
+
+    rel_tol = float(noisy_rank_rel_tol)
+    abs_tol = float(noisy_rank_abs_tol)
+    if rel_tol < 0.0:
+        raise ValueError("noisy_rank_rel_tol must be >= 0.")
+    if abs_tol < 0.0:
+        raise ValueError("noisy_rank_abs_tol must be >= 0.")
+    if la.shape[0] < la.shape[1]:
+        raise ValueError(
+            "Approximate-null noisy mode requires sampled L_A to be tall or square. "
+            f"Got shape={la.shape}."
+        )
+    if expected_rank <= 0:
+        raise ValueError("expected_rank must be positive.")
+    if len(singular_values) != la.shape[1]:
+        raise RuntimeError(
+            "Unexpected singular value shape in noisy SPEAR submatrix handling."
+        )
+    if expected_rank >= len(singular_values):
+        raise ValueError(
+            "Approximate-null noisy mode requires an explicit smallest singular value. "
+            "Use noisy_submatrix_rows >= batch_size."
+        )
+
+    signal_sv = float(singular_values[int(expected_rank - 1)])
+    null_sv = float(singular_values[int(expected_rank)])
+    tol = abs_tol + rel_tol * max(signal_sv, 1e-18)
+    numerical_rank = int(np.sum(singular_values > tol))
+    ratio = null_sv / max(signal_sv, 1e-18)
+
+    diagnostics.update(
+        {
+            "smallest_signal_singular_value": signal_sv,
+            "null_singular_value": null_sv,
+            "null_to_signal_ratio": ratio,
+            "numerical_rank_tol": tol,
+            "accepted_by_rank_filter": bool(numerical_rank == int(expected_rank)),
+        }
+    )
+    if numerical_rank != int(expected_rank):
+        return None, int(numerical_rank), diagnostics
 
     q = vh[-1, :]
-    return _normalize_direction(q, zero_tol), int(rank)
+    return _normalize_direction(q, zero_tol), int(numerical_rank), diagnostics
 
 
 def _fix_scale(
@@ -541,12 +600,19 @@ def _resolve_sampling_policy(
             f"but out_dim={out_dim}. Increase layer width or set "
             f"noisy_submatrix_rows <= {out_dim}."
         )
-    if row_count < int(batch_size - 1):
-        raise ValueError(
-            "noisy_submatrix_rows must be at least batch_size - 1 so that rank b-1 is achievable."
-        )
 
-    # The paper says to stop below 1 under noise, but does not prescribe one universal value.
+    if bool(cfg.noisy_use_approximate_null):
+        if row_count < int(batch_size):
+            raise ValueError(
+                "In noisy SPEAR mode with approximate-null directions enabled, "
+                "noisy_submatrix_rows must be at least batch_size so that sampled "
+                "L_A is tall or square and a numerical rank-(b-1) test is well-defined. "
+                "The paper uses (b+1) x b by default."
+            )
+    else:
+        if row_count < int(batch_size - 1):
+            raise ValueError("noisy_submatrix_rows must be at least batch_size - 1.")
+
     gamma_stop = (
         float(cfg.noisy_gamma_target) if cfg.noisy_gamma_target is not None else 0.98
     )
@@ -611,6 +677,10 @@ def run_spear_batch_attack(
     n_directional_submatrices = 0
     n_sparse_enough = 0
     n_duplicate = 0
+    n_rank_filtered_out = 0
+
+    accepted_null_to_signal_ratios: list[float] = []
+    rejected_null_to_signal_ratios: list[float] = []
 
     candidate_pool_rank = 0
     max_candidate_pool_rank = 0
@@ -627,20 +697,42 @@ def run_spear_batch_attack(
 
     allow_approximate_null = bool(cfg.noisy_mode and cfg.noisy_use_approximate_null)
 
+    def _ratio_stats(values: Sequence[float]) -> Optional[Dict[str, float]]:
+        if not values:
+            return None
+        arr = np.asarray(values, dtype=np.float64)
+        return {
+            "min": float(np.min(arr)),
+            "median": float(np.median(arr)),
+            "max": float(np.max(arr)),
+        }
+
     for sample_idx in range(1, int(cfg.max_samples) + 1):
         rows = tuple(
             sorted(rng.choice(out_dim, size=int(row_count), replace=False).tolist())
         )
         LA = L[np.asarray(rows, dtype=np.int64), :]
 
-        q, sampled_rank = _null_vector_of_rank_b_minus_1_submatrix(
+        q, sampled_rank, rank_diag = _null_vector_of_rank_b_minus_1_submatrix(
             LA,
             expected_rank=int(batch_size - 1),
             rank_tol=cfg.rank_tol,
             zero_tol=cfg.zero_tol,
             allow_approximate=allow_approximate_null,
+            noisy_rank_rel_tol=float(cfg.noisy_rank_rel_tol),
+            noisy_rank_abs_tol=float(cfg.noisy_rank_abs_tol),
         )
+
+        ratio = rank_diag.get("null_to_signal_ratio", None)
+        if ratio is not None and np.isfinite(float(ratio)):
+            if q is None:
+                rejected_null_to_signal_ratios.append(float(ratio))
+            else:
+                accepted_null_to_signal_ratios.append(float(ratio))
+
         if q is None:
+            if bool(rank_diag.get("used_approximate_null", False)):
+                n_rank_filtered_out += 1
             continue
 
         n_directional_submatrices += 1
@@ -710,7 +802,10 @@ def run_spear_batch_attack(
 
     if best_x_hat is None:
         if n_directional_submatrices == 0:
-            failure_reason = "no_directional_submatrices"
+            if bool(cfg.noisy_mode) and n_rank_filtered_out > 0:
+                failure_reason = "no_sampled_submatrix_passed_numerical_rank_filter"
+            else:
+                failure_reason = "no_directional_submatrices"
         elif len(candidates) == 0:
             failure_reason = "no_candidates_survived_filter"
         elif max_candidate_pool_rank < int(batch_size):
@@ -738,11 +833,20 @@ def run_spear_batch_attack(
             "n_directional_submatrices": int(n_directional_submatrices),
             "n_sparse_enough": int(n_sparse_enough),
             "n_duplicates": int(n_duplicate),
+            "n_rank_filtered_out": int(n_rank_filtered_out),
+            "accepted_null_to_signal_ratio_stats": _ratio_stats(
+                accepted_null_to_signal_ratios
+            ),
+            "rejected_null_to_signal_ratio_stats": _ratio_stats(
+                rejected_null_to_signal_ratios
+            ),
             "max_samples": int(cfg.max_samples),
             "used_truncated_svd": bool(cfg.batch_size is not None),
             "singular_values": np.asarray(singular_values, dtype=np.float64),
             "noisy_mode": bool(cfg.noisy_mode),
             "noisy_use_approximate_null": bool(allow_approximate_null),
+            "noisy_rank_rel_tol": float(cfg.noisy_rank_rel_tol),
+            "noisy_rank_abs_tol": float(cfg.noisy_rank_abs_tol),
             "sampled_row_count": int(row_count),
             "gamma_stop_threshold": gamma_stop_threshold,
             "failure_reason": str(failure_reason),
@@ -796,6 +900,13 @@ def run_spear_batch_attack(
         "n_directional_submatrices": int(n_directional_submatrices),
         "n_sparse_enough": int(n_sparse_enough),
         "n_duplicates": int(n_duplicate),
+        "n_rank_filtered_out": int(n_rank_filtered_out),
+        "accepted_null_to_signal_ratio_stats": _ratio_stats(
+            accepted_null_to_signal_ratios
+        ),
+        "rejected_null_to_signal_ratio_stats": _ratio_stats(
+            rejected_null_to_signal_ratios
+        ),
         "n_samples_run": int(sample_idx),
         "best_gamma": float(best_gamma),
         "best_lambda": float(best_gamma),
@@ -820,6 +931,8 @@ def run_spear_batch_attack(
         "singular_values": np.asarray(singular_values, dtype=np.float64),
         "noisy_mode": bool(cfg.noisy_mode),
         "noisy_use_approximate_null": bool(allow_approximate_null),
+        "noisy_rank_rel_tol": float(cfg.noisy_rank_rel_tol),
+        "noisy_rank_abs_tol": float(cfg.noisy_rank_abs_tol),
         "sampled_row_count": int(row_count),
         "true_batch_shape_mismatch": true_batch_shape_mismatch,
         "metrics_skipped_reason": metrics_skipped_reason,
@@ -929,6 +1042,8 @@ def run_spear_trace_step_attack(
             cfg.noisy_submatrix_rows = int(cfg.batch_size + 1)
         if float(cfg.zero_tol) <= 1e-10:
             cfg.zero_tol = 1e-4
+        if float(cfg.noisy_rank_rel_tol) <= 0.0:
+            cfg.noisy_rank_rel_tol = 5e-2
 
     result = run_spear_batch_attack(
         W,

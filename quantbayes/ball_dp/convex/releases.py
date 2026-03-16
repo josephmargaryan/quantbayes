@@ -295,11 +295,31 @@ def _artifact(
         model_family=cfg.model_family,
         architecture=cfg.model_family,
         training_config={
-            "radius": cfg.radius,
-            "lam": cfg.lam,
+            "radius": float(cfg.radius),
+            "lam": float(cfg.lam),
             "orders": tuple(float(a) for a in cfg.orders),
-            "gaussian_method": cfg.gaussian.method,
-            "seed": cfg.seed,
+            "gaussian_method": str(cfg.gaussian.method),
+            "gaussian_tol": float(cfg.gaussian.tol),
+            "gaussian_config": dc.asdict(cfg.gaussian),
+            "optimization_config": dc.asdict(cfg.optimization),
+            "embedding_bound": (
+                None if cfg.embedding_bound is None else float(cfg.embedding_bound)
+            ),
+            "standard_radius": (
+                None if cfg.standard_radius is None else float(cfg.standard_radius)
+            ),
+            "num_classes": (None if cfg.num_classes is None else int(cfg.num_classes)),
+            "lz_mode": str(cfg.lz_mode),
+            "provided_lz": (
+                None if cfg.provided_lz is None else float(cfg.provided_lz)
+            ),
+            "use_exact_sensitivity_if_available": bool(
+                cfg.use_exact_sensitivity_if_available
+            ),
+            "epsilon_requested": (None if cfg.epsilon is None else float(cfg.epsilon)),
+            "delta_requested": (None if cfg.delta is None else float(cfg.delta)),
+            "sigma_requested": (None if cfg.sigma is None else float(cfg.sigma)),
+            "seed": int(cfg.seed),
         },
         privacy=dual_ledger,
         sensitivity=SensitivityMetadata(

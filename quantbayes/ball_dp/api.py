@@ -74,6 +74,19 @@ from .attacks.spear import (
     run_spear_model_batch_attack,
     run_spear_trace_step_attack,
 )
+from .attacks.ball_priors import (
+    TruncatedGaussianBallAttackPrior,
+    UniformBallAttackPrior,
+)
+from .attacks.ball_policy import (
+    BallTraceMapAttackConfig,
+    run_ball_trace_map_attack,
+)
+from .convex.ball_output_attacks import (
+    BallOutputMapAttackConfig,
+    run_convex_ball_output_map_attack,
+)
+
 from .plots import plot_attack_result, plot_batch_reconstruction_grid
 
 __all__ = [
@@ -86,7 +99,15 @@ __all__ = [
     "attack_nonconvex_spear_private_step",
     "fit_ball_sgd",
     "run_nonconvex_model_based_attack",
-    "attack_nonconvex_prior_aware_trace" "attack_nonconvex_trace_optimization",
+    "attack_nonconvex_prior_aware_trace",
+    "attack_nonconvex_trace_optimization",
+    "make_uniform_ball_attack_prior",
+    "make_truncated_gaussian_ball_attack_prior",
+    "attack_convex_ball_output",
+    "attack_nonconvex_ball_trace",
+    "attack_nonconvex_ball_private_trace",
+    "BallTraceMapAttackConfig",
+    "BallOutputMapAttackConfig",
 ]
 
 ConvexModelFamily = str
@@ -261,12 +282,267 @@ def attack_convex(
     return attack, d_minus, target
 
 
+def attack_convex_ball_output(
+    release: ReleaseArtifact,
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    *,
+    target_index: int,
+    prior,
+    cfg: Optional[BallOutputMapAttackConfig] = None,
+    known_label: Optional[int] = None,
+    label_space: Optional[Sequence[int]] = None,
+    eta_grid: Sequence[float] = (0.1, 0.2, 0.5, 1.0),
+    feature_shape: Optional[Sequence[int]] = None,
+    out_path: Optional[str] = None,
+) -> tuple[AttackResult, ArrayDataset, Record]:
+    """Targeted Ball-constrained MAP attack for Gaussian output perturbation."""
+    ds = _as_dataset(X_train, y_train, name="train")
+    d_minus, target = ds.remove_index(int(target_index))
+
+    attack = run_convex_ball_output_map_attack(
+        release,
+        d_minus,
+        prior=prior,
+        cfg=cfg,
+        known_label=known_label,
+        label_space=label_space,
+        true_record=target,
+        eta_grid=tuple(float(v) for v in eta_grid),
+    )
+    attack.diagnostics["target_index"] = int(target_index)
+
+    if out_path is not None and attack.z_hat is not None:
+        plot_attack_result(
+            attack,
+            target,
+            feature_shape=feature_shape,
+            out_path=out_path,
+        )
+
+    return attack, d_minus, target
+
+
+def attack_nonconvex_ball_trace(
+    trace: DPSGDTrace,
+    *,
+    prior,
+    cfg: Optional[BallTraceMapAttackConfig] = None,
+    dataset: Optional[ArrayDataset] = None,
+    target_index: Optional[int] = None,
+    loss_name: Optional[str] = None,
+    loss_fn: Optional[ExampleLossFn] = None,
+    known_label: Optional[int] = None,
+    label_space: Optional[Sequence[int]] = None,
+    true_record: Optional[Record] = None,
+    eta_grid: Sequence[float] = (0.1, 0.2, 0.5, 1.0),
+    feature_shape: Optional[Sequence[int]] = None,
+    out_path: Optional[str] = None,
+) -> AttackResult:
+    """Low-level Ball-constrained MAP attack on an already captured trace.
+
+    Important:
+      - If dataset=... is supplied, it must be in the *same feature space* that the
+        attacked model saw during training.
+      - If you built the trace with flatten_inputs=True, then dataset.X must already
+        be flattened as well.
+    """
+    attack = run_ball_trace_map_attack(
+        trace,
+        prior=prior,
+        cfg=cfg,
+        dataset=dataset,
+        target_index=target_index,
+        loss_name=loss_name,
+        loss_fn=loss_fn,
+        known_label=known_label,
+        label_space=label_space,
+        true_record=true_record,
+        eta_grid=tuple(float(v) for v in eta_grid),
+    )
+    attack.diagnostics["target_index"] = (
+        None if target_index is None else int(target_index)
+    )
+
+    if out_path is not None and attack.z_hat is not None and true_record is not None:
+        plot_attack_result(
+            attack,
+            true_record,
+            feature_shape=feature_shape,
+            out_path=out_path,
+        )
+
+    return attack
+
+
+def attack_nonconvex_ball_private_trace(
+    model: Any,
+    optimizer: optax.GradientTransformation,
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    *,
+    target_index: int,
+    prior,
+    radius: Optional[float] = None,
+    lz: Optional[float] = None,
+    X_eval: Optional[np.ndarray] = None,
+    y_eval: Optional[np.ndarray] = None,
+    privacy: BallPrivacyKind = "ball_rdp",
+    epsilon: Optional[float] = None,
+    delta: Optional[float] = None,
+    num_steps: int = 50,
+    batch_size: int = 128,
+    clip_norm: float = 1.0,
+    noise_multiplier: float = 1.0,
+    loss_name: str = "softmax_cross_entropy",
+    state: Any = None,
+    loss_fn: Optional[ExampleLossFn] = None,
+    predict_fn: Optional[PredictFn] = default_predict_fn,
+    parameter_regularizer: Optional[Callable[[Any, Any], jax.Array]] = None,
+    normalize_noisy_sum_by: str = "batch_size",
+    known_label: Optional[int] = None,
+    use_true_label_as_side_info: bool = False,
+    label_space: Optional[Sequence[int]] = None,
+    attack_cfg: Optional[BallTraceMapAttackConfig] = None,
+    fixed_target_steps: Optional[Literal["none", "first", "all"]] = None,
+    flatten_inputs: bool = True,
+    feature_shape: Optional[Sequence[int]] = None,
+    eta_grid: Sequence[float] = (0.1, 0.2, 0.5, 1.0),
+    seed: int = 0,
+    key: Optional[jax.Array] = None,
+    out_path: Optional[str] = None,
+) -> tuple[AttackResult, ReleaseArtifact, DPSGDTrace, Record, np.ndarray]:
+    """High-level wrapper:
+    1) fit a traced SGD release,
+    2) residualize the trace against the known D^- batch members,
+    3) run the Ball-constrained transcript MAP attack.
+    """
+    attack_cfg_use = BallTraceMapAttackConfig() if attack_cfg is None else attack_cfg
+    mode = str(attack_cfg_use.mode).lower()
+
+    if fixed_target_steps is None:
+        fixed_target_steps_use = "all" if mode == "known_inclusion" else "none"
+    else:
+        fixed_target_steps_use = str(fixed_target_steps).lower()
+
+    X_orig, X_attack, feature_shape_default = _prepare_attack_arrays(
+        X_train,
+        flatten_inputs=bool(flatten_inputs),
+    )
+    y_np = np.asarray(y_train)
+    feature_shape_use = (
+        tuple(int(v) for v in feature_shape)
+        if feature_shape is not None
+        else feature_shape_default
+    )
+    attack_dataset = _as_dataset(X_attack, y_np, name="train")
+
+    release, trace, true_record, batch_idx = fit_targeted_sgd_trace(
+        model,
+        optimizer,
+        X_train,
+        y_train,
+        target_index=int(target_index),
+        radius=radius,
+        lz=lz,
+        X_eval=X_eval,
+        y_eval=y_eval,
+        privacy=str(privacy),
+        epsilon=None if epsilon is None else float(epsilon),
+        delta=None if delta is None else float(delta),
+        num_steps=int(num_steps),
+        batch_size=int(batch_size),
+        clip_norm=float(clip_norm),
+        noise_multiplier=float(noise_multiplier),
+        loss_name=str(loss_name),
+        state=state,
+        loss_fn=loss_fn,
+        predict_fn=predict_fn,
+        parameter_regularizer=parameter_regularizer,
+        normalize_noisy_sum_by=str(normalize_noisy_sum_by),
+        fixed_target_steps=str(fixed_target_steps_use),
+        flatten_inputs=bool(flatten_inputs),
+        seed=int(seed),
+        key=key,
+    )
+
+    resolved_known_label = known_label
+    if resolved_known_label is None and bool(use_true_label_as_side_info):
+        resolved_known_label = int(true_record.label)
+
+    attack = attack_nonconvex_ball_trace(
+        trace,
+        prior=prior,
+        cfg=attack_cfg_use,
+        dataset=attack_dataset,
+        target_index=int(target_index),
+        loss_name=loss_name,
+        loss_fn=loss_fn,
+        known_label=resolved_known_label,
+        label_space=label_space,
+        true_record=true_record,
+        eta_grid=tuple(float(v) for v in eta_grid),
+        feature_shape=feature_shape_use,
+        out_path=out_path,
+    )
+
+    attack.diagnostics["fixed_target_steps"] = str(fixed_target_steps_use)
+    attack.diagnostics["selected_batch_indices"] = np.asarray(batch_idx, dtype=np.int64)
+    attack.diagnostics["release_kind"] = str(release.release_kind)
+    attack.diagnostics["primary_privacy_view"] = str(
+        release.attack_metadata.get("primary_privacy_view", "ball")
+    )
+
+    if mode == "unknown_inclusion" and str(fixed_target_steps_use) != "none":
+        attack.diagnostics["threat_model_mismatch_warning"] = (
+            "unknown_inclusion MAP assumes natural minibatch inclusion probabilities. "
+            f"This run used fixed_target_steps={fixed_target_steps_use!r}, which is "
+            "useful for stress tests but is not the exact paper threat model."
+        )
+
+    return attack, release, trace, true_record, np.asarray(batch_idx, dtype=np.int64)
+
+
 def make_uniform_ball_prior(
     *, center: np.ndarray, radius: float, dimension: Optional[int] = None
 ) -> UniformL2BallPrior:
     center = np.asarray(center, dtype=np.float32).reshape(-1)
     dim = center.size if dimension is None else int(dimension)
     return UniformL2BallPrior(center=center, radius=float(radius), dimension=dim)
+
+
+def make_uniform_ball_attack_prior(
+    *,
+    center: np.ndarray,
+    radius: float,
+    box_bounds: Optional[tuple[float, float]] = None,
+) -> UniformBallAttackPrior:
+    """Factory for the attack-side Ball-local prior used by the MAP attacks."""
+    return UniformBallAttackPrior(
+        center=np.asarray(center, dtype=np.float32),
+        radius=float(radius),
+        box_bounds=(
+            None if box_bounds is None else (float(box_bounds[0]), float(box_bounds[1]))
+        ),
+    )
+
+
+def make_truncated_gaussian_ball_attack_prior(
+    *,
+    center: np.ndarray,
+    radius: float,
+    sigma: float,
+    box_bounds: Optional[tuple[float, float]] = None,
+) -> TruncatedGaussianBallAttackPrior:
+    """Truncated Gaussian prior supported on the Ball-local feasible set."""
+    return TruncatedGaussianBallAttackPrior(
+        center=np.asarray(center, dtype=np.float32),
+        radius=float(radius),
+        sigma=float(sigma),
+        box_bounds=(
+            None if box_bounds is None else (float(box_bounds[0]), float(box_bounds[1]))
+        ),
+    )
 
 
 def make_empirical_ball_prior(
@@ -660,7 +936,7 @@ def fit_targeted_sgd_trace(
     eval_batch_size: int = 1024,
     warn_if_ball_equals_standard: bool = True,
     batch_indices: Optional[Sequence[int]] = None,
-    fixed_target_steps: Literal["first", "all"] = "first",
+    fixed_target_steps: Literal["none", "first", "all"] = "first",
     flatten_inputs: bool = True,
     seed: int = 0,
     key: Optional[jax.Array] = None,
@@ -695,26 +971,29 @@ def fit_targeted_sgd_trace(
     if len(X_attack) != len(y_np):
         raise ValueError("X_train and y_train must have the same length.")
 
-    selected_batch_indices = _resolve_target_batch_indices(
-        n_total=len(X_attack),
-        target_index=int(target_index),
-        batch_size=int(batch_size),
-        seed=int(seed),
-        batch_indices=batch_indices,
-    )
-
     mode = str(fixed_target_steps).lower()
-    if mode not in {"first", "all"}:
-        raise ValueError("fixed_target_steps must be one of {'first', 'all'}.")
+    if mode not in {"none", "first", "all"}:
+        raise ValueError("fixed_target_steps must be one of {'none', 'first', 'all'}.")
 
-    fixed_schedule: list[Optional[tuple[int, ...]]] = []
-    batch_tuple = tuple(int(v) for v in selected_batch_indices.tolist())
-    for t in range(int(num_steps)):
-        if mode == "all" or t == 0:
-            fixed_schedule.append(batch_tuple)
-        else:
-            fixed_schedule.append(None)
+    if mode == "none":
+        selected_batch_indices = np.zeros((0,), dtype=np.int64)
+        fixed_schedule = [None for _ in range(int(num_steps))]
+    else:
+        selected_batch_indices = _resolve_target_batch_indices(
+            n_total=len(X_attack),
+            target_index=int(target_index),
+            batch_size=int(batch_size),
+            seed=int(seed),
+            batch_indices=batch_indices,
+        )
 
+        fixed_schedule = []
+        batch_tuple = tuple(int(v) for v in selected_batch_indices.tolist())
+        for t in range(int(num_steps)):
+            if mode == "all" or t == 0:
+                fixed_schedule.append(batch_tuple)
+            else:
+                fixed_schedule.append(None)
     recorder = DPSGDTraceRecorder(
         capture_every=1,
         keep_models=True,
@@ -765,10 +1044,12 @@ def fit_targeted_sgd_trace(
         trace_recorder=recorder,
     )
 
+    trace_reduction = "sum" if str(normalize_noisy_sum_by).lower() == "none" else "mean"
+
     trace = recorder.to_trace(
         state=state,
         loss_name=str(loss_name),
-        reduction="mean",
+        reduction=trace_reduction,
         metadata={
             "dataset_size": int(len(X_attack)),
             "sample_rate": float(batch_size) / float(len(X_attack)),
@@ -929,11 +1210,14 @@ def attack_nonconvex_spear_private_step(
     feature_shape: Optional[Sequence[int]] = None,
     layer_path: Sequence[Any] = ("layers", 0),
     max_samples: int = 20_000,
+    tau: Optional[float] = None,
     false_rejection_rate: float = 1e-5,
     zero_tol_exact: float = 1e-7,
     zero_tol_noisy: float = 1e-4,
     noisy_gamma_target: float = 0.98,
     noisy_submatrix_rows: Optional[int] = None,
+    noisy_rank_rel_tol: float = 5e-2,
+    noisy_rank_abs_tol: float = 0.0,
     eta_grid: Sequence[float] = (0.1, 0.2, 0.5, 1.0),
     seed: int = 0,
     pair_out_path: Optional[str] = None,
@@ -985,6 +1269,7 @@ def attack_nonconvex_spear_private_step(
     cfg = SpearAttackConfig(
         max_samples=int(max_samples),
         batch_size=int(batch_size),
+        tau=None if tau is None else float(tau),
         false_rejection_rate=float(false_rejection_rate),
         zero_tol=float(zero_tol_noisy if is_noisy else zero_tol_exact),
         random_seed=int(seed),
@@ -994,6 +1279,8 @@ def attack_nonconvex_spear_private_step(
         noisy_submatrix_rows=(
             None if noisy_submatrix_rows is None else int(noisy_submatrix_rows)
         ),
+        noisy_rank_rel_tol=float(noisy_rank_rel_tol),
+        noisy_rank_abs_tol=float(noisy_rank_abs_tol),
     )
 
     batch_result = run_spear_trace_step_attack(
