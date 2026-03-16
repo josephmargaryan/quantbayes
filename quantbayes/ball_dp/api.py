@@ -412,8 +412,9 @@ def attack_nonconvex_ball_private_trace(
     use_true_label_as_side_info: bool = False,
     label_space: Optional[Sequence[int]] = None,
     attack_cfg: Optional[BallTraceMapAttackConfig] = None,
-    fixed_target_steps: Optional[Literal["none", "first", "all"]] = None,
+    fixed_target_steps: Literal["none", "first", "all"] = "none",
     flatten_inputs: bool = True,
+    param_projector: Optional[Callable[[Any], Any]] = None,
     feature_shape: Optional[Sequence[int]] = None,
     eta_grid: Sequence[float] = (0.1, 0.2, 0.5, 1.0),
     seed: int = 0,
@@ -424,14 +425,18 @@ def attack_nonconvex_ball_private_trace(
     1) fit a traced SGD release,
     2) residualize the trace against the known D^- batch members,
     3) run the Ball-constrained transcript MAP attack.
+
+    By default this wrapper uses the natural DP-SGD inclusion process
+    (fixed_target_steps="none").
+    Setting fixed_target_steps to "first" or "all" produces stronger
+    oracle-style stress tests and should be labeled as such in experiments.
     """
     attack_cfg_use = BallTraceMapAttackConfig() if attack_cfg is None else attack_cfg
     mode = str(attack_cfg_use.mode).lower()
 
-    if fixed_target_steps is None:
-        fixed_target_steps_use = "all" if mode == "known_inclusion" else "none"
-    else:
-        fixed_target_steps_use = str(fixed_target_steps).lower()
+    fixed_target_steps_use = str(fixed_target_steps).lower()
+    if fixed_target_steps_use not in {"none", "first", "all"}:
+        raise ValueError("fixed_target_steps must be one of {'none', 'first', 'all'}.")
 
     X_orig, X_attack, feature_shape_default = _prepare_attack_arrays(
         X_train,
@@ -470,6 +475,7 @@ def attack_nonconvex_ball_private_trace(
         normalize_noisy_sum_by=str(normalize_noisy_sum_by),
         fixed_target_steps=str(fixed_target_steps_use),
         flatten_inputs=bool(flatten_inputs),
+        param_projector=param_projector,
         seed=int(seed),
         key=key,
     )
@@ -495,6 +501,13 @@ def attack_nonconvex_ball_private_trace(
     )
 
     attack.diagnostics["fixed_target_steps"] = str(fixed_target_steps_use)
+    attack.diagnostics["inclusion_regime"] = (
+        "natural" if fixed_target_steps_use == "none" else "oracle"
+    )
+    attack.diagnostics["known_inclusion_oracle_stress_test"] = bool(
+        mode == "known_inclusion" and fixed_target_steps_use != "none"
+    )
+
     attack.diagnostics["selected_batch_indices"] = np.asarray(batch_idx, dtype=np.int64)
     attack.diagnostics["release_kind"] = str(release.release_kind)
     attack.diagnostics["primary_privacy_view"] = str(
@@ -946,6 +959,7 @@ def fit_targeted_sgd_trace(
     batch_indices: Optional[Sequence[int]] = None,
     fixed_target_steps: Literal["none", "first", "all"] = "first",
     flatten_inputs: bool = True,
+    param_projector: Optional[Callable[[Any], Any]] = None,
     seed: int = 0,
     key: Optional[jax.Array] = None,
 ) -> tuple[ReleaseArtifact, DPSGDTrace, Record, np.ndarray]:
@@ -1031,6 +1045,7 @@ def fit_targeted_sgd_trace(
         clip_norm=float(clip_norm),
         noise_multiplier=float(noise_multiplier),
         loss_name=str(loss_name),
+        param_projector=param_projector,
         state=state,
         loss_fn=loss_fn,
         predict_fn=predict_fn,

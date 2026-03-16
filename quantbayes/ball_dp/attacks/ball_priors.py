@@ -85,6 +85,89 @@ def _project_ball_np(
     return (ctr + (r / norm) * diff).astype(np.float32, copy=False)
 
 
+def _box_ball_intersection_nonempty(
+    center: np.ndarray,
+    radius: float,
+    box_bounds: Optional[Tuple[float, float]],
+) -> bool:
+    if box_bounds is None:
+        return True
+    ctr = np.asarray(center, dtype=np.float32)
+    closest = _project_box_np(ctr, box_bounds)
+    dist = float(np.linalg.norm((closest - ctr).reshape(-1), ord=2))
+    return dist <= float(radius) + 1e-6
+
+
+def _project_box_ball_intersection_jax(
+    x: jnp.ndarray,
+    center: np.ndarray,
+    radius: float,
+    box_bounds: Optional[Tuple[float, float]],
+    *,
+    max_iters: int = 100,
+    tol: float = 1e-6,
+) -> jnp.ndarray:
+    out = jnp.asarray(x, dtype=jnp.float32)
+
+    if box_bounds is None:
+        return _project_ball_jax(out, center, radius)
+
+    xk = out
+    p = jnp.zeros_like(xk)
+    q = jnp.zeros_like(xk)
+    prev = xk
+
+    for _ in range(int(max_iters)):
+        y = _project_box_jax(xk + p, box_bounds)
+        p = xk + p - y
+
+        x_next = _project_ball_jax(y + q, center, radius)
+        q = y + q - x_next
+
+        if float(jnp.linalg.norm(jnp.ravel(x_next - prev))) <= float(tol):
+            return x_next
+
+        prev = x_next
+        xk = x_next
+
+    return xk
+
+
+def _project_box_ball_intersection_np(
+    x: np.ndarray,
+    center: np.ndarray,
+    radius: float,
+    box_bounds: Optional[Tuple[float, float]],
+    *,
+    max_iters: int = 100,
+    tol: float = 1e-6,
+) -> np.ndarray:
+    out = np.asarray(x, dtype=np.float32)
+
+    if box_bounds is None:
+        return _project_ball_np(out, center, radius)
+
+    xk = out.astype(np.float32, copy=True)
+    p = np.zeros_like(xk, dtype=np.float32)
+    q = np.zeros_like(xk, dtype=np.float32)
+    prev = xk.copy()
+
+    for _ in range(int(max_iters)):
+        y = _project_box_np(xk + p, box_bounds)
+        p = (xk + p - y).astype(np.float32, copy=False)
+
+        x_next = _project_ball_np(y + q, center, radius)
+        q = (y + q - x_next).astype(np.float32, copy=False)
+
+        if float(np.linalg.norm((x_next - prev).reshape(-1), ord=2)) <= float(tol):
+            return x_next.astype(np.float32, copy=False)
+
+        prev = x_next
+        xk = x_next
+
+    return xk.astype(np.float32, copy=False)
+
+
 def _sample_uniform_l2_ball(
     center: np.ndarray,
     radius: float,
@@ -137,20 +220,35 @@ class UniformBallAttackPrior:
         object.__setattr__(self, "box_bounds", _normalize_box_bounds(self.box_bounds))
         if float(self.radius) < 0.0:
             raise ValueError("radius must be >= 0.")
+        if not _box_ball_intersection_nonempty(
+            center, float(self.radius), self.box_bounds
+        ):
+            raise ValueError(
+                "The feasible set box ∩ ball is empty for the provided "
+                "center, radius, and box_bounds."
+            )
 
     def project(self, x: jnp.ndarray) -> jnp.ndarray:
         out = jnp.asarray(x, dtype=jnp.float32).reshape(self.center.shape)
-        for _ in range(2):
-            out = _project_box_jax(out, self.box_bounds)
-            out = _project_ball_jax(out, self.center, self.radius)
-        return out
+        return _project_box_ball_intersection_jax(
+            out,
+            self.center,
+            self.radius,
+            self.box_bounds,
+        ).reshape(self.center.shape)
 
     def project_np(self, x: np.ndarray) -> np.ndarray:
         out = np.asarray(x, dtype=np.float32).reshape(self.center.shape)
-        for _ in range(2):
-            out = _project_box_np(out, self.box_bounds)
-            out = _project_ball_np(out, self.center, self.radius)
-        return out.astype(np.float32, copy=False)
+        return (
+            _project_box_ball_intersection_np(
+                out,
+                self.center,
+                self.radius,
+                self.box_bounds,
+            )
+            .reshape(self.center.shape)
+            .astype(np.float32, copy=False)
+        )
 
     def negative_log_density(self, x: jnp.ndarray) -> jnp.ndarray:
         del x
@@ -171,6 +269,7 @@ class UniformBallAttackPrior:
             "name": "uniform_l2_ball",
             "radius": float(self.radius),
             "center_shape": tuple(int(v) for v in self.center.shape),
+            "projection": "exact_box_intersection_ball_via_dykstra",
             "box_bounds": (
                 None
                 if self.box_bounds is None
@@ -196,20 +295,35 @@ class TruncatedGaussianBallAttackPrior:
             raise ValueError("radius must be >= 0.")
         if float(self.sigma) <= 0.0:
             raise ValueError("sigma must be > 0.")
+        if not _box_ball_intersection_nonempty(
+            center, float(self.radius), self.box_bounds
+        ):
+            raise ValueError(
+                "The feasible set box ∩ ball is empty for the provided "
+                "center, radius, and box_bounds."
+            )
 
     def project(self, x: jnp.ndarray) -> jnp.ndarray:
         out = jnp.asarray(x, dtype=jnp.float32).reshape(self.center.shape)
-        for _ in range(2):
-            out = _project_box_jax(out, self.box_bounds)
-            out = _project_ball_jax(out, self.center, self.radius)
-        return out
+        return _project_box_ball_intersection_jax(
+            out,
+            self.center,
+            self.radius,
+            self.box_bounds,
+        ).reshape(self.center.shape)
 
     def project_np(self, x: np.ndarray) -> np.ndarray:
         out = np.asarray(x, dtype=np.float32).reshape(self.center.shape)
-        for _ in range(2):
-            out = _project_box_np(out, self.box_bounds)
-            out = _project_ball_np(out, self.center, self.radius)
-        return out.astype(np.float32, copy=False)
+        return (
+            _project_box_ball_intersection_np(
+                out,
+                self.center,
+                self.radius,
+                self.box_bounds,
+            )
+            .reshape(self.center.shape)
+            .astype(np.float32, copy=False)
+        )
 
     def negative_log_density(self, x: jnp.ndarray) -> jnp.ndarray:
         arr = jnp.asarray(x, dtype=jnp.float32).reshape(self.center.shape)
@@ -247,6 +361,7 @@ class TruncatedGaussianBallAttackPrior:
             "radius": float(self.radius),
             "sigma": float(self.sigma),
             "center_shape": tuple(int(v) for v in self.center.shape),
+            "projection": "exact_box_intersection_ball_via_dykstra",
             "box_bounds": (
                 None
                 if self.box_bounds is None

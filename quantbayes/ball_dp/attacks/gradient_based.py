@@ -12,6 +12,7 @@ import numpy as np
 import optax
 
 from ..metrics import reconstruction_metrics
+from .ball_priors import _project_box_ball_intersection_jax
 from ..nonconvex.per_example import (
     ExampleLossFn,
     combine_model,
@@ -322,11 +323,23 @@ def _project_guess(
     ball_center: Optional[np.ndarray],
     ball_radius: Optional[float],
 ) -> jnp.ndarray:
-    out = jnp.asarray(x)
-    if box_bounds is not None:
+    out = jnp.asarray(x, dtype=jnp.float32)
+    has_box = box_bounds is not None
+    has_ball = ball_center is not None and ball_radius is not None
+
+    if has_box and has_ball:
+        return _project_box_ball_intersection_jax(
+            out,
+            np.asarray(ball_center, dtype=np.float32).reshape(out.shape),
+            float(ball_radius),
+            box_bounds,
+        )
+
+    if has_box:
         lo, hi = float(box_bounds[0]), float(box_bounds[1])
         out = jnp.clip(out, lo, hi)
-    if ball_center is not None and ball_radius is not None:
+
+    if has_ball:
         center = jnp.asarray(ball_center, dtype=out.dtype).reshape(out.shape)
         diff = out - center
         norm = jnp.linalg.norm(jnp.ravel(diff))
@@ -336,6 +349,7 @@ def _project_guess(
             radius / jnp.maximum(norm, jnp.asarray(1e-12, dtype=out.dtype)),
         )
         out = center + diff * scale
+
     return out
 
 

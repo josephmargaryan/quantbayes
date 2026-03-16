@@ -243,15 +243,21 @@ def run_ball_trace_map_attack(
     true_record: Optional[Record] = None,
     eta_grid: Sequence[float] = (0.1, 0.2, 0.5, 1.0),
 ) -> AttackResult:
-    """Exact Ball-constrained MAP attack on a DP-SGD trace.
+    """Ball-constrained MAP attack on a DP-SGD trace.
 
     Important:
+      - If every retained step has strictly positive effective_noise_std, then the
+        optimized objective is the exact negative log-posterior up to
+        candidate-independent constants under the configured Gaussian trace model.
       - The exact objective is defined on a *residualized* trace, i.e. after subtracting
         all known non-target batch contributions.
       - If you pass dataset=... and target_index=..., this function performs that
         residualization automatically.
       - If you do not pass dataset=... and target_index=..., then trace.metadata must
         indicate that the trace is already residualized.
+      - If a retained step has zero noise, the implementation reduces to
+        squared-residual matching for that step rather than a hard-constraint
+        noiseless posterior.
     """
     cfg = BallTraceMapAttackConfig() if cfg is None else cfg
     if not trace.steps:
@@ -345,8 +351,13 @@ def run_ball_trace_map_attack(
     best_label = None
 
     for label in labels:
+        label_local = int(label)
 
-        def objective_fn(x_var: jnp.ndarray) -> jnp.ndarray:
+        def objective_fn(
+            x_var: jnp.ndarray,
+            *,
+            _label: int = label_local,
+        ) -> jnp.ndarray:
             total = prior.negative_log_density(x_var)
 
             for idx, step in enumerate(selected_steps):
@@ -356,7 +367,7 @@ def run_ball_trace_map_attack(
                     work_trace,
                     loss_fn=resolved_loss_fn,
                     x_var=x_var,
-                    label=int(label),
+                    label=_label,
                     seed=int(cfg.seed),
                 )
 
@@ -391,11 +402,12 @@ def run_ball_trace_map_attack(
 
             return total
 
-        objective_by_label[int(label)] = objective_fn
+        objective_by_label[label_local] = objective_fn
 
         label_best = float("inf")
         label_best_x = None
 
+        value_and_grad = jax.value_and_grad(objective_fn)
         for x0_np in _restart_points(
             prior,
             num_restarts=int(cfg.num_restarts),
@@ -408,7 +420,6 @@ def run_ball_trace_map_attack(
             best_restart_obj = current_obj
             best_restart_x = x
 
-            value_and_grad = jax.value_and_grad(objective_fn)
             for _ in range(max(1, int(cfg.num_steps))):
                 _, grad_x = value_and_grad(x)
                 updates, opt_state = optimizer.update(grad_x, opt_state, x)
@@ -427,13 +438,13 @@ def run_ball_trace_map_attack(
         if label_best_x is None:
             raise RuntimeError("Ball-trace MAP failed to produce a candidate.")
 
-        per_label_best[int(label)] = float(label_best)
-        candidate_points[int(label)] = np.asarray(label_best_x, dtype=np.float32)
+        per_label_best[label_local] = float(label_best)
+        candidate_points[label_local] = np.asarray(label_best_x, dtype=np.float32)
 
         if float(label_best) < best_obj:
             best_obj = float(label_best)
             best_x = np.asarray(label_best_x, dtype=np.float32)
-            best_label = int(label)
+            best_label = label_local
 
     if best_x is None or best_label is None:
         raise RuntimeError("Ball-trace MAP failed to produce a final candidate.")
@@ -471,6 +482,10 @@ def run_ball_trace_map_attack(
         for lbl, _ in sorted_candidates[: min(10, len(sorted_candidates))]
     ]
 
+    all_pos_noise = bool(
+        all(float(step.effective_noise_std) > 0.0 for step in selected_steps)
+    )
+
     diagnostics: Dict[str, Any] = {
         "mode": str(mode),
         "algorithm": "projected_map",
@@ -482,6 +497,9 @@ def run_ball_trace_map_attack(
         "trace_residualized": bool(
             work_trace.metadata.get("residualized_against_known_batch", False)
         ),
+        "logged_transcript_reduction": str(work_trace.reduction),
+        "all_retained_steps_have_positive_noise": all_pos_noise,
+        "exact_posterior_up_to_constants": all_pos_noise,
         "prior_metadata": dict(prior.metadata()),
         "objective_at_truth": truth_objective,
         "objective_gap_to_truth": objective_gap,
