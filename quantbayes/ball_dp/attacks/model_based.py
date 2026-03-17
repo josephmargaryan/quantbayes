@@ -618,7 +618,7 @@ def run_model_based_attack(
     d_minus: ArrayDataset,
     *,
     reconstructor: ReconstructorArtifact,
-    feature_map: AttackFeatureMap,
+    feature_map: Optional[AttackFeatureMap] = None,
     true_record: Optional[Record] = None,
     known_label: Optional[int] = None,
     eta_grid: Sequence[float] = (0.1, 0.2, 0.5, 1.0),
@@ -631,6 +631,8 @@ def run_model_based_attack(
     The returned reconstruction is the output of the RecoNN-style attack model φ
     applied to the flattened parameter vector of the released model.
     """
+    feature_map = ParametersOnlyFeatureMap() if feature_map is None else feature_map
+
     attack_features = np.asarray(
         feature_map(release, d_minus, None),
         dtype=np.float32,

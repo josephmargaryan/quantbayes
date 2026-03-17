@@ -209,24 +209,15 @@ def _resolve_label_space(
     *,
     known_label: Optional[int],
     label_space: Optional[Sequence[int]],
-    dataset: Optional[ArrayDataset],
-    true_record: Optional[Record],
 ) -> list[int]:
     if known_label is not None:
         return [int(known_label)]
-    if label_space is not None:
-        labels = [int(v) for v in label_space]
-        if not labels:
-            raise ValueError("label_space must be non-empty.")
-        return labels
-    if dataset is not None:
-        labels = sorted(np.unique(np.asarray(dataset.y)).tolist())
-        return [int(v) for v in labels]
-    if true_record is not None:
-        return [int(true_record.label)]
-    raise ValueError(
-        "Provide known_label, label_space, dataset, or true_record to determine the candidate label set."
-    )
+    if label_space is None:
+        raise ValueError("Provide known_label or label_space explicitly.")
+    labels = [int(v) for v in label_space]
+    if not labels:
+        raise ValueError("label_space must be non-empty.")
+    return labels
 
 
 def run_ball_trace_map_attack(
@@ -234,7 +225,6 @@ def run_ball_trace_map_attack(
     *,
     prior: BallAttackPrior,
     cfg: Optional[BallTraceMapAttackConfig] = None,
-    dataset: Optional[ArrayDataset] = None,
     target_index: Optional[int] = None,
     loss_name: Optional[str] = None,
     loss_fn: Optional[ExampleLossFn] = None,
@@ -243,25 +233,22 @@ def run_ball_trace_map_attack(
     true_record: Optional[Record] = None,
     eta_grid: Sequence[float] = (0.1, 0.2, 0.5, 1.0),
 ) -> AttackResult:
-    """Ball-constrained MAP attack on a DP-SGD trace.
+    """Ball-constrained MAP attack on a residualized DP-SGD trace.
 
-    Important:
-      - If every retained step has strictly positive effective_noise_std, then the
-        optimized objective is the exact negative log-posterior up to
-        candidate-independent constants under the configured Gaussian trace model.
-      - The exact objective is defined on a *residualized* trace, i.e. after subtracting
-        all known non-target batch contributions.
-      - If you pass dataset=... and target_index=..., this function performs that
-        residualization automatically.
-      - If you do not pass dataset=... and target_index=..., then trace.metadata must
-        indicate that the trace is already residualized.
-      - If a retained step has zero noise, the implementation reduces to
-        squared-residual matching for that step rather than a hard-constraint
-        noiseless posterior.
+    This is the exact posterior attack from the Ball-trace section of the paper,
+    expressed on the residualized sanitized transcript. If you are in the informed-
+    adversary setting and want to subtract the known non-target batch contribution,
+    call subtract_known_batch_gradients(...) before calling this function.
     """
     cfg = BallTraceMapAttackConfig() if cfg is None else cfg
     if not trace.steps:
         raise ValueError("Trace is empty.")
+
+    if not bool(trace.metadata.get("residualized_against_known_batch", False)):
+        raise ValueError(
+            "run_ball_trace_map_attack expects a residualized trace. "
+            "Call subtract_known_batch_gradients(...) first."
+        )
 
     resolved_loss_fn = (
         resolve_loss_fn(trace.loss_name if loss_name is None else loss_name)
@@ -269,42 +256,12 @@ def run_ball_trace_map_attack(
         else loss_fn
     )
 
-    target_index = _resolve_target_index(trace, target_index)
-    trace_dataset_size = trace.metadata.get("dataset_size", None)
-    if dataset is not None and trace_dataset_size is not None:
-        if int(trace_dataset_size) != int(len(dataset)):
-            raise ValueError(
-                f"dataset size mismatch: trace metadata says {trace_dataset_size}, "
-                f"but len(dataset)={len(dataset)}."
-            )
-
-    residualized = bool(trace.metadata.get("residualized_against_known_batch", False))
-    if dataset is not None and target_index is not None and not residualized:
-        work_trace = subtract_known_batch_gradients(
-            trace,
-            dataset,
-            target_index=int(target_index),
-            loss_name=trace.loss_name if loss_name is None else str(loss_name),
-            loss_fn=resolved_loss_fn,
-            seed=int(cfg.seed),
-        )
-    else:
-        work_trace = trace
-
-    if not bool(work_trace.metadata.get("residualized_against_known_batch", False)):
-        raise ValueError(
-            "Ball-trace MAP needs a residualized trace. "
-            "Either pass dataset=... and target_index=... so the wrapper can subtract "
-            "known non-target batch contributions, or call "
-            "subtract_known_batch_gradients(...) first."
-        )
-
     labels = _resolve_label_space(
         known_label=known_label,
         label_space=label_space,
-        dataset=dataset,
-        true_record=true_record,
     )
+
+    target_index = _resolve_target_index(trace, target_index)
 
     mode = str(cfg.mode).lower()
     if mode not in {"known_inclusion", "unknown_inclusion"}:
@@ -319,16 +276,16 @@ def run_ball_trace_map_attack(
                 "or via trace.metadata['target_index']."
             )
         selected_steps, effective_step_mode = _known_inclusion_selected_steps(
-            work_trace,
+            trace,
             target_index=int(target_index),
             step_mode=str(cfg.step_mode),
         )
         q_by_step = None
     else:
-        selected_steps = list(work_trace.steps)
+        selected_steps = list(trace.steps)
         effective_step_mode = "all"
         q_by_step = _resolve_sampling_probabilities(
-            work_trace,
+            trace,
             selected_steps=selected_steps,
             cfg=cfg,
         )
@@ -364,7 +321,7 @@ def run_ball_trace_map_attack(
                 obs = step.observed_private_gradient
                 cand = _candidate_mean_tree(
                     step,
-                    work_trace,
+                    trace,
                     loss_fn=resolved_loss_fn,
                     x_var=x_var,
                     label=_label,
@@ -416,8 +373,7 @@ def run_ball_trace_map_attack(
             x = jnp.asarray(x0_np, dtype=jnp.float32)
             opt_state = optimizer.init(x)
 
-            current_obj = float(objective_fn(x))
-            best_restart_obj = current_obj
+            best_restart_obj = float(objective_fn(x))
             best_restart_x = x
 
             for _ in range(max(1, int(cfg.num_steps))):
@@ -494,10 +450,8 @@ def run_ball_trace_map_attack(
         "selected_step_count": int(len(selected_steps)),
         "selected_steps": [int(step.step) for step in selected_steps],
         "step_mode": str(effective_step_mode),
-        "trace_residualized": bool(
-            work_trace.metadata.get("residualized_against_known_batch", False)
-        ),
-        "logged_transcript_reduction": str(work_trace.reduction),
+        "trace_residualized": True,
+        "logged_transcript_reduction": str(trace.reduction),
         "all_retained_steps_have_positive_noise": all_pos_noise,
         "exact_posterior_up_to_constants": all_pos_noise,
         "prior_metadata": dict(prior.metadata()),

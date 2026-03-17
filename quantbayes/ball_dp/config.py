@@ -218,21 +218,14 @@ class ShadowCorpusConfig:
     train_frac: float = 0.7
     val_frac: float = 0.15
     seed: int = 0
-    side_info_regime: Literal["none", "known_label"] = "none"
     store_releases: bool = False
 
 
 @dc.dataclass
 class ReconstructorTrainingConfig:
-    hidden_dims: Tuple[int, ...] = (256, 256)
-    activation: Literal["relu"] = "relu"
-    loss: Literal["mse_ce", "l1_ce", "huber_ce"] = "mse_ce"
-    feature_loss_weight: float = 1.0
-    label_loss_weight: float = 1.0
+    hidden_dims: Tuple[int, ...] = (1000, 1000)
     batch_size: int = 128
-    num_epochs: int = 100
-    patience: int = 10
+    num_epochs: int = 30
+    patience: int = 30
     learning_rate: float = 1e-3
-    weight_decay: float = 0.0
-    trainer: Literal["stochax_sgd"] = "stochax_sgd"
     seed: int = 0

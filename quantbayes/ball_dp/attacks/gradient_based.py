@@ -657,25 +657,20 @@ def run_trace_optimization_attack(
     trace: DPSGDTrace,
     *,
     cfg: Optional[TraceOptimizationAttackConfig] = None,
-    dataset: Optional[ArrayDataset] = None,
-    target_index: Optional[int] = None,
     loss_name: Optional[str] = None,
     loss_fn: Optional[ExampleLossFn] = None,
-    feature_shape: Optional[Sequence[int]] = None,
+    feature_shape: Sequence[int],
     known_label: Optional[int] = None,
     label_space: Optional[Sequence[int]] = None,
     true_record: Optional[Record] = None,
     eta_grid: Sequence[float] = (0.1, 0.2, 0.5, 1.0),
+    target_index: Optional[int] = None,
 ) -> AttackResult:
-    """Run the gradient-based DP-SGD trace attack using Equation (1).
+    """Run the Equation (1) optimization attack on the supplied trace.
 
-    The optimized objective is
-        L(z) = sum_t [ -<clip_C(∇ℓ(θ_t, z)), ḡ_t>
-                       + ||clip_C(∇ℓ(θ_t, z)) - ḡ_t||_1 ].
-
-    If `dataset` and `target_index` are provided, the trace is first residualized
-    by subtracting all known non-target contributions from each retained sanitized
-    gradient step.
+    This function attacks exactly the trace you pass in. If you want the informed-
+    adversary residualized trace variant, call subtract_known_batch_gradients(...)
+    before calling this function.
     """
     cfg = TraceOptimizationAttackConfig() if cfg is None else cfg
     resolved_loss_fn = (
@@ -684,42 +679,32 @@ def run_trace_optimization_attack(
         else loss_fn
     )
 
-    work_trace = trace
-    if dataset is not None and target_index is not None:
-        work_trace = subtract_known_batch_gradients(
-            trace,
-            dataset,
-            target_index=int(target_index),
-            loss_name=trace.loss_name if loss_name is None else str(loss_name),
-            loss_fn=resolved_loss_fn,
-            seed=int(cfg.seed),
-        )
+    x_shape = tuple(int(v) for v in feature_shape)
 
-    if target_index is None:
-        target_index = work_trace.metadata.get("target_index", None)
-    target_index = None if target_index is None else int(target_index)
-
-    x_shape = _as_feature_shape(
-        feature_shape=feature_shape,
-        true_record=true_record,
-        trace=work_trace,
-    )
-
-    labels = [int(known_label)] if known_label is not None else None
-    if labels is None:
+    if known_label is not None:
+        labels = [int(known_label)]
+    else:
         if label_space is None:
             raise ValueError(
-                "known_label or label_space must be provided for trace optimization."
+                "Provide known_label or label_space explicitly for trace optimization."
             )
         labels = [int(v) for v in label_space]
+        if not labels:
+            raise ValueError("label_space must be non-empty.")
+
+    if target_index is None:
+        target_index = trace.metadata.get("target_index", None)
+    target_index = None if target_index is None else int(target_index)
 
     selected_steps = _select_steps(
-        work_trace,
+        trace,
         step_mode=str(cfg.step_mode),
         target_index=target_index,
     )
 
     rng = np.random.default_rng(int(cfg.seed))
+    optimizer = optax.sgd(float(cfg.learning_rate))
+
     best_obj = float("inf")
     best_x = None
     best_label = None
@@ -727,47 +712,46 @@ def run_trace_optimization_attack(
 
     for label in labels:
         label_best = float("inf")
-        for restart in range(max(1, int(cfg.num_restarts))):
+
+        def _objective(x_var: jnp.ndarray) -> jnp.ndarray:
+            total = jnp.asarray(0.0, dtype=jnp.float32)
+            for step in selected_steps:
+                step_key = jr.PRNGKey(
+                    int(cfg.seed + 10007 * int(step.step) + 131 * int(label))
+                )
+                cand = _single_example_grad(
+                    step.model_before,
+                    trace.state,
+                    resolved_loss_fn,
+                    x_var,
+                    jnp.asarray(label),
+                    step_key,
+                )
+                cand = _clip_single_grad(cand, float(step.clip_norm))
+                if str(trace.reduction) == "mean":
+                    batch_size = max(1, int(len(step.batch_indices)))
+                    cand = _tree_scalar_mul(cand, 1.0 / float(batch_size))
+
+                obs = step.observed_private_gradient
+                total = total + (-_tree_dot(cand, obs) + _tree_l1_distance(cand, obs))
+            return total
+
+        value_and_grad = jax.value_and_grad(_objective)
+
+        for _ in range(max(1, int(cfg.num_restarts))):
             x0 = _default_init(
                 x_shape,
                 rng=rng,
                 box_bounds=cfg.box_bounds,
             )
             x = jnp.asarray(x0, dtype=jnp.float32)
-            optimizer = optax.sgd(float(cfg.learning_rate))
             opt_state = optimizer.init(x)
 
-            def _objective(x_var: jnp.ndarray) -> jnp.ndarray:
-                total = jnp.asarray(0.0, dtype=jnp.float32)
-                for step in selected_steps:
-                    step_key = jr.PRNGKey(
-                        int(cfg.seed + 10007 * int(step.step) + 131 * int(label))
-                    )
-                    cand = _single_example_grad(
-                        step.model_before,
-                        work_trace.state,
-                        resolved_loss_fn,
-                        x_var,
-                        jnp.asarray(label),
-                        step_key,
-                    )
-                    cand = _clip_single_grad(cand, float(step.clip_norm))
-                    if str(work_trace.reduction) == "mean":
-                        batch_size = max(1, int(len(step.batch_indices)))
-                        cand = _tree_scalar_mul(cand, 1.0 / float(batch_size))
-
-                    obs = step.observed_private_gradient
-                    total = total + (
-                        -_tree_dot(cand, obs) + _tree_l1_distance(cand, obs)
-                    )
-                return total
-
-            value_and_grad = jax.value_and_grad(_objective)
-            best_restart_obj = float("inf")
+            best_restart_obj = float(_objective(x))
             best_restart_x = x
 
             for _ in range(max(1, int(cfg.num_steps))):
-                loss_value, grad_x = value_and_grad(x)
+                _, grad_x = value_and_grad(x)
                 updates, opt_state = optimizer.update(grad_x, opt_state, x)
                 x = optax.apply_updates(x, updates)
                 x = _project_guess(
@@ -776,9 +760,10 @@ def run_trace_optimization_attack(
                     ball_center=cfg.ball_center,
                     ball_radius=cfg.ball_radius,
                 )
-                fv = float(loss_value)
-                if fv < best_restart_obj:
-                    best_restart_obj = fv
+
+                curr = float(_objective(x))
+                if curr < best_restart_obj:
+                    best_restart_obj = curr
                     best_restart_x = x
 
             final_obj = float(_objective(best_restart_x))
@@ -819,6 +804,9 @@ def run_trace_optimization_attack(
             "num_steps": int(cfg.num_steps),
             "num_restarts": int(cfg.num_restarts),
             "target_index": None if target_index is None else int(target_index),
+            "trace_residualized": bool(
+                trace.metadata.get("residualized_against_known_batch", False)
+            ),
         },
         metrics=metrics,
     )

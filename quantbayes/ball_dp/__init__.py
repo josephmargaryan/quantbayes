@@ -8,10 +8,6 @@ from .api import (
     get_release_step_table,
     make_empirical_ball_prior,
     make_uniform_ball_prior,
-    build_nonconvex_shadow_corpus,
-    fit_shadow_reconstructor,
-    attack_nonconvex_model_based,
-    attack_nonconvex_prior_aware_trace,
 )
 from .plots import (
     plot_convex_attack_result,

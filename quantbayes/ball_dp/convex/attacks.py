@@ -145,29 +145,49 @@ def _softmax_attack(
     *,
     lam: float,
     n_total: int,
+    known_label: Optional[int],
     tol: float,
     true_record: Optional[Record],
     eta_grid: tuple[float, ...],
 ) -> AttackResult:
-    G = softmax_missing_gradient(model, d_minus.X, d_minus.y, lam=lam, n_total=n_total)
-    a = G[:, -1]
+    G = np.asarray(
+        softmax_missing_gradient(model, d_minus.X, d_minus.y, lam=lam, n_total=n_total)
+    )
+    a = np.asarray(G[:, -1])
     attack_name = "convex_softmax_logistic"
 
     neg = np.where(a < -tol)[0]
-    y_hat = int(neg[0]) if neg.size == 1 else int(np.argmin(a))
+    if known_label is not None:
+        y_hat = int(known_label)
+        if y_hat < 0 or y_hat >= G.shape[0]:
+            raise ValueError(
+                f"known_label={y_hat} is outside valid class range [0, {G.shape[0] - 1}]."
+            )
+    else:
+        y_hat = int(neg[0]) if neg.size == 1 else int(np.argmin(a))
 
     denom = float(np.dot(a, a))
-    if abs(denom) <= tol:
+    row_sum_residual = float(np.linalg.norm(G.sum(axis=0)))
+
+    if denom <= tol:
         return AttackResult(
             attack_name,
             z_hat=None,
             y_hat=y_hat,
             status="degenerate_last_column",
-            diagnostics={"missing_gradient": G, "a": a},
+            diagnostics={
+                "missing_gradient": G,
+                "a": a,
+                "known_label_used": known_label is not None,
+                "negative_row_indices": neg.astype(np.int64).tolist(),
+                "row_sum_residual": row_sum_residual,
+            },
         )
 
     z_aug_raw = (a[:, None] * G).sum(axis=0) / denom
     residual_raw = float(np.linalg.norm(G - a[:, None] * z_aug_raw[None, :]))
+    G_norm = float(np.linalg.norm(G))
+    relative_residual = residual_raw / max(G_norm, tol)
 
     if neg.size == 1 and abs(z_aug_raw[-1]) > tol:
         z_aug = z_aug_raw / z_aug_raw[-1]
@@ -180,8 +200,12 @@ def _softmax_attack(
             diagnostics={
                 "missing_gradient": G,
                 "a": a,
+                "known_label_used": known_label is not None,
+                "negative_row_indices": neg.astype(np.int64).tolist(),
                 "last_coordinate_after_normalization": float(z_aug[-1]),
                 "row_residual": residual_raw,
+                "relative_rank1_residual": relative_residual,
+                "row_sum_residual": row_sum_residual,
             },
             metrics=_record_metrics(true_record, z_hat, y_hat, eta_grid),
         )
@@ -193,7 +217,11 @@ def _softmax_attack(
         diagnostics = {
             "missing_gradient": G,
             "a": a,
+            "known_label_used": known_label is not None,
+            "negative_row_indices": neg.astype(np.int64).tolist(),
             "rank1_residual": residual_raw,
+            "relative_rank1_residual": relative_residual,
+            "row_sum_residual": row_sum_residual,
             "last_coordinate_after_normalization": float(z_aug[-1]),
         }
     else:
@@ -202,7 +230,11 @@ def _softmax_attack(
         diagnostics = {
             "missing_gradient": G,
             "a": a,
+            "known_label_used": known_label is not None,
+            "negative_row_indices": neg.astype(np.int64).tolist(),
             "rank1_residual": residual_raw,
+            "relative_rank1_residual": relative_residual,
+            "row_sum_residual": row_sum_residual,
             "last_coordinate_raw": float(z_aug_raw[-1]),
         }
 
@@ -329,12 +361,24 @@ def run_convex_attack(
     eta_grid: tuple[float, ...] = (0.1, 0.2, 0.5, 1.0),
 ) -> AttackResult:
     """
-    Public convex reconstruction API.
+    Public noiseless convex reconstruction API.
 
-    The computation is chosen solely by `release.model_family`.
-    Exactness guarantees are recorded in release metadata; they are not exposed
-    as a user-facing attack mode.
+    This function implements the algebraic / missing-gradient attacks derived for
+    noiseless convex ERM releases.
+
+    It is not the correct attack for Gaussian output-perturbation releases. For those,
+    use run_convex_ball_output_map_attack(...), which optimizes the exact Gaussian
+    posterior objective.
     """
+    sigma_ball = release.privacy.ball.sigma
+    sigma_std = release.privacy.standard.sigma
+    if sigma_ball is not None or sigma_std is not None:
+        raise ValueError(
+            "run_convex_attack is the noiseless convex reconstruction API. "
+            "This release carries Gaussian output noise (sigma is not None). "
+            "Use run_convex_ball_output_map_attack(...) instead."
+        )
+
     fam = release.model_family
     lam = float(release.training_config["lam"])
     n_total = int(release.dataset_metadata["n_total"])
@@ -360,6 +404,7 @@ def run_convex_attack(
             d_minus,
             lam=lam,
             n_total=n_total,
+            known_label=known_label,
             tol=tol,
             true_record=true_record,
             eta_grid=eta_grid,

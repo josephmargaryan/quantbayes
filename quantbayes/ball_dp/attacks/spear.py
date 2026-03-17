@@ -1009,11 +1009,16 @@ def run_spear_trace_step_attack(
     step: Any,
     *,
     layer_path: Sequence[Any] = ("layers", 0),
-    cfg: Optional[SpearAttackConfig] = None,
+    cfg: SpearAttackConfig,
     true_batch: Optional[np.ndarray] = None,
     eta_grid: Sequence[float] = (0.1, 0.2, 0.5, 1.0),
 ) -> SpearAttackResult:
-    """Run SPEAR on the gradients stored in a DPSGDTraceStep."""
+    """Run SPEAR on the gradients stored in a DPSGDTraceStep.
+
+    Exact SPEAR and the noisy DP-SGD adaptation are both supported, but the choice
+    must be explicit in cfg. This function no longer mutates the configuration based
+    on the observed trace.
+    """
     if getattr(step, "model_before", None) is None:
         raise ValueError("Trace step is missing model_before.")
     if getattr(step, "observed_private_gradient", None) is None:
@@ -1025,32 +1030,34 @@ def run_spear_trace_step_attack(
         layer_path=layer_path,
     )
 
-    cfg = SpearAttackConfig() if cfg is None else dc.replace(cfg)
-
     batch_idx = np.asarray(
         getattr(step, "batch_indices", np.zeros((0,), dtype=np.int64))
     )
-    if cfg.batch_size is None and batch_idx.size > 0:
-        cfg.batch_size = int(batch_idx.size)
+    cfg_use = dc.replace(cfg)
+    if cfg_use.batch_size is None:
+        if batch_idx.size == 0:
+            raise ValueError(
+                "cfg.batch_size is None and the trace step does not carry batch_indices."
+            )
+        cfg_use.batch_size = int(batch_idx.size)
 
     trace_sigma = float(getattr(step, "effective_noise_std", 0.0))
-    if trace_sigma > 0.0:
-        cfg.noisy_mode = True
-        if cfg.noisy_gamma_target is None:
-            cfg.noisy_gamma_target = 0.98
-        if cfg.noisy_submatrix_rows is None and cfg.batch_size is not None:
-            cfg.noisy_submatrix_rows = int(cfg.batch_size + 1)
-        if float(cfg.zero_tol) <= 1e-10:
-            cfg.zero_tol = 1e-4
-        if float(cfg.noisy_rank_rel_tol) <= 0.0:
-            cfg.noisy_rank_rel_tol = 5e-2
+    if trace_sigma > 0.0 and not bool(cfg_use.noisy_mode):
+        raise ValueError(
+            "Trace step has positive effective_noise_std. Pass an explicit noisy SPEAR "
+            "configuration, e.g. default_noisy_spear_config(...)."
+        )
+    if trace_sigma <= 0.0 and bool(cfg_use.noisy_mode):
+        raise ValueError(
+            "cfg.noisy_mode=True but the supplied trace step has zero effective noise."
+        )
 
     result = run_spear_batch_attack(
         W,
         bias,
         grad_W,
         grad_b,
-        cfg=cfg,
+        cfg=cfg_use,
         true_batch=true_batch,
         eta_grid=eta_grid,
     )
@@ -1063,9 +1070,9 @@ def run_spear_trace_step_attack(
     )
     result.diagnostics["trace_effective_noise_std"] = trace_sigma
     result.diagnostics["batch_size_source"] = (
-        "trace_batch_indices" if batch_idx.size > 0 else "user_or_rank"
+        "trace_batch_indices" if batch_idx.size > 0 else "explicit_cfg"
     )
-    result.diagnostics["paper_noisy_adaptation_structural"] = bool(cfg.noisy_mode)
+    result.diagnostics["paper_noisy_adaptation_structural"] = bool(cfg_use.noisy_mode)
     return result
 
 
@@ -1138,3 +1145,48 @@ def run_spear_model_batch_attack(
     result.diagnostics["reduction"] = str(reduction)
     result.diagnostics["batch_size_from_data"] = int(len(xb))
     return result
+
+
+def default_noisy_spear_config(
+    *,
+    batch_size: int,
+    max_samples: int = 50_000,
+    tau: Optional[float] = None,
+    false_rejection_rate: float = 1e-5,
+    zero_tol: float = 1e-4,
+    dedup_cosine_tol: float = 1e-6,
+    rank_tol: Optional[float] = None,
+    random_seed: int = 0,
+    greedy_swap_rule: str = "best_improvement",
+    max_greedy_passes: int = 10_000,
+    noisy_gamma_target: float = 0.98,
+    noisy_submatrix_rows: Optional[int] = None,
+    noisy_use_approximate_null: bool = True,
+    noisy_rank_rel_tol: float = 5e-2,
+    noisy_rank_abs_tol: float = 0.0,
+) -> SpearAttackConfig:
+    """Explicit DP-SGD/noisy-gradient adaptation of SPEAR."""
+    rows = (
+        int(batch_size + 1)
+        if noisy_submatrix_rows is None
+        else int(noisy_submatrix_rows)
+    )
+    return SpearAttackConfig(
+        max_samples=int(max_samples),
+        batch_size=int(batch_size),
+        tau=None if tau is None else float(tau),
+        false_rejection_rate=float(false_rejection_rate),
+        zero_tol=float(zero_tol),
+        dedup_cosine_tol=float(dedup_cosine_tol),
+        rank_tol=None if rank_tol is None else float(rank_tol),
+        random_seed=int(random_seed),
+        stop_when_lambda_one=False,
+        greedy_swap_rule=str(greedy_swap_rule),
+        max_greedy_passes=int(max_greedy_passes),
+        noisy_mode=True,
+        noisy_gamma_target=float(noisy_gamma_target),
+        noisy_submatrix_rows=int(rows),
+        noisy_use_approximate_null=bool(noisy_use_approximate_null),
+        noisy_rank_rel_tol=float(noisy_rank_rel_tol),
+        noisy_rank_abs_tol=float(noisy_rank_abs_tol),
+    )

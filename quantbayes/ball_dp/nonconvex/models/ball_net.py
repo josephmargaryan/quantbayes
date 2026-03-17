@@ -195,8 +195,9 @@ if __name__ == "__main__":
 
     from quantbayes.ball_dp.api import (
         fit_ball_sgd,
+        account_ball_sgd_noise_multiplier,
+        calibrate_ball_sgd_noise_multiplier,
         extract_privacy_epsilon,
-        calibrate_privacy_parameter,
         evaluate_release_classifier,
         get_release_step_table,
     )
@@ -246,7 +247,7 @@ if __name__ == "__main__":
     print()
 
     # ------------------------------------------------------------
-    # 3) Shared training hyperparameters
+    # 3) Shared training/accounting hyperparameters
     # ------------------------------------------------------------
     learning_rate = 3e-2
     num_steps = 250
@@ -256,6 +257,7 @@ if __name__ == "__main__":
     delta = 1e-5
     epsilon_target = 3.0
     seed = 123
+    orders = (2, 3, 4, 5, 8, 16, 32, 64, 128)
 
     optimizer = optax.adam(learning_rate)
 
@@ -277,6 +279,7 @@ if __name__ == "__main__":
         epsilon: float | None,
     ):
         # do use privacy="standard_dp" / "standard_rdp" to compare with normal DP/RDP
+        # Keep orders identical to the accountant-only calibration orders.
         return fit_ball_sgd(
             model=make_model(),
             optimizer=optimizer,
@@ -293,6 +296,7 @@ if __name__ == "__main__":
             batch_size=batch_size,
             clip_norm=clip_norm,
             noise_multiplier=noise_multiplier,
+            orders=orders,
             loss_name="binary_logistic",
             checkpoint_selection="best_public_eval_accuracy",
             eval_every=eval_every,
@@ -304,31 +308,40 @@ if __name__ == "__main__":
         )
 
     # ------------------------------------------------------------
-    # 4) Same-noise comparison
-    #    Same mechanism, same seed, same model family, different accountant.
+    # 4) Same-noise comparison (accountant only; no training needed)
     # ------------------------------------------------------------
     shared_noise_multiplier = 1.0
 
-    release_ball_same_noise = fit_release(
+    same_noise_ball = account_ball_sgd_noise_multiplier(
+        dataset_size=len(X_train),
+        radius=r,
+        lz=lz,
+        num_steps=num_steps,
+        batch_size=batch_size,
+        clip_norm=clip_norm,
+        noise_multiplier=shared_noise_multiplier,
+        delta=delta,
         privacy="ball_rdp",
-        noise_multiplier=shared_noise_multiplier,
-        epsilon=None,
+        orders=orders,
     )
-    release_std_same_noise = fit_release(
-        privacy="standard_rdp",
+    same_noise_std = account_ball_sgd_noise_multiplier(
+        dataset_size=len(X_train),
+        radius=r,
+        lz=None,
+        num_steps=num_steps,
+        batch_size=batch_size,
+        clip_norm=clip_norm,
         noise_multiplier=shared_noise_multiplier,
-        epsilon=None,
+        delta=delta,
+        privacy="standard_rdp",
+        orders=orders,
     )
 
-    eps_ball_same_noise = extract_privacy_epsilon(
-        release_ball_same_noise, accounting_view="ball"
-    )
-    eps_std_same_noise = extract_privacy_epsilon(
-        release_std_same_noise, accounting_view="standard"
-    )
+    eps_ball_same_noise = float(same_noise_ball["epsilon"])
+    eps_std_same_noise = float(same_noise_std["epsilon"])
 
     print("=" * 80)
-    print("Same-noise comparison")
+    print("Same-noise comparison (accountant only)")
     print("=" * 80)
     print(f"shared noise multiplier = {shared_noise_multiplier:.6f}")
     print(f"Ball epsilon     = {eps_ball_same_noise:.6f}")
@@ -337,37 +350,55 @@ if __name__ == "__main__":
     print()
 
     # ------------------------------------------------------------
-    # 5) Matched-epsilon comparison
-    #    Calibrate separate noise multipliers, then compare utility.
+    # 5) Matched-epsilon calibration (accountant only; no training needed)
     # ------------------------------------------------------------
-    nm_ball, _ = calibrate_privacy_parameter(
-        lambda nm: fit_release(
-            privacy="ball_rdp",
-            noise_multiplier=nm,
-            epsilon=None,
-        ),
+    calib_ball = calibrate_ball_sgd_noise_multiplier(
+        dataset_size=len(X_train),
+        radius=r,
+        lz=lz,
+        num_steps=num_steps,
+        batch_size=batch_size,
+        clip_norm=clip_norm,
         target_epsilon=epsilon_target,
-        accounting_view="ball",
+        delta=delta,
+        privacy="ball_rdp",
+        orders=orders,
+        lower=1e-3,
+        upper=0.25,
+        max_upper=128.0,
+        num_bisection_steps=10,
+    )
+    calib_std = calibrate_ball_sgd_noise_multiplier(
+        dataset_size=len(X_train),
+        radius=r,
+        lz=None,
+        num_steps=num_steps,
+        batch_size=batch_size,
+        clip_norm=clip_norm,
+        target_epsilon=epsilon_target,
+        delta=delta,
+        privacy="standard_rdp",
+        orders=orders,
         lower=1e-3,
         upper=0.25,
         max_upper=128.0,
         num_bisection_steps=10,
     )
 
-    nm_std, _ = calibrate_privacy_parameter(
-        lambda nm: fit_release(
-            privacy="standard_rdp",
-            noise_multiplier=nm,
-            epsilon=None,
-        ),
-        target_epsilon=epsilon_target,
-        accounting_view="standard",
-        lower=1e-3,
-        upper=0.25,
-        max_upper=128.0,
-        num_bisection_steps=10,
-    )
+    nm_ball = float(calib_ball["noise_multiplier"])
+    nm_std = float(calib_std["noise_multiplier"])
 
+    print("=" * 80)
+    print("Matched-epsilon calibration (accountant only)")
+    print("=" * 80)
+    print(f"target epsilon = {epsilon_target:.6f}, delta = {delta:.2e}")
+    print(f"Ball calibrated noise multiplier     = {nm_ball:.6f}")
+    print(f"Standard calibrated noise multiplier = {nm_std:.6f}")
+    print()
+
+    # ------------------------------------------------------------
+    # 6) Final matched-epsilon training runs
+    # ------------------------------------------------------------
     release_ball = fit_release(
         privacy="ball_dp",
         noise_multiplier=nm_ball,
@@ -418,7 +449,7 @@ if __name__ == "__main__":
     print()
 
     # ------------------------------------------------------------
-    # 6) Internal release diagnostics
+    # 7) Internal release diagnostics
     # ------------------------------------------------------------
     print("=" * 80)
     print("First 3 Ball release step rows")
@@ -428,7 +459,7 @@ if __name__ == "__main__":
     print()
 
     # ------------------------------------------------------------
-    # 7) Visual comparison of matched-epsilon runs
+    # 8) Visual comparison of matched-epsilon runs
     # ------------------------------------------------------------
     plot_release_comparison(
         release_ball,

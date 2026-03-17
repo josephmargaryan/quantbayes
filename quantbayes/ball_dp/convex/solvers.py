@@ -169,6 +169,11 @@ def solve_lbfgs_fullbatch(
             termination_reason = reason
             break
 
+    # Recompute objective and gradient at the returned parameters.
+    final_obj, final_grad = jax.value_and_grad(flat_obj)(params)
+    prev_obj = float(final_obj)
+    grad_norm = _tree_l2_norm(final_grad)
+
     if (
         bool(cfg.certify_approximation)
         and cfg.approximation_mode == "optimality_residual"
@@ -193,6 +198,7 @@ def solve_lbfgs_fullbatch(
         final_delta_obj=float(delta_obj),
         notes=[
             "Deterministic iterative solver. exact_solution=False because this path does not provide a theorem-backed global certificate of exact ERM optimality.",
+            "grad_norm and parameter_error_bound are evaluated at the returned parameters.",
             "parameter_error_bound=||grad F_D(theta)||/lambda and sensitivity_addon=2*parameter_error_bound are local residual bounds for the realized dataset only; they are not neighboring-dataset-uniform privacy certificates.",
             f"Stopping configuration: early_stop={bool(cfg.early_stop)}, stop_rule={str(cfg.stop_rule)}, min_iter={int(cfg.min_iter)}, grad_tol={cfg.grad_tol}, param_tol={cfg.param_tol}, objective_tol={cfg.objective_tol}.",
         ],
@@ -211,10 +217,15 @@ def solve_gd_fullbatch(
     cfg: ConvexOptimizationConfig,
 ) -> SolverResult:
     objective = _fullbatch_objective(loss_fn, lam, x, y, key)
-    value_and_grad = eqx.filter_value_and_grad(objective)
-    opt = optax.sgd(float(cfg.learning_rate))
 
     params, static = eqx.partition(model, eqx.is_inexact_array)
+
+    def flat_obj(p):
+        mdl = eqx.combine(p, static)
+        return objective(mdl)
+
+    value_and_grad = eqx.filter_value_and_grad(objective)
+    opt = optax.sgd(float(cfg.learning_rate))
     opt_state = opt.init(params)
 
     prev_params = params
@@ -258,6 +269,11 @@ def solve_gd_fullbatch(
             termination_reason = reason
             break
 
+    # Recompute objective and gradient at the returned parameters.
+    final_obj, final_grad = jax.value_and_grad(flat_obj)(params)
+    prev_obj = float(final_obj)
+    grad_norm = _tree_l2_norm(final_grad)
+
     if (
         bool(cfg.certify_approximation)
         and cfg.approximation_mode == "optimality_residual"
@@ -282,6 +298,7 @@ def solve_gd_fullbatch(
         final_delta_obj=float(delta_obj),
         notes=[
             "Deterministic iterative solver. exact_solution=False because this path does not provide a theorem-backed global certificate of exact ERM optimality.",
+            "grad_norm and parameter_error_bound are evaluated at the returned parameters.",
             "parameter_error_bound=||grad F_D(theta)||/lambda and sensitivity_addon=2*parameter_error_bound are local residual bounds for the realized dataset only; they are not neighboring-dataset-uniform privacy certificates.",
             f"Stopping configuration: early_stop={bool(cfg.early_stop)}, stop_rule={str(cfg.stop_rule)}, min_iter={int(cfg.min_iter)}, grad_tol={cfg.grad_tol}, param_tol={cfg.param_tol}, objective_tol={cfg.objective_tol}.",
         ],

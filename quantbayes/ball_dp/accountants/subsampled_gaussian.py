@@ -194,3 +194,243 @@ def build_ball_sgd_rdp_ledgers(
         )
 
     return DualPrivacyLedger(ball=ball, standard=std)
+
+
+def _expand_schedule(value_or_seq, T: int, *, cast_fn=float):
+    if isinstance(value_or_seq, (tuple, list)):
+        seq = [cast_fn(v) for v in value_or_seq]
+        if len(seq) != T:
+            raise ValueError(f"Expected schedule of length {T}, got {len(seq)}")
+        return seq
+    return [cast_fn(value_or_seq) for _ in range(T)]
+
+
+def _effective_noise_stds(
+    clip_schedule: Sequence[float], noise_multiplier_schedule: Sequence[float]
+) -> list[float]:
+    out: list[float] = []
+    for c, nm in zip(clip_schedule, noise_multiplier_schedule):
+        c = float(c)
+        nm = float(nm)
+        if c < 0.0:
+            raise ValueError("clip norms must be >= 0.")
+        if nm < 0.0:
+            raise ValueError("noise multipliers must be >= 0.")
+        out.append(float(c * nm))
+    return out
+
+
+def step_delta_ball_from_schedule(
+    *,
+    clip_schedule: Sequence[float],
+    lz: float | None,
+    radius: float,
+) -> list[float] | None:
+    if lz is None:
+        return None
+    lz = float(lz)
+    radius = float(radius)
+    if lz < 0.0:
+        raise ValueError("lz must be >= 0.")
+    if radius < 0.0:
+        raise ValueError("radius must be >= 0.")
+    out = []
+    for c in clip_schedule:
+        c = float(c)
+        out.append(float(min(lz * radius, 2.0 * c)))
+    return out
+
+
+def step_delta_standard_from_schedule(
+    *,
+    clip_schedule: Sequence[float],
+) -> list[float]:
+    out = []
+    for c in clip_schedule:
+        c = float(c)
+        if not math.isfinite(c):
+            raise ValueError(
+                "Standard DP-SGD accounting requires finite clip norms at every step."
+            )
+        out.append(float(2.0 * c))
+    return out
+
+
+def account_ball_sgd_noise_multiplier(
+    *,
+    noise_multiplier: float,
+    accounting_view: str,
+    orders: Sequence[int],
+    dataset_size: int,
+    num_steps: int,
+    batch_size: int | Sequence[int],
+    clip_norm: float | Sequence[float],
+    radius: float,
+    lz: float | None,
+    dp_delta: float,
+) -> dict[str, object]:
+    """Account privacy for a scalar noise multiplier without running training.
+
+    This is the accountant-only path for the fixed-size subsampled Gaussian
+    DP-SGD comparison used by the nonconvex Ball-vs-standard experiments.
+    """
+    accounting_view = str(accounting_view).lower()
+    if accounting_view not in {"ball", "standard"}:
+        raise ValueError("accounting_view must be one of {'ball', 'standard'}.")
+
+    dataset_size = int(dataset_size)
+    num_steps = int(num_steps)
+    noise_multiplier = float(noise_multiplier)
+    radius = float(radius)
+    dp_delta = float(dp_delta)
+
+    if dataset_size <= 0:
+        raise ValueError("dataset_size must be positive.")
+    if num_steps <= 0:
+        raise ValueError("num_steps must be positive.")
+    if noise_multiplier < 0.0:
+        raise ValueError("noise_multiplier must be >= 0.")
+    if not (0.0 < dp_delta < 1.0):
+        raise ValueError("dp_delta must be in (0,1).")
+
+    step_batch_sizes = _expand_schedule(batch_size, num_steps, cast_fn=int)
+    step_clip_norms = _expand_schedule(clip_norm, num_steps, cast_fn=float)
+    step_noise_multipliers = _expand_schedule(
+        noise_multiplier, num_steps, cast_fn=float
+    )
+    step_noise_stds = _effective_noise_stds(step_clip_norms, step_noise_multipliers)
+    step_delta_ball = step_delta_ball_from_schedule(
+        clip_schedule=step_clip_norms,
+        lz=lz,
+        radius=radius,
+    )
+    step_delta_std = step_delta_standard_from_schedule(clip_schedule=step_clip_norms)
+
+    if accounting_view == "ball" and step_delta_ball is None:
+        raise ValueError(
+            "Ball accounting requires a theorem-backed lz so that step_delta_ball is available."
+        )
+
+    dual_ledger = build_ball_sgd_rdp_ledgers(
+        orders=tuple(int(v) for v in orders),
+        step_batch_sizes=step_batch_sizes,
+        dataset_size=dataset_size,
+        step_clip_norms=step_clip_norms,
+        step_noise_stds=step_noise_stds,
+        step_delta_ball=step_delta_ball,
+        step_delta_std=step_delta_std,
+        radius=radius,
+        dp_delta=dp_delta,
+    )
+
+    ledger = dual_ledger.ball if accounting_view == "ball" else dual_ledger.standard
+    if not ledger.dp_certificates:
+        raise ValueError(
+            f"No DP certificate available for accounting_view={accounting_view!r}."
+        )
+
+    epsilon = float(ledger.dp_certificates[0].epsilon)
+    return {
+        "accounting_view": accounting_view,
+        "noise_multiplier": noise_multiplier,
+        "epsilon": epsilon,
+        "ledger": dual_ledger,
+        "step_batch_sizes": list(map(int, step_batch_sizes)),
+        "step_clip_norms": list(map(float, step_clip_norms)),
+        "step_noise_stds": list(map(float, step_noise_stds)),
+        "step_delta_ball": (
+            None if step_delta_ball is None else list(map(float, step_delta_ball))
+        ),
+        "step_delta_std": list(map(float, step_delta_std)),
+    }
+
+
+def calibrate_ball_sgd_noise_multiplier(
+    *,
+    target_epsilon: float,
+    accounting_view: str,
+    orders: Sequence[int],
+    dataset_size: int,
+    num_steps: int,
+    batch_size: int | Sequence[int],
+    clip_norm: float | Sequence[float],
+    radius: float,
+    lz: float | None,
+    dp_delta: float,
+    lower: float = 1e-3,
+    upper: float = 0.25,
+    max_upper: float = 128.0,
+    num_bisection_steps: int = 10,
+) -> dict[str, object]:
+    """Calibrate the minimum scalar noise multiplier using only the accountant.
+
+    This is the recommended privacy-calibration path for the nonconvex Ball-vs-standard
+    DP-SGD experiments: no training is needed during calibration.
+    """
+    target_epsilon = float(target_epsilon)
+    lower = float(lower)
+    upper = float(upper)
+    max_upper = float(max_upper)
+    num_bisection_steps = int(num_bisection_steps)
+
+    if target_epsilon <= 0.0:
+        raise ValueError("target_epsilon must be > 0.")
+    if not (0.0 < lower < upper):
+        raise ValueError("Require 0 < lower < upper.")
+    if max_upper <= upper:
+        raise ValueError("max_upper must exceed upper.")
+    if num_bisection_steps < 0:
+        raise ValueError("num_bisection_steps must be >= 0.")
+
+    lo = lower
+    hi = upper
+
+    while True:
+        summary_hi = account_ball_sgd_noise_multiplier(
+            noise_multiplier=hi,
+            accounting_view=accounting_view,
+            orders=orders,
+            dataset_size=dataset_size,
+            num_steps=num_steps,
+            batch_size=batch_size,
+            clip_norm=clip_norm,
+            radius=radius,
+            lz=lz,
+            dp_delta=dp_delta,
+        )
+        eps_hi = float(summary_hi["epsilon"])
+        if eps_hi <= target_epsilon:
+            best_summary = summary_hi
+            break
+        lo = hi
+        hi *= 2.0
+        if hi > max_upper:
+            raise RuntimeError(
+                "Failed to bracket a privacy-feasible noise multiplier. "
+                f"Last tried upper={hi:.6g}, target_epsilon={target_epsilon:.6g}."
+            )
+
+    for _ in range(num_bisection_steps):
+        mid = 0.5 * (lo + hi)
+        summary_mid = account_ball_sgd_noise_multiplier(
+            noise_multiplier=mid,
+            accounting_view=accounting_view,
+            orders=orders,
+            dataset_size=dataset_size,
+            num_steps=num_steps,
+            batch_size=batch_size,
+            clip_norm=clip_norm,
+            radius=radius,
+            lz=lz,
+            dp_delta=dp_delta,
+        )
+        eps_mid = float(summary_mid["epsilon"])
+        if eps_mid <= target_epsilon:
+            hi = mid
+            best_summary = summary_mid
+        else:
+            lo = mid
+
+    out = dict(best_summary)
+    out["noise_multiplier"] = float(hi)
+    return out
