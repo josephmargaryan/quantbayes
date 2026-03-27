@@ -709,3 +709,190 @@ def run_convex_ball_output_map_attack(
         true_record=true_record,
         eta_grid=eta_grid,
     )
+
+
+def _records_close_for_finite_prior(
+    a: Record, b: Record, *, atol: float = 1e-7
+) -> bool:
+    xa = np.asarray(a.features, dtype=np.float32).reshape(-1)
+    xb = np.asarray(b.features, dtype=np.float32).reshape(-1)
+    return (
+        int(a.label) == int(b.label)
+        and xa.shape == xb.shape
+        and np.allclose(xa, xb, atol=atol, rtol=0.0)
+    )
+
+
+def _normalize_finite_prior_records(
+    prior_records: Sequence[Record],
+    prior_weights: Optional[Sequence[float]],
+    *,
+    known_label: Optional[int],
+) -> tuple[list[Record], np.ndarray]:
+    if not prior_records:
+        raise ValueError("prior_records must be non-empty.")
+
+    if prior_weights is None:
+        weights = [1.0 for _ in prior_records]
+    else:
+        if len(prior_weights) != len(prior_records):
+            raise ValueError(
+                "prior_weights must have the same length as prior_records."
+            )
+        weights = [float(v) for v in prior_weights]
+
+    kept_records: list[Record] = []
+    kept_weights: list[float] = []
+    for rec, w in zip(prior_records, weights):
+        if known_label is not None and int(rec.label) != int(known_label):
+            continue
+        kept_records.append(
+            Record(
+                features=np.asarray(rec.features, dtype=np.float32),
+                label=int(rec.label),
+            )
+        )
+        kept_weights.append(float(w))
+
+    if not kept_records:
+        raise ValueError(
+            "Finite prior became empty after applying known_label filtering."
+        )
+
+    probs = np.asarray(kept_weights, dtype=np.float64)
+    if np.any(~np.isfinite(probs)) or np.any(probs <= 0.0):
+        raise ValueError("prior_weights must be finite and strictly positive.")
+    probs = probs / float(np.sum(probs))
+    return kept_records, probs.astype(np.float64, copy=False)
+
+
+def run_convex_ball_output_finite_prior_attack(
+    release: ReleaseArtifact,
+    d_minus: ArrayDataset,
+    *,
+    prior_records: Sequence[Record],
+    prior_weights: Optional[Sequence[float]] = None,
+    known_label: Optional[int] = None,
+    true_record: Optional[Record] = None,
+    eta_grid: Sequence[float] = (0.1, 0.2, 0.5, 1.0),
+) -> AttackResult:
+    """Exact finite-prior Bayes attack for Gaussian output perturbation.
+
+    This routine evaluates the exact Gaussian posterior score on every candidate
+    in the supplied finite support and returns the MAP candidate. No outer
+    continuous optimization is performed.
+    """
+    sigma = _release_sigma(release)
+    release_cfg = _convex_cfg_from_release(release)
+    noisy_vec = _payload_vector(release.payload)
+    if noisy_vec.size == 0:
+        raise ValueError(
+            "Could not extract a floating-point parameter vector from release.payload."
+        )
+
+    filtered_records, probs = _normalize_finite_prior_records(
+        prior_records,
+        prior_weights,
+        known_label=known_label,
+    )
+
+    log_scores: list[float] = []
+    candidate_vectors: list[np.ndarray] = []
+    for rec, prob in zip(filtered_records, probs):
+        candidate_ds = _candidate_dataset(
+            d_minus,
+            np.asarray(rec.features, dtype=np.float32),
+            int(rec.label),
+        )
+        candidate_payload, _, _ = _solve_nonprivate_erm(
+            candidate_ds,
+            release_cfg,
+            jr.PRNGKey(int(release_cfg.seed)),
+        )
+        cand_vec = _payload_vector(candidate_payload)
+        if cand_vec.shape != noisy_vec.shape:
+            raise ValueError(
+                "Candidate parameter vector shape mismatch: "
+                f"release shape={noisy_vec.shape}, candidate shape={cand_vec.shape}."
+            )
+        diff = noisy_vec - cand_vec
+        log_score = float(
+            np.log(prob) - 0.5 * float(np.dot(diff, diff)) / (sigma * sigma)
+        )
+        log_scores.append(log_score)
+        candidate_vectors.append(cand_vec)
+
+    log_scores_arr = np.asarray(log_scores, dtype=np.float64)
+    best_idx = int(np.argmax(log_scores_arr))
+    best_record = filtered_records[best_idx]
+
+    metrics = (
+        {}
+        if true_record is None
+        else reconstruction_metrics(
+            true_record,
+            best_record,
+            eta_grid=tuple(float(v) for v in eta_grid),
+        )
+    )
+    metrics["oblivious_kappa"] = float(np.max(probs))
+
+    true_prior_index = None
+    if true_record is not None:
+        true_prior_index = next(
+            (
+                i
+                for i, rec in enumerate(filtered_records)
+                if _records_close_for_finite_prior(rec, true_record)
+            ),
+            None,
+        )
+        feat_pred = np.asarray(best_record.features, dtype=np.float32).reshape(-1)
+        feat_true = np.asarray(true_record.features, dtype=np.float32).reshape(-1)
+        metrics["mse"] = float(np.mean((feat_pred - feat_true) ** 2))
+        metrics["exact_identification_success"] = float(
+            _records_close_for_finite_prior(best_record, true_record)
+        )
+        if true_prior_index is not None:
+            order = np.argsort(-log_scores_arr)
+            rank = int(np.where(order == true_prior_index)[0][0]) + 1
+            metrics["prior_exact_hit"] = float(best_idx == true_prior_index)
+            metrics["prior_rank"] = float(rank)
+            for kk in (1, 5, 10):
+                metrics[f"prior_hit@{kk}"] = float(rank <= kk)
+
+    top_order = np.argsort(-log_scores_arr)[: min(10, len(filtered_records))]
+    candidates = [
+        (
+            int(filtered_records[int(i)].label),
+            np.asarray(filtered_records[int(i)].features, dtype=np.float32),
+        )
+        for i in top_order.tolist()
+    ]
+
+    diagnostics = {
+        "algorithm": "finite_prior_exact_bayes",
+        "exact_posterior_over_finite_support": True,
+        "exact_posterior_up_to_additive_constant": True,
+        "prior_size": int(len(filtered_records)),
+        "prior_weights": probs.astype(float).tolist(),
+        "oblivious_kappa": float(np.max(probs)),
+        "candidate_log_scores": log_scores_arr.astype(float).tolist(),
+        "candidate_objectives": (-log_scores_arr).astype(float).tolist(),
+        "predicted_prior_index": int(best_idx),
+        "true_prior_index": true_prior_index,
+        "true_record_in_prior": bool(true_prior_index is not None),
+        "sigma": float(sigma),
+        "release_solver_snapshot": dc.asdict(release_cfg.optimization),
+        "release_gaussian_snapshot": dc.asdict(release_cfg.gaussian),
+    }
+
+    return AttackResult(
+        attack_family="ball_output_finite_prior_exact_bayes",
+        z_hat=np.asarray(best_record.features, dtype=np.float32),
+        y_hat=int(best_record.label),
+        status="ok_known_label" if known_label is not None else "ok",
+        diagnostics=diagnostics,
+        metrics=metrics,
+        candidates=candidates,
+    )

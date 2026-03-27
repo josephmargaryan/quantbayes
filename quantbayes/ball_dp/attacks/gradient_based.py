@@ -31,6 +31,11 @@ class DPSGDTraceStep:
     clip_norm: float
     noise_multiplier: float
     effective_noise_std: float
+    normalization_denominator: Optional[float] = None
+    realized_batch_size: Optional[int] = None
+    target_batch_size: Optional[int] = None
+    batch_sampler: str = "unknown"
+    reduction: Literal["mean", "sum"] = "mean"
 
 
 @dc.dataclass
@@ -67,22 +72,50 @@ class DPSGDTraceRecorder:
         clip_norm: float,
         noise_multiplier: float,
         effective_noise_std: float,
+        normalization_denominator: Optional[float] = None,
+        realized_batch_size: Optional[int] = None,
+        target_batch_size: Optional[int] = None,
+        batch_sampler: str = "unknown",
+        reduction: Literal["mean", "sum"] = "mean",
     ) -> None:
         if int(step) % self.capture_every != 0:
             return
+
+        stored_batch_indices = (
+            np.asarray(batch_indices, dtype=np.int64).copy()
+            if self.keep_batch_indices
+            else np.zeros((0,), dtype=np.int64)
+        )
+        realized = (
+            int(realized_batch_size)
+            if realized_batch_size is not None
+            else int(stored_batch_indices.size)
+        )
+        target = (
+            int(target_batch_size)
+            if target_batch_size is not None
+            else int(stored_batch_indices.size)
+        )
+        denom = (
+            None
+            if normalization_denominator is None
+            else float(normalization_denominator)
+        )
+
         self.steps.append(
             DPSGDTraceStep(
                 step=int(step),
                 model_before=model_before if self.keep_models else None,
                 observed_private_gradient=observed_private_gradient,
-                batch_indices=(
-                    np.asarray(batch_indices, dtype=np.int64).copy()
-                    if self.keep_batch_indices
-                    else np.zeros((0,), dtype=np.int64)
-                ),
+                batch_indices=stored_batch_indices,
                 clip_norm=float(clip_norm),
                 noise_multiplier=float(noise_multiplier),
                 effective_noise_std=float(effective_noise_std),
+                normalization_denominator=denom,
+                realized_batch_size=realized,
+                target_batch_size=target,
+                batch_sampler=str(batch_sampler),
+                reduction=str(reduction),
             )
         )
 
@@ -101,6 +134,32 @@ class DPSGDTraceRecorder:
             reduction=str(reduction),
             metadata={} if metadata is None else dict(metadata),
         )
+
+
+def _step_realized_batch_size(step: DPSGDTraceStep | Any) -> int:
+    maybe = getattr(step, "realized_batch_size", None)
+    if maybe is not None:
+        return int(maybe)
+    return int(np.asarray(step.batch_indices, dtype=np.int64).size)
+
+
+def _step_target_batch_size(step: DPSGDTraceStep | Any) -> int:
+    maybe = getattr(step, "target_batch_size", None)
+    if maybe is not None:
+        return int(maybe)
+    return _step_realized_batch_size(step)
+
+
+def _step_mean_denominator(step: DPSGDTraceStep | Any) -> float:
+    maybe = getattr(step, "normalization_denominator", None)
+    if maybe is not None:
+        return float(max(1.0, float(maybe)))
+    batch_size = _step_realized_batch_size(step)
+    if batch_size <= 0:
+        raise ValueError(
+            "Trace step is missing batch size information; cannot rescale mean-reduced gradients."
+        )
+    return float(batch_size)
 
 
 @dc.dataclass
@@ -449,7 +508,9 @@ def subtract_known_batch_gradients(
             clipped, _ = _clip_per_example_grad_tree(per_example, float(step.clip_norm))
             known_agg = jax.tree_util.tree_map(lambda g: jnp.sum(g, axis=0), clipped)
             if str(trace.reduction) == "mean":
-                known_agg = _tree_scalar_mul(known_agg, 1.0 / float(len(batch_idx)))
+                known_agg = _tree_scalar_mul(
+                    known_agg, 1.0 / _step_mean_denominator(step)
+                )
 
         residual = _tree_sub(step.observed_private_gradient, known_agg)
         new_steps.append(
@@ -461,6 +522,23 @@ def subtract_known_batch_gradients(
                 clip_norm=float(step.clip_norm),
                 noise_multiplier=float(step.noise_multiplier),
                 effective_noise_std=float(step.effective_noise_std),
+                normalization_denominator=(
+                    None
+                    if getattr(step, "normalization_denominator", None) is None
+                    else float(step.normalization_denominator)
+                ),
+                realized_batch_size=(
+                    None
+                    if getattr(step, "realized_batch_size", None) is None
+                    else int(step.realized_batch_size)
+                ),
+                target_batch_size=(
+                    None
+                    if getattr(step, "target_batch_size", None) is None
+                    else int(step.target_batch_size)
+                ),
+                batch_sampler=str(getattr(step, "batch_sampler", "unknown")),
+                reduction=str(getattr(step, "reduction", trace.reduction)),
             )
         )
 
@@ -525,7 +603,7 @@ def run_prior_aware_trace_attack(
             n_total = trace.metadata.get("dataset_size", None)
             if n_total is not None:
                 avg_bs = float(
-                    np.mean([max(1, len(s.batch_indices)) for s in trace.steps])
+                    np.mean([max(1, _step_target_batch_size(s)) for s in trace.steps])
                 )
                 q = avg_bs / float(n_total)
         alg = "algorithm2" if (q is None or float(q) >= 1.0 - 1e-12) else "algorithm3"
@@ -564,8 +642,7 @@ def run_prior_aware_trace_attack(
         )
         clipped, _ = _clip_per_example_grad_tree(per_example, float(step.clip_norm))
         if str(trace.reduction) == "mean":
-            batch_size = max(1, int(len(step.batch_indices)))
-            clipped = _tree_scalar_mul(clipped, 1.0 / float(batch_size))
+            clipped = _tree_scalar_mul(clipped, 1.0 / _step_mean_denominator(step))
 
         step_scores = np.asarray(
             _tree_batch_dot(clipped, step.observed_private_gradient),
@@ -586,7 +663,7 @@ def run_prior_aware_trace_attack(
             n_total = trace.metadata.get("dataset_size", None)
             if n_total is not None:
                 avg_bs = float(
-                    np.mean([max(1, len(s.batch_indices)) for s in trace.steps])
+                    np.mean([max(1, _step_target_batch_size(s)) for s in trace.steps])
                 )
                 q = avg_bs / float(n_total)
         if q is None:
@@ -729,8 +806,7 @@ def run_trace_optimization_attack(
                 )
                 cand = _clip_single_grad(cand, float(step.clip_norm))
                 if str(trace.reduction) == "mean":
-                    batch_size = max(1, int(len(step.batch_indices)))
-                    cand = _tree_scalar_mul(cand, 1.0 / float(batch_size))
+                    cand = _tree_scalar_mul(cand, 1.0 / _step_mean_denominator(step))
 
                 obs = step.observed_private_gradient
                 total = total + (-_tree_dot(cand, obs) + _tree_l1_distance(cand, obs))

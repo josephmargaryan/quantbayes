@@ -20,6 +20,8 @@ from .gradient_based import (
     DPSGDTrace,
     _clip_single_grad,
     _single_example_grad,
+    _step_mean_denominator,
+    _step_target_batch_size,
     _tree_l2_sq,
     _tree_scalar_mul,
     _tree_sub,
@@ -119,14 +121,25 @@ def _resolve_sampling_probabilities(
     else:
         dataset_size = trace.metadata.get("dataset_size", None)
         sample_rate = trace.metadata.get("sample_rate", None)
+        sample_rates = trace.metadata.get("sample_rates", None)
 
-        if dataset_size is not None:
+        if sample_rates is not None:
+            full_qs = [float(v) for v in sample_rates]
+            qs = []
+            for step in selected_steps:
+                step_idx = int(step.step) - 1
+                if step_idx < 0 or step_idx >= len(full_qs):
+                    raise ValueError(
+                        "trace.metadata['sample_rates'] does not cover every selected step."
+                    )
+                qs.append(float(full_qs[step_idx]))
+        elif dataset_size is not None:
             n_total = int(dataset_size)
             qs = []
             for step in selected_steps:
-                batch_idx = np.asarray(step.batch_indices, dtype=np.int64)
-                if batch_idx.size > 0:
-                    qs.append(float(batch_idx.size) / float(n_total))
+                target_batch_size = _step_target_batch_size(step)
+                if target_batch_size > 0:
+                    qs.append(float(target_batch_size) / float(n_total))
                 elif sample_rate is not None:
                     qs.append(float(sample_rate))
                 else:
@@ -139,7 +152,7 @@ def _resolve_sampling_probabilities(
             raise ValueError(
                 "Unknown-inclusion MAP requires sampling_probability=..., "
                 "per_step_sampling_probabilities=..., or trace metadata containing "
-                "dataset_size / sample_rate."
+                "sample_rates, dataset_size / sample_rate."
             )
 
     for q in qs:
@@ -175,12 +188,7 @@ def _candidate_mean_tree(
 
     reduction = str(trace.reduction).lower()
     if reduction == "mean":
-        batch_size = int(len(step.batch_indices))
-        if batch_size <= 0:
-            raise ValueError(
-                "Trace step is missing batch_indices; cannot rescale mean-reduced gradients."
-            )
-        cand = _tree_scalar_mul(cand, 1.0 / float(batch_size))
+        cand = _tree_scalar_mul(cand, 1.0 / _step_mean_denominator(step))
     elif reduction != "sum":
         raise ValueError("trace.reduction must be one of {'mean', 'sum'}.")
 
@@ -472,6 +480,273 @@ def run_ball_trace_map_attack(
         attack_family=f"ball_trace_map_{mode}",
         z_hat=np.asarray(best_x, dtype=np.float32),
         y_hat=int(best_label),
+        status="ok_known_label" if known_label is not None else "ok",
+        diagnostics=diagnostics,
+        metrics=metrics,
+        candidates=candidates,
+    )
+
+
+def _records_close_for_finite_prior(
+    a: Record, b: Record, *, atol: float = 1e-7
+) -> bool:
+    xa = np.asarray(a.features, dtype=np.float32).reshape(-1)
+    xb = np.asarray(b.features, dtype=np.float32).reshape(-1)
+    return (
+        int(a.label) == int(b.label)
+        and xa.shape == xb.shape
+        and np.allclose(xa, xb, atol=atol, rtol=0.0)
+    )
+
+
+def _normalize_finite_prior_records(
+    prior_records: Sequence[Record],
+    prior_weights: Optional[Sequence[float]],
+    *,
+    known_label: Optional[int],
+) -> tuple[list[Record], np.ndarray]:
+    if not prior_records:
+        raise ValueError("prior_records must be non-empty.")
+
+    if prior_weights is None:
+        weights = [1.0 for _ in prior_records]
+    else:
+        if len(prior_weights) != len(prior_records):
+            raise ValueError(
+                "prior_weights must have the same length as prior_records."
+            )
+        weights = [float(v) for v in prior_weights]
+
+    kept_records: list[Record] = []
+    kept_weights: list[float] = []
+    for rec, w in zip(prior_records, weights):
+        if known_label is not None and int(rec.label) != int(known_label):
+            continue
+        kept_records.append(
+            Record(
+                features=np.asarray(rec.features, dtype=np.float32),
+                label=int(rec.label),
+            )
+        )
+        kept_weights.append(float(w))
+
+    if not kept_records:
+        raise ValueError(
+            "Finite prior became empty after applying known_label filtering."
+        )
+
+    probs = np.asarray(kept_weights, dtype=np.float64)
+    if np.any(~np.isfinite(probs)) or np.any(probs <= 0.0):
+        raise ValueError("prior_weights must be finite and strictly positive.")
+    probs = probs / float(np.sum(probs))
+    return kept_records, probs.astype(np.float64, copy=False)
+
+
+def run_ball_trace_finite_prior_attack(
+    trace: DPSGDTrace,
+    prior_records: Sequence[Record],
+    *,
+    prior_weights: Optional[Sequence[float]] = None,
+    cfg: Optional[BallTraceMapAttackConfig] = None,
+    target_index: Optional[int] = None,
+    loss_name: Optional[str] = None,
+    loss_fn: Optional[ExampleLossFn] = None,
+    known_label: Optional[int] = None,
+    true_record: Optional[Record] = None,
+    eta_grid: Sequence[float] = (0.1, 0.2, 0.5, 1.0),
+) -> AttackResult:
+    """Exact finite-prior Bayes attack on a residualized DP-SGD trace.
+
+    The posterior is scored exactly on the supplied discrete candidate set. No
+    projected gradient descent is used.
+    """
+    cfg = BallTraceMapAttackConfig() if cfg is None else cfg
+    if not trace.steps:
+        raise ValueError("Trace is empty.")
+    if not bool(trace.metadata.get("residualized_against_known_batch", False)):
+        raise ValueError(
+            "run_ball_trace_finite_prior_attack expects a residualized trace. "
+            "Call subtract_known_batch_gradients(...) first."
+        )
+
+    resolved_loss_fn = (
+        resolve_loss_fn(trace.loss_name if loss_name is None else loss_name)
+        if loss_fn is None
+        else loss_fn
+    )
+
+    filtered_records, probs = _normalize_finite_prior_records(
+        prior_records,
+        prior_weights,
+        known_label=known_label,
+    )
+
+    target_index = _resolve_target_index(trace, target_index)
+
+    mode = str(cfg.mode).lower()
+    if mode not in {"known_inclusion", "unknown_inclusion"}:
+        raise ValueError(
+            "cfg.mode must be one of {'known_inclusion', 'unknown_inclusion'}."
+        )
+
+    if mode == "known_inclusion":
+        if target_index is None:
+            raise ValueError(
+                "Known-inclusion finite-prior attack requires target_index to be known, "
+                "either explicitly or via trace.metadata['target_index']."
+            )
+        selected_steps, effective_step_mode = _known_inclusion_selected_steps(
+            trace,
+            target_index=int(target_index),
+            step_mode=str(cfg.step_mode),
+        )
+        q_by_step = None
+    else:
+        selected_steps = list(trace.steps)
+        effective_step_mode = "all"
+        q_by_step = _resolve_sampling_probabilities(
+            trace,
+            selected_steps=selected_steps,
+            cfg=cfg,
+        )
+        for step in selected_steps:
+            if float(step.effective_noise_std) <= 0.0:
+                raise ValueError(
+                    "Unknown-inclusion finite-prior Bayes attack requires strictly "
+                    "positive effective_noise_std at every retained step."
+                )
+
+    log_scores: list[float] = []
+    all_pos_noise = bool(
+        all(float(step.effective_noise_std) > 0.0 for step in selected_steps)
+    )
+
+    for rec, prob in zip(filtered_records, probs):
+        total = -float(np.log(prob))
+        x_var = jnp.asarray(
+            np.asarray(rec.features, dtype=np.float32), dtype=jnp.float32
+        )
+        label = int(rec.label)
+
+        for idx, step in enumerate(selected_steps):
+            obs = step.observed_private_gradient
+            cand = _candidate_mean_tree(
+                step,
+                trace,
+                loss_fn=resolved_loss_fn,
+                x_var=x_var,
+                label=label,
+                seed=int(cfg.seed),
+            )
+
+            sigma = float(step.effective_noise_std)
+            if mode == "known_inclusion":
+                if effective_step_mode == "present_steps":
+                    include = True
+                else:
+                    include = _step_contains_target(step, int(target_index))
+                if not include:
+                    continue
+
+                sq = float(_tree_l2_sq(_tree_sub(obs, cand)))
+                if sigma > 0.0:
+                    total += sq / (2.0 * sigma * sigma)
+                else:
+                    total += sq
+            else:
+                q = float(q_by_step[idx])
+                sq0 = _tree_l2_sq(obs)
+                sq1 = _tree_l2_sq(_tree_sub(obs, cand))
+                if q <= 0.0:
+                    total += float(sq0 / (2.0 * sigma * sigma))
+                elif q >= 1.0:
+                    total += float(sq1 / (2.0 * sigma * sigma))
+                else:
+                    q_j = jnp.asarray(q, dtype=jnp.float32)
+                    a0 = jnp.log1p(-q_j) - sq0 / (2.0 * sigma * sigma)
+                    a1 = jnp.log(q_j) - sq1 / (2.0 * sigma * sigma)
+                    total += float(-logsumexp(jnp.stack([a0, a1])))
+
+        log_scores.append(-float(total))
+
+    log_scores_arr = np.asarray(log_scores, dtype=np.float64)
+    best_idx = int(np.argmax(log_scores_arr))
+    best_record = filtered_records[best_idx]
+
+    metrics = (
+        {}
+        if true_record is None
+        else reconstruction_metrics(
+            true_record,
+            best_record,
+            eta_grid=tuple(float(v) for v in eta_grid),
+        )
+    )
+    metrics["oblivious_kappa"] = float(np.max(probs))
+
+    true_prior_index = None
+    if true_record is not None:
+        true_prior_index = next(
+            (
+                i
+                for i, rec in enumerate(filtered_records)
+                if _records_close_for_finite_prior(rec, true_record)
+            ),
+            None,
+        )
+        feat_pred = np.asarray(best_record.features, dtype=np.float32).reshape(-1)
+        feat_true = np.asarray(true_record.features, dtype=np.float32).reshape(-1)
+        metrics["mse"] = float(np.mean((feat_pred - feat_true) ** 2))
+        metrics["exact_identification_success"] = float(
+            _records_close_for_finite_prior(best_record, true_record)
+        )
+        if true_prior_index is not None:
+            order = np.argsort(-log_scores_arr)
+            rank = int(np.where(order == true_prior_index)[0][0]) + 1
+            metrics["prior_exact_hit"] = float(best_idx == true_prior_index)
+            metrics["prior_rank"] = float(rank)
+            for kk in (1, 5, 10):
+                metrics[f"prior_hit@{kk}"] = float(rank <= kk)
+
+    top_order = np.argsort(-log_scores_arr)[: min(10, len(filtered_records))]
+    candidates = [
+        (
+            int(filtered_records[int(i)].label),
+            np.asarray(filtered_records[int(i)].features, dtype=np.float32),
+        )
+        for i in top_order.tolist()
+    ]
+
+    diagnostics: Dict[str, Any] = {
+        "mode": str(mode),
+        "algorithm": "finite_prior_exact_bayes",
+        "prior_size": int(len(filtered_records)),
+        "prior_weights": probs.astype(float).tolist(),
+        "oblivious_kappa": float(np.max(probs)),
+        "candidate_log_scores": log_scores_arr.astype(float).tolist(),
+        "candidate_objectives": (-log_scores_arr).astype(float).tolist(),
+        "predicted_prior_index": int(best_idx),
+        "true_prior_index": true_prior_index,
+        "true_record_in_prior": bool(true_prior_index is not None),
+        "selected_step_count": int(len(selected_steps)),
+        "selected_steps": [int(step.step) for step in selected_steps],
+        "step_mode": str(effective_step_mode),
+        "trace_residualized": True,
+        "logged_transcript_reduction": str(trace.reduction),
+        "all_retained_steps_have_positive_noise": all_pos_noise,
+        "exact_posterior_up_to_constants": bool(all_pos_noise),
+        "target_index": None if target_index is None else int(target_index),
+        "known_inclusion_skips_absent_step_constants": bool(
+            mode == "known_inclusion" and effective_step_mode == "all"
+        ),
+    }
+    if q_by_step is not None:
+        diagnostics["sampling_probabilities"] = list(map(float, q_by_step))
+
+    return AttackResult(
+        attack_family=f"ball_trace_finite_prior_exact_bayes_{mode}",
+        z_hat=np.asarray(best_record.features, dtype=np.float32),
+        y_hat=int(best_record.label),
         status="ok_known_label" if known_label is not None else "ok",
         diagnostics=diagnostics,
         metrics=metrics,

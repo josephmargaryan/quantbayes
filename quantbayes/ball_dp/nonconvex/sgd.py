@@ -35,6 +35,7 @@ from .per_example import (
     resolve_loss_fn,
     tree_add,
     tree_scalar_mul,
+    tree_zeros_like,
 )
 from quantbayes.stochax.utils.regularizers import (
     collect_operator_norms,
@@ -70,6 +71,106 @@ def _expand_schedule(value_or_seq, T: int, *, cast_fn=float):
             raise ValueError(f"Expected schedule of length {T}, got {len(seq)}")
         return seq
     return [cast_fn(value_or_seq) for _ in range(T)]
+
+
+def _normalize_batch_sampler(batch_sampler: str) -> str:
+    key = str(batch_sampler).lower()
+    mapping = {
+        "shuffle": "without_replacement",
+        "without_replacement": "without_replacement",
+        "fixed_without_replacement": "without_replacement",
+        "fixed_size": "without_replacement",
+        "legacy": "without_replacement",
+        "poisson": "poisson",
+    }
+    if key not in mapping:
+        raise ValueError(
+            "cfg.batch_sampler must be one of "
+            "{'shuffle', 'without_replacement', 'poisson'}."
+        )
+    return mapping[key]
+
+
+def _normalize_accountant_subsampling(
+    accountant_subsampling: str,
+    *,
+    batch_sampler: str,
+) -> str:
+    key = str(accountant_subsampling).lower()
+    if key == "auto":
+        return "poisson" if batch_sampler == "poisson" else "poisson_optimistic"
+    if key == "match_sampler":
+        if batch_sampler != "poisson":
+            raise ValueError(
+                "cfg.accountant_subsampling='match_sampler' is only available for "
+                "cfg.batch_sampler='poisson' in this library."
+            )
+        return "poisson"
+    if key in {"poisson", "poisson_optimistic"}:
+        return key
+    raise ValueError(
+        "cfg.accountant_subsampling must be one of "
+        "{'auto', 'match_sampler', 'poisson', 'poisson_optimistic'}."
+    )
+
+
+def _resolve_normalization_denominator(
+    *,
+    normalize_noisy_sum_by: str,
+    target_batch_size: int,
+    realized_batch_size: int,
+) -> float | None:
+    mode = str(normalize_noisy_sum_by).lower()
+    if mode == "batch_size":
+        return float(target_batch_size)
+    if mode == "realized_batch_size":
+        return float(max(1, int(realized_batch_size)))
+    if mode == "none":
+        return None
+    raise ValueError(
+        "normalize_noisy_sum_by must be one of "
+        "{'batch_size', 'realized_batch_size', 'none'}."
+    )
+
+
+def _sample_batch_indices(
+    *,
+    sample_key: jax.Array,
+    dataset_size: int,
+    target_batch_size: int,
+    batch_sampler: str,
+) -> np.ndarray:
+    dataset_size = int(dataset_size)
+    target_batch_size = int(target_batch_size)
+    batch_sampler = _normalize_batch_sampler(batch_sampler)
+
+    if target_batch_size < 0:
+        raise ValueError("target_batch_size must be >= 0.")
+    if target_batch_size > dataset_size:
+        raise ValueError(
+            f"target_batch_size={target_batch_size} exceeds dataset_size={dataset_size}."
+        )
+
+    if batch_sampler == "without_replacement":
+        idx = jr.choice(
+            sample_key,
+            dataset_size,
+            shape=(target_batch_size,),
+            replace=False,
+        )
+        return np.asarray(idx, dtype=np.int64)
+
+    q = float(target_batch_size) / float(dataset_size)
+    if q <= 0.0:
+        return np.zeros((0,), dtype=np.int64)
+    if q >= 1.0:
+        return np.arange(dataset_size, dtype=np.int64)
+
+    mask = np.asarray(
+        jr.bernoulli(sample_key, p=q, shape=(dataset_size,)),
+        dtype=np.bool_,
+    )
+    return np.flatnonzero(mask).astype(np.int64, copy=False)
 
 
 def _binary_targets01_np(y: np.ndarray) -> np.ndarray:
@@ -228,13 +329,23 @@ def _make_train_step(
         key: jax.Array,
         clip_norm: jax.Array,
         noise_multiplier: jax.Array,
+        normalization_denominator: jax.Array,
     ):
         grad_key, noise_key = jr.split(key)
-        per_example_grads = per_example_grad_fn(params, xb, yb, grad_key)
-        summed_clipped, norms, clip_frac = clip_and_aggregate_per_example_grads(
-            per_example_grads,
-            clip_norm,
-        )
+
+        if xb.shape[0] == 0:
+            summed_clipped = tree_zeros_like(params)
+            clip_frac = jnp.asarray(0.0, dtype=jnp.float32)
+            mean_norm = jnp.asarray(0.0, dtype=jnp.float32)
+            max_norm = jnp.asarray(0.0, dtype=jnp.float32)
+        else:
+            per_example_grads = per_example_grad_fn(params, xb, yb, grad_key)
+            summed_clipped, norms, clip_frac = clip_and_aggregate_per_example_grads(
+                per_example_grads,
+                clip_norm,
+            )
+            mean_norm = jnp.mean(norms)
+            max_norm = jnp.max(norms)
 
         noise_std = jnp.asarray(
             noise_multiplier,
@@ -242,16 +353,19 @@ def _make_train_step(
         ) * jnp.asarray(clip_norm)
         noisy_sum = add_gaussian_noise(summed_clipped, noise_std, noise_key)
 
-        if normalize_noisy_sum_by == "batch_size":
+        if normalize_noisy_sum_by in {"batch_size", "realized_batch_size"}:
+            denom = jnp.asarray(normalization_denominator, dtype=jnp.float32)
+            denom = jnp.maximum(denom, jnp.asarray(1.0, dtype=denom.dtype))
             sanitized_grad = tree_scalar_mul(
                 noisy_sum,
-                1.0 / jnp.asarray(xb.shape[0], dtype=jnp.float32),
+                1.0 / denom,
             )
         elif normalize_noisy_sum_by == "none":
             sanitized_grad = noisy_sum
         else:
             raise ValueError(
-                "normalize_noisy_sum_by must be one of {'batch_size', 'none'}."
+                "normalize_noisy_sum_by must be one of "
+                "{'batch_size', 'realized_batch_size', 'none'}."
             )
 
         if regularizer_grad_fn is not None:
@@ -266,8 +380,6 @@ def _make_train_step(
         if param_projector is not None:
             params = param_projector(params)
 
-        mean_norm = jnp.mean(norms)
-        max_norm = jnp.max(norms)
         return params, opt_state, mean_norm, max_norm, clip_frac, sanitized_grad
 
     return _step
@@ -434,6 +546,8 @@ def _make_release_artifact(
     utility_metrics: dict[str, float],
     checkpoint_selection: str,
     selected_step: int,
+    resolved_batch_sampler: str,
+    resolved_accountant_subsampling: str,
 ) -> ReleaseArtifact:
     regime = _regime_summary(cfg.lz, clip_schedule, step_delta_ball, step_delta_std)
 
@@ -489,11 +603,18 @@ def _make_release_artifact(
         else int(dataset.num_classes)
     )
 
+    sample_rates = tuple(float(v) / float(len(dataset)) for v in batch_schedule)
+
     training_config = {
         "radius": float(cfg.radius),
         "lz": None if cfg.lz is None else float(cfg.lz),
         "num_steps": int(cfg.num_steps),
         "batch_sizes": tuple(int(v) for v in batch_schedule),
+        "sample_rates": sample_rates,
+        "batch_sampler": str(getattr(cfg, "batch_sampler", "shuffle")),
+        "resolved_batch_sampler": str(resolved_batch_sampler),
+        "accountant_subsampling": str(getattr(cfg, "accountant_subsampling", "auto")),
+        "resolved_accountant_subsampling": str(resolved_accountant_subsampling),
         "clip_norms": tuple(float(v) for v in clip_schedule),
         "noise_multipliers": tuple(float(v) for v in noise_multiplier_schedule),
         "effective_noise_stds": tuple(float(v) for v in effective_noise_stds),
@@ -519,6 +640,12 @@ def _make_release_artifact(
         "shadow_attack_recommended": False,
         "primary_privacy_view": "ball",
         "selected_checkpoint_step": int(selected_step),
+        "batch_sampler": str(resolved_batch_sampler),
+        "accountant_subsampling": str(resolved_accountant_subsampling),
+        "privacy_accountant_matches_sampler": bool(
+            resolved_batch_sampler == "poisson"
+            and resolved_accountant_subsampling == "poisson"
+        ),
     }
 
     extra = {
@@ -540,6 +667,8 @@ def _make_release_artifact(
             regime["ball_equals_standard_at_all_steps"]
         ),
         "selected_checkpoint_step": int(selected_step),
+        "resolved_batch_sampler": str(resolved_batch_sampler),
+        "resolved_accountant_subsampling": str(resolved_accountant_subsampling),
         # Backward-compatible place to store the (read-only) Equinox state.
         "model_state": state,
     }
@@ -685,6 +814,24 @@ def _run_training(
         n_total=n_total,
         batch_schedule=batch_schedule,
     )
+    resolved_batch_sampler = _normalize_batch_sampler(
+        getattr(cfg, "batch_sampler", "shuffle")
+    )
+    resolved_accountant_subsampling = _normalize_accountant_subsampling(
+        getattr(cfg, "accountant_subsampling", "auto"),
+        batch_sampler=resolved_batch_sampler,
+    )
+    if (
+        not force_noiseless
+        and resolved_batch_sampler != "poisson"
+        and resolved_accountant_subsampling == "poisson_optimistic"
+    ):
+        print(
+            "[ball_dp note] Using Poisson-subsampling accounting as an optimistic proxy "
+            "for the legacy fixed-size minibatch sampler. Set batch_sampler='poisson' "
+            "for matched Poisson training and accounting.",
+            flush=True,
+        )
 
     if any(m <= 0 for m in batch_schedule):
         raise ValueError("All batch sizes must be positive.")
@@ -792,9 +939,25 @@ def _run_training(
 
         m_t = int(batch_schedule[t])
         if fixed_batch_schedule is not None and fixed_batch_schedule[t] is not None:
-            idx = jnp.asarray(fixed_batch_schedule[t], dtype=jnp.int32)
+            idx_np = np.asarray(fixed_batch_schedule[t], dtype=np.int64)
+            step_sampler = "fixed_schedule"
         else:
-            idx = jr.choice(sample_key, n_total, shape=(m_t,), replace=False)
+            idx_np = _sample_batch_indices(
+                sample_key=sample_key,
+                dataset_size=n_total,
+                target_batch_size=m_t,
+                batch_sampler=resolved_batch_sampler,
+            )
+            step_sampler = str(resolved_batch_sampler)
+
+        realized_batch_size = int(idx_np.size)
+        normalization_denominator = _resolve_normalization_denominator(
+            normalize_noisy_sum_by=str(cfg.normalize_noisy_sum_by),
+            target_batch_size=m_t,
+            realized_batch_size=realized_batch_size,
+        )
+
+        idx = jnp.asarray(idx_np, dtype=jnp.int32)
         xb = x_train[idx]
         yb = y_train[idx]
 
@@ -811,32 +974,62 @@ def _run_training(
                 step_key,
                 jnp.asarray(clip_schedule[t], dtype=jnp.float32),
                 jnp.asarray(noise_multiplier_schedule[t], dtype=jnp.float32),
+                jnp.asarray(
+                    (
+                        1.0
+                        if normalization_denominator is None
+                        else normalization_denominator
+                    ),
+                    dtype=jnp.float32,
+                ),
             )
         )
 
         if trace_recorder is not None:
-            # `sanitized_grad` is what gets stored in the trace.
-            # If we normalize the noisy sum by batch size, the stored Gaussian noise
-            # standard deviation must be scaled the same way.
             observed_noise_std = float(effective_noise_stds[t])
-            if str(cfg.normalize_noisy_sum_by) == "batch_size":
-                observed_noise_std /= float(m_t)
-            elif str(cfg.normalize_noisy_sum_by) == "none":
-                observed_noise_std = float(effective_noise_stds[t])
-            else:
+            if normalization_denominator is not None:
+                observed_noise_std /= float(max(1.0, normalization_denominator))
+            elif str(cfg.normalize_noisy_sum_by) != "none":
                 raise ValueError(
-                    "normalize_noisy_sum_by must be one of {'batch_size', 'none'}."
+                    "normalize_noisy_sum_by must be one of "
+                    "{'batch_size', 'realized_batch_size', 'none'}."
                 )
 
-            trace_recorder(
-                step=int(t + 1),
-                model_before=model_before_step,
-                observed_private_gradient=sanitized_grad,
-                batch_indices=np.asarray(idx),
-                clip_norm=float(clip_schedule[t]),
-                noise_multiplier=float(noise_multiplier_schedule[t]),
-                effective_noise_std=float(observed_noise_std),
-            )
+            trace_kwargs = {
+                "step": int(t + 1),
+                "model_before": model_before_step,
+                "observed_private_gradient": sanitized_grad,
+                "batch_indices": np.asarray(idx_np, dtype=np.int64),
+                "clip_norm": float(clip_schedule[t]),
+                "noise_multiplier": float(noise_multiplier_schedule[t]),
+                "effective_noise_std": float(observed_noise_std),
+                "normalization_denominator": (
+                    None
+                    if normalization_denominator is None
+                    else float(normalization_denominator)
+                ),
+                "realized_batch_size": int(realized_batch_size),
+                "target_batch_size": int(m_t),
+                "batch_sampler": str(step_sampler),
+                "reduction": (
+                    "sum" if str(cfg.normalize_noisy_sum_by) == "none" else "mean"
+                ),
+            }
+            try:
+                trace_recorder(**trace_kwargs)
+            except TypeError:
+                legacy_kwargs = {
+                    "step": trace_kwargs["step"],
+                    "model_before": trace_kwargs["model_before"],
+                    "observed_private_gradient": trace_kwargs[
+                        "observed_private_gradient"
+                    ],
+                    "batch_indices": trace_kwargs["batch_indices"],
+                    "clip_norm": trace_kwargs["clip_norm"],
+                    "noise_multiplier": trace_kwargs["noise_multiplier"],
+                    "effective_noise_std": trace_kwargs["effective_noise_std"],
+                }
+                trace_recorder(**legacy_kwargs)
 
         current_model = eqx.combine(params, static)
 
@@ -844,9 +1037,25 @@ def _run_training(
             debug_row = {
                 "step": int(t + 1),
                 "batch_size": int(m_t),
+                "realized_batch_size": int(realized_batch_size),
+                "batch_sampler": str(step_sampler),
+                "normalization_denominator": (
+                    None
+                    if normalization_denominator is None
+                    else float(normalization_denominator)
+                ),
                 "clip_norm": float(clip_schedule[t]),
                 "noise_multiplier": float(noise_multiplier_schedule[t]),
-                "effective_noise_std": float(effective_noise_stds[t]),
+                "effective_noise_std": (
+                    float(observed_noise_std)
+                    if trace_recorder is not None
+                    else (
+                        float(effective_noise_stds[t])
+                        if normalization_denominator is None
+                        else float(effective_noise_stds[t])
+                        / float(max(1.0, normalization_denominator))
+                    )
+                ),
                 "mean_per_example_grad_norm": float(mean_norm_j),
                 "max_per_example_grad_norm": float(max_norm_j),
                 "clip_fraction": float(clip_frac_j),
@@ -863,9 +1072,21 @@ def _run_training(
             public_row = {
                 "step": int(t + 1),
                 "batch_size": int(m_t),
+                "realized_batch_size": int(realized_batch_size),
+                "batch_sampler": str(step_sampler),
+                "normalization_denominator": (
+                    None
+                    if normalization_denominator is None
+                    else float(normalization_denominator)
+                ),
                 "clip_norm": float(clip_schedule[t]),
                 "noise_multiplier": float(noise_multiplier_schedule[t]),
-                "effective_noise_std": float(effective_noise_stds[t]),
+                "effective_noise_std": (
+                    float(effective_noise_stds[t])
+                    if normalization_denominator is None
+                    else float(effective_noise_stds[t])
+                    / float(max(1.0, normalization_denominator))
+                ),
             }
             if public_eval_dataset is not None:
                 train_key, eval_key = jr.split(train_key)
@@ -963,6 +1184,8 @@ def _run_training(
             step_delta_std=step_delta_std,
             radius=float(cfg.radius),
             dp_delta=cfg.delta,
+            batch_sampler=resolved_batch_sampler,
+            accountant_subsampling=resolved_accountant_subsampling,
         )
 
     artifact = _make_release_artifact(
@@ -985,6 +1208,8 @@ def _run_training(
         utility_metrics=utility_metrics,
         checkpoint_selection=checkpoint_selection,
         selected_step=best_step,
+        resolved_batch_sampler=resolved_batch_sampler,
+        resolved_accountant_subsampling=resolved_accountant_subsampling,
     )
 
     if accounting_view == "standard":

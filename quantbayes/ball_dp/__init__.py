@@ -1,5 +1,8 @@
 from .api import (
     attack_convex,
+    attack_convex_ball_output,
+    attack_convex_ball_output_finite_prior,
+    attack_nonconvex_ball_trace_finite_prior,
     ball_rero,
     fit_ball_sgd,
     fit_convex,
@@ -7,7 +10,10 @@ from .api import (
     get_public_curve_history,
     get_release_step_table,
     make_empirical_ball_prior,
+    make_finite_identification_prior,
+    make_trace_metadata_from_release,
     make_uniform_ball_prior,
+    summarize_attack_trials,
 )
 from .plots import (
     plot_convex_attack_result,
@@ -31,10 +37,16 @@ from .types import (
 __all__ = [
     "fit_convex",
     "attack_convex",
+    "attack_convex_ball_output",
+    "attack_convex_ball_output_finite_prior",
+    "attack_nonconvex_ball_trace_finite_prior",
     "fit_ball_sgd",
     "ball_rero",
     "make_uniform_ball_prior",
+    "make_finite_identification_prior",
     "make_empirical_ball_prior",
+    "make_trace_metadata_from_release",
+    "summarize_attack_trials",
     "get_public_curve_history",
     "get_operator_norm_history",
     "get_release_step_table",
@@ -52,8 +64,4 @@ __all__ = [
     "AttackResult",
     "ReRoPoint",
     "ReRoReport",
-    "build_nonconvex_shadow_corpus",
-    "fit_shadow_reconstructor",
-    "attack_nonconvex_model_based",
-    "attack_nonconvex_prior_aware_trace",
 ]

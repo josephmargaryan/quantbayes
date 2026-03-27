@@ -1033,15 +1033,34 @@ def run_spear_trace_step_attack(
     batch_idx = np.asarray(
         getattr(step, "batch_indices", np.zeros((0,), dtype=np.int64))
     )
+    realized_batch_size = getattr(step, "realized_batch_size", None)
+    if realized_batch_size is None:
+        realized_batch_size = int(batch_idx.size)
+    else:
+        realized_batch_size = int(realized_batch_size)
+
     cfg_use = dc.replace(cfg)
     if cfg_use.batch_size is None:
-        if batch_idx.size == 0:
+        if realized_batch_size <= 0:
             raise ValueError(
-                "cfg.batch_size is None and the trace step does not carry batch_indices."
+                "cfg.batch_size is None and the trace step does not carry a realized batch size."
             )
-        cfg_use.batch_size = int(batch_idx.size)
+        cfg_use.batch_size = int(realized_batch_size)
 
     trace_sigma = float(getattr(step, "effective_noise_std", 0.0))
+    normalization_denominator = getattr(step, "normalization_denominator", None)
+    reduction = str(getattr(step, "reduction", "mean")).lower()
+    trace_rescale = 1.0
+    if (
+        reduction == "mean"
+        and normalization_denominator is not None
+        and realized_batch_size > 0
+        and abs(float(normalization_denominator) - float(realized_batch_size)) > 1e-12
+    ):
+        trace_rescale = float(normalization_denominator) / float(realized_batch_size)
+        grad_W = np.asarray(grad_W, dtype=np.float64) * trace_rescale
+        grad_b = np.asarray(grad_b, dtype=np.float64) * trace_rescale
+        trace_sigma = float(trace_sigma) * trace_rescale
     if trace_sigma > 0.0 and not bool(cfg_use.noisy_mode):
         raise ValueError(
             "Trace step has positive effective_noise_std. Pass an explicit noisy SPEAR "
@@ -1069,8 +1088,15 @@ def run_spear_trace_step_attack(
         getattr(step, "noise_multiplier", np.nan)
     )
     result.diagnostics["trace_effective_noise_std"] = trace_sigma
+    result.diagnostics["trace_reduction"] = reduction
+    result.diagnostics["trace_normalization_denominator"] = (
+        None if normalization_denominator is None else float(normalization_denominator)
+    )
+    result.diagnostics["trace_rescale_to_realized_batch_mean"] = float(trace_rescale)
     result.diagnostics["batch_size_source"] = (
-        "trace_batch_indices" if batch_idx.size > 0 else "explicit_cfg"
+        "trace_realized_batch_size"
+        if realized_batch_size > 0
+        else ("trace_batch_indices" if batch_idx.size > 0 else "explicit_cfg")
     )
     result.diagnostics["paper_noisy_adaptation_structural"] = bool(cfg_use.noisy_mode)
     return result

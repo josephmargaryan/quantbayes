@@ -4,6 +4,8 @@ from __future__ import annotations
 import math
 from typing import List, Sequence
 
+import numpy as np
+
 from .rdp import RdpCurve, compose_rdp_curves, rdp_to_dp
 from ..types import DpCertificate, DualPrivacyLedger, PrivacyLedger, StepPrivacyRecord
 
@@ -24,16 +26,79 @@ def _log_expm1(x: float) -> float:
     return float(x + math.log1p(-math.exp(-x)))
 
 
-def fixed_size_subsampled_gaussian_rdp(
-    *, alpha: int, sample_rate: float, sensitivity: float, noise_std: float
+def _get_dp_accounting_rpa():
+    from dp_accounting import rdp
+
+    return rdp.rdp_privacy_accountant
+
+
+def _normalize_batch_sampler(batch_sampler: str) -> str:
+    key = str(batch_sampler).lower()
+    mapping = {
+        "shuffle": "without_replacement",
+        "without_replacement": "without_replacement",
+        "fixed_without_replacement": "without_replacement",
+        "fixed_size": "without_replacement",
+        "legacy": "without_replacement",
+        "poisson": "poisson",
+    }
+    if key not in mapping:
+        raise ValueError(
+            "batch_sampler must be one of "
+            "{'shuffle', 'without_replacement', 'poisson'}."
+        )
+    return mapping[key]
+
+
+def _normalize_accountant_subsampling(
+    accountant_subsampling: str,
+    *,
+    batch_sampler: str,
+) -> str:
+    key = str(accountant_subsampling).lower()
+    if key == "auto":
+        return "poisson" if batch_sampler == "poisson" else "poisson_optimistic"
+    if key == "match_sampler":
+        if batch_sampler != "poisson":
+            raise ValueError(
+                "No sampler-matched theorem-backed accountant is implemented here for "
+                "the legacy fixed-size without-replacement minibatch path. "
+                "Use accountant_subsampling='poisson_optimistic' to keep the previous "
+                "optimistic proxy, or set batch_sampler='poisson' for matched Poisson "
+                "training and accounting."
+            )
+        return "poisson"
+    if key in {"poisson", "poisson_optimistic"}:
+        return key
+    raise ValueError(
+        "accountant_subsampling must be one of "
+        "{'auto', 'match_sampler', 'poisson', 'poisson_optimistic'}."
+    )
+
+
+def poisson_subsampled_gaussian_rdp_upper_bound(
+    *,
+    alpha: int,
+    sample_rate: float,
+    sensitivity: float,
+    noise_std: float,
 ) -> float:
+    """Upper bound for Poisson-subsampled Gaussian RDP at an integer order.
+
+    This is the theorem-backed analytic upper bound used as the internal fallback
+    when the optional `dp-accounting` package is unavailable. The bound applies to
+    the Poisson-subsampled Gaussian mechanism and depends only on the inclusion
+    probability `sample_rate`, the per-step sensitivity, and the Gaussian noise
+    standard deviation.
+    """
     alpha = int(alpha)
     q = float(sample_rate)
     delta = float(sensitivity)
     nu = float(noise_std)
     if alpha < 2:
         raise ValueError(
-            "The fixed-size theorem-backed accountant requires integer alpha >= 2."
+            "The internal Poisson fallback requires integer alpha >= 2. "
+            "Install `dp-accounting` to use non-integer orders."
         )
     if not (0.0 <= q <= 1.0):
         raise ValueError("sample_rate must be in [0,1].")
@@ -58,9 +123,85 @@ def fixed_size_subsampled_gaussian_rdp(
     return float((_logsumexp(logs)) / (alpha - 1.0))
 
 
+def fixed_size_subsampled_gaussian_rdp(
+    *,
+    alpha: int,
+    sample_rate: float,
+    sensitivity: float,
+    noise_std: float,
+) -> float:
+    """Backward-compatible alias for the prior function name.
+
+    Earlier versions exposed this name even though the underlying bound is the
+    Poisson-subsampled Gaussian RDP upper bound. The alias is preserved so that
+    downstream imports continue to work.
+    """
+    return poisson_subsampled_gaussian_rdp_upper_bound(
+        alpha=alpha,
+        sample_rate=sample_rate,
+        sensitivity=sensitivity,
+        noise_std=noise_std,
+    )
+
+
+def _poisson_rdp_vector(
+    *,
+    orders: Sequence[float],
+    sample_rate: float,
+    sensitivity: float,
+    noise_std: float,
+) -> tuple[tuple[float, ...], str]:
+    q = float(sample_rate)
+    delta = float(sensitivity)
+    sigma = float(noise_std)
+
+    if not (0.0 <= q <= 1.0):
+        raise ValueError("sample_rate must be in [0,1].")
+    if delta < 0.0:
+        raise ValueError("sensitivity must be >= 0.")
+    if sigma <= 0.0:
+        raise ValueError("noise_std must be > 0.")
+    if delta == 0.0 or q == 0.0:
+        return tuple(0.0 for _ in orders), "zero_privacy_loss"
+
+    rpa = _get_dp_accounting_rpa()
+    if rpa is not None:
+        noise_multiplier = sigma / delta
+        values = np.asarray(
+            rpa._compute_rdp_poisson_subsampled_gaussian(
+                q,
+                noise_multiplier,
+                tuple(float(a) for a in orders),
+            ),
+            dtype=np.float64,
+        )
+        return tuple(float(v) for v in values.tolist()), "dp_accounting_poisson"
+
+    eps = []
+    for alpha in orders:
+        alpha_f = float(alpha)
+        alpha_i = int(round(alpha_f))
+        if abs(alpha_f - alpha_i) > 1e-12 or alpha_i < 2:
+            raise ValueError(
+                "Without the optional `dp-accounting` package, Poisson accounting "
+                "falls back to an internal integer-order bound and therefore requires "
+                "orders to be integers >= 2. "
+                f"Got order={alpha!r}."
+            )
+        eps.append(
+            poisson_subsampled_gaussian_rdp_upper_bound(
+                alpha=alpha_i,
+                sample_rate=q,
+                sensitivity=delta,
+                noise_std=sigma,
+            )
+        )
+    return tuple(float(v) for v in eps), "internal_poisson_upper_bound"
+
+
 def build_ball_sgd_rdp_ledgers(
     *,
-    orders: Sequence[int],
+    orders: Sequence[int | float],
     step_batch_sizes: Sequence[int],
     dataset_size: int,
     step_clip_norms: Sequence[float],
@@ -69,9 +210,17 @@ def build_ball_sgd_rdp_ledgers(
     step_delta_std: Sequence[float] | None,
     radius: float | None,
     dp_delta: float | None = None,
+    batch_sampler: str = "shuffle",
+    accountant_subsampling: str = "auto",
 ) -> DualPrivacyLedger:
     if not (len(step_batch_sizes) == len(step_clip_norms) == len(step_noise_stds)):
         raise ValueError("Step schedules must have the same length.")
+
+    resolved_batch_sampler = _normalize_batch_sampler(batch_sampler)
+    resolved_accountant_subsampling = _normalize_accountant_subsampling(
+        accountant_subsampling,
+        batch_sampler=resolved_batch_sampler,
+    )
 
     n_steps = len(step_batch_sizes)
     if step_delta_ball is not None and len(step_delta_ball) != n_steps:
@@ -87,6 +236,9 @@ def build_ball_sgd_rdp_ledgers(
     ball_curves: List[RdpCurve] = []
     std_curves: List[RdpCurve] = []
 
+    used_dp_accounting = False
+    used_internal_fallback = False
+
     for t in range(n_steps):
         q = float(step_batch_sizes[t]) / float(dataset_size)
 
@@ -97,13 +249,19 @@ def build_ball_sgd_rdp_ledgers(
 
         if step_delta_ball is not None:
             delta_ball_t = float(step_delta_ball[t])
-            for alpha in orders:
-                eps_ball = fixed_size_subsampled_gaussian_rdp(
-                    alpha=int(alpha),
-                    sample_rate=q,
-                    sensitivity=delta_ball_t,
-                    noise_std=float(step_noise_stds[t]),
-                )
+            eps_vec, source_kind = _poisson_rdp_vector(
+                orders=tuple(float(a) for a in orders),
+                sample_rate=q,
+                sensitivity=delta_ball_t,
+                noise_std=float(step_noise_stds[t]),
+            )
+            used_dp_accounting = (
+                used_dp_accounting or source_kind == "dp_accounting_poisson"
+            )
+            used_internal_fallback = used_internal_fallback or (
+                source_kind == "internal_poisson_upper_bound"
+            )
+            for alpha, eps_ball in zip(orders, eps_vec):
                 ball_map[float(alpha)] = float(eps_ball)
 
             ball_curves.append(
@@ -117,13 +275,19 @@ def build_ball_sgd_rdp_ledgers(
 
         if step_delta_std is not None:
             delta_std_t = float(step_delta_std[t])
-            for alpha in orders:
-                eps_std = fixed_size_subsampled_gaussian_rdp(
-                    alpha=int(alpha),
-                    sample_rate=q,
-                    sensitivity=delta_std_t,
-                    noise_std=float(step_noise_stds[t]),
-                )
+            eps_vec, source_kind = _poisson_rdp_vector(
+                orders=tuple(float(a) for a in orders),
+                sample_rate=q,
+                sensitivity=delta_std_t,
+                noise_std=float(step_noise_stds[t]),
+            )
+            used_dp_accounting = (
+                used_dp_accounting or source_kind == "dp_accounting_poisson"
+            )
+            used_internal_fallback = used_internal_fallback or (
+                source_kind == "internal_poisson_upper_bound"
+            )
+            for alpha, eps_std in zip(orders, eps_vec):
                 std_map[float(alpha)] = float(eps_std)
 
             std_curves.append(
@@ -149,15 +313,46 @@ def build_ball_sgd_rdp_ledgers(
             )
         )
 
+    accountant_notes: list[str] = []
+    if resolved_batch_sampler == "poisson":
+        accountant_notes.append(
+            "Batch sampler and accountant are both Poisson-subsampled Gaussian."
+        )
+    else:
+        accountant_notes.append(
+            "The configured batch sampler is the library's legacy fixed-size "
+            "without-replacement minibatch path, but the accountant uses a "
+            "Poisson-subsampling proxy. This reproduces the previous optimistic "
+            "accounting behavior and should not be interpreted as a sampler-matched "
+            "privacy certificate for the legacy sampler."
+        )
+    if used_dp_accounting:
+        accountant_notes.append(
+            "Poisson RDP values were computed with the optional official "
+            "`dp-accounting` routines when available."
+        )
+    if used_internal_fallback:
+        accountant_notes.append(
+            "Poisson RDP values fell back to the internal integer-order upper bound "
+            "because the optional `dp-accounting` package was unavailable."
+        )
+
     if ball_curves:
         ball_total = compose_rdp_curves(
             ball_curves, source="ball_sgd_total", radius=radius
         )
+        ball_mechanism = (
+            "ball_sgd_rdp_poisson"
+            if resolved_accountant_subsampling == "poisson"
+            and resolved_batch_sampler == "poisson"
+            else "ball_sgd_rdp_poisson_proxy"
+        )
         ball = PrivacyLedger(
-            mechanism="ball_sgd_rdp",
+            mechanism=ball_mechanism,
             radius=radius,
             rdp_curve=ball_total,
             step_records=step_records,
+            notes=list(accountant_notes),
         )
         if dp_delta is not None:
             ball.dp_certificates.append(
@@ -168,17 +363,26 @@ def build_ball_sgd_rdp_ledgers(
             mechanism="ball_sgd_rdp_unavailable",
             radius=radius,
             step_records=step_records,
-            notes=[
-                "Ball accounting unavailable because no Ball sensitivity schedule was supplied."
+            notes=list(accountant_notes)
+            + [
+                "Ball accounting unavailable because no Ball sensitivity schedule "
+                "was supplied."
             ],
         )
 
     if std_curves:
         std_total = compose_rdp_curves(std_curves, source="std_sgd_total")
+        std_mechanism = (
+            "std_sgd_rdp_poisson"
+            if resolved_accountant_subsampling == "poisson"
+            and resolved_batch_sampler == "poisson"
+            else "std_sgd_rdp_poisson_proxy"
+        )
         std = PrivacyLedger(
-            mechanism="std_sgd_rdp",
+            mechanism=std_mechanism,
             rdp_curve=std_total,
             step_records=step_records,
+            notes=list(accountant_notes),
         )
         if dp_delta is not None:
             std.dp_certificates.append(
@@ -188,8 +392,10 @@ def build_ball_sgd_rdp_ledgers(
         std = PrivacyLedger(
             mechanism="std_sgd_rdp_unavailable",
             step_records=step_records,
-            notes=[
-                "Standard accounting unavailable because no finite clipping-based sensitivity schedule was supplied."
+            notes=list(accountant_notes)
+            + [
+                "Standard accounting unavailable because no finite clipping-based "
+                "sensitivity schedule was supplied."
             ],
         )
 
@@ -260,7 +466,7 @@ def account_ball_sgd_noise_multiplier(
     *,
     noise_multiplier: float,
     accounting_view: str,
-    orders: Sequence[int],
+    orders: Sequence[int | float],
     dataset_size: int,
     num_steps: int,
     batch_size: int | Sequence[int],
@@ -268,11 +474,13 @@ def account_ball_sgd_noise_multiplier(
     radius: float,
     lz: float | None,
     dp_delta: float,
+    batch_sampler: str = "shuffle",
+    accountant_subsampling: str = "auto",
 ) -> dict[str, object]:
     """Account privacy for a scalar noise multiplier without running training.
 
-    This is the accountant-only path for the fixed-size subsampled Gaussian
-    DP-SGD comparison used by the nonconvex Ball-vs-standard experiments.
+    This is the accountant-only path for the DP-SGD comparison used by the
+    nonconvex Ball-vs-standard experiments.
     """
     accounting_view = str(accounting_view).lower()
     if accounting_view not in {"ball", "standard"}:
@@ -283,6 +491,11 @@ def account_ball_sgd_noise_multiplier(
     noise_multiplier = float(noise_multiplier)
     radius = float(radius)
     dp_delta = float(dp_delta)
+    resolved_batch_sampler = _normalize_batch_sampler(batch_sampler)
+    resolved_accountant_subsampling = _normalize_accountant_subsampling(
+        accountant_subsampling,
+        batch_sampler=resolved_batch_sampler,
+    )
 
     if dataset_size <= 0:
         raise ValueError("dataset_size must be positive.")
@@ -312,7 +525,7 @@ def account_ball_sgd_noise_multiplier(
         )
 
     dual_ledger = build_ball_sgd_rdp_ledgers(
-        orders=tuple(int(v) for v in orders),
+        orders=tuple(float(v) for v in orders),
         step_batch_sizes=step_batch_sizes,
         dataset_size=dataset_size,
         step_clip_norms=step_clip_norms,
@@ -321,6 +534,8 @@ def account_ball_sgd_noise_multiplier(
         step_delta_std=step_delta_std,
         radius=radius,
         dp_delta=dp_delta,
+        batch_sampler=resolved_batch_sampler,
+        accountant_subsampling=resolved_accountant_subsampling,
     )
 
     ledger = dual_ledger.ball if accounting_view == "ball" else dual_ledger.standard
@@ -335,6 +550,8 @@ def account_ball_sgd_noise_multiplier(
         "noise_multiplier": noise_multiplier,
         "epsilon": epsilon,
         "ledger": dual_ledger,
+        "batch_sampler": resolved_batch_sampler,
+        "accountant_subsampling": resolved_accountant_subsampling,
         "step_batch_sizes": list(map(int, step_batch_sizes)),
         "step_clip_norms": list(map(float, step_clip_norms)),
         "step_noise_stds": list(map(float, step_noise_stds)),
@@ -349,7 +566,7 @@ def calibrate_ball_sgd_noise_multiplier(
     *,
     target_epsilon: float,
     accounting_view: str,
-    orders: Sequence[int],
+    orders: Sequence[int | float],
     dataset_size: int,
     num_steps: int,
     batch_size: int | Sequence[int],
@@ -357,6 +574,8 @@ def calibrate_ball_sgd_noise_multiplier(
     radius: float,
     lz: float | None,
     dp_delta: float,
+    batch_sampler: str = "shuffle",
+    accountant_subsampling: str = "auto",
     lower: float = 1e-3,
     upper: float = 0.25,
     max_upper: float = 128.0,
@@ -397,6 +616,8 @@ def calibrate_ball_sgd_noise_multiplier(
             radius=radius,
             lz=lz,
             dp_delta=dp_delta,
+            batch_sampler=batch_sampler,
+            accountant_subsampling=accountant_subsampling,
         )
         eps_hi = float(summary_hi["epsilon"])
         if eps_hi <= target_epsilon:
@@ -423,6 +644,8 @@ def calibrate_ball_sgd_noise_multiplier(
             radius=radius,
             lz=lz,
             dp_delta=dp_delta,
+            batch_sampler=batch_sampler,
+            accountant_subsampling=accountant_subsampling,
         )
         eps_mid = float(summary_mid["epsilon"])
         if eps_mid <= target_epsilon:

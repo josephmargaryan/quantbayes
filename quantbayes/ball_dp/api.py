@@ -32,8 +32,10 @@ from .convex.releases import (
 )
 from .evaluation.rero import (
     EmpiricalBallPrior,
+    FiniteExactIdentificationPrior,
     UniformL2BallPrior,
     compute_ball_rero_report,
+    summarize_attack_trials as _summarize_attack_trials,
 )
 from .nonconvex.per_example import ExampleLossFn, PredictFn, default_predict_fn
 from .nonconvex.sgd import (
@@ -63,7 +65,11 @@ from .trace_setup import (
     prepare_targeted_trace_batch,
     make_target_inclusion_schedule,
 )
-from .attacks.ball_policy import BallTraceMapAttackConfig, run_ball_trace_map_attack
+from .attacks.ball_policy import (
+    BallTraceMapAttackConfig,
+    run_ball_trace_finite_prior_attack,
+    run_ball_trace_map_attack,
+)
 from .attacks.gradient_based import (
     DPSGDTrace,
     DPSGDTraceRecorder,
@@ -90,6 +96,7 @@ from .attacks.ball_policy import (
 )
 from .convex.ball_output_attacks import (
     BallOutputMapAttackConfig,
+    run_convex_ball_output_finite_prior_attack,
     run_convex_ball_output_map_attack,
 )
 
@@ -99,8 +106,11 @@ __all__ = [
     "fit_convex",
     "attack_convex",
     "make_uniform_ball_prior",
+    "make_finite_identification_prior",
     "ball_rero",
     "fit_ball_sgd",
+    "make_trace_metadata_from_release",
+    "summarize_attack_trials",
     "InformedAttackData",
     "prepare_informed_attack_data",
     "train_released_model",
@@ -111,6 +121,8 @@ __all__ = [
     "make_uniform_ball_attack_prior",
     "make_truncated_gaussian_ball_attack_prior",
     "attack_convex_ball_output",
+    "attack_convex_ball_output_finite_prior",
+    "attack_nonconvex_ball_trace_finite_prior",
     "BallTraceMapAttackConfig",
     "BallOutputMapAttackConfig",
 ]
@@ -350,7 +362,12 @@ def make_uniform_ball_attack_prior(
     radius: float,
     box_bounds: Optional[tuple[float, float]] = None,
 ) -> UniformBallAttackPrior:
-    """Factory for the attack-side Ball-local prior used by the MAP attacks."""
+    """Factory for the attack-side Ball-local prior used by the MAP attacks.
+
+    The feasible set is now the Euclidean ball only. The optional box_bounds
+    argument is accepted for backward compatibility but is ignored by the
+    projection and sampling routines.
+    """
     return UniformBallAttackPrior(
         center=np.asarray(center, dtype=np.float32),
         radius=float(radius),
@@ -367,7 +384,12 @@ def make_truncated_gaussian_ball_attack_prior(
     sigma: float,
     box_bounds: Optional[tuple[float, float]] = None,
 ) -> TruncatedGaussianBallAttackPrior:
-    """Truncated Gaussian prior supported on the Ball-local feasible set."""
+    """Truncated Gaussian prior supported on the Ball-local feasible set.
+
+    The feasible set is now the Euclidean ball only. The optional box_bounds
+    argument is accepted for backward compatibility but is ignored by the
+    projection and sampling routines.
+    """
     return TruncatedGaussianBallAttackPrior(
         center=np.asarray(center, dtype=np.float32),
         radius=float(radius),
@@ -428,6 +450,7 @@ def get_release_step_table(release: ReleaseArtifact) -> list[dict[str, Any]]:
     extra = dict(release.extra)
 
     batch_sizes = list(cfg.get("batch_sizes", ()))
+    sample_rates = list(cfg.get("sample_rates", ()))
     clip_norms = list(cfg.get("clip_norms", ()))
     noise_multipliers = list(cfg.get("noise_multipliers", ()))
     effective_noise_stds = list(cfg.get("effective_noise_stds", ()))
@@ -438,6 +461,7 @@ def get_release_step_table(release: ReleaseArtifact) -> list[dict[str, Any]]:
 
     T = max(
         len(batch_sizes),
+        len(sample_rates),
         len(clip_norms),
         len(noise_multipliers),
         len(effective_noise_stds),
@@ -449,18 +473,44 @@ def get_release_step_table(release: ReleaseArtifact) -> list[dict[str, Any]]:
 
     rows: list[dict[str, Any]] = []
     for t in range(T):
+        batch_size_t = None if t >= len(batch_sizes) else int(batch_sizes[t])
+        effective_noise_std_t = (
+            None if t >= len(effective_noise_stds) else float(effective_noise_stds[t])
+        )
+        normalize_mode = str(cfg.get("normalize_noisy_sum_by", "batch_size"))
+        if normalize_mode == "none":
+            stored_private_object = "noisy_sum"
+            noise_std_on_stored_object = effective_noise_std_t
+        elif normalize_mode == "batch_size":
+            stored_private_object = "noisy_mean"
+            noise_std_on_stored_object = (
+                None
+                if effective_noise_std_t is None or batch_size_t in {None, 0}
+                else float(effective_noise_std_t) / float(batch_size_t)
+            )
+        else:
+            stored_private_object = "noisy_mean"
+            noise_std_on_stored_object = None
+
         row = {
             "step": int(t + 1),
-            "batch_size": None if t >= len(batch_sizes) else int(batch_sizes[t]),
+            "batch_sampler": cfg.get(
+                "resolved_batch_sampler", cfg.get("batch_sampler")
+            ),
+            "accountant_subsampling": cfg.get(
+                "resolved_accountant_subsampling",
+                cfg.get("accountant_subsampling"),
+            ),
+            "batch_size": batch_size_t,
+            "target_batch_size": batch_size_t,
+            "sample_rate": None if t >= len(sample_rates) else float(sample_rates[t]),
             "clip_norm": None if t >= len(clip_norms) else float(clip_norms[t]),
             "noise_multiplier": (
                 None if t >= len(noise_multipliers) else float(noise_multipliers[t])
             ),
-            "effective_noise_std": (
-                None
-                if t >= len(effective_noise_stds)
-                else float(effective_noise_stds[t])
-            ),
+            "effective_noise_std": effective_noise_std_t,
+            "stored_private_object": stored_private_object,
+            "noise_std_on_stored_object": noise_std_on_stored_object,
             "delta_ball": (
                 None if t >= len(step_delta_ball) else float(step_delta_ball[t])
             ),
@@ -485,6 +535,8 @@ def account_ball_sgd_noise_multiplier(
     noise_multiplier: float = 1.0,
     delta: float = 1e-5,
     privacy: BallPrivacyKind = "ball_rdp",
+    batch_sampler: str = "shuffle",
+    accountant_subsampling: str = "auto",
     orders: Sequence[int] = (2, 3, 4, 5, 8, 16, 32, 64, 128),
 ) -> dict[str, Any]:
     """Account privacy for a scalar DP-SGD noise multiplier without training."""
@@ -507,6 +559,8 @@ def account_ball_sgd_noise_multiplier(
         radius=float(radius),
         lz=None if lz is None else float(lz),
         dp_delta=float(delta),
+        batch_sampler=str(batch_sampler),
+        accountant_subsampling=str(accountant_subsampling),
     )
 
 
@@ -521,6 +575,8 @@ def calibrate_ball_sgd_noise_multiplier(
     target_epsilon: float,
     delta: float,
     privacy: BallPrivacyKind = "ball_rdp",
+    batch_sampler: str = "shuffle",
+    accountant_subsampling: str = "auto",
     orders: Sequence[int] = (2, 3, 4, 5, 8, 16, 32, 64, 128),
     lower: float = 1e-3,
     upper: float = 0.25,
@@ -547,6 +603,8 @@ def calibrate_ball_sgd_noise_multiplier(
         radius=float(radius),
         lz=None if lz is None else float(lz),
         dp_delta=float(delta),
+        batch_sampler=str(batch_sampler),
+        accountant_subsampling=str(accountant_subsampling),
         lower=float(lower),
         upper=float(upper),
         max_upper=float(max_upper),
@@ -714,6 +772,8 @@ def fit_ball_sgd(
     delta: Optional[float] = None,
     num_steps: int = 1000,
     batch_size: int | Sequence[int] = 128,
+    batch_sampler: str = "shuffle",
+    accountant_subsampling: str = "auto",
     clip_norm: float | Sequence[float] = 1.0,
     noise_multiplier: float | Sequence[float] = 1.0,
     orders: Sequence[int] = (2, 3, 4, 5, 8, 16, 32, 64, 128),
@@ -759,6 +819,8 @@ def fit_ball_sgd(
             if isinstance(batch_size, int)
             else tuple(int(v) for v in batch_size)
         ),
+        batch_sampler=str(batch_sampler),
+        accountant_subsampling=str(accountant_subsampling),
         clip_norms=(
             clip_norm
             if isinstance(clip_norm, (int, float))
@@ -823,3 +885,147 @@ def fit_ball_sgd(
         return run_noiseless_sgd_release(**kwargs)
 
     raise ValueError(f"Unsupported privacy kind: {privacy!r}")
+
+
+def make_finite_identification_prior(
+    X: np.ndarray,
+    *,
+    weights: Optional[Sequence[float]] = None,
+) -> FiniteExactIdentificationPrior:
+    X = np.asarray(X, dtype=np.float32).reshape(len(X), -1)
+    return FiniteExactIdentificationPrior(X, weights=weights)
+
+
+def make_trace_metadata_from_release(
+    release: ReleaseArtifact,
+    *,
+    target_index: Optional[int] = None,
+    extra: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Build theorem-aligned trace metadata from a release artifact.
+
+    This helper packages the run-level information needed by the exact Ball-trace
+    attacks, including the per-step Poisson probabilities when they are present in
+    the release configuration.
+    """
+    cfg = dict(release.training_config)
+    meta: dict[str, Any] = {
+        "dataset_size": int(release.dataset_metadata.get("n_total", 0)),
+        "feature_shape": tuple(release.dataset_metadata.get("feature_shape", ())),
+        "sample_rates": tuple(float(v) for v in cfg.get("sample_rates", ())),
+        "batch_sampler": cfg.get(
+            "resolved_batch_sampler",
+            cfg.get("batch_sampler", "unknown"),
+        ),
+        "normalize_noisy_sum_by": cfg.get("normalize_noisy_sum_by", "batch_size"),
+        "reduction": (
+            "sum"
+            if str(cfg.get("normalize_noisy_sum_by", "batch_size")) == "none"
+            else "mean"
+        ),
+    }
+    sample_rates = tuple(float(v) for v in cfg.get("sample_rates", ()))
+    if sample_rates:
+        if len(set(sample_rates)) == 1:
+            meta["sample_rate"] = float(sample_rates[0])
+    if target_index is not None:
+        meta["target_index"] = int(target_index)
+    if extra is not None:
+        meta.update(dict(extra))
+    return meta
+
+
+def summarize_attack_trials(
+    attack_results: Sequence[AttackResult],
+    *,
+    eta_grid: Optional[Sequence[float]] = None,
+    oblivious_kappa: Optional[float] = None,
+) -> dict[str, float]:
+    return _summarize_attack_trials(
+        attack_results,
+        eta_grid=eta_grid,
+        oblivious_kappa=oblivious_kappa,
+    )
+
+
+def attack_convex_ball_output_finite_prior(
+    release: ReleaseArtifact,
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    *,
+    target_index: int,
+    X_candidates: np.ndarray,
+    y_candidates: np.ndarray,
+    prior_weights: Optional[Sequence[float]] = None,
+    known_label: Optional[int] = None,
+    eta_grid: Sequence[float] = (0.1, 0.2, 0.5, 1.0),
+    out_path: Optional[str] = None,
+) -> tuple[AttackResult, ArrayDataset, Record]:
+    ds = _as_dataset(X_train, y_train, name="train")
+    d_minus, target = ds.remove_index(int(target_index))
+
+    Xc = np.asarray(X_candidates)
+    yc = np.asarray(y_candidates)
+    if len(Xc) != len(yc):
+        raise ValueError("X_candidates and y_candidates must have the same length.")
+    prior_records = [
+        Record(features=np.asarray(Xc[i]), label=int(yc[i]))
+        for i in range(int(len(Xc)))
+    ]
+
+    attack = run_convex_ball_output_finite_prior_attack(
+        release,
+        d_minus,
+        prior_records=prior_records,
+        prior_weights=prior_weights,
+        known_label=known_label,
+        true_record=target,
+        eta_grid=tuple(float(v) for v in eta_grid),
+    )
+    attack.diagnostics["target_index"] = int(target_index)
+
+    if out_path is not None and attack.z_hat is not None:
+        plot_attack_result(
+            attack,
+            target,
+            feature_shape=ds.feature_shape,
+            out_path=out_path,
+        )
+
+    return attack, d_minus, target
+
+
+def attack_nonconvex_ball_trace_finite_prior(
+    trace: DPSGDTrace,
+    X_candidates: np.ndarray,
+    y_candidates: np.ndarray,
+    *,
+    prior_weights: Optional[Sequence[float]] = None,
+    cfg: Optional[BallTraceMapAttackConfig] = None,
+    target_index: Optional[int] = None,
+    loss_name: Optional[str] = None,
+    loss_fn: Optional[ExampleLossFn] = None,
+    known_label: Optional[int] = None,
+    true_record: Optional[Record] = None,
+    eta_grid: Sequence[float] = (0.1, 0.2, 0.5, 1.0),
+) -> AttackResult:
+    Xc = np.asarray(X_candidates)
+    yc = np.asarray(y_candidates)
+    if len(Xc) != len(yc):
+        raise ValueError("X_candidates and y_candidates must have the same length.")
+    prior_records = [
+        Record(features=np.asarray(Xc[i]), label=int(yc[i]))
+        for i in range(int(len(Xc)))
+    ]
+    return run_ball_trace_finite_prior_attack(
+        trace,
+        prior_records,
+        prior_weights=prior_weights,
+        cfg=cfg,
+        target_index=target_index,
+        loss_name=loss_name,
+        loss_fn=loss_fn,
+        known_label=known_label,
+        true_record=true_record,
+        eta_grid=tuple(float(v) for v in eta_grid),
+    )

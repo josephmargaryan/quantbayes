@@ -160,18 +160,38 @@ class BallSGDConfig:
       has standard deviation `noise_multipliers[t] * clip_norms[t]`.
     - `lz` is a user-supplied theorem-backed constant. The library does not attempt
       to derive it automatically.
+    - `batch_sampler` controls minibatch generation:
+          * `"shuffle"` / `"without_replacement"` use the library's legacy
+            fixed-size unique-index minibatch sampling at every step.
+          * `"poisson"` independently includes each example with probability
+            `batch_sizes[t] / n` at every step.
+    - `accountant_subsampling="auto"` uses Poisson accounting for
+      `batch_sampler="poisson"` and otherwise keeps the previous optimistic
+      Poisson proxy for the legacy fixed-size minibatch path.
+    - `normalize_noisy_sum_by="batch_size"` divides by the configured target
+      batch size. For Poisson subsampling this matches the standard DP-SGD
+      convention of scaling by the target batch size, not the realized batch
+      size.
     - Public checkpoint selection should only use a non-private evaluation set.
     - `fixed_batch_indices_schedule`, when supplied, allows deterministic batch
       selection for specific steps. Each entry is either:
           * None   -> sample that step randomly as usual
           * tuple of indices -> force that exact minibatch at that step
-      This is intended for controlled attack experiments, not public release metadata.
+      This is intended for controlled attack experiments, not public release
+      metadata.
     """
 
     radius: float = 1.0
     lz: Optional[float] = None
     num_steps: int = 1000
     batch_sizes: Union[int, Tuple[int, ...]] = 128
+    batch_sampler: Literal["shuffle", "without_replacement", "poisson"] = "shuffle"
+    accountant_subsampling: Literal[
+        "auto",
+        "match_sampler",
+        "poisson",
+        "poisson_optimistic",
+    ] = "auto"
     clip_norms: Union[float, Tuple[float, ...]] = 1.0
     noise_multipliers: Union[float, Tuple[float, ...]] = 1.0
     orders: Tuple[int, ...] = (2, 3, 4, 5, 8, 16, 32, 64, 128)
@@ -180,7 +200,11 @@ class BallSGDConfig:
     loss_name: Literal["softmax_cross_entropy", "binary_logistic"] = (
         "softmax_cross_entropy"
     )
-    normalize_noisy_sum_by: Literal["batch_size", "none"] = "batch_size"
+    normalize_noisy_sum_by: Literal[
+        "batch_size",
+        "realized_batch_size",
+        "none",
+    ] = "batch_size"
 
     fixed_batch_indices_schedule: Optional[Tuple[Optional[Tuple[int, ...]], ...]] = None
 
