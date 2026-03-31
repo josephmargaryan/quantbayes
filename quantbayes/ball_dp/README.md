@@ -51,6 +51,54 @@ u = np.asarray(X_train[y_train == target_label].mean(axis=0), dtype=np.float32)
 eta_grid = (0.1, 0.2, 0.5, 1.0)
 ```
 
+## 0.5. Pick the Ball radius `r` in embedding space
+
+Under the paper's label-preserving metric, cross-label distances are irrelevant:
+only within-label Euclidean distances matter.
+The helper below reports pooled within-label quantiles, worst-class quantiles,
+and within-label maxima so you can choose `r` explicitly.
+
+```python
+from quantbayes.ball_dp.api import summarize_embedding_ball_radii, select_ball_radius
+
+radius_report = summarize_embedding_ball_radii(
+    X_train,
+    y_train,
+    quantiles=(0.5, 0.8, 0.9, 0.95, 0.99, 1.0),
+    max_exact_pairs=250_000,
+    max_sampled_pairs=100_000,
+    seed=seed,
+)
+
+# Recommended default for one universal policy radius:
+# take a conservative within-label quantile and then the worst class.
+radius = select_ball_radius(
+    radius_report,
+    strategy="max_labelwise_quantile",
+    quantile=0.95,
+)
+
+print("selected radius:", radius)
+print("candidate radii:")
+for k, v in radius_report["candidate_radii"].items():
+    print(f"  {k}: {v:.6f}")
+
+print("per-label summaries:")
+for row in radius_report["per_label"]:
+    print(
+        row["label"],
+        row["n_examples"],
+        row["pair_sampling_mode"],
+        row["quantiles"],
+    )
+```
+
+Interpretation:
+- `pooled_q...` means the corresponding quantile for a random same-label pair.
+- `max_labelwise_q...` means: compute that quantile inside each label, then take the worst class.
+  This is usually the better default for a single universal policy radius.
+- `global_max_exact` is the within-label diameter. It is valid but usually too outlier-sensitive.
+
 ## 1. Convex exact equation-solving attack
 
 ```python

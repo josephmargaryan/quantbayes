@@ -101,12 +101,18 @@ from .convex.ball_output_attacks import (
 )
 
 from .plots import plot_attack_result, plot_batch_reconstruction_grid
+from .radius_selection import (
+    summarize_embedding_ball_radii as _summarize_embedding_ball_radii,
+    select_ball_radius as _select_ball_radius,
+)
 
 __all__ = [
     "fit_convex",
     "attack_convex",
     "make_uniform_ball_prior",
     "make_finite_identification_prior",
+    "summarize_embedding_ball_radii",
+    "select_ball_radius",
     "ball_rero",
     "fit_ball_sgd",
     "make_trace_metadata_from_release",
@@ -885,6 +891,40 @@ def fit_ball_sgd(
         return run_noiseless_sgd_release(**kwargs)
 
     raise ValueError(f"Unsupported privacy kind: {privacy!r}")
+
+
+def summarize_embedding_ball_radii(
+    X: np.ndarray,
+    y: np.ndarray,
+    *,
+    quantiles: Sequence[float] = (0.5, 0.8, 0.9, 0.95, 0.99, 1.0),
+    max_exact_pairs: int = 250_000,
+    max_sampled_pairs: int = 100_000,
+    seed: int = 0,
+) -> dict[str, Any]:
+    return _summarize_embedding_ball_radii(
+        X,
+        y,
+        quantiles=quantiles,
+        max_exact_pairs=int(max_exact_pairs),
+        max_sampled_pairs=int(max_sampled_pairs),
+        seed=int(seed),
+    )
+
+
+def select_ball_radius(
+    report: dict[str, Any],
+    *,
+    strategy: str = "max_labelwise_quantile",
+    quantile: float = 0.95,
+    allow_observed_max: bool = False,
+) -> float:
+    return _select_ball_radius(
+        report,
+        strategy=str(strategy),
+        quantile=float(quantile),
+        allow_observed_max=bool(allow_observed_max),
+    )
 
 
 def make_finite_identification_prior(
