@@ -6,9 +6,9 @@ import equinox as eqx
 from equinox import tree_at
 
 _HAS_SPECTRAL = False
-SVDDense = object
+SVDDense = RFFTCirculant1D = object
 try:
-    from quantbayes.stochax.layers.spectral_layers import SVDDense  # type: ignore
+    from quantbayes.stochax.layers.spectral_layers import SVDDense, RFFTCirculant1D  # type: ignore
 
     _HAS_SPECTRAL = True
 except Exception:
@@ -70,12 +70,56 @@ def _svd_warmstart_svddense(mod, W, b, report):
     return new
 
 
+def _nearest_circulant_first_column(W: jnp.ndarray) -> jnp.ndarray:
+    """Least-squares projection of a square matrix onto the circulant subspace."""
+    if W.ndim != 2 or W.shape[0] != W.shape[1]:
+        raise ValueError(f"Expected a square matrix; got {tuple(W.shape)}.")
+    n = int(W.shape[0])
+    rows = jnp.arange(n)
+    cols = jnp.arange(n)
+
+    def mean_for_offset(k):
+        return jnp.mean(W[rows, (cols - k) % n])
+
+    return jnp.asarray([mean_for_offset(k) for k in range(n)], dtype=W.dtype)
+
+
+def _warmstart_rfft1d(mod, W, b, report):
+    want_in = int(getattr(mod, "in_features"))
+    want_pad = int(getattr(mod, "padded_dim"))
+    have = tuple(int(x) for x in W.shape)
+    want = (want_pad, want_in)
+
+    # Current supported use-case: square D->D projections.
+    if have != want or want_in != want_pad:
+        report.setdefault("spectral_skipped", []).append(("rfft1d", have, want))
+        return mod
+
+    c = _nearest_circulant_first_column(W)
+    H_half = (jnp.fft.rfft(c, norm="ortho") * jnp.sqrt(float(want_pad))).astype(
+        mod.H_half.dtype
+    )
+    new = tree_at(lambda m: m.H_half, mod, H_half)
+
+    if hasattr(new, "bias") and (b is not None):
+        if getattr(new, "bias").ndim == 0:
+            new = tree_at(
+                lambda m: m.bias, new, jnp.asarray(jnp.mean(b), new.bias.dtype)
+            )
+        elif tuple(new.bias.shape) == tuple(b.shape):
+            new = tree_at(lambda m: m.bias, new, b.astype(new.bias.dtype))
+
+    report["spectral_warmstarted"] += 1
+    report["n_loaded"] += _numel(W) + (_numel(b) if (b is not None) else 0)
+    return new
+
+
 def _copy_into(
     obj,
     pt: Dict[str, jnp.ndarray],
     *,
     prefix: str,
-    spectral: bool,
+    spectral_warmstart: Literal["skip", "svd", "rfft1d"],
     report: Dict[str, Any],
 ):
     w_key, b_key = f"{prefix}.weight", f"{prefix}.bias"
@@ -87,10 +131,29 @@ def _copy_into(
             return pt[prefix]
         return obj
 
-    if _HAS_SPECTRAL and isinstance(obj, SVDDense) and spectral:
+    if _HAS_SPECTRAL and isinstance(obj, SVDDense) and spectral_warmstart == "svd":
         if w_key in pt:
             try:
                 new = _svd_warmstart_svddense(obj, pt[w_key], pt.get(b_key), report)
+                report["used"].add(w_key)
+                if b_key in pt:
+                    report["used"].add(b_key)
+                return new
+            except Exception as e:
+                report["spectral_errors"].append((prefix, repr(e)))
+                report["used"].add(w_key)
+                if b_key in pt:
+                    report["used"].add(b_key)
+                return obj
+
+    if (
+        _HAS_SPECTRAL
+        and isinstance(obj, RFFTCirculant1D)
+        and spectral_warmstart == "rfft1d"
+    ):
+        if w_key in pt:
+            try:
+                new = _warmstart_rfft1d(obj, pt[w_key], pt.get(b_key), report)
                 report["used"].add(w_key)
                 if b_key in pt:
                     report["used"].add(b_key)
@@ -131,7 +194,11 @@ def _copy_into(
         for name, child in vars(obj).items():
             child_prefix = name if prefix == "" else f"{prefix}.{name}"
             new_child = _copy_into(
-                child, pt, prefix=child_prefix, spectral=spectral, report=report
+                child,
+                pt,
+                prefix=child_prefix,
+                spectral_warmstart=spectral_warmstart,
+                report=report,
             )
             if new_child is not child:
                 try:
@@ -144,7 +211,15 @@ def _copy_into(
         seq = []
         for i, c in enumerate(obj):
             pfx = f"{prefix}.{i}" if prefix else str(i)
-            seq.append(_copy_into(c, pt, prefix=pfx, spectral=spectral, report=report))
+            seq.append(
+                _copy_into(
+                    c,
+                    pt,
+                    prefix=pfx,
+                    spectral_warmstart=spectral_warmstart,
+                    report=report,
+                )
+            )
         return type(obj)(seq)
 
     if isinstance(obj, dict):
@@ -153,7 +228,7 @@ def _copy_into(
                 v,
                 pt,
                 prefix=f"{prefix}.{k}" if prefix else k,
-                spectral=spectral,
+                spectral_warmstart=spectral_warmstart,
                 report=report,
             )
             for k, v in obj.items()
@@ -167,7 +242,7 @@ def load_dinov2(
     npz_path: str,
     *,
     strict_fc: bool = False,
-    spectral_warmstart: Literal["skip", "svd"] = "skip",
+    spectral_warmstart: Literal["skip", "svd", "rfft1d"] = "skip",
     verbose: bool = True,
 ) -> Tuple[eqx.Module, Dict[str, Any]]:
     raw = dict(np.load(npz_path, allow_pickle=False))
@@ -315,12 +390,17 @@ def load_dinov2(
         "unused_keys": [],
         "mismatch": [],
         "spectral_warmstarted": 0,
+        "spectral_skipped": [],
         "spectral_errors": [],
         "n_loaded": 0,
         "n_total_pt": sum(_numel(v) for v in pt.values()),
     }
     new_tree = _copy_into(
-        eqx_tree, pt, prefix="", spectral=(spectral_warmstart == "svd"), report=report
+        eqx_tree,
+        pt,
+        prefix="",
+        spectral_warmstart=spectral_warmstart,
+        report=report,
     )
     report["unused_keys"] = sorted(set(pt.keys()) - report["used"])
     report["coverage"] = float(report["n_loaded"]) / max(1, report["n_total_pt"])
@@ -340,6 +420,10 @@ def load_dinov2(
         if report["unused_keys"]:
             print(
                 f"[dinov2 loader] mapped-but-unused params: {len(report['unused_keys'])}"
+            )
+        if report.get("spectral_skipped"):
+            print(
+                f"[dinov2 loader] spectral skipped (shape mismatch): {len(report['spectral_skipped'])}"
             )
         if report["spectral_errors"]:
             print(

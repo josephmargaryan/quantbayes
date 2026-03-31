@@ -355,14 +355,10 @@ def load_pretrained_dino(
     strict_fc: bool = False,
     verbose: bool = True,
 ):
-    """Load DINO/DINOv2-style weights into a dense or SVDDense backbone."""
+    """Load DINO/DINOv2-style weights into a dense, SVDDense, or RFFTCirculant1D backbone."""
     from quantbayes.stochax.vision_backbones.dino.dinov2_loader import load_dinov2
 
     spectral = _infer_linear_spectral_warmstart(model)
-    if spectral == "rfft1d":
-        raise ValueError(
-            "DINO loader currently supports dense or SVDDense leaves, not RFFTCirculant1D."
-        )
     loaded, _ = load_dinov2(
         model,
         _require_npz(

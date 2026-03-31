@@ -31,8 +31,6 @@ def make_linear_or_spectral(
 
 
 class PatchEmbedding(eqx.Module):
-    """(C,H,W) -> (N_patches, D) using a linearized patch projection."""
-
     linear: eqx.Module
     patch_size: int
     in_ch: int = eqx.field(static=True)
@@ -94,7 +92,6 @@ class MultiheadSelfAttention(eqx.Module):
         self.num_heads = int(num_heads)
         self.head_dim = self.embed_dim // self.num_heads
 
-        # These are the projections where RFFT makes sense: square D -> D maps.
         self.q_proj = make_linear_or_spectral(
             self.embed_dim,
             self.embed_dim,
@@ -126,9 +123,9 @@ class MultiheadSelfAttention(eqx.Module):
         k = jax.vmap(self.k_proj)(x)
         v = jax.vmap(self.v_proj)(x)
 
-        q = q.reshape(-1, H, hd).transpose(1, 0, 2)  # [H, N, hd]
-        k = k.reshape(-1, H, hd).transpose(1, 2, 0)  # [H, hd, N]
-        v = v.reshape(-1, H, hd).transpose(1, 0, 2)  # [H, N, hd]
+        q = q.reshape(-1, H, hd).transpose(1, 0, 2)
+        k = k.reshape(-1, H, hd).transpose(1, 2, 0)
+        v = v.reshape(-1, H, hd).transpose(1, 0, 2)
 
         scale = 1.0 / math.sqrt(hd)
         attn = jax.nn.softmax(jnp.matmul(q * scale, k), axis=-1)
@@ -167,11 +164,8 @@ class AttentionBlock(eqx.Module):
             use_spectral_proj=use_spectral_proj,
         )
         self.norm2 = eqx.nn.LayerNorm(embed_dim)
-
-        # DINO MLP is typically non-square -> keep it dense.
         self.mlp1 = eqx.nn.Linear(embed_dim, hidden_dim, key=k_mlp1)
         self.mlp2 = eqx.nn.Linear(hidden_dim, embed_dim, key=k_mlp2)
-
         self.dropout1 = eqx.nn.Dropout(dropout_rate)
         self.dropout2 = eqx.nn.Dropout(dropout_rate)
 
@@ -202,26 +196,6 @@ class AttentionBlock(eqx.Module):
 
 
 class RFFTDinoVisionTransformer(eqx.Module):
-    """DINO/DINOv2-style ViT with RFFTCirculant1D on square D->D projections.
-
-    Loader-compatible field names:
-      - patch_embedding.linear.{weight,bias} or spectral leaf
-      - positional_embedding
-      - cls_token
-      - register_tokens
-      - attention_blocks[i].norm1
-      - attention_blocks[i].attn.{q_proj,k_proj,v_proj,out_proj}
-      - attention_blocks[i].norm2
-      - attention_blocks[i].mlp1 / mlp2
-      - norm
-      - head
-
-    Embedding API:
-      - forward_tokens(x, key, state)   -> normalized token sequence, state
-      - forward_features(x, key, state) -> pooled feature vector, state
-      - __call__(x, key, state)         -> logits, state
-    """
-
     patch_embedding: PatchEmbedding
     positional_embedding: jnp.ndarray
     cls_token: jnp.ndarray
@@ -313,8 +287,8 @@ class RFFTDinoVisionTransformer(eqx.Module):
         if (H % ps) or (W % ps):
             raise ValueError(f"H,W must be multiples of patch_size={ps}; got {(H, W)}.")
 
-        patches = self.patch_embedding(x)  # [N, D]
-        seq = jnp.concatenate([self.cls_token, patches], axis=0)  # [1+N, D]
+        patches = self.patch_embedding(x)
+        seq = jnp.concatenate([self.cls_token, patches], axis=0)
         seq = seq + self.positional_embedding[: seq.shape[0]]
 
         if self.register_tokens is not None and self.register_tokens.shape[0] > 0:
@@ -348,34 +322,3 @@ class RFFTDinoVisionTransformer(eqx.Module):
         feat, state = self.forward_features(x, key, state)
         logits = self.forward_head(feat)
         return logits, state
-
-
-if __name__ == "__main__":
-    import equinox as eqx
-
-    IMAGE_SIZE = 224
-    PATCH_SIZE = 14
-    NUM_PATCHES = (IMAGE_SIZE // PATCH_SIZE) ** 2
-
-    key = jr.PRNGKey(0)
-    model, state = eqx.nn.make_with_state(RFFTDinoVisionTransformer)(
-        embedding_dim=384,
-        hidden_dim=1536,
-        num_heads=6,
-        num_layers=12,
-        patch_size=PATCH_SIZE,
-        num_patches=NUM_PATCHES,
-        num_classes=1000,
-        n_register_tokens=4,
-        dropout_rate=0.0,
-        pool="cls",
-        channels=3,
-        key=key,
-        use_spectral_proj=True,
-    )
-
-    x = jr.normal(jr.fold_in(key, 1), (3, IMAGE_SIZE, IMAGE_SIZE))
-    feat, _ = model.forward_features(x, jr.fold_in(key, 2), state)
-    logits, _ = model(x, jr.fold_in(key, 3), state)
-    print("feature shape:", feat.shape)
-    print("logits shape:", logits.shape)
