@@ -8,6 +8,8 @@ from .efficient_net import EfficientNet
 from .vgg import VGG
 from .rfft_vit import VisionTransformer as RFFTVisionTransformer
 from .rfft_swin import RFFTSwinTransformer
+from .svd_swin import SVDSwinTransformer
+from .svd_vit import SVDVisionTransformer
 
 
 __all__ = [
@@ -21,4 +23,6 @@ __all__ = [
     "RFFTSwinTransformer",
     "EfficientNet",
     "VGG",
+    "SVDSwinTransformer",
+    "SVDVisionTransformer",
 ]
