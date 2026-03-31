@@ -52,7 +52,6 @@ def _float_parameter_vector(
 class FlatRecordCodec(RecordCodec):
     feature_shape: Tuple[int, ...]
     dtype: str = "float32"
-    box_bounds: Optional[Tuple[float, float]] = None
 
     def encode_record(self, record: Record) -> Tuple[np.ndarray, int]:
         x = np.asarray(record.features, dtype=np.dtype(self.dtype)).reshape(-1)
@@ -66,11 +65,6 @@ class FlatRecordCodec(RecordCodec):
         return {
             "feature_shape": tuple(int(v) for v in self.feature_shape),
             "dtype": self.dtype,
-            "box_bounds": (
-                None
-                if self.box_bounds is None
-                else (float(self.box_bounds[0]), float(self.box_bounds[1]))
-            ),
         }
 
 
@@ -358,12 +352,7 @@ def train_shadow_reconstructor(
     if not label_values:
         label_values = (0,)
 
-    box_bounds = corpus.codec_metadata.get("box_bounds", None)
-    use_sigmoid_output = bool(
-        box_bounds is not None
-        and abs(float(box_bounds[0])) <= 1e-8
-        and abs(float(box_bounds[1]) - 1.0) <= 1e-8
-    )
+    use_sigmoid_output = False
 
     hidden_dims = (
         tuple(int(v) for v in cfg.hidden_dims) if cfg.hidden_dims else (1000, 1000)
@@ -581,7 +570,6 @@ def train_shadow_reconstructor(
                 for v in corpus.codec_metadata.get("feature_shape", (target_dim,))
             ),
             "dtype": str(corpus.codec_metadata.get("dtype", "float32")),
-            "box_bounds": corpus.codec_metadata.get("box_bounds", None),
             "label_values": tuple(int(v) for v in label_values),
             "attack_feature_map": dict(
                 corpus.feature_metadata.get("attack_feature_map", {})
@@ -624,13 +612,8 @@ def run_model_based_attack(
     eta_grid: Sequence[float] = (0.1, 0.2, 0.5, 1.0),
     ball_center: Optional[np.ndarray] = None,
     ball_radius: Optional[float] = None,
-    box_bounds: Optional[Tuple[float, float]] = None,
 ) -> AttackResult:
-    """Run the informed-adversary final-model attack.
-
-    The returned reconstruction is the output of the RecoNN-style attack model φ
-    applied to the flattened parameter vector of the released model.
-    """
+    """Run the informed-adversary final-model attack."""
     feature_map = ParametersOnlyFeatureMap() if feature_map is None else feature_map
 
     attack_features = np.asarray(
@@ -647,15 +630,6 @@ def run_model_based_attack(
         recon_model(jnp.asarray(x_norm, dtype=jnp.float32)),
         dtype=np.float32,
     ).reshape(-1)
-
-    effective_box_bounds = (
-        box_bounds
-        if box_bounds is not None
-        else reconstructor.extra.get("box_bounds", None)
-    )
-    if effective_box_bounds is not None:
-        lo, hi = float(effective_box_bounds[0]), float(effective_box_bounds[1])
-        feat_pred = np.clip(feat_pred, lo, hi)
 
     feat_pred = _project_to_ball(
         feat_pred,

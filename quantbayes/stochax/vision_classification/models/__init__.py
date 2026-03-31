@@ -6,15 +6,19 @@ from .inception import InceptionV3
 from .swin import SwinTransformer
 from .efficient_net import EfficientNet
 from .vgg import VGG
+from .rfft_vit import VisionTransformer as RFFTVisionTransformer
+from .rfft_swin import RFFTSwinTransformer
 
 
 __all__ = [
     "VisionTransformer",
+    "RFFTVisionTransformer",
     "ResNetClassifier",
     "ViTResNetHybrid",
     "ConvNeXt",
     "InceptionV3",
     "SwinTransformer",
+    "RFFTSwinTransformer",
     "EfficientNet",
     "VGG",
 ]

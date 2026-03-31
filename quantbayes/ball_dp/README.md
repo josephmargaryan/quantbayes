@@ -3,13 +3,6 @@
 This file is the current paper-facing usage guide.
 It assumes your dataset is already loaded into memory as `X` and `y`.
 
-The Ball attacks now use the Euclidean ball only:
-\[
-\mathcal C = \mathcal B(u,r).
-\]
-There is no box constraint and no box-intersection Lagrangian/KKT projection in the Ball-attack path anymore.
-That is deliberate: the intended semantics are now embedding-space semantics, where Euclidean distance is the policy metric.
-
 The code blocks below are meant to be copied into notebook cells.
 
 ## 0. Common setup
@@ -355,7 +348,6 @@ attack = run_trace_optimization_attack(
         num_steps=800,
         learning_rate=1e-2,
         num_restarts=5,
-        box_bounds=None,
         seed=seed,
     ),
     feature_shape=feature_shape,
@@ -672,7 +664,6 @@ attack = run_model_based_attack(
     reconstructor=reconstructor,
     true_record=data.target,
     known_label=target_label,
-    box_bounds=None,
 )
 
 print("status:", attack.status)

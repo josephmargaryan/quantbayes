@@ -11,9 +11,12 @@ from equinox import tree_at
 
 # ---- Optional spectral imports (if present) ----
 _HAS_SPECTRAL = False
-SVDDense = object  # placeholder
+SVDDense = RFFTCirculant1D = object  # placeholders
 try:
-    from quantbayes.stochax.layers.spectral_layers import SVDDense  # type: ignore
+    from quantbayes.stochax.layers.spectral_layers import (
+        SVDDense,
+        RFFTCirculant1D,
+    )  # type: ignore
 
     _HAS_SPECTRAL = True
 except Exception:
@@ -83,6 +86,54 @@ def _warmstart_svddense(mod, W, b, report):
     return new
 
 
+def _nearest_circulant_first_column(W: jnp.ndarray) -> jnp.ndarray:
+    """Least-squares projection of a square matrix onto the circulant subspace.
+
+    For C_{ij} = c[(i-j) mod n], the Frobenius-optimal c is the average over
+    each cyclic diagonal.
+    """
+    if W.ndim != 2 or W.shape[0] != W.shape[1]:
+        raise ValueError(f"Expected a square matrix; got {tuple(W.shape)}.")
+    n = int(W.shape[0])
+    rows = jnp.arange(n)
+    cols = jnp.arange(n)
+
+    def mean_for_offset(k):
+        return jnp.mean(W[rows, (cols - k) % n])
+
+    return jnp.asarray([mean_for_offset(k) for k in range(n)], dtype=W.dtype)
+
+
+def _warmstart_rfft1d(mod, W, b, report):
+    want_in = int(getattr(mod, "in_features"))
+    want_pad = int(getattr(mod, "padded_dim"))
+    have = tuple(int(x) for x in W.shape)
+    want = (want_pad, want_in)
+
+    # The current RFFT use-case is square D->D projections (ViT/Swin attention out).
+    if have != want or want_in != want_pad:
+        report.setdefault("spectral_skipped", []).append(("rfft1d", have, want))
+        return mod
+
+    c = _nearest_circulant_first_column(W)
+    H_half = (jnp.fft.rfft(c, norm="ortho") * jnp.sqrt(float(want_pad))).astype(
+        mod.H_half.dtype
+    )
+    new = tree_at(lambda m: m.H_half, mod, H_half)
+
+    if hasattr(new, "bias") and (b is not None):
+        if getattr(new, "bias").ndim == 0:
+            new = tree_at(
+                lambda m: m.bias, new, jnp.asarray(jnp.mean(b), new.bias.dtype)
+            )
+        elif tuple(new.bias.shape) == tuple(b.shape):
+            new = tree_at(lambda m: m.bias, new, b.astype(new.bias.dtype))
+
+    report["spectral_warmstarted"] += 1
+    report["n_loaded"] += _numel(W) + (_numel(b) if (b is not None) else 0)
+    return new
+
+
 def _resize_pos_embedding(tv_pos: jnp.ndarray, target_len: int) -> jnp.ndarray:
     """tv_pos: [1, L_tv, D] -> [1, L_target, D] (2D aware, keeps CLS at 0)."""
     assert tv_pos.ndim == 3 and tv_pos.shape[0] == 1
@@ -108,7 +159,7 @@ def _resize_pos_embedding(tv_pos: jnp.ndarray, target_len: int) -> jnp.ndarray:
 
 
 def _infer_linear_want_shape(obj) -> Optional[Tuple[int, int]]:
-    """Return (out_features, in_features) for Linear or SVDDense; else None."""
+    """Return (out_features, in_features) for supported linear-like leaves."""
     try:
         if isinstance(obj, eqx.nn.Linear):
             w = obj.weight
@@ -117,6 +168,12 @@ def _infer_linear_want_shape(obj) -> Optional[Tuple[int, int]]:
             # Prefer statics; fall back to U/V shapes if needed.
             out_f = int(getattr(obj, "out_features", obj.U.shape[0]))
             in_f = int(getattr(obj, "in_features", obj.V.shape[0]))
+            return (out_f, in_f)
+        if _HAS_SPECTRAL and isinstance(obj, RFFTCirculant1D):
+            out_f = int(getattr(obj, "padded_dim", obj.in_features))
+            if bool(getattr(obj, "crop_output", True)):
+                out_f = int(getattr(obj, "in_features"))
+            in_f = int(getattr(obj, "in_features"))
             return (out_f, in_f)
     except Exception:
         pass
@@ -128,7 +185,7 @@ def _copy_into(
     pt: Dict[str, jnp.ndarray],
     *,
     prefix: str,
-    spectral_warmstart: Literal["skip", "svd"],
+    spectral_warmstart: Literal["skip", "svd", "rfft1d"],
     strict_fc: bool,
     report: Dict[str, Any],
 ) -> Any:
@@ -143,7 +200,7 @@ def _copy_into(
             return pt[prefix]
         return obj
 
-    # --- Handle spectral dense FIRST to avoid touching .weight on SVDDense ---
+    # --- Handle spectral leaves FIRST to avoid touching .weight on custom modules ---
     if _HAS_SPECTRAL and isinstance(obj, SVDDense) and spectral_warmstart == "svd":
         if w_key in pt:
             try:
@@ -156,6 +213,25 @@ def _copy_into(
             except Exception as e:
                 report["spectral_errors"].append((prefix, repr(e)))
                 # Even on failure, we attempted to consume these keys.
+                report["used"].add(w_key)
+                if b_key in pt:
+                    report["used"].add(b_key)
+                return obj
+
+    if (
+        _HAS_SPECTRAL
+        and isinstance(obj, RFFTCirculant1D)
+        and spectral_warmstart == "rfft1d"
+    ):
+        if w_key in pt:
+            try:
+                new = _warmstart_rfft1d(obj, pt[w_key], pt.get(b_key), report)
+                report["used"].add(w_key)
+                if b_key in pt:
+                    report["used"].add(b_key)
+                return new
+            except Exception as e:
+                report["spectral_errors"].append((prefix, repr(e)))
                 report["used"].add(w_key)
                 if b_key in pt:
                     report["used"].add(b_key)
@@ -259,7 +335,7 @@ def load_imagenet_vit(
     npz_path: str,
     *,
     strict_fc: bool = True,
-    spectral_warmstart: Literal["skip", "svd"] = "skip",
+    spectral_warmstart: Literal["skip", "svd", "rfft1d"] = "skip",
     verbose: bool = True,
 ) -> Tuple[eqx.Module, Dict[str, Any]]:
     """
@@ -462,6 +538,7 @@ def load_imagenet_vit(
         "mismatch": [],
         "skipped_fc": [],
         "spectral_warmstarted": 0,
+        "spectral_skipped": [],
         "spectral_errors": [],
         "n_loaded": 0,
         "n_total_pt": sum(_numel(v) for v in pt.values()),

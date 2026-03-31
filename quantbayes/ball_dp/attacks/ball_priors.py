@@ -1,27 +1,12 @@
+# quantbayes/ball_dp/attacks/ball_priors.py
+
 from __future__ import annotations
 
 import dataclasses as dc
-from typing import Dict, Optional, Protocol, Tuple
+from typing import Dict, Protocol
 
 import jax.numpy as jnp
 import numpy as np
-
-
-def _normalize_box_bounds(
-    box_bounds: Optional[Tuple[float, float]],
-) -> Optional[Tuple[float, float]]:
-    """Backward-compatible validator for the deprecated box_bounds argument.
-
-    Ball attacks are now defined on the Euclidean ball only. We still accept
-    box_bounds so older call-sites do not break, but the projection and support
-    are determined solely by the Ball-local constraint.
-    """
-    if box_bounds is None:
-        return None
-    lo, hi = float(box_bounds[0]), float(box_bounds[1])
-    if hi < lo:
-        raise ValueError("box_bounds must satisfy lo <= hi.")
-    return (lo, hi)
 
 
 def _project_ball_jax(
@@ -96,7 +81,6 @@ def _sample_uniform_l2_ball(
 class BallAttackPrior(Protocol):
     center: np.ndarray
     radius: float
-    box_bounds: Optional[Tuple[float, float]]
 
     def project(self, x: jnp.ndarray) -> jnp.ndarray: ...
     def project_np(self, x: np.ndarray) -> np.ndarray: ...
@@ -110,13 +94,11 @@ class BallAttackPrior(Protocol):
 class UniformBallAttackPrior:
     center: np.ndarray
     radius: float
-    box_bounds: Optional[Tuple[float, float]] = None
 
     def __post_init__(self) -> None:
         center = np.asarray(self.center, dtype=np.float32)
         object.__setattr__(self, "center", center)
         object.__setattr__(self, "radius", float(self.radius))
-        object.__setattr__(self, "box_bounds", _normalize_box_bounds(self.box_bounds))
         if float(self.radius) < 0.0:
             raise ValueError("radius must be >= 0.")
 
@@ -149,12 +131,6 @@ class UniformBallAttackPrior:
             "radius": float(self.radius),
             "center_shape": tuple(int(v) for v in self.center.shape),
             "projection": "euclidean_ball",
-            "box_bounds": (
-                None
-                if self.box_bounds is None
-                else (float(self.box_bounds[0]), float(self.box_bounds[1]))
-            ),
-            "box_bounds_ignored": bool(self.box_bounds is not None),
         }
 
 
@@ -163,14 +139,12 @@ class TruncatedGaussianBallAttackPrior:
     center: np.ndarray
     radius: float
     sigma: float
-    box_bounds: Optional[Tuple[float, float]] = None
 
     def __post_init__(self) -> None:
         center = np.asarray(self.center, dtype=np.float32)
         object.__setattr__(self, "center", center)
         object.__setattr__(self, "radius", float(self.radius))
         object.__setattr__(self, "sigma", float(self.sigma))
-        object.__setattr__(self, "box_bounds", _normalize_box_bounds(self.box_bounds))
         if float(self.radius) < 0.0:
             raise ValueError("radius must be >= 0.")
         if float(self.sigma) <= 0.0:
@@ -225,10 +199,4 @@ class TruncatedGaussianBallAttackPrior:
             "sigma": float(self.sigma),
             "center_shape": tuple(int(v) for v in self.center.shape),
             "projection": "euclidean_ball",
-            "box_bounds": (
-                None
-                if self.box_bounds is None
-                else (float(self.box_bounds[0]), float(self.box_bounds[1]))
-            ),
-            "box_bounds_ignored": bool(self.box_bounds is not None),
         }

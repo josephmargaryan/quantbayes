@@ -1,3 +1,5 @@
+# quantbayes/stochax/vision_classification/models/rfft_vit.py
+
 from __future__ import annotations
 from typing import Tuple, Optional, Any
 
@@ -9,7 +11,16 @@ import jax.numpy as jnp
 import jax.random as jr
 from jaxtyping import Array, Float, PRNGKeyArray
 
-from quantbayes.stochax.layers import RFFTCirculant1D
+try:
+    from quantbayes.stochax.layers import RFFTCirculant1D
+except Exception:
+    try:
+        from quantbayes.stochax.layers.spectral_layers import RFFTCirculant1D
+    except (
+        Exception
+    ) as e:  # pragma: no cover - only hit when spectral layers are absent
+        RFFTCirculant1D = None
+        _RFFT_IMPORT_ERROR = e
 
 
 def make_linear_or_spectral(
@@ -25,6 +36,11 @@ def make_linear_or_spectral(
     return an RFFTCirculant1D(in_features).
     """
     if use_spectral and (in_features == out_features):
+        if RFFTCirculant1D is None:
+            raise RuntimeError(
+                "RFFTCirculant1D is unavailable. Make sure "
+                "quantbayes.stochax.layers.spectral_layers is on the PYTHONPATH."
+            )
         return RFFTCirculant1D(
             in_features=in_features,
             padded_dim=out_features,

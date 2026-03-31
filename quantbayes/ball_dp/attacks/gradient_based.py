@@ -12,7 +12,7 @@ import numpy as np
 import optax
 
 from ..metrics import reconstruction_metrics
-from .ball_priors import _project_box_ball_intersection_jax
+from .ball_priors import _project_ball_jax
 from ..nonconvex.per_example import (
     ExampleLossFn,
     combine_model,
@@ -164,21 +164,12 @@ def _step_mean_denominator(step: DPSGDTraceStep | Any) -> float:
 
 @dc.dataclass
 class TraceOptimizationAttackConfig:
-    """Configuration for the DP-SGD trace optimization attack.
-
-    Defaults match the paper's optimization recipe:
-      - optimize Equation (1),
-      - uniform-noise initialization,
-      - learning rate 0.01,
-      - five random restarts,
-      - known label assumed unless exhaustive label search is requested.
-    """
+    """Configuration for the DP-SGD trace optimization attack."""
 
     step_mode: Literal["all", "present_steps"] = "all"
     num_steps: int = 1_000_000
     learning_rate: float = 1e-2
     num_restarts: int = 5
-    box_bounds: Optional[Tuple[float, float]] = None
     ball_center: Optional[np.ndarray] = None
     ball_radius: Optional[float] = None
     seed: int = 0
@@ -358,69 +349,44 @@ def _clip_per_example_grad_tree(
     return jax.tree_util.tree_map(_scale_leaf, per_example_grads), norms
 
 
-def _as_feature_shape(
-    *,
-    feature_shape: Optional[Sequence[int]],
-    true_record: Optional[Record],
-    trace: DPSGDTrace,
-) -> Tuple[int, ...]:
-    if feature_shape is not None:
-        return tuple(int(v) for v in feature_shape)
-    if true_record is not None:
-        return tuple(np.asarray(true_record.features).shape)
-    if "feature_shape" in trace.metadata:
-        return tuple(int(v) for v in trace.metadata["feature_shape"])
-    raise ValueError(
-        "feature_shape must be provided unless true_record or trace.metadata['feature_shape'] is available."
-    )
-
-
 def _project_guess(
     x: jnp.ndarray,
     *,
-    box_bounds: Optional[Tuple[float, float]],
     ball_center: Optional[np.ndarray],
     ball_radius: Optional[float],
 ) -> jnp.ndarray:
     out = jnp.asarray(x, dtype=jnp.float32)
-    has_box = box_bounds is not None
-    has_ball = ball_center is not None and ball_radius is not None
-
-    if has_box and has_ball:
-        return _project_box_ball_intersection_jax(
-            out,
-            np.asarray(ball_center, dtype=np.float32).reshape(out.shape),
-            float(ball_radius),
-            box_bounds,
-        )
-
-    if has_box:
-        lo, hi = float(box_bounds[0]), float(box_bounds[1])
-        out = jnp.clip(out, lo, hi)
-
-    if has_ball:
-        center = jnp.asarray(ball_center, dtype=out.dtype).reshape(out.shape)
-        diff = out - center
-        norm = jnp.linalg.norm(jnp.ravel(diff))
-        radius = jnp.asarray(float(ball_radius), dtype=out.dtype)
-        scale = jnp.minimum(
-            jnp.asarray(1.0, dtype=out.dtype),
-            radius / jnp.maximum(norm, jnp.asarray(1e-12, dtype=out.dtype)),
-        )
-        out = center + diff * scale
-
-    return out
+    if ball_center is None or ball_radius is None:
+        return out
+    return _project_ball_jax(
+        out,
+        np.asarray(ball_center, dtype=np.float32).reshape(out.shape),
+        float(ball_radius),
+    ).reshape(out.shape)
 
 
 def _default_init(
     shape: Sequence[int],
     *,
     rng: np.random.Generator,
-    box_bounds: Optional[Tuple[float, float]],
+    ball_center: Optional[np.ndarray] = None,
+    ball_radius: Optional[float] = None,
 ) -> np.ndarray:
-    if box_bounds is not None:
-        lo, hi = float(box_bounds[0]), float(box_bounds[1])
-        return rng.uniform(lo, hi, size=shape).astype(np.float32)
+    shape = tuple(int(v) for v in shape)
+    if ball_center is not None and ball_radius is not None:
+        center = np.asarray(ball_center, dtype=np.float32).reshape(shape)
+        radius = float(ball_radius)
+        if radius < 0.0:
+            raise ValueError("ball_radius must be >= 0.")
+        flat_center = center.reshape(-1)
+        d = int(flat_center.size)
+        if d == 0 or radius == 0.0:
+            return center.astype(np.float32, copy=True)
+        direction = rng.normal(size=d).astype(np.float32)
+        direction /= max(float(np.linalg.norm(direction)), 1e-12)
+        scale = float(rng.random()) ** (1.0 / float(d))
+        out = flat_center + radius * scale * direction
+        return out.reshape(shape).astype(np.float32, copy=False)
     return rng.uniform(-1.0, 1.0, size=shape).astype(np.float32)
 
 
@@ -818,9 +784,14 @@ def run_trace_optimization_attack(
             x0 = _default_init(
                 x_shape,
                 rng=rng,
-                box_bounds=cfg.box_bounds,
+                ball_center=cfg.ball_center,
+                ball_radius=cfg.ball_radius,
             )
-            x = jnp.asarray(x0, dtype=jnp.float32)
+            x = _project_guess(
+                jnp.asarray(x0, dtype=jnp.float32),
+                ball_center=cfg.ball_center,
+                ball_radius=cfg.ball_radius,
+            )
             opt_state = optimizer.init(x)
 
             best_restart_obj = float(_objective(x))
@@ -832,7 +803,6 @@ def run_trace_optimization_attack(
                 x = optax.apply_updates(x, updates)
                 x = _project_guess(
                     x,
-                    box_bounds=cfg.box_bounds,
                     ball_center=cfg.ball_center,
                     ball_radius=cfg.ball_radius,
                 )

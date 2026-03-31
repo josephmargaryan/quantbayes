@@ -366,20 +366,10 @@ def make_uniform_ball_attack_prior(
     *,
     center: np.ndarray,
     radius: float,
-    box_bounds: Optional[tuple[float, float]] = None,
 ) -> UniformBallAttackPrior:
-    """Factory for the attack-side Ball-local prior used by the MAP attacks.
-
-    The feasible set is now the Euclidean ball only. The optional box_bounds
-    argument is accepted for backward compatibility but is ignored by the
-    projection and sampling routines.
-    """
     return UniformBallAttackPrior(
         center=np.asarray(center, dtype=np.float32),
         radius=float(radius),
-        box_bounds=(
-            None if box_bounds is None else (float(box_bounds[0]), float(box_bounds[1]))
-        ),
     )
 
 
@@ -388,21 +378,11 @@ def make_truncated_gaussian_ball_attack_prior(
     center: np.ndarray,
     radius: float,
     sigma: float,
-    box_bounds: Optional[tuple[float, float]] = None,
 ) -> TruncatedGaussianBallAttackPrior:
-    """Truncated Gaussian prior supported on the Ball-local feasible set.
-
-    The feasible set is now the Euclidean ball only. The optional box_bounds
-    argument is accepted for backward compatibility but is ignored by the
-    projection and sampling routines.
-    """
     return TruncatedGaussianBallAttackPrior(
         center=np.asarray(center, dtype=np.float32),
         radius=float(radius),
         sigma=float(sigma),
-        box_bounds=(
-            None if box_bounds is None else (float(box_bounds[0]), float(box_bounds[1]))
-        ),
     )
 
 
