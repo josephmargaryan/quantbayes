@@ -2,13 +2,14 @@ from __future__ import annotations
 
 """Public pretrained-weight loading API.
 
-This module is the plain, non-spectral entry point for loading pretrained
-checkpoints into vision models. The goal is to keep the common path simple:
-instantiate the model you actually want, then load weights into it.
+This module is the plain entry point for loading pretrained checkpoints into
+vision models. The common path is intentionally simple: instantiate the model
+you actually want, then load weights into it.
 
-The lower-level `replace_layers_api` module still exists for experiments that
-*change* the architecture (for example spectral surgery), but it is no longer
-required for ordinary transfer learning.
+Explicit spectral model *classes* that still make sense in practice—such as
+ViT/Swin variants using `SVDDense` or `RFFTCirculant1D`—remain supported here.
+What is intentionally no longer part of the public API is architecture surgery
+that rewrites dense/CNN models into new spectral parameterisations at load time.
 """
 
 from typing import Literal, Optional
@@ -459,31 +460,12 @@ def load_pretrained(
     raise ValueError(f"Unsupported family={fam!r}.")
 
 
-def load_pretrained_model(
-    model,
-    *,
-    family: AutoFamily = "auto",
-    npz_path: Optional[str] = None,
-    strict_fc: bool | None = None,
-    verbose: bool | None = None,
-):
-    """Backward-compatible alias for :func:`load_pretrained`."""
-    return load_pretrained(
-        model,
-        npz_path=npz_path,
-        family=family,
-        strict_fc=strict_fc,
-        verbose=verbose,
-    )
-
-
 __all__ = [
     "AutoFamily",
     "Family",
     "default_pretrained_checkpoint",
     "infer_pretrained_family",
     "load_pretrained",
-    "load_pretrained_model",
     "load_pretrained_resnet",
     "load_pretrained_vit",
     "load_pretrained_vgg",

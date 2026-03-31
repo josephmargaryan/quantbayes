@@ -354,11 +354,8 @@ class ViTResNetHybrid(eqx.Module):
         self.img_size = img_size
         self.out_stage = out_stage
 
-    def __call__(self, x, key, state):
-        """
-        x: [C,H,W] single sample, C should be 3
-        Returns: (logits [num_classes], state)
-        """
+    def forward_features(self, x, key, state):
+        """Return the pooled transformer feature before the classifier head."""
         # Backbone features
         kb, key = jr.split(key)
         feat, state = self.backbone(x, key=kb, state=state)  # [C', H', W']
@@ -386,9 +383,26 @@ class ViTResNetHybrid(eqx.Module):
         for blk, kblk in zip(self.blocks, keys[1:]):
             x_tok = blk(x_tok, key=kblk)
 
-        # Classification head on CLS
+        # Classification head input on CLS token
         cls = x_tok[0]
-        logits = self.head(cls)
+        # Keep any preprocessing layers inside `head` except the final classifier
+        if isinstance(self.head, eqx.nn.Sequential) and len(self.head.layers) > 1:
+            feat = cls
+            for layer in self.head.layers[:-1]:
+                feat = layer(feat)
+            return feat, state
+        return cls, state
+
+    def forward_head(self, feat):
+        return self.head(feat)
+
+    def __call__(self, x, key, state):
+        """
+        x: [C,H,W] single sample, C should be 3
+        Returns: (logits [num_classes], state)
+        """
+        feat, state = self.forward_features(x, key, state)
+        logits = self.forward_head(feat)
         return logits, state
 
 

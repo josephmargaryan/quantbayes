@@ -1,14 +1,12 @@
-# Vision pretrained loaders
+# Vision pretrained loaders and embeddings
 
-This directory now exposes a **plain pretrained-loading API** for your vision
-models. The common path is:
+This directory exposes a small public API for two production paths:
 
-1. instantiate the model you actually want,
-2. load a pretrained `.npz` checkpoint into it,
-3. train or finetune.
+1. **load pretrained weights** into the model you actually want,
+2. **extract embeddings** from the penultimate representation.
 
-You do **not** need to go through `replace_layers_api` unless you are
-intentionally changing the architecture.
+The normal classifier API is unchanged. You can still train and predict exactly
+as before.
 
 ## Public entry points
 
@@ -20,8 +18,14 @@ from quantbayes.stochax.vision_common import (
     load_pretrained_swin,
     infer_pretrained_family,
     default_pretrained_checkpoint,
+    as_feature_extractor,
+    extract_embeddings,
+    extract_embeddings_batched,
+    infer_embedding_dim,
 )
 ```
+
+## Load pretrained weights
 
 ### Smallest plain usage
 
@@ -45,7 +49,7 @@ model = load_pretrained(
 )
 ```
 
-If the checkpoint filename is standard and the model stores enough metadata, you
+If the checkpoint name is standard and the model stores enough metadata, you
 can omit `npz_path`:
 
 ```python
@@ -54,6 +58,72 @@ model = load_pretrained(model, strict_fc=False)
 
 That works for model families where the variant is explicit on the instance, for
 example ResNet (`backbone="resnet18"`) or Swin (`arch="swin_t"`).
+
+## Embeddings
+
+For a pretrained classifier, the helper returns the penultimate feature vector
+`phi(x) in R^d` for an input image `x in R^{C x H x W}`.
+
+### Direct embedding extraction
+
+```python
+import jax.random as jr
+
+from quantbayes.stochax.vision_common import extract_embeddings
+
+Z = extract_embeddings(
+    model,
+    state,
+    X,                  # [B, C, H, W]
+    key=jr.PRNGKey(123),
+)
+print(Z.shape)         # [B, d]
+```
+
+To L2-normalize the embeddings:
+
+```python
+Z = extract_embeddings(model, state, X, key=jr.PRNGKey(123), l2_normalize=True)
+```
+
+For large datasets:
+
+```python
+Z = extract_embeddings(
+    model,
+    state,
+    X,
+    key=jr.PRNGKey(123),
+    batch_size=256,
+)
+```
+
+### Reuse your normal `predict(...)` flow
+
+```python
+from quantbayes.stochax.vision_common import as_feature_extractor
+from quantbayes.stochax.trainer.train import predict
+
+feature_model = as_feature_extractor(model)
+Z = predict(feature_model, state, X, jr.PRNGKey(123))
+```
+
+### Infer embedding size
+
+```python
+from quantbayes.stochax.vision_common import infer_embedding_dim
+
+print(infer_embedding_dim(model))
+```
+
+Typical values:
+
+- ResNet18/34: `512`
+- ResNet50/101/152: `2048`
+- ViT / RFFT-ViT / DINO: `embed_dim`
+- Swin-T / Swin-S: `768`
+- Swin-B: `1024`
+- VGG: `4096`
 
 ## Family-specific helpers
 
@@ -70,8 +140,6 @@ from quantbayes.stochax.vision_common import (
 ### ResNet
 
 ```python
-from quantbayes.stochax.vision_common import load_pretrained_resnet
-
 model = load_pretrained_resnet(
     model,
     "resnet18_imagenet.npz",
@@ -82,8 +150,6 @@ model = load_pretrained_resnet(
 ### ViT
 
 ```python
-from quantbayes.stochax.vision_common import load_pretrained_vit
-
 model = load_pretrained_vit(
     model,
     "vit_b_16_imagenet.npz",
@@ -94,8 +160,6 @@ model = load_pretrained_vit(
 ### Swin
 
 ```python
-from quantbayes.stochax.vision_common import load_pretrained_swin
-
 model = load_pretrained_swin(
     model,
     "swin_t_imagenet.npz",
@@ -103,26 +167,24 @@ model = load_pretrained_swin(
 )
 ```
 
-## Spectral models: what is still supported
+## What is supported
 
-The plain loader can still warm-start the spectral models that made empirical
-sense in practice:
+The plain loader supports:
 
-- **SVDDense** leaves in ViT / Swin / DINO-style models,
-- **RFFTCirculant1D** leaves in `rfft_vit.py`,
-- **RFFTCirculant1D** leaves in `rfft_swin.py`.
+- dense models,
+- models that explicitly use `SVDDense`,
+- models that explicitly use `RFFTCirculant1D`.
 
-The loader detects those leaves automatically and applies the appropriate
-warm-start when possible.
+That means the supported spectral path is now **explicit model design**, not
+retrofitting arbitrary CNNs at load time.
 
-## About classifier heads
+## Classifier heads and transfer learning
 
-- Keep `strict_fc=True` when the checkpoint and model classifier head should
-  match exactly.
-- Use `strict_fc=False` for transfer learning when `num_classes != 1000` and you
-  only want the backbone/features loaded.
+- Keep `strict_fc=True` when checkpoint and classifier head should match.
+- Use `strict_fc=False` when `num_classes != 1000` and you only want the
+  backbone/features loaded.
 
-## Naming convention
+## Standard checkpoint names
 
 The code assumes torchvision-style `.npz` files such as:
 
@@ -131,13 +193,11 @@ The code assumes torchvision-style `.npz` files such as:
 - `swin_t_imagenet.npz`
 - `convnext_tiny_imagenet.npz`
 
-## Where the experimental API lives
+## Removed experimental path
 
-The spectral surgery entry points still exist in:
+The old layer-surgery utilities that rewrote models into spectral CNNs at load time have been removed from the public package surface. The recommended path is now:
 
-```python
-quantbayes.stochax.vision_common.replace_layers_api
-```
-
-Use that module only when you explicitly want to **replace layers** before
-loading weights.
+- keep dense CNNs dense,
+- use explicit RFFT/SVD model variants where they empirically make sense,
+- load weights with `load_pretrained(...)`,
+- extract features with `extract_embeddings(...)` when needed.

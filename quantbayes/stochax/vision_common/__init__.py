@@ -1,12 +1,19 @@
-"""Stable public API for pretrained vision checkpoints and optional spectral surgery."""
+"""Stable public API for pretrained vision checkpoints and embedding extraction."""
 
+from .embeddings import (
+    FeatureExtractor,
+    IdentityHead,
+    as_feature_extractor,
+    extract_embeddings,
+    extract_embeddings_batched,
+    infer_embedding_dim,
+)
 from .pretrained_api import (
     AutoFamily,
     Family,
     default_pretrained_checkpoint,
     infer_pretrained_family,
     load_pretrained,
-    load_pretrained_model,
     load_pretrained_resnet,
     load_pretrained_vit,
     load_pretrained_vgg,
@@ -18,16 +25,6 @@ from .pretrained_api import (
     load_pretrained_dino,
     load_pretrained_unet_encoder,
 )
-from .replace_layers_api import (
-    spectralize_and_warmstart_resnet,
-    spectralize_and_warmstart_unet_encoder,
-    spectralize_and_warmstart_vgg,
-    spectralize_and_warmstart_vit,
-    spectralize_and_warmstart_dino,
-    spectralize_and_warmstart_convnext,
-    spectralize_and_warmstart_efficientnet,
-    spectralize_and_warmstart_swin,
-)
 
 __all__ = [
     "AutoFamily",
@@ -35,7 +32,6 @@ __all__ = [
     "default_pretrained_checkpoint",
     "infer_pretrained_family",
     "load_pretrained",
-    "load_pretrained_model",
     "load_pretrained_resnet",
     "load_pretrained_vit",
     "load_pretrained_vgg",
@@ -46,12 +42,10 @@ __all__ = [
     "load_pretrained_vit_resnet_backbone",
     "load_pretrained_dino",
     "load_pretrained_unet_encoder",
-    "spectralize_and_warmstart_resnet",
-    "spectralize_and_warmstart_unet_encoder",
-    "spectralize_and_warmstart_vgg",
-    "spectralize_and_warmstart_vit",
-    "spectralize_and_warmstart_dino",
-    "spectralize_and_warmstart_convnext",
-    "spectralize_and_warmstart_efficientnet",
-    "spectralize_and_warmstart_swin",
+    "IdentityHead",
+    "FeatureExtractor",
+    "as_feature_extractor",
+    "extract_embeddings",
+    "extract_embeddings_batched",
+    "infer_embedding_dim",
 ]
