@@ -1,54 +1,73 @@
-# quantbayes/ball_dp/nonconvex/models/ball_net.py
+# quantbayes/ball_dp/nonconvex/models/ball_net_svd_multiclass.py
+
 from __future__ import annotations
 
 import math
 from typing import Any, Callable
 
 import equinox as eqx
-import optax
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import optax
 
+from quantbayes.ball_dp.nonconvex.models.ball_net_svd import (
+    FixedBasisSVDDense,
+    check_hidden_basis_orthonormal,
+    check_input_bound,
+    full_hidden_rank,
+    make_ball_svd_freeze_mask,
+    tanh_kappa,
+)
 
 Array = jax.Array
 
 
-class BallTanhNet(eqx.Module):
-    """One-hidden-layer tanh MLP matching the theorem:
-         f(x) = (1/sqrt(H)) * a^T tanh(Wx + b)
+class BallSVDTanhMulticlassNet(eqx.Module):
+    """One-hidden-layer tanh multiclass MLP with fixed-basis SVD hidden layer:
 
-    hidden bias is allowed; output bias is omitted.
+         f(x) = (1/sqrt(H)) * M^T tanh(U diag(s) V^T x + b)
+
+    In code, `out.weight` has shape (K, H), which corresponds to M^T.
     """
 
-    hidden: eqx.nn.Linear
+    hidden: FixedBasisSVDDense
     out: eqx.nn.Linear
     hidden_dim: int = eqx.field(static=True)
+    num_classes: int = eqx.field(static=True)
+    rank: int = eqx.field(static=True)
 
     def __init__(
         self,
         d_in: int,
         hidden_dim: int,
+        num_classes: int,
         *,
+        rank: int | None = None,
         key: Array,
         dtype=None,
     ):
         k1, k2 = jr.split(key, 2)
-        self.hidden = eqx.nn.Linear(
+
+        dense_hidden = eqx.nn.Linear(
             d_in,
             hidden_dim,
             use_bias=True,
             dtype=dtype,
             key=k1,
         )
+        self.hidden = FixedBasisSVDDense.from_linear(dense_hidden, rank=rank)
         self.out = eqx.nn.Linear(
             hidden_dim,
-            1,
+            num_classes,
             use_bias=False,
             dtype=dtype,
             key=k2,
         )
+
         self.hidden_dim = int(hidden_dim)
+        self.num_classes = int(num_classes)
+        self.rank = int(self.hidden.rank)
 
     def __call__(
         self,
@@ -59,76 +78,109 @@ class BallTanhNet(eqx.Module):
     ):
         del key
         h = jnp.tanh(self.hidden(jnp.asarray(x)))
-        logit = self.out(h)[0] / math.sqrt(self.hidden_dim)
-        return logit, state
+        logits = self.out(h) / math.sqrt(self.hidden_dim)
+        return logits, state
 
 
-def make_ball_tanh_net(
+def make_ball_svd_tanh_multiclass_net(
     d_in: int,
     hidden_dim: int,
+    num_classes: int,
     *,
+    rank: int | None = None,
     key: Array,
     dtype=None,
     init_project: bool = False,
-    S: float | None = None,
+    Lambda: float | None = None,
     A: float | None = None,
-) -> BallTanhNet:
-    model = BallTanhNet(
+) -> BallSVDTanhMulticlassNet:
+    model = BallSVDTanhMulticlassNet(
         d_in=d_in,
         hidden_dim=hidden_dim,
+        num_classes=num_classes,
+        rank=rank,
         key=key,
         dtype=dtype,
     )
     if init_project:
-        if S is None or A is None:
-            raise ValueError("init_project=True requires both S and A.")
-        model = project_ball_tanh_params(model, S=float(S), A=float(A))
+        if Lambda is None or A is None:
+            raise ValueError("init_project=True requires both Lambda and A.")
+        model = project_ball_svd_multiclass_params(
+            model,
+            Lambda=float(Lambda),
+            A=float(A),
+        )
     return model
 
 
-def tanh_kappa() -> float:
-    return 4.0 / (3.0 * math.sqrt(3.0))
+def softmax_jacobian_lipschitz() -> float:
+    return 0.5
 
 
-def certified_tanh_mlp_constants(
+def softmax_residual_l2_bound() -> float:
+    return math.sqrt(2.0)
+
+
+def certified_tanh_svd_mlp_multiclass_constants(
     *,
     A: float,
-    S: float,
+    Lambda: float,
     B: float,
     H: int,
 ) -> dict[str, float]:
-    if A < 0.0 or S < 0.0 or B < 0.0:
-        raise ValueError("A, S, B must be nonnegative.")
+    """Theorem-backed constants for the fixed-basis SVD multiclass tanh MLP."""
+    if A < 0.0 or Lambda < 0.0 or B < 0.0:
+        raise ValueError("A, Lambda, B must be nonnegative.")
     if H <= 0:
         raise ValueError("H must be positive.")
 
     kappa = tanh_kappa()
     sqrt_H = math.sqrt(float(H))
+    l_sm = softmax_jacobian_lipschitz()
+    r_sm = softmax_residual_l2_bound()
 
     L_f = (
         1.0
         / sqrt_H
-        * math.sqrt(S * S + (A * kappa * S) ** 2 + (A * (kappa * S * B + 1.0)) ** 2)
+        * math.sqrt(
+            Lambda * Lambda
+            + (A * kappa * Lambda) ** 2
+            + (A * (kappa * Lambda * B + 1.0)) ** 2
+        )
     )
     G_f = math.sqrt(1.0 + (A * A * (1.0 + B * B)) / float(H))
-    L_z = L_f + (A * S / (4.0 * sqrt_H)) * G_f
+    L_z = r_sm * L_f + l_sm * (A * Lambda / sqrt_H) * G_f
 
     return {
         "kappa_tanh": kappa,
+        "softmax_lipschitz": l_sm,
+        "softmax_residual_l2_bound": r_sm,
         "L_f": L_f,
         "G_f": G_f,
         "L_z": L_z,
     }
 
 
-def certified_tanh_mlp_lz(
+def certified_tanh_svd_mlp_multiclass_lz(
     *,
     A: float,
-    S: float,
+    Lambda: float,
     B: float,
     H: int,
 ) -> float:
-    return certified_tanh_mlp_constants(A=A, S=S, B=B, H=H)["L_z"]
+    return certified_tanh_svd_mlp_multiclass_constants(
+        A=A,
+        Lambda=Lambda,
+        B=B,
+        H=H,
+    )["L_z"]
+
+
+def _project_linf(vec: jnp.ndarray, radius: float) -> jnp.ndarray:
+    if not math.isfinite(radius):
+        return vec
+    bound = jnp.asarray(radius, dtype=vec.dtype)
+    return jnp.clip(vec, -bound, bound)
 
 
 def _project_fro(weight: jnp.ndarray, radius: float) -> jnp.ndarray:
@@ -143,86 +195,78 @@ def _project_fro(weight: jnp.ndarray, radius: float) -> jnp.ndarray:
     return weight * scale
 
 
-def _project_l2(vec: jnp.ndarray, radius: float) -> jnp.ndarray:
-    if not math.isfinite(radius):
-        return vec
-    norm = jnp.linalg.norm(vec)
-    scale = jnp.minimum(
-        jnp.asarray(1.0, dtype=vec.dtype),
-        jnp.asarray(radius, dtype=vec.dtype)
-        / jnp.maximum(norm, jnp.asarray(1e-12, dtype=vec.dtype)),
-    )
-    return vec * scale
+def project_ball_svd_multiclass_params(
+    params: BallSVDTanhMulticlassNet,
+    *,
+    Lambda: float,
+    A: float,
+) -> BallSVDTanhMulticlassNet:
+    """Project the theorem-backed trainable parameters.
 
+    Projects:
+      - hidden singular values s onto the l_infinity ball of radius Lambda
+      - output head matrix onto the Frobenius ball of radius A
+    """
+    if Lambda < 0.0 or A < 0.0:
+        raise ValueError("Lambda and A must be nonnegative.")
 
-def project_ball_tanh_params(params: BallTanhNet, *, S: float, A: float) -> BallTanhNet:
-    """Project either a full BallTanhNet or its parameter pytree."""
-    if S < 0.0 or A < 0.0:
-        raise ValueError("S and A must be nonnegative.")
+    new_s = _project_linf(params.hidden.s, float(Lambda))
+    new_out_weight = _project_fro(params.out.weight, float(A))
 
-    new_hidden_weight = _project_fro(params.hidden.weight, float(S))
-    new_out_weight = _project_l2(params.out.weight.reshape(-1), float(A)).reshape(
-        params.out.weight.shape
-    )
-
-    params = eqx.tree_at(lambda m: m.hidden.weight, params, new_hidden_weight)
+    params = eqx.tree_at(lambda m: m.hidden.s, params, new_s)
     params = eqx.tree_at(lambda m: m.out.weight, params, new_out_weight)
     return params
 
 
-def make_ball_tanh_projector(*, S: float, A: float) -> Callable[[Any], Any]:
+def make_ball_svd_multiclass_projector(
+    *,
+    Lambda: float,
+    A: float,
+) -> Callable[[Any], Any]:
     """Return a post-update projector on the full model."""
 
     def projector(model: Any) -> Any:
-        return project_ball_tanh_params(model, S=S, A=A)
+        return project_ball_svd_multiclass_params(model, Lambda=Lambda, A=A)
 
     return projector
 
 
-def check_ball_tanh_constraints(
-    model: BallTanhNet,
+def check_ball_svd_multiclass_constraints(
+    model: BallSVDTanhMulticlassNet,
     *,
-    S: float,
+    Lambda: float,
     A: float,
     atol: float = 1e-6,
 ) -> None:
-    """Check the theorem-backed Ball constraints for the binary tanh MLP."""
-    w_norm = float(jnp.linalg.norm(model.hidden.weight))
-    a_norm = float(jnp.linalg.norm(model.out.weight.reshape(-1)))
+    sigma = float(jnp.max(jnp.abs(model.hidden.s)))
+    m_norm = float(jnp.linalg.norm(model.out.weight))
 
-    if w_norm > float(S) + float(atol):
+    if sigma > float(Lambda) + float(atol):
         raise ValueError(
-            f"Hidden Frobenius bound violated: ||W||_F={w_norm:.8g} > S={float(S):.8g}."
+            f"Hidden operator bound violated: ||s||_inf={sigma:.8g} > Lambda={float(Lambda):.8g}."
         )
-    if a_norm > float(A) + float(atol):
+    if m_norm > float(A) + float(atol):
         raise ValueError(
-            f"Output-head bound violated: ||a||_2={a_norm:.8g} > A={float(A):.8g}."
+            f"Output-head Frobenius bound violated: ||M||_F={m_norm:.8g} > A={float(A):.8g}."
         )
 
 
-def make_ball_tanh_adam(
+def make_ball_svd_multiclass_adam(
+    model: Any,
     *,
     learning_rate: float,
 ) -> optax.GradientTransformation:
-    """Minimal optimizer helper for the theorem-backed binary tanh MLP."""
-    return optax.adam(float(learning_rate))
-
-
-def check_input_bound(X: jnp.ndarray, *, B: float, atol: float = 1e-6) -> None:
-    norms = jnp.linalg.norm(jnp.asarray(X), axis=1)
-    max_norm = float(jnp.max(norms))
-    if max_norm > float(B) + float(atol):
-        raise ValueError(
-            f"Input bound violated: max ||x||_2 = {max_norm:.8g} > B = {float(B):.8g}."
-        )
+    """Minimal theorem-safe optimizer for the fixed-basis SVD multiclass model."""
+    freeze_mask = make_ball_svd_freeze_mask(model)
+    return optax.chain(
+        optax.masked(optax.set_to_zero(), freeze_mask),
+        optax.adam(float(learning_rate)),
+    )
 
 
 if __name__ == "__main__":
     import numpy as np
-    import jax.numpy as jnp
-    import jax.random as jr
-    import optax
-    from sklearn.datasets import make_moons
+    from sklearn.datasets import make_classification
     from sklearn.model_selection import train_test_split
 
     from quantbayes.ball_dp.api import (
@@ -236,13 +280,24 @@ if __name__ == "__main__":
     from quantbayes.ball_dp.plots import plot_release_comparison
 
     # ------------------------------------------------------------
-    # 1) Synthetic binary dataset with a public input bound ||x||_2 <= 1
+    # 1) Synthetic multiclass dataset with a public input bound ||x||_2 <= 1
     # ------------------------------------------------------------
-    X, y = make_moons(n_samples=2500, noise=0.18, random_state=0)
+    num_classes = 4
+    X, y = make_classification(
+        n_samples=3000,
+        n_features=64,
+        n_informative=24,
+        n_redundant=12,
+        n_repeated=0,
+        n_classes=num_classes,
+        n_clusters_per_class=1,
+        class_sep=1.4,
+        flip_y=0.03,
+        random_state=0,
+    )
     X = X.astype(np.float32)
     y = y.astype(np.int32)
 
-    # Public preprocessing to enforce the theorem assumption ||x||_2 <= B.
     X_norms = np.linalg.norm(X, axis=1, keepdims=True)
     X = X / np.maximum(X_norms, 1e-12)
     B = 1.0
@@ -256,21 +311,51 @@ if __name__ == "__main__":
     )
 
     # ------------------------------------------------------------
-    # 2) Theorem-backed Ball-tanh model constants
+    # 2) Theorem-backed Ball multiclass SVD-tanh model constants
     # ------------------------------------------------------------
     H = 64
+    rank = 16
     A = 1.0
-    S = 1.0
+    Lambda = 1.0
     r = 1.0
     clip_norm = 1.0
 
-    lz = certified_tanh_mlp_lz(A=A, S=S, B=B, H=H)
-    projector = make_ball_tanh_projector(S=S, A=A)
+    const = certified_tanh_svd_mlp_multiclass_constants(
+        A=A,
+        Lambda=Lambda,
+        B=B,
+        H=H,
+    )
+    lz = const["L_z"]
+    projector = make_ball_svd_multiclass_projector(Lambda=Lambda, A=A)
+
+    def make_model():
+        return make_ball_svd_tanh_multiclass_net(
+            d_in=X_train.shape[1],
+            hidden_dim=H,
+            num_classes=num_classes,
+            rank=rank,
+            key=jr.PRNGKey(0),
+            init_project=True,
+            Lambda=Lambda,
+            A=A,
+        )
+
+    model0 = make_model()
+    check_hidden_basis_orthonormal(model0)
+    check_ball_svd_multiclass_constraints(model0, Lambda=Lambda, A=A)
+
+    full_rank = full_hidden_rank(X_train.shape[1], H)
 
     print("=" * 80)
-    print("Ball-tanh demo setup")
+    print("Ball-SVD-multiclass-tanh demo setup")
     print("=" * 80)
-    print(f"H={H}, A={A}, S={S}, B={B}, r={r}, C={clip_norm}")
+    print(
+        f"K={num_classes}, H={H}, rank={model0.rank}, full_rank={full_rank}, "
+        f"A={A}, Lambda={Lambda}, B={B}, r={r}, C={clip_norm}"
+    )
+    print(f"softmax l2 Lipschitz constant = {const['softmax_lipschitz']:.6f}")
+    print(f"||softmax-e_y||_2 upper bound = {const['softmax_residual_l2_bound']:.6f}")
     print(f"L_z = {lz:.6f}")
     print(f"L_z * r = {lz * r:.6f}")
     print(f"2C = {2.0 * clip_norm:.6f}")
@@ -282,8 +367,8 @@ if __name__ == "__main__":
     # 3) Shared training/accounting hyperparameters
     # ------------------------------------------------------------
     learning_rate = 3e-2
-    num_steps = 250
-    batch_size = 64
+    num_steps = 300
+    batch_size = 96
     eval_every = 25
     eval_batch_size = 512
     delta = 1e-5
@@ -291,18 +376,7 @@ if __name__ == "__main__":
     seed = 123
     orders = (2, 3, 4, 5, 8, 16, 32, 64, 128)
 
-    optimizer = optax.adam(learning_rate)
-
-    def make_model():
-        # Fresh model each time; projected at init so the theorem starts valid.
-        return make_ball_tanh_net(
-            d_in=X_train.shape[1],
-            hidden_dim=H,
-            key=jr.PRNGKey(0),
-            init_project=True,
-            S=S,
-            A=A,
-        )
+    optimizer = make_ball_svd_multiclass_adam(model0, learning_rate=learning_rate)
 
     def fit_release(
         *,
@@ -310,8 +384,6 @@ if __name__ == "__main__":
         noise_multiplier: float,
         epsilon: float | None,
     ):
-        # do use privacy="standard_dp" / "standard_rdp" to compare with normal DP/RDP
-        # Keep orders identical to the accountant-only calibration orders.
         return fit_ball_sgd(
             model=make_model(),
             optimizer=optimizer,
@@ -329,7 +401,7 @@ if __name__ == "__main__":
             clip_norm=clip_norm,
             noise_multiplier=noise_multiplier,
             orders=orders,
-            loss_name="binary_logistic",
+            loss_name="softmax_cross_entropy",
             checkpoint_selection="best_public_eval_accuracy",
             eval_every=eval_every,
             eval_batch_size=eval_batch_size,
@@ -340,7 +412,7 @@ if __name__ == "__main__":
         )
 
     # ------------------------------------------------------------
-    # 4) Same-noise comparison (accountant only; no training needed)
+    # 4) Same-noise comparison (accountant only)
     # ------------------------------------------------------------
     shared_noise_multiplier = 1.0
 
@@ -369,20 +441,16 @@ if __name__ == "__main__":
         orders=orders,
     )
 
-    eps_ball_same_noise = float(same_noise_ball["epsilon"])
-    eps_std_same_noise = float(same_noise_std["epsilon"])
-
     print("=" * 80)
     print("Same-noise comparison (accountant only)")
     print("=" * 80)
     print(f"shared noise multiplier = {shared_noise_multiplier:.6f}")
-    print(f"Ball epsilon     = {eps_ball_same_noise:.6f}")
-    print(f"Standard epsilon = {eps_std_same_noise:.6f}")
-    print("At the same noise, Ball should certify a smaller (or equal) epsilon.")
+    print(f"Ball epsilon     = {float(same_noise_ball['epsilon']):.6f}")
+    print(f"Standard epsilon = {float(same_noise_std['epsilon']):.6f}")
     print()
 
     # ------------------------------------------------------------
-    # 5) Matched-epsilon calibration (accountant only; no training needed)
+    # 5) Matched-epsilon calibration (accountant only)
     # ------------------------------------------------------------
     calib_ball = calibrate_ball_sgd_noise_multiplier(
         dataset_size=len(X_train),
@@ -491,11 +559,14 @@ if __name__ == "__main__":
     print()
 
     # ------------------------------------------------------------
-    # 8) Visual comparison of matched-epsilon runs
+    # 8) Visual comparison
     # ------------------------------------------------------------
     plot_release_comparison(
         release_ball,
         release_std,
-        labels=("Ball-DP (matched ε)", "Standard DP (matched ε)"),
+        labels=(
+            "Ball-DP SVD multiclass (matched ε)",
+            "Standard DP SVD multiclass (matched ε)",
+        ),
         metric_keys=("public_eval_accuracy", "public_eval_loss"),
     )

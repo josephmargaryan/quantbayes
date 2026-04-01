@@ -1,24 +1,28 @@
-# quantbayes/ball_dp/nonconvex/models/ball_net.py
 from __future__ import annotations
 
 import math
 from typing import Any, Callable
 
 import equinox as eqx
-import optax
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import optax
 
 
 Array = jax.Array
 
 
-class BallTanhNet(eqx.Module):
-    """One-hidden-layer tanh MLP matching the theorem:
+class BallTanhOpNet(eqx.Module):
+    """One-hidden-layer tanh MLP with theorem-backed operator-norm control:
          f(x) = (1/sqrt(H)) * a^T tanh(Wx + b)
 
-    hidden bias is allowed; output bias is omitted.
+    Hidden bias is allowed; output bias is omitted.
+
+    This is the dense operator-norm baseline:
+      - hidden layer is a standard dense layer
+      - theorem/control uses ||W||_op <= Lambda
+      - projection onto the operator-norm ball is exact via SVD
     """
 
     hidden: eqx.nn.Linear
@@ -63,26 +67,26 @@ class BallTanhNet(eqx.Module):
         return logit, state
 
 
-def make_ball_tanh_net(
+def make_ball_tanh_op_net(
     d_in: int,
     hidden_dim: int,
     *,
     key: Array,
     dtype=None,
     init_project: bool = False,
-    S: float | None = None,
+    Lambda: float | None = None,
     A: float | None = None,
-) -> BallTanhNet:
-    model = BallTanhNet(
+) -> BallTanhOpNet:
+    model = BallTanhOpNet(
         d_in=d_in,
         hidden_dim=hidden_dim,
         key=key,
         dtype=dtype,
     )
     if init_project:
-        if S is None or A is None:
-            raise ValueError("init_project=True requires both S and A.")
-        model = project_ball_tanh_params(model, S=float(S), A=float(A))
+        if Lambda is None or A is None:
+            raise ValueError("init_project=True requires both Lambda and A.")
+        model = project_ball_tanh_op_params(model, Lambda=float(Lambda), A=float(A))
     return model
 
 
@@ -90,15 +94,16 @@ def tanh_kappa() -> float:
     return 4.0 / (3.0 * math.sqrt(3.0))
 
 
-def certified_tanh_mlp_constants(
+def certified_tanh_mlp_op_constants(
     *,
     A: float,
-    S: float,
+    Lambda: float,
     B: float,
     H: int,
 ) -> dict[str, float]:
-    if A < 0.0 or S < 0.0 or B < 0.0:
-        raise ValueError("A, S, B must be nonnegative.")
+    """Theorem-backed constants for the dense operator-norm tanh MLP."""
+    if A < 0.0 or Lambda < 0.0 or B < 0.0:
+        raise ValueError("A, Lambda, B must be nonnegative.")
     if H <= 0:
         raise ValueError("H must be positive.")
 
@@ -108,10 +113,14 @@ def certified_tanh_mlp_constants(
     L_f = (
         1.0
         / sqrt_H
-        * math.sqrt(S * S + (A * kappa * S) ** 2 + (A * (kappa * S * B + 1.0)) ** 2)
+        * math.sqrt(
+            Lambda * Lambda
+            + (A * kappa * Lambda) ** 2
+            + (A * (kappa * Lambda * B + 1.0)) ** 2
+        )
     )
     G_f = math.sqrt(1.0 + (A * A * (1.0 + B * B)) / float(H))
-    L_z = L_f + (A * S / (4.0 * sqrt_H)) * G_f
+    L_z = L_f + (A * Lambda / (4.0 * sqrt_H)) * G_f
 
     return {
         "kappa_tanh": kappa,
@@ -121,26 +130,36 @@ def certified_tanh_mlp_constants(
     }
 
 
-def certified_tanh_mlp_lz(
+def certified_tanh_mlp_op_lz(
     *,
     A: float,
-    S: float,
+    Lambda: float,
     B: float,
     H: int,
 ) -> float:
-    return certified_tanh_mlp_constants(A=A, S=S, B=B, H=H)["L_z"]
+    return certified_tanh_mlp_op_constants(
+        A=A,
+        Lambda=Lambda,
+        B=B,
+        H=H,
+    )["L_z"]
 
 
-def _project_fro(weight: jnp.ndarray, radius: float) -> jnp.ndarray:
+def _top_singular_value(weight: jnp.ndarray) -> jnp.ndarray:
+    s = jnp.linalg.svd(jnp.asarray(weight), full_matrices=False, compute_uv=False)
+    return s[0]
+
+
+def _project_spectral(weight: jnp.ndarray, radius: float) -> jnp.ndarray:
+    """Exact Frobenius projection onto the operator-norm ball {||W||_op <= radius}."""
     if not math.isfinite(radius):
         return weight
-    norm = jnp.linalg.norm(weight)
-    scale = jnp.minimum(
-        jnp.asarray(1.0, dtype=weight.dtype),
-        jnp.asarray(radius, dtype=weight.dtype)
-        / jnp.maximum(norm, jnp.asarray(1e-12, dtype=weight.dtype)),
-    )
-    return weight * scale
+
+    U, s, Vh = jnp.linalg.svd(jnp.asarray(weight), full_matrices=False)
+    bound = jnp.asarray(radius, dtype=s.dtype)
+    s_proj = jnp.minimum(s, bound)
+    out = U @ (s_proj[:, None] * Vh)
+    return out.astype(weight.dtype)
 
 
 def _project_l2(vec: jnp.ndarray, radius: float) -> jnp.ndarray:
@@ -155,12 +174,22 @@ def _project_l2(vec: jnp.ndarray, radius: float) -> jnp.ndarray:
     return vec * scale
 
 
-def project_ball_tanh_params(params: BallTanhNet, *, S: float, A: float) -> BallTanhNet:
-    """Project either a full BallTanhNet or its parameter pytree."""
-    if S < 0.0 or A < 0.0:
-        raise ValueError("S and A must be nonnegative.")
+def project_ball_tanh_op_params(
+    params: BallTanhOpNet,
+    *,
+    Lambda: float,
+    A: float,
+) -> BallTanhOpNet:
+    """Project the theorem-backed trainable parameters.
 
-    new_hidden_weight = _project_fro(params.hidden.weight, float(S))
+    Projects:
+      - hidden weight onto the operator-norm ball of radius Lambda
+      - output head onto the l2 ball of radius A
+    """
+    if Lambda < 0.0 or A < 0.0:
+        raise ValueError("Lambda and A must be nonnegative.")
+
+    new_hidden_weight = _project_spectral(params.hidden.weight, float(Lambda))
     new_out_weight = _project_l2(params.out.weight.reshape(-1), float(A)).reshape(
         params.out.weight.shape
     )
@@ -170,41 +199,20 @@ def project_ball_tanh_params(params: BallTanhNet, *, S: float, A: float) -> Ball
     return params
 
 
-def make_ball_tanh_projector(*, S: float, A: float) -> Callable[[Any], Any]:
+def make_ball_tanh_op_projector(*, Lambda: float, A: float) -> Callable[[Any], Any]:
     """Return a post-update projector on the full model."""
 
     def projector(model: Any) -> Any:
-        return project_ball_tanh_params(model, S=S, A=A)
+        return project_ball_tanh_op_params(model, Lambda=Lambda, A=A)
 
     return projector
 
 
-def check_ball_tanh_constraints(
-    model: BallTanhNet,
-    *,
-    S: float,
-    A: float,
-    atol: float = 1e-6,
-) -> None:
-    """Check the theorem-backed Ball constraints for the binary tanh MLP."""
-    w_norm = float(jnp.linalg.norm(model.hidden.weight))
-    a_norm = float(jnp.linalg.norm(model.out.weight.reshape(-1)))
-
-    if w_norm > float(S) + float(atol):
-        raise ValueError(
-            f"Hidden Frobenius bound violated: ||W||_F={w_norm:.8g} > S={float(S):.8g}."
-        )
-    if a_norm > float(A) + float(atol):
-        raise ValueError(
-            f"Output-head bound violated: ||a||_2={a_norm:.8g} > A={float(A):.8g}."
-        )
-
-
-def make_ball_tanh_adam(
+def make_ball_tanh_op_adam(
     *,
     learning_rate: float,
 ) -> optax.GradientTransformation:
-    """Minimal optimizer helper for the theorem-backed binary tanh MLP."""
+    """Minimal optimizer helper for the theorem-backed dense operator-norm model."""
     return optax.adam(float(learning_rate))
 
 
@@ -217,11 +225,29 @@ def check_input_bound(X: jnp.ndarray, *, B: float, atol: float = 1e-6) -> None:
         )
 
 
+def check_ball_tanh_op_constraints(
+    model: BallTanhOpNet,
+    *,
+    Lambda: float,
+    A: float,
+    atol: float = 1e-6,
+) -> None:
+    sigma = float(_top_singular_value(model.hidden.weight))
+    a_norm = float(jnp.linalg.norm(model.out.weight.reshape(-1)))
+
+    if sigma > float(Lambda) + float(atol):
+        raise ValueError(
+            f"Hidden operator bound violated: ||W||_op={sigma:.8g} > Lambda={float(Lambda):.8g}."
+        )
+    if a_norm > float(A) + float(atol):
+        raise ValueError(
+            f"Output-head bound violated: ||a||_2={a_norm:.8g} > A={float(A):.8g}."
+        )
+
+
 if __name__ == "__main__":
     import numpy as np
-    import jax.numpy as jnp
     import jax.random as jr
-    import optax
     from sklearn.datasets import make_moons
     from sklearn.model_selection import train_test_split
 
@@ -242,7 +268,6 @@ if __name__ == "__main__":
     X = X.astype(np.float32)
     y = y.astype(np.int32)
 
-    # Public preprocessing to enforce the theorem assumption ||x||_2 <= B.
     X_norms = np.linalg.norm(X, axis=1, keepdims=True)
     X = X / np.maximum(X_norms, 1e-12)
     B = 1.0
@@ -256,26 +281,43 @@ if __name__ == "__main__":
     )
 
     # ------------------------------------------------------------
-    # 2) Theorem-backed Ball-tanh model constants
+    # 2) Theorem-backed dense operator-norm tanh model constants
     # ------------------------------------------------------------
     H = 64
     A = 1.0
-    S = 1.0
+    Lambda = 1.0
     r = 1.0
     clip_norm = 1.0
 
-    lz = certified_tanh_mlp_lz(A=A, S=S, B=B, H=H)
-    projector = make_ball_tanh_projector(S=S, A=A)
+    lz = certified_tanh_mlp_op_lz(A=A, Lambda=Lambda, B=B, H=H)
+    projector = make_ball_tanh_op_projector(Lambda=Lambda, A=A)
+
+    def make_model():
+        return make_ball_tanh_op_net(
+            d_in=X_train.shape[1],
+            hidden_dim=H,
+            key=jr.PRNGKey(0),
+            init_project=True,
+            Lambda=Lambda,
+            A=A,
+        )
+
+    model0 = make_model()
+    check_ball_tanh_op_constraints(model0, Lambda=Lambda, A=A)
 
     print("=" * 80)
-    print("Ball-tanh demo setup")
+    print("Ball-operator-norm-tanh demo setup")
     print("=" * 80)
-    print(f"H={H}, A={A}, S={S}, B={B}, r={r}, C={clip_norm}")
+    print(f"H={H}, A={A}, Lambda={Lambda}, B={B}, r={r}, C={clip_norm}")
     print(f"L_z = {lz:.6f}")
     print(f"L_z * r = {lz * r:.6f}")
     print(f"2C = {2.0 * clip_norm:.6f}")
     print(f"(L_z * r) / (2C) = {(lz * r) / (2.0 * clip_norm):.6f}")
     print(f"Strict Ball sensitivity improvement? {(lz * r) < (2.0 * clip_norm)}")
+    print(f"init ||W||_op = {float(_top_singular_value(model0.hidden.weight)):.6f}")
+    print(
+        f"init ||a||_2  = {float(jnp.linalg.norm(model0.out.weight.reshape(-1))):.6f}"
+    )
     print()
 
     # ------------------------------------------------------------
@@ -291,18 +333,7 @@ if __name__ == "__main__":
     seed = 123
     orders = (2, 3, 4, 5, 8, 16, 32, 64, 128)
 
-    optimizer = optax.adam(learning_rate)
-
-    def make_model():
-        # Fresh model each time; projected at init so the theorem starts valid.
-        return make_ball_tanh_net(
-            d_in=X_train.shape[1],
-            hidden_dim=H,
-            key=jr.PRNGKey(0),
-            init_project=True,
-            S=S,
-            A=A,
-        )
+    optimizer = make_ball_tanh_op_adam(learning_rate=learning_rate)
 
     def fit_release(
         *,
@@ -310,8 +341,6 @@ if __name__ == "__main__":
         noise_multiplier: float,
         epsilon: float | None,
     ):
-        # do use privacy="standard_dp" / "standard_rdp" to compare with normal DP/RDP
-        # Keep orders identical to the accountant-only calibration orders.
         return fit_ball_sgd(
             model=make_model(),
             optimizer=optimizer,
@@ -340,7 +369,7 @@ if __name__ == "__main__":
         )
 
     # ------------------------------------------------------------
-    # 4) Same-noise comparison (accountant only; no training needed)
+    # 4) Same-noise comparison (accountant only)
     # ------------------------------------------------------------
     shared_noise_multiplier = 1.0
 
@@ -369,20 +398,16 @@ if __name__ == "__main__":
         orders=orders,
     )
 
-    eps_ball_same_noise = float(same_noise_ball["epsilon"])
-    eps_std_same_noise = float(same_noise_std["epsilon"])
-
     print("=" * 80)
     print("Same-noise comparison (accountant only)")
     print("=" * 80)
     print(f"shared noise multiplier = {shared_noise_multiplier:.6f}")
-    print(f"Ball epsilon     = {eps_ball_same_noise:.6f}")
-    print(f"Standard epsilon = {eps_std_same_noise:.6f}")
-    print("At the same noise, Ball should certify a smaller (or equal) epsilon.")
+    print(f"Ball epsilon     = {float(same_noise_ball['epsilon']):.6f}")
+    print(f"Standard epsilon = {float(same_noise_std['epsilon']):.6f}")
     print()
 
     # ------------------------------------------------------------
-    # 5) Matched-epsilon calibration (accountant only; no training needed)
+    # 5) Matched-epsilon calibration (accountant only)
     # ------------------------------------------------------------
     calib_ball = calibrate_ball_sgd_noise_multiplier(
         dataset_size=len(X_train),
@@ -491,11 +516,14 @@ if __name__ == "__main__":
     print()
 
     # ------------------------------------------------------------
-    # 8) Visual comparison of matched-epsilon runs
+    # 8) Visual comparison
     # ------------------------------------------------------------
     plot_release_comparison(
         release_ball,
         release_std,
-        labels=("Ball-DP (matched ε)", "Standard DP (matched ε)"),
+        labels=(
+            "Ball-DP operator-norm (matched ε)",
+            "Standard DP operator-norm (matched ε)",
+        ),
         metric_keys=("public_eval_accuracy", "public_eval_loss"),
     )

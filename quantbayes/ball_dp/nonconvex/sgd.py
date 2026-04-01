@@ -27,6 +27,7 @@ from .per_example import (
     PredictFn,
     add_gaussian_noise,
     clip_and_aggregate_per_example_grads,
+    combine_model,
     default_predict_fn,
     make_batched_predict_fn,
     make_parameter_regularizer_grad_fn,
@@ -318,6 +319,7 @@ def _make_train_step(
     per_example_grad_fn,
     regularizer_grad_fn,
     normalize_noisy_sum_by: str,
+    static: Any,
     param_projector=None,
 ):
     @eqx.filter_jit
@@ -378,7 +380,9 @@ def _make_train_step(
         params = optax.apply_updates(params, updates)
 
         if param_projector is not None:
-            params = param_projector(params)
+            full_model = combine_model(params, static)
+            projected_model = param_projector(full_model)
+            params, _ = partition_model(projected_model)
 
         return params, opt_state, mean_norm, max_norm, clip_frac, sanitized_grad
 
@@ -891,6 +895,7 @@ def _run_training(
         per_example_grad_fn=per_example_grad_fn,
         regularizer_grad_fn=regularizer_grad_fn,
         normalize_noisy_sum_by=str(cfg.normalize_noisy_sum_by),
+        static=static,
         param_projector=param_projector,
     )
 

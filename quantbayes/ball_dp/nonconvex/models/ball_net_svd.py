@@ -1,46 +1,146 @@
-# quantbayes/ball_dp/nonconvex/models/ball_net.py
+# quantbayes/ball_dp/nonconvex/models/ball_net_svd.py
+
 from __future__ import annotations
 
 import math
 from typing import Any, Callable
 
 import equinox as eqx
-import optax
 import jax
 import jax.numpy as jnp
 import jax.random as jr
+import optax
+
+from quantbayes.stochax.utils.optim_util import make_freeze_mask
 
 
 Array = jax.Array
 
 
-class BallTanhNet(eqx.Module):
-    """One-hidden-layer tanh MLP matching the theorem:
-         f(x) = (1/sqrt(H)) * a^T tanh(Wx + b)
+class SVDDense(eqx.Module):
+    """Fixed-basis rectangular SVD dense used by the Ball-DP theorem model.
 
-    hidden bias is allowed; output bias is omitted.
+    This is intentionally theorem-specific:
+      W = U diag(s) V^T
+    with U and V frozen orthonormal factors and only s trainable.
     """
 
-    hidden: eqx.nn.Linear
+    in_features: int = eqx.field(static=True)
+    out_features: int = eqx.field(static=True)
+    rank: int = eqx.field(static=True)
+
+    U: jnp.ndarray  # (out_features, rank)
+    V: jnp.ndarray  # (in_features,  rank)
+    s: jnp.ndarray  # (rank,)
+    bias: jnp.ndarray  # (out_features,)
+
+    def __init__(self, U, V, s, bias):
+        U = jnp.asarray(U)
+        V = jnp.asarray(V)
+        s = jnp.asarray(s)
+        bias = jnp.asarray(bias)
+
+        r = int(s.shape[0])
+        if U.shape != (bias.shape[0], r):
+            raise ValueError(
+                f"Expected U.shape={(bias.shape[0], r)}, got {tuple(U.shape)}."
+            )
+        if V.shape[1] != r:
+            raise ValueError(f"Expected V.shape[1]={r}, got {V.shape[1]}.")
+
+        self.in_features = int(V.shape[0])
+        self.out_features = int(U.shape[0])
+        self.rank = r
+
+        self.U = U
+        self.V = V
+        self.s = s
+        self.bias = bias
+
+    @classmethod
+    def from_linear(cls, lin: eqx.nn.Linear, *, rank: int | None = None):
+        """Exact SVD warm-start from an eqx.nn.Linear."""
+        W = jnp.asarray(lin.weight)  # (out, in)
+        U, s, Vh = jnp.linalg.svd(W, full_matrices=False)
+
+        if rank is not None:
+            r = int(rank)
+            if r <= 0:
+                raise ValueError("rank must be positive.")
+            r = min(r, int(s.shape[0]))
+            U = U[:, :r]
+            s = s[:r]
+            Vh = Vh[:r, :]
+
+        V = Vh.T
+        bias = (
+            jnp.asarray(lin.bias)
+            if getattr(lin, "bias", None) is not None
+            else jnp.zeros((W.shape[0],), dtype=W.dtype)
+        )
+        return cls(U=U, V=V, s=s, bias=bias)
+
+    def __call__(self, x: jnp.ndarray) -> jnp.ndarray:
+        x = jnp.asarray(x)
+        U = jax.lax.stop_gradient(self.U)
+        V = jax.lax.stop_gradient(self.V)
+
+        z = x @ V
+        z = z * self.s
+        y = z @ U.T
+        return y + self.bias
+
+    def __operator_norm_hint__(self):
+        return jnp.max(jnp.abs(self.s)).astype(jnp.float32)
+
+
+# This theorem-specific layer uses a genuinely fixed basis.
+# Keep an explicit alias to distinguish it conceptually from the generic
+# stochax SVDDense layer, which is intended for broader spectral experiments.
+FixedBasisSVDDense = SVDDense
+
+
+def full_hidden_rank(d_in: int, hidden_dim: int) -> int:
+    """Maximum rank available for the hidden map W ∈ R^{hidden_dim × d_in}."""
+    return min(int(d_in), int(hidden_dim))
+
+
+class BallSVDTanhNet(eqx.Module):
+    """One-hidden-layer tanh MLP with fixed-basis SVD hidden layer:
+
+         f(x) = (1/sqrt(H)) * a^T tanh(U diag(s) V^T x + b)
+
+    The theorem-backed trainable parameters are:
+      - hidden singular values s
+      - hidden bias b
+      - output head a
+    while U and V remain fixed.
+    """
+
+    hidden: SVDDense
     out: eqx.nn.Linear
     hidden_dim: int = eqx.field(static=True)
+    rank: int = eqx.field(static=True)
 
     def __init__(
         self,
         d_in: int,
         hidden_dim: int,
         *,
+        rank: int | None = None,
         key: Array,
         dtype=None,
     ):
         k1, k2 = jr.split(key, 2)
-        self.hidden = eqx.nn.Linear(
+
+        dense_hidden = eqx.nn.Linear(
             d_in,
             hidden_dim,
             use_bias=True,
             dtype=dtype,
             key=k1,
         )
+        self.hidden = SVDDense.from_linear(dense_hidden, rank=rank)
         self.out = eqx.nn.Linear(
             hidden_dim,
             1,
@@ -48,7 +148,9 @@ class BallTanhNet(eqx.Module):
             dtype=dtype,
             key=k2,
         )
+
         self.hidden_dim = int(hidden_dim)
+        self.rank = int(self.hidden.rank)
 
     def __call__(
         self,
@@ -63,42 +165,100 @@ class BallTanhNet(eqx.Module):
         return logit, state
 
 
-def make_ball_tanh_net(
+def make_ball_svd_tanh_net(
     d_in: int,
     hidden_dim: int,
     *,
+    rank: int | None = None,
     key: Array,
     dtype=None,
     init_project: bool = False,
-    S: float | None = None,
+    Lambda: float | None = None,
     A: float | None = None,
-) -> BallTanhNet:
-    model = BallTanhNet(
+) -> BallSVDTanhNet:
+    model = BallSVDTanhNet(
         d_in=d_in,
         hidden_dim=hidden_dim,
+        rank=rank,
         key=key,
         dtype=dtype,
     )
     if init_project:
-        if S is None or A is None:
-            raise ValueError("init_project=True requires both S and A.")
-        model = project_ball_tanh_params(model, S=float(S), A=float(A))
+        if Lambda is None or A is None:
+            raise ValueError("init_project=True requires both Lambda and A.")
+        model = project_ball_svd_params(model, Lambda=float(Lambda), A=float(A))
     return model
+
+
+def make_ball_svd_tanh_net_from_dense(
+    dense_model: Any,
+    *,
+    rank: int | None = None,
+    init_project: bool = False,
+    Lambda: float | None = None,
+    A: float | None = None,
+) -> BallSVDTanhNet:
+    """Build a fixed-basis Ball-SVD tanh net from a trained dense tanh model.
+
+    Intended use:
+      1) train a public-only dense BallTanhNet (or any duck-typed equivalent)
+      2) compute the SVD of its hidden layer
+      3) freeze U,V and private-train only s,b,a
+
+    The output head is copied from the dense model.
+    """
+    hidden_weight = jnp.asarray(dense_model.hidden.weight)
+    d_in = int(hidden_weight.shape[1])
+    hidden_dim = int(hidden_weight.shape[0])
+    dtype = hidden_weight.dtype
+
+    model = BallSVDTanhNet(
+        d_in=d_in,
+        hidden_dim=hidden_dim,
+        rank=rank,
+        key=jr.PRNGKey(0),
+        dtype=dtype,
+    )
+    hidden = FixedBasisSVDDense.from_linear(dense_model.hidden, rank=rank)
+
+    model = eqx.tree_at(lambda m: m.hidden, model, hidden)
+    model = eqx.tree_at(lambda m: m.out, model, dense_model.out)
+
+    if init_project:
+        if Lambda is None or A is None:
+            raise ValueError("init_project=True requires both Lambda and A.")
+        model = project_ball_svd_params(model, Lambda=float(Lambda), A=float(A))
+
+    return model
+
+
+def svd_frobenius_energy_fraction(weight: jnp.ndarray, rank: int | None) -> float:
+    """Return the retained Frobenius-energy fraction of the rank-r truncated SVD."""
+    s = jnp.linalg.svd(jnp.asarray(weight), compute_uv=False)
+    r_eff = int(s.shape[0]) if rank is None else min(int(rank), int(s.shape[0]))
+    num = jnp.sum(s[:r_eff] ** 2)
+    den = jnp.sum(s**2)
+    frac = num / jnp.maximum(den, jnp.asarray(1e-12, dtype=s.dtype))
+    return float(frac)
 
 
 def tanh_kappa() -> float:
     return 4.0 / (3.0 * math.sqrt(3.0))
 
 
-def certified_tanh_mlp_constants(
+def certified_tanh_svd_mlp_constants(
     *,
     A: float,
-    S: float,
+    Lambda: float,
     B: float,
     H: int,
 ) -> dict[str, float]:
-    if A < 0.0 or S < 0.0 or B < 0.0:
-        raise ValueError("A, S, B must be nonnegative.")
+    """The theorem-backed constants for the fixed-basis SVD tanh MLP.
+
+    Note: the explicit bound depends on H, A, Lambda, B, but not directly on rank.
+    """
+    if A < 0.0 or Lambda < 0.0 or B < 0.0:
+        raise ValueError("A, Lambda, B must be nonnegative.")
     if H <= 0:
         raise ValueError("H must be positive.")
 
@@ -108,10 +268,14 @@ def certified_tanh_mlp_constants(
     L_f = (
         1.0
         / sqrt_H
-        * math.sqrt(S * S + (A * kappa * S) ** 2 + (A * (kappa * S * B + 1.0)) ** 2)
+        * math.sqrt(
+            Lambda * Lambda
+            + (A * kappa * Lambda) ** 2
+            + (A * (kappa * Lambda * B + 1.0)) ** 2
+        )
     )
     G_f = math.sqrt(1.0 + (A * A * (1.0 + B * B)) / float(H))
-    L_z = L_f + (A * S / (4.0 * sqrt_H)) * G_f
+    L_z = L_f + (A * Lambda / (4.0 * sqrt_H)) * G_f
 
     return {
         "kappa_tanh": kappa,
@@ -121,26 +285,26 @@ def certified_tanh_mlp_constants(
     }
 
 
-def certified_tanh_mlp_lz(
+def certified_tanh_svd_mlp_lz(
     *,
     A: float,
-    S: float,
+    Lambda: float,
     B: float,
     H: int,
 ) -> float:
-    return certified_tanh_mlp_constants(A=A, S=S, B=B, H=H)["L_z"]
+    return certified_tanh_svd_mlp_constants(
+        A=A,
+        Lambda=Lambda,
+        B=B,
+        H=H,
+    )["L_z"]
 
 
-def _project_fro(weight: jnp.ndarray, radius: float) -> jnp.ndarray:
+def _project_linf(vec: jnp.ndarray, radius: float) -> jnp.ndarray:
     if not math.isfinite(radius):
-        return weight
-    norm = jnp.linalg.norm(weight)
-    scale = jnp.minimum(
-        jnp.asarray(1.0, dtype=weight.dtype),
-        jnp.asarray(radius, dtype=weight.dtype)
-        / jnp.maximum(norm, jnp.asarray(1e-12, dtype=weight.dtype)),
-    )
-    return weight * scale
+        return vec
+    bound = jnp.asarray(radius, dtype=vec.dtype)
+    return jnp.clip(vec, -bound, bound)
 
 
 def _project_l2(vec: jnp.ndarray, radius: float) -> jnp.ndarray:
@@ -155,57 +319,62 @@ def _project_l2(vec: jnp.ndarray, radius: float) -> jnp.ndarray:
     return vec * scale
 
 
-def project_ball_tanh_params(params: BallTanhNet, *, S: float, A: float) -> BallTanhNet:
-    """Project either a full BallTanhNet or its parameter pytree."""
-    if S < 0.0 or A < 0.0:
-        raise ValueError("S and A must be nonnegative.")
+def project_ball_svd_params(
+    params: BallSVDTanhNet,
+    *,
+    Lambda: float,
+    A: float,
+) -> BallSVDTanhNet:
+    """Project the theorem-backed trainable parameters.
 
-    new_hidden_weight = _project_fro(params.hidden.weight, float(S))
+    Projects:
+      - hidden singular values s onto the l_infinity ball of radius Lambda
+      - output head a onto the l2 ball of radius A
+
+    Leaves hidden U, V, and b unchanged.
+    """
+    if Lambda < 0.0 or A < 0.0:
+        raise ValueError("Lambda and A must be nonnegative.")
+
+    new_s = _project_linf(params.hidden.s, float(Lambda))
     new_out_weight = _project_l2(params.out.weight.reshape(-1), float(A)).reshape(
         params.out.weight.shape
     )
 
-    params = eqx.tree_at(lambda m: m.hidden.weight, params, new_hidden_weight)
+    params = eqx.tree_at(lambda m: m.hidden.s, params, new_s)
     params = eqx.tree_at(lambda m: m.out.weight, params, new_out_weight)
     return params
 
 
-def make_ball_tanh_projector(*, S: float, A: float) -> Callable[[Any], Any]:
+def make_ball_svd_projector(*, Lambda: float, A: float) -> Callable[[Any], Any]:
     """Return a post-update projector on the full model."""
 
     def projector(model: Any) -> Any:
-        return project_ball_tanh_params(model, S=S, A=A)
+        return project_ball_svd_params(model, Lambda=Lambda, A=A)
 
     return projector
 
 
-def check_ball_tanh_constraints(
-    model: BallTanhNet,
-    *,
-    S: float,
-    A: float,
-    atol: float = 1e-6,
-) -> None:
-    """Check the theorem-backed Ball constraints for the binary tanh MLP."""
-    w_norm = float(jnp.linalg.norm(model.hidden.weight))
-    a_norm = float(jnp.linalg.norm(model.out.weight.reshape(-1)))
-
-    if w_norm > float(S) + float(atol):
-        raise ValueError(
-            f"Hidden Frobenius bound violated: ||W||_F={w_norm:.8g} > S={float(S):.8g}."
-        )
-    if a_norm > float(A) + float(atol):
-        raise ValueError(
-            f"Output-head bound violated: ||a||_2={a_norm:.8g} > A={float(A):.8g}."
-        )
+def make_ball_svd_freeze_mask(model: Any):
+    """Freeze the hidden SVD basis matrices U and V."""
+    return make_freeze_mask(model, names=("U", "V"))
 
 
-def make_ball_tanh_adam(
+def make_ball_svd_adam(
+    model: Any,
     *,
     learning_rate: float,
 ) -> optax.GradientTransformation:
-    """Minimal optimizer helper for the theorem-backed binary tanh MLP."""
-    return optax.adam(float(learning_rate))
+    """Minimal theorem-safe optimizer for BallSVDTanhNet.
+
+    This zeroes updates to U and V before Adam. For AdamW or more elaborate
+    setups, use your build_optimizer(..., prepend=...) path with the same mask.
+    """
+    freeze_mask = make_ball_svd_freeze_mask(model)
+    return optax.chain(
+        optax.masked(optax.set_to_zero(), freeze_mask),
+        optax.adam(float(learning_rate)),
+    )
 
 
 def check_input_bound(X: jnp.ndarray, *, B: float, atol: float = 1e-6) -> None:
@@ -217,12 +386,54 @@ def check_input_bound(X: jnp.ndarray, *, B: float, atol: float = 1e-6) -> None:
         )
 
 
+def check_hidden_basis_orthonormal(
+    model: Any,
+    *,
+    atol: float = 1e-5,
+) -> None:
+    """Check that model.hidden.U and model.hidden.V are column-orthonormal."""
+    U = jnp.asarray(model.hidden.U)
+    V = jnp.asarray(model.hidden.V)
+
+    Iu = U.T @ U
+    Iv = V.T @ V
+
+    err_u = float(jnp.max(jnp.abs(Iu - jnp.eye(U.shape[1], dtype=Iu.dtype))))
+    err_v = float(jnp.max(jnp.abs(Iv - jnp.eye(V.shape[1], dtype=Iv.dtype))))
+
+    if err_u > float(atol):
+        raise ValueError(
+            f"Hidden U is not orthonormal to tolerance {atol:.3g}: max error={err_u:.6g}."
+        )
+    if err_v > float(atol):
+        raise ValueError(
+            f"Hidden V is not orthonormal to tolerance {atol:.3g}: max error={err_v:.6g}."
+        )
+
+
+def check_ball_svd_constraints(
+    model: BallSVDTanhNet,
+    *,
+    Lambda: float,
+    A: float,
+    atol: float = 1e-6,
+) -> None:
+    sigma = float(jnp.max(jnp.abs(model.hidden.s)))
+    a_norm = float(jnp.linalg.norm(model.out.weight.reshape(-1)))
+
+    if sigma > float(Lambda) + float(atol):
+        raise ValueError(
+            f"Hidden operator bound violated: ||s||_inf={sigma:.8g} > Lambda={float(Lambda):.8g}."
+        )
+    if a_norm > float(A) + float(atol):
+        raise ValueError(
+            f"Output-head bound violated: ||a||_2={a_norm:.8g} > A={float(A):.8g}."
+        )
+
+
 if __name__ == "__main__":
     import numpy as np
-    import jax.numpy as jnp
-    import jax.random as jr
-    import optax
-    from sklearn.datasets import make_moons
+    from sklearn.datasets import make_classification
     from sklearn.model_selection import train_test_split
 
     from quantbayes.ball_dp.api import (
@@ -238,7 +449,17 @@ if __name__ == "__main__":
     # ------------------------------------------------------------
     # 1) Synthetic binary dataset with a public input bound ||x||_2 <= 1
     # ------------------------------------------------------------
-    X, y = make_moons(n_samples=2500, noise=0.18, random_state=0)
+    X, y = make_classification(
+        n_samples=2500,
+        n_features=64,
+        n_informative=20,
+        n_redundant=10,
+        n_repeated=0,
+        n_clusters_per_class=2,
+        class_sep=1.25,
+        flip_y=0.03,
+        random_state=0,
+    )
     X = X.astype(np.float32)
     y = y.astype(np.int32)
 
@@ -256,26 +477,50 @@ if __name__ == "__main__":
     )
 
     # ------------------------------------------------------------
-    # 2) Theorem-backed Ball-tanh model constants
+    # 2) Theorem-backed Ball-SVD-tanh model constants
     # ------------------------------------------------------------
     H = 64
+    rank = 32
     A = 1.0
-    S = 1.0
+    Lambda = 1.0
     r = 1.0
     clip_norm = 1.0
 
-    lz = certified_tanh_mlp_lz(A=A, S=S, B=B, H=H)
-    projector = make_ball_tanh_projector(S=S, A=A)
+    lz = certified_tanh_svd_mlp_lz(A=A, Lambda=Lambda, B=B, H=H)
+    projector = make_ball_svd_projector(Lambda=Lambda, A=A)
+
+    def make_model():
+        return make_ball_svd_tanh_net(
+            d_in=X_train.shape[1],
+            hidden_dim=H,
+            rank=rank,
+            key=jr.PRNGKey(0),
+            init_project=True,
+            Lambda=Lambda,
+            A=A,
+        )
+
+    model0 = make_model()
+    check_hidden_basis_orthonormal(model0)
+    check_ball_svd_constraints(model0, Lambda=Lambda, A=A)
 
     print("=" * 80)
-    print("Ball-tanh demo setup")
+    print("Ball-SVD-tanh demo setup")
     print("=" * 80)
-    print(f"H={H}, A={A}, S={S}, B={B}, r={r}, C={clip_norm}")
+    full_rank = full_hidden_rank(X_train.shape[1], H)
+    print(
+        f"H={H}, rank={model0.rank}, full_rank={full_rank}, "
+        f"A={A}, Lambda={Lambda}, B={B}, r={r}, C={clip_norm}"
+    )
     print(f"L_z = {lz:.6f}")
     print(f"L_z * r = {lz * r:.6f}")
     print(f"2C = {2.0 * clip_norm:.6f}")
     print(f"(L_z * r) / (2C) = {(lz * r) / (2.0 * clip_norm):.6f}")
     print(f"Strict Ball sensitivity improvement? {(lz * r) < (2.0 * clip_norm)}")
+    print(f"init ||s||_inf = {float(jnp.max(jnp.abs(model0.hidden.s))):.6f}")
+    print(
+        f"init ||a||_2   = {float(jnp.linalg.norm(model0.out.weight.reshape(-1))):.6f}"
+    )
     print()
 
     # ------------------------------------------------------------
@@ -291,18 +536,7 @@ if __name__ == "__main__":
     seed = 123
     orders = (2, 3, 4, 5, 8, 16, 32, 64, 128)
 
-    optimizer = optax.adam(learning_rate)
-
-    def make_model():
-        # Fresh model each time; projected at init so the theorem starts valid.
-        return make_ball_tanh_net(
-            d_in=X_train.shape[1],
-            hidden_dim=H,
-            key=jr.PRNGKey(0),
-            init_project=True,
-            S=S,
-            A=A,
-        )
+    optimizer = make_ball_svd_adam(model0, learning_rate=learning_rate)
 
     def fit_release(
         *,
@@ -310,8 +544,6 @@ if __name__ == "__main__":
         noise_multiplier: float,
         epsilon: float | None,
     ):
-        # do use privacy="standard_dp" / "standard_rdp" to compare with normal DP/RDP
-        # Keep orders identical to the accountant-only calibration orders.
         return fit_ball_sgd(
             model=make_model(),
             optimizer=optimizer,
@@ -496,6 +728,6 @@ if __name__ == "__main__":
     plot_release_comparison(
         release_ball,
         release_std,
-        labels=("Ball-DP (matched ε)", "Standard DP (matched ε)"),
+        labels=("Ball-DP SVD (matched ε)", "Standard DP SVD (matched ε)"),
         metric_keys=("public_eval_accuracy", "public_eval_loss"),
     )

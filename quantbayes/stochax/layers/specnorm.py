@@ -541,6 +541,7 @@ class SpectralNorm(eqx.Module):
         if not (self.target > 0 and self.safety_factor >= 1.0):
             return None
 
+        cap = jnp.asarray(self.target / self.safety_factor, jnp.float32)
         lyr = self.layer
 
         def _ok(
@@ -563,28 +564,20 @@ class SpectralNorm(eqx.Module):
             return False
 
         if _is_eqx_linear(lyr):
-            return jnp.asarray(self.target, jnp.float32)
+            return cap
 
         if _is_eqx_conv(lyr) or _is_eqx_convT(lyr):
             nd, stride, dilation = _stride_dilation_2d(lyr)
             if nd != 2:
                 return None
-            return (
-                jnp.asarray(self.target, jnp.float32)
-                if _ok(self.conv2d_method, stride, dilation)
-                else None
-            )
+            return cap if _ok(self.conv2d_method, stride, dilation) else None
 
         if _is_param_svd_conv(lyr):
             stride = getattr(lyr, "strides", (1, 1))
             if isinstance(stride, int):
                 stride = (stride, stride)
             stride = (int(stride[0]), int(stride[1]))
-            return (
-                jnp.asarray(self.target, jnp.float32)
-                if _ok(self.param_svd_conv2d_method, stride, (1, 1))
-                else None
-            )
+            return cap if _ok(self.param_svd_conv2d_method, stride, (1, 1)) else None
 
         if _type_name(lyr) in (
             _DENSE_S_NAMES
@@ -594,7 +587,7 @@ class SpectralNorm(eqx.Module):
             | _SPECTRAL_CIRC_1D_NAMES
             | _SPECTRAL_CIRC_2D_NAMES
         ):
-            return jnp.asarray(self.target, jnp.float32)
+            return cap
 
         if hasattr(lyr, "__operator_norm_hint__"):
             try:

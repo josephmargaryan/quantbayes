@@ -22,9 +22,8 @@ from typing import (
     Dict,
 )
 from quantbayes.stochax.utils import EMA, init_ema, update_ema, swap_ema_params
-from quantbayes.stochax.utils.spectral_penalty_tx import specpen_metrics_from_opt_state
 from quantbayes.stochax.utils.regularizers import (
-    global_spectral_penalty,  # backward-compat (your custom spectral hooks)
+    global_spectral_penalty,  # backward-compat
     global_frobenius_penalty,  # L2 on weights (skips bias)
     global_spectral_norm_penalty,  # Σ per-layer σ (exact/TN/FFT)
     sobolev_jacobian_penalty,  # Jacobian Sobolev
@@ -1404,7 +1403,6 @@ def train(
     ema_decay: float = 0.999,
     eval_with_ema: bool = True,
     return_ema: bool = False,
-    specpen_recorder: Optional[Callable[[Dict[str, Any]], None]] = None,
     # -------------------- Global Lipschitz logging -------------------- #
     log_global_bound_every: Optional[int] = None,
     bound_conv_mode: Literal[
@@ -1604,14 +1602,6 @@ def train(
                 lip_conv_input_shape=lip_conv_input_shape,
             )
 
-            if specpen_recorder is not None:
-                try:
-                    m = specpen_metrics_from_opt_state(opt_state)  # optional helper
-                    if m and m.get("lip_updated", False):
-                        specpen_recorder(m)
-                except NameError:
-                    pass  # helper not available; silently skip
-
             # EMA update (outside jit)
             if use_ema and ema is not None:
                 ema = update_ema(ema, model)
@@ -1795,8 +1785,6 @@ def train_on_full_data(
     ema_decay: float = 0.999,
     eval_with_ema: bool = True,
     return_ema: bool = False,
-    # spectral-penalty recorder passthrough
-    specpen_recorder: Optional[Callable[[Dict[str, Any]], None]] = None,
     # ---- global bound logging passthrough ----
     log_global_bound_every: Optional[int] = None,
     bound_conv_mode: Literal[
@@ -1872,7 +1860,6 @@ def train_on_full_data(
         ema_decay=ema_decay,
         eval_with_ema=eval_with_ema,
         return_ema=return_ema,
-        specpen_recorder=specpen_recorder,
         # global Lipschitz logging passthrough
         log_global_bound_every=log_global_bound_every,
         bound_conv_mode=bound_conv_mode,
@@ -1946,8 +1933,6 @@ def train_sam(
     asam_eps: float = 1e-12,
     require_no_batchnorm: bool = True,
     freeze_norm_on_perturbed: bool = True,
-    # logging hooks
-    specpen_recorder: Optional[Callable[[Dict[str, Any]], None]] = None,
     # ---- certified global Lipschitz logging ----
     log_global_bound_every: Optional[int] = None,  # e.g. 5 → compute every 5 epochs
     bound_conv_mode: Literal[
@@ -2067,11 +2052,6 @@ def train_sam(
                 freeze_norm_on_perturbed=freeze_norm_on_perturbed,
                 asam_mask=asam_mask,
             )
-
-            if specpen_recorder is not None:
-                m = specpen_metrics_from_opt_state(opt_state)
-                if m and m.get("lip_updated", False):
-                    specpen_recorder(m)
 
             if use_ema and ema is not None:
                 ema = update_ema(ema, model)
@@ -2255,7 +2235,6 @@ def train_on_full_data_sam(
     asam_eps: float = 1e-12,
     require_no_batchnorm: bool = True,
     freeze_norm_on_perturbed: bool = True,
-    specpen_recorder: Optional[Callable[[Dict[str, Any]], None]] = None,
     # Lipschitz logging passthrough
     log_global_bound_every: Optional[int] = None,
     bound_conv_mode: Literal[
@@ -2334,7 +2313,6 @@ def train_on_full_data_sam(
         asam_eps=asam_eps,
         require_no_batchnorm=require_no_batchnorm,
         freeze_norm_on_perturbed=freeze_norm_on_perturbed,
-        specpen_recorder=specpen_recorder,
         # Lipschitz logging
         log_global_bound_every=log_global_bound_every,
         bound_conv_mode=bound_conv_mode,

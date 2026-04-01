@@ -151,7 +151,6 @@ class EQXBaseEstimator(BaseEstimator):
         predict_batch_size: int = 1024,
         # loss (must be set in subclass default or explicitly by user)
         loss_fn: Optional[Callable] = None,
-        specpen_recorder: Optional[Callable[[Dict[str, Any]], None]] = None,
     ):
         self.model_cls = model_cls
         self.model_kwargs = model_kwargs
@@ -192,7 +191,6 @@ class EQXBaseEstimator(BaseEstimator):
         self.predict_batch_size = predict_batch_size
 
         self.loss_fn = loss_fn
-        self.specpen_recorder = specpen_recorder
 
         # fitted attrs (set in fit)
         # self.model_
@@ -371,7 +369,6 @@ class EQXBaseEstimator(BaseEstimator):
             ema_decay=self.ema_decay,
             eval_with_ema=self.eval_with_ema,
             return_ema=want_ema,
-            specpen_recorder=self.specpen_recorder,
             # SAM-only knobs
             **sam_kwargs,
         )
@@ -452,7 +449,6 @@ class EQXBaseEstimator(BaseEstimator):
                 ema_decay=self.ema_decay,
                 eval_with_ema=self.eval_with_ema,
                 return_ema=False,
-                specpen_recorder=self.specpen_recorder,
                 # SAM-only knobs
                 **sam_kwargs,
             )

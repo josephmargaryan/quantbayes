@@ -644,8 +644,15 @@ def global_spectral_norm_penalty(
 
         # SpectralNorm wrapper: certified cap
         if name == "SpectralNorm" and "spectral" in apply_to:
-            tgt = getattr(x, "target", 1.0)
-            return acc + jnp.asarray(tgt, jnp.float32)
+            try:
+                val = x.__operator_norm_hint__()
+                if val is not None:
+                    return acc + jnp.asarray(val, jnp.float32)
+            except Exception:
+                pass
+            tgt = float(getattr(x, "target", 1.0))
+            sf = float(getattr(x, "safety_factor", 1.0))
+            return acc + jnp.asarray(tgt / max(sf, 1.0), jnp.float32)
 
         # Dense (exact)
         if nn is not None and isinstance(x, getattr(nn, "Linear", ())):
@@ -1226,10 +1233,22 @@ def network_lipschitz_upper(
             current_hw = _pool_out_hw(current_hw, (sH, sW))
             return acc
 
-        # SpectralNorm wrapper: at most 'target'
+        # SpectralNorm wrapper: use its certified cap
         if name == "SpectralNorm":
-            tgt = getattr(x, "target", 1.0)
-            return add_log(acc, jnp.asarray(tgt, LOGDT))
+            if hasattr(x, "__operator_norm_hint__"):
+                sig = x.__operator_norm_hint__()
+                if sig is None:
+                    raise ValueError(
+                        "SpectralNorm layer does not expose a certified operator-norm "
+                        "cap for the current configuration. Provide the required conv "
+                        "shape metadata or avoid using this wrapper in certified "
+                        "Lipschitz logging."
+                    )
+                return add_log(acc, sig)
+
+            tgt = float(getattr(x, "target", 1.0))
+            sf = float(getattr(x, "safety_factor", 1.0))
+            return add_log(acc, jnp.asarray(tgt / max(sf, 1.0), LOGDT))
 
         # Linear (exact)
         if nn is not None and isinstance(x, getattr(nn, "Linear", ())):
@@ -1485,8 +1504,12 @@ def collect_operator_norms(
                 sigma = (
                     x.__operator_norm_hint__()
                     if hasattr(x, "__operator_norm_hint__")
-                    else getattr(x, "target")
+                    else None
                 )
+                if sigma is None:
+                    tgt = float(getattr(x, "target", 1.0))
+                    sf = float(getattr(x, "safety_factor", 1.0))
+                    sigma = jnp.asarray(tgt / max(sf, 1.0), jnp.float32)
                 _record(path, name, float(jnp.asarray(sigma)), "spectral_wrapper")
             except Exception:
                 pass
