@@ -1,3 +1,5 @@
+# quantbayes/stochax/layers/specnorm.py
+
 from __future__ import annotations
 
 import inspect

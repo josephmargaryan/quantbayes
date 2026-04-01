@@ -32,12 +32,6 @@ from .vision_utils import (
 )
 from .optim_util import OptimizerConfig, DecayMaskConfig, LabelConfig, build_optimizer
 
-from .spectral_penalty_tx import (
-    add_spectral_penalty_transform,
-    make_lambda_spec_schedule,
-    make_soft_barrier,
-    SpecPenRecorder,
-)
 from .research_diagnostics import (
     compute_diagnostics,
     pretty_print_diagnostics,
@@ -79,10 +73,6 @@ __all__ = [
     "build_optimizer",
     "expected_calibration_error",
     "brier_score",
-    "add_spectral_penalty_transform",
-    "make_lambda_spec_schedule",
-    "make_soft_barrier",
-    "SpecPenRecorder",
     "compute_diagnostics",
     "pretty_print_diagnostics",
     "plot_margin_distribution",
