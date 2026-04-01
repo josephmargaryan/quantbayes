@@ -112,6 +112,50 @@ def make_ball_svd_tanh_multiclass_net(
         )
     return model
 
+def make_ball_svd_tanh_multiclass_net_from_dense(
+    dense_model: Any,
+    *,
+    rank: int | None = None,
+    init_project: bool = False,
+    Lambda: float | None = None,
+    A: float | None = None,
+) -> BallSVDTanhMulticlassNet:
+    """Build a fixed-basis multiclass Ball-SVD tanh net from a trained dense model.
+
+    Intended use:
+      1) train a public-only dense multiclass tanh model
+      2) compute the SVD of its hidden layer
+      3) freeze U,V and private-train only s,b,M
+    """
+    hidden_weight = jnp.asarray(dense_model.hidden.weight)
+    d_in = int(hidden_weight.shape[1])
+    hidden_dim = int(hidden_weight.shape[0])
+    num_classes = int(dense_model.out.weight.shape[0])
+    dtype = hidden_weight.dtype
+
+    model = BallSVDTanhMulticlassNet(
+        d_in=d_in,
+        hidden_dim=hidden_dim,
+        num_classes=num_classes,
+        rank=rank,
+        key=jr.PRNGKey(0),
+        dtype=dtype,
+    )
+    hidden = FixedBasisSVDDense.from_linear(dense_model.hidden, rank=rank)
+
+    model = eqx.tree_at(lambda m: m.hidden, model, hidden)
+    model = eqx.tree_at(lambda m: m.out, model, dense_model.out)
+
+    if init_project:
+        if Lambda is None or A is None:
+            raise ValueError("init_project=True requires both Lambda and A.")
+        model = project_ball_svd_multiclass_params(
+            model,
+            Lambda=float(Lambda),
+            A=float(A),
+        )
+
+    return model
 
 def softmax_jacobian_lipschitz() -> float:
     return 0.5
