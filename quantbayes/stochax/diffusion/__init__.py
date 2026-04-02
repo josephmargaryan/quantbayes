@@ -31,3 +31,11 @@ from .dataloaders import (
     generate_synthetic_image_dataset,
 )
 from .inference import sample_edm, sample_edm_conditional
+
+from .workflows import (
+    retrofit_diffusion_model,
+    replace_diffusion_linears_with_svd,
+    replace_diffusion_square_linears_with_rfft,
+    make_svd_basis_freeze_mask,
+    make_s_only_freeze_mask,
+)

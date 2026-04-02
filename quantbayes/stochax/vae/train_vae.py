@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, Tuple
+from typing import Callable, Literal, Tuple
 
 import equinox as eqx
 import jax
@@ -44,18 +44,38 @@ def _iterate_minibatches(rng, X, batch_size: int, *, drop_last: bool):
         yield X[perm[start : start + batch_size]]
 
 
-def train_vae(model, data: jnp.ndarray, cfg: TrainConfig):
+def train_vae(
+    model,
+    data: jnp.ndarray,
+    cfg: TrainConfig,
+    *,
+    optimizer: optax.GradientTransformation | None = None,
+    extra_loss_fn: Callable[[object], jnp.ndarray] | None = None,
+):
     """
     Trainer expects model(x, rng, train=True) -> (decoder_out, mu, logvar).
+
+    Parameters
+    ----------
+    optimizer:
+        Optional Optax transformation. Pass this when you want a masked or
+        multi-group optimiser, e.g. to freeze ``SVDDense.U``/``SVDDense.V`` and
+        fine-tune only the singular values ``s`` after retrofitting.
+
+    extra_loss_fn:
+        Optional callable taking the model and returning an additional scalar
+        loss term to add to the ELBO objective.
 
     IMPORTANT JAX NOTE:
       - step is passed into jitted fns as a *JAX scalar* to avoid recompiling every batch.
       - step counts optimizer updates (not number of examples).
     """
-    tx = optax.chain(
-        optax.clip_by_global_norm(cfg.grad_clip_norm),
-        optax.adamw(cfg.learning_rate, weight_decay=cfg.weight_decay),
-    )
+    tx = optimizer
+    if tx is None:
+        tx = optax.chain(
+            optax.clip_by_global_norm(cfg.grad_clip_norm),
+            optax.adamw(cfg.learning_rate, weight_decay=cfg.weight_decay),
+        )
     params0 = eqx.filter(model, eqx.is_inexact_array)
     opt_state = tx.init(params0)
 
@@ -84,7 +104,10 @@ def train_vae(model, data: jnp.ndarray, cfg: TrainConfig):
         beta = jnp.asarray(beta, dtype=x.dtype)
 
         obj = losses.elbo(recon, kl, beta=beta, free_bits=cfg.free_bits)
-        return jnp.mean(obj)
+        loss = jnp.mean(obj)
+        if extra_loss_fn is not None:
+            loss = loss + jnp.asarray(extra_loss_fn(m), dtype=loss.dtype)
+        return loss
 
     @eqx.filter_jit
     def step_fn(m, opt_state, x, step_scalar: jnp.ndarray, rng):

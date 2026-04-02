@@ -112,6 +112,7 @@ def make_ball_svd_tanh_multiclass_net(
         )
     return model
 
+
 def make_ball_svd_tanh_multiclass_net_from_dense(
     dense_model: Any,
     *,
@@ -156,6 +157,7 @@ def make_ball_svd_tanh_multiclass_net_from_dense(
         )
 
     return model
+
 
 def softmax_jacobian_lipschitz() -> float:
     return 0.5

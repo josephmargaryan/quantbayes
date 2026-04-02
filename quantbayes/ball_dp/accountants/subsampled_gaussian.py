@@ -27,7 +27,10 @@ def _log_expm1(x: float) -> float:
 
 
 def _get_dp_accounting_rpa():
-    from dp_accounting import rdp
+    try:
+        from dp_accounting import rdp
+    except Exception:
+        return None
 
     return rdp.rdp_privacy_accountant
 

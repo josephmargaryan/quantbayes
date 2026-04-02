@@ -918,7 +918,7 @@ class AdaptiveSpectralConv2d(SpectralConv2d):
         return float(jnp.sqrt(row_sum_max * col_sum_max))
 
 
-class RFFTCirculant1D(eqx.Module):
+class RFFTCirculant1D(eqx.Module, _SpectralMixin):
     """1D spectral-circulant with RFFT storage (half-spectrum)."""
 
     in_features: int = eqx.field(static=True)

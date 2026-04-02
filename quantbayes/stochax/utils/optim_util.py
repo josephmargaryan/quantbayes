@@ -24,6 +24,7 @@ __all__ = [
     "DecayMaskConfig",
     "LabelConfig",
     "build_optimizer",
+    "make_freeze_mask",
 ]
 
 """
@@ -32,7 +33,7 @@ import optax
 from quantbayes.stochax.utils.optim_util import (
     OptimizerConfig, DecayMaskConfig, build_optimizer
 )
-from quantbayes.stochax.utils.freeze_mask import make_freeze_mask
+from quantbayes.stochax.utils.optim_util import make_freeze_mask
 
 freeze_mask = make_freeze_mask(model, names=("U", "V"))  # optionally add "alpha_raw"
 

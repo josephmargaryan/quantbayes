@@ -1,52 +1,35 @@
-from .custom_jvp import (
-    Circulant,
-    Circulant2d,
-    BlockCirculant,
-    BlockCirculantProcess,
-)
+"""Public re-exports for spectral layers used across stochax.
 
-from .layers import (
-    FourierNeuralOperator,
-    MixtureOfTwoLayers,
-)
+Historically several modules imported symbols directly from
+``quantbayes.stochax.layers`` even though only ``spectral_layers.py`` existed.
+This ``__init__`` file restores that import surface and keeps the public API
+stable for vision, diffusion, and VAE workflows.
+"""
+
 from .spectral_layers import (
-    SpectralCirculantLayer,
     AdaptiveSpectralCirculantLayer,
-    SpectralCirculantLayer2d,
-    AdaptiveSpectralCirculantLayer2d,
-    SpectralDense,
     AdaptiveSpectralDense,
-    SpectralConv2d,
-    AdaptiveSpectralConv2d,
+    GraphChebSobolev,
     RFFTCirculant1D,
     RFFTCirculant2D,
+    SpectralCirculantLayer,
+    SpectralCirculantLayer2d,
+    SpectralConv2d,
+    SpectralDense,
     SpectralTokenMixer,
     SVDDense,
-    GraphChebSobolev,
 )
-from .specnorm import SpectralNorm
 
 __all__ = [
-    # Custom layers
-    "Circulant",
-    "Circulant2d",
-    "BlockCirculant",
-    "BlockCirculantProcess",
-    "FourierNeuralOperator",
-    "MixtureOfTwoLayers",
-    # Spectral layers
-    "SpectralCirculantLayer",
     "AdaptiveSpectralCirculantLayer",
-    "SpectralCirculantLayer2d",
-    "AdaptiveSpectralCirculantLayer2d",
-    "SpectralDense",
     "AdaptiveSpectralDense",
-    "SpectralConv2d",
-    "AdaptiveSpectralConv2d",
+    "GraphChebSobolev",
     "RFFTCirculant1D",
     "RFFTCirculant2D",
+    "SpectralCirculantLayer",
+    "SpectralCirculantLayer2d",
+    "SpectralConv2d",
+    "SpectralDense",
     "SpectralTokenMixer",
     "SVDDense",
-    "GraphChebSobolev",
-    "SpectralNorm",
 ]
