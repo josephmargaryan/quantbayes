@@ -34,64 +34,6 @@ Unlike diffusion, the VAE trainer needs a small patch if you want the full workf
 
 If you only want dense training or direct retrofit followed by ordinary training, the stock trainer is enough. If you want warm-start `s`-only fine-tuning and regularization, apply the trainer patch below.
 
-## Required trainer patch for the full workflow
-
-Patch:
-
-```text
-quantbayes/stochax/vae/train_vae.py
-```
-
-with the following diff:
-
-```diff
---- a/quantbayes/stochax/vae/train_vae.py
-+++ b/quantbayes/stochax/vae/train_vae.py
-@@
--from typing import Literal, Tuple
-+from typing import Callable, Literal, Tuple
-@@
--def train_vae(model, data: jnp.ndarray, cfg: TrainConfig):
-+def train_vae(
-+    model,
-+    data: jnp.ndarray,
-+    cfg: TrainConfig,
-+    *,
-+    optimizer: optax.GradientTransformation | None = None,
-+    extra_loss_fn: Callable[[object], jnp.ndarray] | None = None,
-+):
-@@
--    tx = optax.chain(
--        optax.clip_by_global_norm(cfg.grad_clip_norm),
--        optax.adamw(cfg.learning_rate, weight_decay=cfg.weight_decay),
--    )
-+    tx = optimizer
-+    if tx is None:
-+        tx = optax.chain(
-+            optax.clip_by_global_norm(cfg.grad_clip_norm),
-+            optax.adamw(cfg.learning_rate, weight_decay=cfg.weight_decay),
-+        )
-@@
--        obj = losses.elbo(recon, kl, beta=beta, free_bits=cfg.free_bits)
--        return jnp.mean(obj)
-+        obj = losses.elbo(recon, kl, beta=beta, free_bits=cfg.free_bits)
-+        loss = jnp.mean(obj)
-+        if extra_loss_fn is not None:
-+            loss = loss + jnp.asarray(extra_loss_fn(m), dtype=loss.dtype)
-+        return loss
-```
-
-After that patch, VAE supports the same two extension points as diffusion:
-
-- custom optimizer for warm-start fine-tuning,
-- extra loss term for regularization.
-
-## Optional RFFT patch
-
-If you want `global_spectral_penalty(...)` to include RFFT layers, make `RFFTCirculant1D` and `RFFTCirculant2D` inherit `_SpectralMixin` in `spectral_layers.py`.
-
-This is not required for `global_spectral_norm_penalty(...)`, because the operator-norm utilities already use the existing `__operator_norm_hint__` path.
-
 ## Minimal end-to-end example
 
 ```python
