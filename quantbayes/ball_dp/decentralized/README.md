@@ -52,9 +52,9 @@ than `min(L_z r, 2 C_t)`, pass it through `step_delta_ball=`.
 
 When the observer view has the theorem form
 
-\[
+$$
 Y_A = c_A(D_{-j}) + (H_{A \leftarrow j} \otimes I_p) s_j(D) + \zeta_A,
-\]
+$$
 
 you can account it directly.
 
@@ -90,11 +90,11 @@ Correctness notes:
 
 For the linear recursion
 
-\[
+$$
 x_{t+1} = W_t x_t + u_t + \xi_t,
 \qquad
 y_t = (S_A \otimes I_p) x_t,
-\]
+$$
 
 build the theorem transfer matrix as:
 
