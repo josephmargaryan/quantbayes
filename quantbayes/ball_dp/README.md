@@ -761,7 +761,7 @@ normalize_noisy_sum_by="batch_size"
 ```
 ### Sampler/accountant compatibility
 - "`batch_sampler="poisson"` $\to$ use `accountant_subsampling="match_sampler"` (mainline/private runs)"
-- "`batch_sampler="without_replacement"` $to$ use `batch_sampler="without_replacement"` for noiseless/public debugging"
+- "`batch_sampler="without_replacement"` $\to$ use `batch_sampler="without_replacement"` for noiseless/public debugging"
 `match_sampler` is only valid with Poisson sampling in this library.
 
 Keep the trace recorder metadata needed by the attacks:
