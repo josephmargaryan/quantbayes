@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-"""Compact high-level workflows for dense <-> SVDDense experiments.
+"""Compact high-level workflows for dense <-> spectral retrofit experiments.
 
 The public design goal is simple:
 
 1. instantiate the model family/variant you want,
 2. optionally load a pretrained checkpoint,
-3. optionally retrofit dense Linear leaves into SVDDense,
-4. choose whether to freeze only the SVD bases (U,V) or everything except s.
+3. optionally retrofit dense Linear leaves into ``SVDDense`` or ``RFFTCirculant1D``,
+4. optionally freeze only the SVD bases (``U,V``) or everything except ``s``.
 
 This keeps the theory-facing workflow explicit while avoiding model-family-specific
 ad hoc scripts.
@@ -19,6 +19,9 @@ import equinox as eqx
 import jax.tree_util as jtu
 
 from quantbayes.stochax.layers import SVDDense
+from quantbayes.stochax.utils.linear_surgery import (
+    replace_square_linears_with_rfft as _replace_square_linears_with_rfft,
+)
 from quantbayes.stochax.utils.optim_util import make_freeze_mask
 
 AttentionFamily = Literal["vit", "dino", "swin"]
@@ -30,6 +33,8 @@ __all__ = [
     "AttentionSVDMode",
     "replace_linears_with_svd",
     "replace_attention_linears_with_svd",
+    "replace_square_linears_with_rfft",
+    "replace_attention_linears_with_rfft",
     "make_svd_basis_freeze_mask",
     "make_s_only_freeze_mask",
 ]
@@ -205,6 +210,63 @@ def replace_attention_linears_with_svd(
         rank_ratio=rank_ratio,
         alpha_init=alpha_init,
         predicate=_attention_predicate(family, mode),
+    )
+    report["family"] = family
+    report["mode"] = mode
+    return new_model, report
+
+
+def replace_square_linears_with_rfft(
+    model,
+    *,
+    alpha_init: float = 1.0,
+    predicate: LinearPredicate | None = None,
+    warmstart: bool = True,
+    key: Any | None = None,
+):
+    """Replace selected square dense-like linear leaves with ``RFFTCirculant1D``.
+
+    This is a thin public wrapper over the shared low-level retrofit helper in
+    ``quantbayes.stochax.utils.linear_surgery``. Only square dense matrices are
+    replaced. When ``warmstart=True`` they are projected onto the nearest
+    circulant matrix in Frobenius norm and the resulting RFFT half-spectrum is
+    copied into the new layer.
+    """
+
+    return _replace_square_linears_with_rfft(
+        model,
+        alpha_init=alpha_init,
+        predicate=predicate,
+        warmstart=warmstart,
+        key=key,
+    )
+
+
+def replace_attention_linears_with_rfft(
+    model,
+    *,
+    family: AttentionFamily,
+    mode: AttentionSVDMode = "attn_only",
+    alpha_init: float = 1.0,
+    warmstart: bool = True,
+    key: Any | None = None,
+):
+    """Retrofitting helper for ViT, Swin, and DINO attention-family models.
+
+    Notes
+    -----
+    Only *square* dense projections are eligible for RFFT retrofits. Any matched
+    non-square leaves are left unchanged and reported in ``report["skipped"]``.
+    This matters in particular for Swin, where ``qkv`` has shape ``(3d, d)`` and
+    is therefore skipped, while ``proj`` remains eligible.
+    """
+
+    new_model, report = replace_square_linears_with_rfft(
+        model,
+        alpha_init=alpha_init,
+        predicate=_attention_predicate(family, mode),
+        warmstart=warmstart,
+        key=key,
     )
     report["family"] = family
     report["mode"] = mode

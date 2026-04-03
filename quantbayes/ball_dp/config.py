@@ -253,3 +253,6 @@ class ReconstructorTrainingConfig:
     patience: int = 30
     learning_rate: float = 1e-3
     seed: int = 0
+    target_normalization: Literal["none", "l2"] = "none"
+    output_normalization: Literal["none", "l2"] = "none"
+    loss_name: Literal["mse_mae", "cosine"] = "mse_mae"

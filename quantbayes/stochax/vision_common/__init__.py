@@ -43,8 +43,10 @@ from .workflows import (
     AttentionSVDMode,
     make_s_only_freeze_mask,
     make_svd_basis_freeze_mask,
+    replace_attention_linears_with_rfft,
     replace_attention_linears_with_svd,
     replace_linears_with_svd,
+    replace_square_linears_with_rfft,
 )
 
 __all__ = [
@@ -78,6 +80,8 @@ __all__ = [
     "AttentionSVDMode",
     "replace_linears_with_svd",
     "replace_attention_linears_with_svd",
+    "replace_square_linears_with_rfft",
+    "replace_attention_linears_with_rfft",
     "make_svd_basis_freeze_mask",
     "make_s_only_freeze_mask",
     "IdentityHead",

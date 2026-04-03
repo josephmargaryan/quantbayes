@@ -655,6 +655,9 @@ reconstructor = train_reconstructor(
         patience=15,
         learning_rate=1e-3,
         seed=seed,
+        target_normalization="l2",
+        output_normalization="l2",
+        loss_name="cosine",
     ),
 )
 

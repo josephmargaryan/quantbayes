@@ -150,6 +150,27 @@ class _Standardizer:
         )
 
 
+def _normalize_rows_np(x: np.ndarray, mode: str) -> np.ndarray:
+    arr = np.asarray(x, dtype=np.float32)
+    if mode == "none":
+        return arr
+    if mode != "l2":
+        raise ValueError("mode must be one of {'none', 'l2'}.")
+    norms = np.linalg.norm(arr, axis=-1, keepdims=True)
+    norms = np.where(norms > 1e-12, norms, 1.0)
+    return (arr / norms).astype(np.float32, copy=False)
+
+
+def _normalize_last_axis_jnp(x: jnp.ndarray, mode: str) -> jnp.ndarray:
+    if mode == "none":
+        return x
+    if mode != "l2":
+        raise ValueError("mode must be one of {'none', 'l2'}.")
+    norms = jnp.linalg.norm(x, axis=-1, keepdims=True)
+    norms = jnp.maximum(norms, 1e-12)
+    return x / norms
+
+
 class _RecoNN(eqx.Module):
     hidden: Tuple[eqx.nn.Linear, ...]
     out: eqx.nn.Linear
@@ -352,6 +373,22 @@ def train_shadow_reconstructor(
     if not label_values:
         label_values = (0,)
 
+    target_normalization = str(cfg.target_normalization)
+    output_normalization = str(cfg.output_normalization)
+    loss_name = str(cfg.loss_name)
+
+    if loss_name == "cosine" and (
+        target_normalization != "l2" or output_normalization != "l2"
+    ):
+        raise ValueError(
+            "loss_name='cosine' requires target_normalization='l2' "
+            "and output_normalization='l2'."
+        )
+
+    y_feat_train = _normalize_rows_np(y_feat_train, target_normalization)
+    y_feat_val = _normalize_rows_np(y_feat_val, target_normalization)
+    y_feat_test = _normalize_rows_np(y_feat_test, target_normalization)
+
     use_sigmoid_output = False
 
     hidden_dims = (
@@ -370,11 +407,21 @@ def train_shadow_reconstructor(
     opt_state = optimizer.init(eqx.filter(model, eqx.is_inexact_array))
 
     def _loss_fn(model: _RecoNN, xb, yb_feat):
-        pred = jax.vmap(model)(xb)
+        pred_raw = jax.vmap(model)(xb)
+        pred = _normalize_last_axis_jnp(pred_raw, output_normalization)
         mse = jnp.mean(jnp.square(pred - yb_feat))
         mae = jnp.mean(jnp.abs(pred - yb_feat))
-        total = mse + mae
-        return total, (mae, mse)
+        cosine_similarity = jnp.mean(jnp.sum(pred * yb_feat, axis=-1))
+        cosine_error = 1.0 - cosine_similarity
+
+        if loss_name == "mse_mae":
+            total = mse + mae
+        elif loss_name == "cosine":
+            total = cosine_error
+        else:
+            raise ValueError("loss_name must be one of {'mse_mae', 'cosine'}.")
+
+        return total, (mae, mse, cosine_similarity, cosine_error)
 
     @eqx.filter_jit
     def _step(model, opt_state, xb, yb_feat):
@@ -400,26 +447,36 @@ def train_shadow_reconstructor(
                 "total_loss": float("nan"),
                 "mae": float("nan"),
                 "mse": float("nan"),
+                "cosine_similarity": float("nan"),
+                "cosine_error": float("nan"),
             }
 
         total_sum = 0.0
         mae_sum = 0.0
         mse_sum = 0.0
+        cosine_similarity_sum = 0.0
+        cosine_error_sum = 0.0
 
         for lo in range(0, n, int(batch_size_eval)):
             hi = min(lo + int(batch_size_eval), n)
             xb = jnp.asarray(x_arr[lo:hi], dtype=jnp.float32)
             yb = jnp.asarray(y_arr[lo:hi], dtype=jnp.float32)
-            loss_b, (mae_b, mse_b) = _evaluate_batch(model, xb, yb)
+            loss_b, (mae_b, mse_b, cosine_similarity_b, cosine_error_b) = (
+                _evaluate_batch(model, xb, yb)
+            )
             m = hi - lo
             total_sum += float(loss_b) * m
             mae_sum += float(mae_b) * m
             mse_sum += float(mse_b) * m
+            cosine_similarity_sum += float(cosine_similarity_b) * m
+            cosine_error_sum += float(cosine_error_b) * m
 
         return {
             "total_loss": total_sum / float(n),
             "mae": mae_sum / float(n),
             "mse": mse_sum / float(n),
+            "cosine_similarity": cosine_similarity_sum / float(n),
+            "cosine_error": cosine_error_sum / float(n),
         }
 
     rng = np.random.default_rng(int(cfg.seed))
@@ -446,9 +503,17 @@ def train_shadow_reconstructor(
             idx = perm[lo : lo + batch_size]
             xb = jnp.asarray(x_train_n[idx], dtype=jnp.float32)
             yb_feat = jnp.asarray(y_feat_train[idx], dtype=jnp.float32)
-            model, opt_state, step_loss, (step_mae, step_mse) = _step(
-                model, opt_state, xb, yb_feat
-            )
+            (
+                model,
+                opt_state,
+                step_loss,
+                (
+                    step_mae,
+                    step_mse,
+                    step_cosine_similarity,
+                    step_cosine_error,
+                ),
+            ) = _step(model, opt_state, xb, yb_feat)
 
             update_loss_history.append(
                 {
@@ -458,6 +523,8 @@ def train_shadow_reconstructor(
                     "train_total_loss": float(step_loss),
                     "train_mae": float(step_mae),
                     "train_mse": float(step_mse),
+                    "train_cosine_similarity": float(step_cosine_similarity),
+                    "train_cosine_error": float(step_cosine_error),
                     "batch_size": int(len(idx)),
                 }
             )
@@ -475,6 +542,8 @@ def train_shadow_reconstructor(
                 "train_total_loss": float(train_metrics["total_loss"]),
                 "train_mae": float(train_metrics["mae"]),
                 "train_mse": float(train_metrics["mse"]),
+                "train_cosine_similarity": float(train_metrics["cosine_similarity"]),
+                "train_cosine_error": float(train_metrics["cosine_error"]),
             }
         )
 
@@ -493,6 +562,8 @@ def train_shadow_reconstructor(
                 "val_total_loss": float(val_metrics["total_loss"]),
                 "val_mae": float(val_metrics["mae"]),
                 "val_mse": float(val_metrics["mse"]),
+                "val_cosine_similarity": float(val_metrics["cosine_similarity"]),
+                "val_cosine_error": float(val_metrics["cosine_error"]),
             }
         )
 
@@ -538,6 +609,8 @@ def train_shadow_reconstructor(
             "test_total_loss": float(test_eval["total_loss"]),
             "test_mae": float(test_eval["mae"]),
             "test_mse": float(test_eval["mse"]),
+            "test_cosine_similarity": float(test_eval["cosine_similarity"]),
+            "test_cosine_error": float(test_eval["cosine_error"]),
         }
 
     return ReconstructorArtifact(
@@ -554,9 +627,17 @@ def train_shadow_reconstructor(
             "final_train_total_loss": float(final_train_metrics["total_loss"]),
             "final_train_mae": float(final_train_metrics["mae"]),
             "final_train_mse": float(final_train_metrics["mse"]),
+            "final_train_cosine_similarity": float(
+                final_train_metrics["cosine_similarity"]
+            ),
+            "final_train_cosine_error": float(final_train_metrics["cosine_error"]),
             "final_val_total_loss": float(final_val_metrics["total_loss"]),
             "final_val_mae": float(final_val_metrics["mae"]),
             "final_val_mse": float(final_val_metrics["mse"]),
+            "final_val_cosine_similarity": float(
+                final_val_metrics["cosine_similarity"]
+            ),
+            "final_val_cosine_error": float(final_val_metrics["cosine_error"]),
             **test_metrics,
         },
         feature_dim=int(input_dim),
@@ -575,6 +656,9 @@ def train_shadow_reconstructor(
                 corpus.feature_metadata.get("attack_feature_map", {})
             ),
             "use_sigmoid_output": bool(use_sigmoid_output),
+            "target_normalization": str(target_normalization),
+            "output_normalization": str(output_normalization),
+            "loss_name": str(loss_name),
             "used_validation_split": bool(used_val_split),
             "train_curve_history": list(train_curve_history),
             "val_curve_history": list(val_curve_history),
@@ -630,6 +714,9 @@ def run_model_based_attack(
         recon_model(jnp.asarray(x_norm, dtype=jnp.float32)),
         dtype=np.float32,
     ).reshape(-1)
+
+    output_normalization = str(reconstructor.extra.get("output_normalization", "none"))
+    feat_pred = _normalize_rows_np(feat_pred, output_normalization).reshape(-1)
 
     feat_pred = _project_to_ball(
         feat_pred,
