@@ -37,6 +37,7 @@ from .evaluation.rero import (
     compute_ball_rero_report,
     summarize_attack_trials as _summarize_attack_trials,
 )
+from .evaluation.direct_poisson import direct_profile_step_summary
 from .nonconvex.per_example import ExampleLossFn, PredictFn, default_predict_fn
 from .nonconvex.sgd import (
     run_ball_sgd_dp,
@@ -478,6 +479,33 @@ def get_release_step_table(release: ReleaseArtifact) -> list[dict[str, Any]]:
             stored_private_object = "noisy_mean"
             noise_std_on_stored_object = None
 
+        sample_rate_t = None if t >= len(sample_rates) else float(sample_rates[t])
+        delta_ball_t = None if t >= len(step_delta_ball) else float(step_delta_ball[t])
+        delta_standard_t = (
+            None if t >= len(step_delta_std) else float(step_delta_std[t])
+        )
+
+        if sample_rate_t is None:
+            direct_ball = {
+                "direct_c": None,
+                "direct_tau": None,
+                "direct_v": None,
+                "direct_kappa_left": None,
+                "direct_kappa_right": None,
+            }
+            direct_standard = dict(direct_ball)
+        else:
+            direct_ball = direct_profile_step_summary(
+                sample_rate=float(sample_rate_t),
+                sensitivity=delta_ball_t,
+                noise_std=effective_noise_std_t,
+            )
+            direct_standard = direct_profile_step_summary(
+                sample_rate=float(sample_rate_t),
+                sensitivity=delta_standard_t,
+                noise_std=effective_noise_std_t,
+            )
+
         row = {
             "step": int(t + 1),
             "batch_sampler": cfg.get(
@@ -489,7 +517,7 @@ def get_release_step_table(release: ReleaseArtifact) -> list[dict[str, Any]]:
             ),
             "batch_size": batch_size_t,
             "target_batch_size": batch_size_t,
-            "sample_rate": None if t >= len(sample_rates) else float(sample_rates[t]),
+            "sample_rate": sample_rate_t,
             "clip_norm": None if t >= len(clip_norms) else float(clip_norms[t]),
             "noise_multiplier": (
                 None if t >= len(noise_multipliers) else float(noise_multipliers[t])
@@ -497,14 +525,18 @@ def get_release_step_table(release: ReleaseArtifact) -> list[dict[str, Any]]:
             "effective_noise_std": effective_noise_std_t,
             "stored_private_object": stored_private_object,
             "noise_std_on_stored_object": noise_std_on_stored_object,
-            "delta_ball": (
-                None if t >= len(step_delta_ball) else float(step_delta_ball[t])
-            ),
-            "delta_standard": (
-                None if t >= len(step_delta_std) else float(step_delta_std[t])
-            ),
+            "delta_ball": delta_ball_t,
+            "delta_standard": delta_standard_t,
             "ball_to_standard_ratio": None if t >= len(ratios) else ratios[t],
             "rho": None if t >= len(rho_by_step) else rho_by_step[t],
+            "direct_c_ball": direct_ball["direct_c"],
+            "direct_tau_ball": direct_ball["direct_tau"],
+            "direct_kappa_left_ball": direct_ball["direct_kappa_left"],
+            "direct_kappa_right_ball": direct_ball["direct_kappa_right"],
+            "direct_c_standard": direct_standard["direct_c"],
+            "direct_tau_standard": direct_standard["direct_tau"],
+            "direct_kappa_left_standard": direct_standard["direct_kappa_left"],
+            "direct_kappa_right_standard": direct_standard["direct_kappa_right"],
         }
         rows.append(row)
     return rows

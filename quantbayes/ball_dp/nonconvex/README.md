@@ -587,8 +587,58 @@ This table contains, per step:
 - standard sensitivity
 - Ball-to-standard sensitivity ratio
 - `rho = (L_z r) / (2 C_t)` when defined
+- direct-profile ratios / breakpoints (`direct_c_*`, `direct_kappa_left_*`, `direct_kappa_right_*`)
 
-This is the easiest way to inspect whether Ball accounting is actually improving sensitivity for your schedule.
+This is the easiest way to inspect whether Ball accounting is actually improving sensitivity for your schedule,
+and it now also exposes the one-step ingredients for the direct Poisson Ball-SGD Ball-ReRo bound.
+
+### 11.4 Direct Ball-ReRo for Poisson Ball-SGD final releases
+
+Use this when you want the theorem-backed direct bound from the Poisson Ball-SGD section, rather than the
+Ball-RDP -> Ball-ReRo conversion. The release must satisfy:
+
+- `batch_sampler="poisson"`
+- no `fixed_batch_indices_schedule`
+- `normalize_noisy_sum_by` in `{"batch_size", "none"}`
+- strictly positive noise on every step
+
+```python
+import numpy as np
+
+from quantbayes.ball_dp import ball_rero, make_uniform_ball_prior, plot_rero_report
+from quantbayes.ball_dp.api import get_release_step_table
+
+# Example side-information center. In actual experiments use your policy-aligned u.
+u = np.asarray(X_train.mean(axis=0), dtype=np.float32).reshape(-1)
+
+prior = make_uniform_ball_prior(
+    center=u,
+    radius=0.10,
+)
+
+report_direct = ball_rero(
+    release,
+    prior=prior,
+    eta_grid=(0.02, 0.05, 0.10),
+    mode="ball_sgd_direct",
+    out_path="results/ball_sgd_direct_rero.json",
+)
+
+plot_rero_report(report_direct, out_path="results/ball_sgd_direct_rero.png")
+
+for point in report_direct.points:
+    print(point.eta, point.kappa, point.gamma_ball, point.gamma_standard)
+
+# Per-step one-step profile diagnostics.
+rows = get_release_step_table(release)
+print(rows[0]["direct_c_ball"], rows[0]["direct_kappa_left_ball"])
+
+# Full per-step theorem metadata is also saved in the report.
+print(report_direct.metadata["ball_step_profiles"][0])
+```
+
+`mode="ball_sgd_direct"` works for both continuous Ball priors and finite exact-identification priors.
+For finite priors you can compare the direct bound and the optimized RDP conversion side by side.
 
 ---
 

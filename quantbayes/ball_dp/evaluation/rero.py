@@ -17,8 +17,47 @@ from ..types import (
     ReRoReport,
     ReleaseArtifact,
 )
+from .direct_poisson import compute_ball_sgd_direct_rero_report
 
 _STD_NORMAL = NormalDist()
+
+
+def _normalize_rero_mode(mode: str) -> str:
+    key = str(mode).strip().lower()
+    mapping = {
+        "auto": "auto",
+        "dp": "dp",
+        "rdp": "rdp",
+        "gaussian_direct": "gaussian_direct",
+        "ball_sgd_direct": "ball_sgd_direct",
+        "sgd_direct": "ball_sgd_direct",
+        "poisson_direct": "ball_sgd_direct",
+        "poisson_ball_sgd_direct": "ball_sgd_direct",
+    }
+    try:
+        return mapping[key]
+    except KeyError as exc:
+        raise ValueError(
+            "mode must be one of {'auto', 'dp', 'rdp', 'gaussian_direct', 'ball_sgd_direct'}."
+        ) from exc
+
+
+def _save_rero_report(report: ReRoReport, out_path: str | Path | None) -> None:
+    if out_path is None:
+        return
+    path = Path(out_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "mode": report.mode,
+                "metadata": report.metadata,
+                "points": [point.__dict__ for point in report.points],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
 
 
 class UniformL2BallPrior:
@@ -261,6 +300,8 @@ def compute_ball_rero_report(
     mode: str = "auto",
     out_path: str | Path | None = None,
 ) -> ReRoReport:
+    mode = _normalize_rero_mode(mode)
+
     if mode == "auto":
         # Prefer the full Ball-RDP curve whenever it is available. This is the
         # theorem-backed path used by the optimized gamma_ball^RDP conversion in
@@ -317,6 +358,14 @@ def compute_ball_rero_report(
                     alpha_opt_standard=alpha_std,
                 )
             )
+    elif mode == "ball_sgd_direct":
+        report = compute_ball_sgd_direct_rero_report(
+            release,
+            prior,
+            eta_grid=eta_grid,
+        )
+        _save_rero_report(report, out_path)
+        return report
     elif mode == "gaussian_direct":
         mechanism = str(getattr(release.privacy.ball, "mechanism", ""))
         sigma = release.privacy.ball.sigma
@@ -373,20 +422,7 @@ def compute_ball_rero_report(
             "delta_standard": release.sensitivity.delta_std,
         },
     )
-    if out_path is not None:
-        path = Path(out_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(
-                {
-                    "mode": report.mode,
-                    "metadata": report.metadata,
-                    "points": [point.__dict__ for point in report.points],
-                },
-                indent=2,
-                sort_keys=True,
-            )
-        )
+    _save_rero_report(report, out_path)
     return report
 
 

@@ -97,7 +97,7 @@ Interpretation:
 ```python
 from quantbayes.ball_dp.api import fit_convex, attack_convex
 
-convex_convex_release = fit_convex(
+convex_release = fit_convex(
     X_train,
     y_train,
     X_eval=X_eval,
@@ -515,7 +515,7 @@ for point in report.points:
 ### 11b. Direct Gaussian Ball-ReRo for convex Gaussian output perturbation
 
 This direct mode is theorem-backed only for Gaussian output perturbation releases.
-Do not use it for Ball-SGD transcript releases.
+Do not use it for Ball-SGD releases; use `mode="ball_sgd_direct"` below instead.
 
 ```python
 report_direct = ball_rero(
@@ -529,7 +529,54 @@ for point in report_direct.points:
     print("eta=", point.eta, "gamma_ball_dir=", point.gamma_ball)
 ```
 
-### 11c. Finite-prior exact-identification certificate
+### 11c. Direct Ball-ReRo for Poisson Ball-SGD
+
+This is the theorem-backed direct bound from the Poisson Ball-SGD section.
+Use it for nonconvex releases trained with:
+
+- `batch_sampler="poisson"`
+- no `fixed_batch_indices_schedule`
+- `normalize_noisy_sum_by` in `{"batch_size", "none"}`
+- strictly positive noise on every step
+
+The report JSON contains the per-step direct-profile parameters in
+`report.metadata["ball_step_profiles"]`.
+
+```python
+from quantbayes.ball_dp import plot_rero_report
+
+report_direct_sgd = ball_rero(
+    sgd_release,
+    prior=continuous_prior,
+    eta_grid=eta_grid,
+    mode="ball_sgd_direct",
+    out_path="results/ball_sgd_direct_rero.json",
+)
+
+plot_rero_report(report_direct_sgd, out_path="results/ball_sgd_direct_rero.png")
+
+for point in report_direct_sgd.points:
+    print(
+        "eta=", point.eta,
+        "kappa=", point.kappa,
+        "gamma_ball_dir=", point.gamma_ball,
+        "gamma_standard_dir=", point.gamma_standard,
+    )
+
+print(report_direct_sgd.metadata["ball_step_profiles"][0])
+```
+
+If you want to inspect the one-step ingredients directly, `get_release_step_table(...)` now also
+includes the per-step direct-profile ratios and breakpoint locations:
+
+```python
+from quantbayes.ball_dp.api import get_release_step_table
+
+rows = get_release_step_table(sgd_release)
+print(rows[0]["direct_c_ball"], rows[0]["direct_kappa_left_ball"])
+```
+
+### 11d. Finite-prior exact-identification certificate
 
 For exact identification under a finite prior, use the theorem-aligned discrete prior helper.
 Choose any `eta < 1`.
@@ -546,8 +593,16 @@ report_finite = ball_rero(
     mode="rdp",
 )
 
+report_finite_direct = ball_rero(
+    sgd_release,
+    prior=finite_prior,
+    eta_grid=(0.5,),
+    mode="ball_sgd_direct",
+)
+
 print(report_finite.points[0].kappa)
 print(report_finite.points[0].gamma_ball)
+print(report_finite_direct.points[0].gamma_ball)
 ```
 
 ## 12. Theorem-aligned empirical summaries across many targets

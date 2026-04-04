@@ -552,6 +552,7 @@ def _make_release_artifact(
     selected_step: int,
     resolved_batch_sampler: str,
     resolved_accountant_subsampling: str,
+    fixed_batch_schedule_num_steps: int,
 ) -> ReleaseArtifact:
     regime = _regime_summary(cfg.lz, clip_schedule, step_delta_ball, step_delta_std)
 
@@ -600,6 +601,20 @@ def _make_release_artifact(
     else:
         ball_regime = "unknown"
 
+    fixed_batch_schedule_num_steps = int(fixed_batch_schedule_num_steps)
+    direct_rero_common_ok = (
+        str(resolved_batch_sampler) == "poisson"
+        and fixed_batch_schedule_num_steps == 0
+        and str(cfg.normalize_noisy_sum_by) in {"batch_size", "none"}
+        and all(float(v) > 0.0 for v in effective_noise_stds)
+    )
+    direct_ball_rero_available = bool(
+        direct_rero_common_ok and step_delta_ball is not None
+    )
+    direct_standard_rero_available = bool(
+        direct_rero_common_ok and step_delta_std is not None
+    )
+
     num_classes_meta = (
         2
         if str(getattr(cfg, "loss_name", "softmax_cross_entropy")).lower()
@@ -625,6 +640,8 @@ def _make_release_artifact(
         "orders": tuple(int(v) for v in cfg.orders),
         "loss_name": str(cfg.loss_name),
         "normalize_noisy_sum_by": str(cfg.normalize_noisy_sum_by),
+        "fixed_batch_schedule_present": bool(fixed_batch_schedule_num_steps > 0),
+        "fixed_batch_schedule_num_steps": int(fixed_batch_schedule_num_steps),
         "frobenius_reg_strength": float(getattr(cfg, "frobenius_reg_strength", 0.0)),
         "spectral_reg_strength": float(getattr(cfg, "spectral_reg_strength", 0.0)),
         "spectral_reg_kwargs": dict(getattr(cfg, "spectral_reg_kwargs", {}) or {}),
@@ -650,6 +667,10 @@ def _make_release_artifact(
             resolved_batch_sampler == "poisson"
             and resolved_accountant_subsampling == "poisson"
         ),
+        "theorem_backed_direct_rero_available": bool(direct_ball_rero_available),
+        "theorem_backed_standard_direct_rero_available": bool(
+            direct_standard_rero_available
+        ),
     }
 
     extra = {
@@ -673,6 +694,12 @@ def _make_release_artifact(
         "selected_checkpoint_step": int(selected_step),
         "resolved_batch_sampler": str(resolved_batch_sampler),
         "resolved_accountant_subsampling": str(resolved_accountant_subsampling),
+        "fixed_batch_schedule_present": bool(fixed_batch_schedule_num_steps > 0),
+        "fixed_batch_schedule_num_steps": int(fixed_batch_schedule_num_steps),
+        "theorem_backed_direct_rero_available": bool(direct_ball_rero_available),
+        "theorem_backed_standard_direct_rero_available": bool(
+            direct_standard_rero_available
+        ),
         # Backward-compatible place to store the (read-only) Equinox state.
         "model_state": state,
     }
@@ -817,6 +844,11 @@ def _run_training(
         T=T,
         n_total=n_total,
         batch_schedule=batch_schedule,
+    )
+    fixed_batch_schedule_num_steps = (
+        int(sum(step is not None for step in fixed_batch_schedule))
+        if fixed_batch_schedule is not None
+        else 0
     )
     resolved_batch_sampler = _normalize_batch_sampler(
         getattr(cfg, "batch_sampler", "shuffle")
@@ -1215,6 +1247,7 @@ def _run_training(
         selected_step=best_step,
         resolved_batch_sampler=resolved_batch_sampler,
         resolved_accountant_subsampling=resolved_accountant_subsampling,
+        fixed_batch_schedule_num_steps=fixed_batch_schedule_num_steps,
     )
 
     if accounting_view == "standard":

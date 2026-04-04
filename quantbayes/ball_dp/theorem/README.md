@@ -75,6 +75,9 @@ The compact API uses privacy-safer defaults than the old exploratory demos:
 - `TrainConfig.accountant_subsampling="match_sampler"`
 
 This makes the public API line up with the accounting assumptions by default.
+It also means the final release is compatible with the theorem-backed direct
+Poisson Ball-SGD Ball-ReRo bound via `ball_rero(..., mode="ball_sgd_direct")`,
+provided you keep the default fixed normalization of the noisy sum.
 
 ## 1) Binary dense model, trained directly
 
@@ -127,6 +130,28 @@ release = fit_release(
 
 print("L_z:", certified_lz(spec, bounds))
 print("train accuracy:", release.utility_metrics.get("train_accuracy"))
+```
+
+You can then compute either the optimized Ball-RDP -> Ball-ReRo curve or the
+direct Poisson Ball-SGD Ball-ReRo curve:
+
+```python
+import numpy as np
+
+from quantbayes.ball_dp import ball_rero, make_uniform_ball_prior, plot_rero_report
+
+u = np.asarray(X_train.mean(axis=0), dtype=np.float32)
+prior = make_uniform_ball_prior(center=u, radius=train_cfg.radius)
+
+report_direct = ball_rero(
+    release,
+    prior=prior,
+    eta_grid=(0.05, 0.10, 0.20),
+    mode="ball_sgd_direct",
+)
+
+plot_rero_report(report_direct)
+print(report_direct.metadata["ball_step_profiles"][0])
 ```
 
 ## 2) Binary fixed-basis SVD model from scratch
