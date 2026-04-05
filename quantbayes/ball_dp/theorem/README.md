@@ -31,9 +31,9 @@ Supported families:
 - multiclass fixed-basis SVD
 
 The fixed-basis SVD hidden layer has the form
-$$
+```math
 W \approx U\,\operatorname{diag}(s)\,V^\top,
-$$
+```
 with frozen orthonormal $U,V$ and private optimization over $s$ (plus typically hidden bias and output head).
 
 The theorem parameters are kept separate from the training configuration:
@@ -48,9 +48,9 @@ The theorem parameters are kept separate from the training configuration:
 ## 2. Rank invariance of the fixed-basis certificate
 
 In the fixed-basis theorem used here, the certified Lipschitz-in-data constant
-$$
+```math
 L_z^{(\mathrm{fb})}
-$$
+```
 depends on the public norm bound and the parameter constraints, but **not on the chosen rank**.
 
 So if `B`, `A`, `Lambda`, and the hidden width are fixed, then changing rank should leave the theorem-backed privacy certificate unchanged.
@@ -129,7 +129,7 @@ print("utility:", release.utility_metrics)
 
 ---
 
-## 4. Group 2: public dense pretrain $\to$ private dense fine-tune
+## 4. Group 2: public dense pretrain → private dense fine-tune
 
 Typical workflow:
 1. train a dense theorem model on public data;
@@ -142,7 +142,7 @@ Use the helpers:
 
 ---
 
-## 5. Group 3: public dense pretrain $\to$ fixed-basis SVD private fine-tune
+## 5. Group 3: public dense pretrain → fixed-basis SVD private fine-tune
 
 Typical workflow:
 1. train a dense public model;
@@ -165,3 +165,4 @@ Once you have a theorem-backed private release, the recommended report path is t
 - finite-prior exact identification for the primary embedding result;
 - `mode="rdp"` for the main nonconvex certificate;
 - `mode="ball_sgd_direct"` as the direct transcript theorem.
+
