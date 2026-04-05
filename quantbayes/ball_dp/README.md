@@ -4,112 +4,112 @@ This README mirrors the demonstration notebook style and is meant to be the **ma
 It emphasizes the theorem-backed workflows used in the thesis and then, at the end, shows how to run the older non-Ball baselines as well.
 
 Throughout, records are $z=(x,y)$ with the label-preserving metric
-$$
+```math
 d\big((x,y),(x',y')\big)
 =
 \begin{cases}
 \|x-x'\|_2, & y=y',\\
 \infty, & y\neq y'.
 \end{cases}
-$$
+```
 
 ---
 
 ## 1. What the library can certify
 
 The library can upper-bound
-$$
+```math
 p_{\mathrm{succ}}(\eta)
 :=
 \Pr\big[\rho(Z,\widehat Z)\le \eta\big]
-$$
+```
 through four theorem routes.
 
-### 1.1 Generic Ball-DP $\Rightarrow$ Ball-ReRo
+### 1.1 Generic Ball-DP → Ball-ReRo
 If a mechanism is $(\varepsilon,\delta)$-Ball-DP, then
-$$
+```math
 p_{\mathrm{succ}}(\eta)
 \le
  e^\varepsilon\,\kappa(\eta)+\delta.
-$$
+```
 
 **`ball_rero(..., mode="dp")`**
 
-### 1.2 Generic Ball-RDP $\Rightarrow$ Ball-ReRo
+### 1.2 Generic Ball-RDP → Ball-ReRo
 If a mechanism is $(\alpha,\varepsilon_\alpha)$-Ball-RDP, then
-$$
+```math
 p_{\mathrm{succ}}(\eta)
 \le
 \min\left\{1,\,(\kappa(\eta)e^{\varepsilon_\alpha})^{(\alpha-1)/\alpha}\right\}.
-$$
+```
 With a full RDP curve $\alpha\mapsto\varepsilon(\alpha)$, the library optimizes over $\alpha$.
 
 **`ball_rero(..., mode="rdp")`**
 
 ### 1.3 Direct Gaussian Ball-ReRo
 For Gaussian output perturbation
-$$
+```math
 \widetilde\theta = \widehat\theta(D)+\xi,
 \qquad
 \xi\sim\mathcal N(0,\sigma^2 I),
-$$
+```
 with Ball sensitivity $\Delta_2(r)$, the direct theorem gives
-$$
+```math
 p_{\mathrm{succ}}(\eta)
 \le
 \Phi\!\left(\Phi^{-1}(\kappa(\eta))+\frac{\Delta_2(r)}{\sigma}\right).
-$$
+```
 
 **`ball_rero(..., mode="gaussian_direct")`**
 
 ### 1.4 Direct Poisson Ball-SGD Ball-ReRo
 For Poisson Ball-SGD, the theorem composes one-step profiles
-$$
+```math
 \Gamma_t^{\mathrm{ball}}(\kappa;r)=\Psi_{\gamma_t,\Delta_t(r)/\nu_t}(\kappa)
-$$
+```
 into
-$$
+```math
 \Gamma_{1:T}^{\mathrm{ball}}(\kappa;r)
 =
 (\Gamma_1^{\mathrm{ball}}\circ\cdots\circ\Gamma_T^{\mathrm{ball}})(\kappa).
-$$
+```
 Then
-$$
+```math
 p_{\mathrm{succ}}(\eta)
 \le
 \Gamma_{1:T}^{\mathrm{ball}}\big(\kappa(\eta);r\big).
-$$
+```
 
 **`ball_rero(..., mode="ball_sgd_direct")`**
 
 ### 1.5 Finite-prior exact identification
 For a uniform finite prior
-$$
+```math
 \pi_S=\frac1m\sum_{i=1}^m \delta_{z_i}
-$$
+```
 and the exact-identification loss
-$$
-\rho_{0/1}(z,z')=\mathbbm 1\{z\neq z'\},
-$$
+```math
+\rho_{0/1}(z,z')=\mathbf{1}_{\{z\neq z'\}},
+```
 all $\eta<1$ are equivalent and
-$$
+```math
 \Pr[\rho_{0/1}(Z,\widehat Z)\le \eta]=\Pr[\widehat Z=Z].
-$$
+```
 So the primary empirical quantity is
-$$
+```math
 \widehat p_{\mathrm{exact}}
 =
-\frac1N\sum_{j=1}^N \mathbbm 1\{\widehat Z_j=Z_j\}.
-$$
+\frac1N\sum_{j=1}^N \mathbf{1}_{\{\widehat Z_j=Z_j\}}.
+```
 For a uniform prior, $\kappa=1/m$.
 
 **Practical takeaway:**
 - for high-dimensional embeddings, the **finite-prior exact-ID** setting is usually the most interpretable primary result;
 - the **continuous Ball prior** is still useful as a geometry diagnostic because
-  $$
+  ```math
   \kappa(\eta)=\left(\frac{\eta}{r}\right)^d
   \qquad (\eta<r)
-  $$
+  ```
   changes extremely quickly in large dimension.
 
 ---
@@ -189,17 +189,17 @@ print("target_label:", target_label)
 ## 3. Convex Gaussian output perturbation
 
 We release
-$$
+```math
 \widetilde\theta = \widehat\theta(D)+\xi,
 \qquad
 \xi\sim\mathcal N(0,\sigma^2 I).
-$$
+```
 The ERM sensitivity theorem gives
-$$
+```math
 \|\widehat\theta(D)-\widehat\theta(D')\|_2
 \le
 \Delta_2(r).
-$$
+```
 The two main theorem-backed ReRo routes here are:
 - generic Ball-DP $\Rightarrow$ Ball-ReRo;
 - direct Gaussian Ball-ReRo.
@@ -312,9 +312,9 @@ for point in report_convex_cont.points:
 ```
 
 Use this section to explain the geometry of
-$$
+```math
 \kappa(\eta)=\left(\frac{\eta}{r}\right)^d
-$$
+```
 not as the main embedding result.
 
 ---
@@ -322,17 +322,17 @@ not as the main embedding result.
 ## 4. Nonconvex Poisson Ball-SGD
 
 At step $t$, we sample a Poisson minibatch with rate $\gamma_t$, compute clipped per-example gradients, and release
-$$
+```math
 \widetilde S_t(D)=\sum_{i\in B_t}\bar g_t(z_i)+\xi_t,
 \qquad
 \xi_t\sim\mathcal N(0,\nu_t^2 I).
-$$
+```
 The stepwise Ball sensitivity is
-$$
+```math
 \Delta_t(r)
 \le
 \min\{L_z r,\ 2C\}.
-$$
+```
 The two main theorem-backed ReRo routes here are:
 - optimized Ball-RDP $\Rightarrow$ Ball-ReRo;
 - direct Poisson Ball-SGD $\Rightarrow$ Ball-ReRo.
@@ -516,11 +516,11 @@ That is normal, not a bug.
 For finite-prior trace attacks, the expensive step is usually
 `subtract_known_batch_gradients(...)`, not the final score-each-candidate call.
 The rough attack scale is
-$$
+```math
 (\#\text{retained steps})\times(\text{avg retained batch size})
 +
 (\#\text{retained steps})\times(\#\text{candidates}).
-$$
+```
 
 Practical defaults for notebook demos:
 - `batch_size = 128` or `256`
@@ -539,17 +539,17 @@ from quantbayes.ball_dp.theorem import ...
 
 It is designed for the theorem-covered one-hidden-layer tanh models only.
 A fixed-basis SVD hidden layer has the form
-$$
+```math
 W \approx U\,\operatorname{diag}(s)\,V^\top,
-$$
+```
 with frozen orthonormal $U,V$ and private optimization over $s$ (and typically the hidden bias and output head).
 
 ### What rank can and cannot change
 
 Under the fixed-basis theorem currently implemented in the library, the certified Lipschitz-in-data constant
-$$
+```math
 L_z^{(\mathrm{fb})}
-$$
+```
 depends on the public norm bound and the parameter constraints, but **not on the rank**.
 Therefore, if the theorem parameters are fixed, changing the SVD rank should leave the theorem-backed privacy certificate unchanged.
 
@@ -876,3 +876,4 @@ If you replace the example MLP with a different architecture, update `layer_path
 - `quantbayes/ball_dp/nonconvex/README.md` — Poisson Ball-SGD, runtime notes, and theorem-backed nonconvex ReRo.
 - `quantbayes/ball_dp/theorem/README.md` — theorem-only dense/SVD API and rank experiments.
 - `quantbayes/ball_dp/decentralized/README.md` — observer-specific decentralized Ball-PN-RDP and exact MAP attacks.
+
