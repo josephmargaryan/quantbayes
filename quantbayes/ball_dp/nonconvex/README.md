@@ -5,23 +5,22 @@ This README is the focused guide for theorem-backed Poisson Ball-SGD releases an
 ## 1. Theorems used here
 
 At step $t$, Poisson Ball-SGD releases
-$$
+```math
 \widetilde S_t(D)=\sum_{i\in B_t}\bar g_t(z_i)+\xi_t,
 \qquad
 \xi_t\sim\mathcal N(0,\nu_t^2 I).
-$$
+```
 The stepwise Ball sensitivity is
-$$
+```math
 \Delta_t(r)\le \min\{L_z r, 2C\}.
-$$
-
-### 1.1 Ball-RDP $\Rightarrow$ Ball-ReRo
+```
+### 1.1 Ball-RDP → Ball-ReRo
 If the transcript-level Ball-RDP curve is
-$$
+```math
 \alpha \mapsto \varepsilon_{1:T}^{\mathrm{ball}}(\alpha;r),
-$$
+```
 then the generic theorem gives
-$$
+```math
 p_{\mathrm{succ}}(\eta)
 \le
 \inf_\alpha
@@ -31,22 +30,20 @@ p_{\mathrm{succ}}(\eta)
 \frac{\alpha-1}{\alpha}[\log \kappa(\eta)+\varepsilon_{1:T}^{\mathrm{ball}}(\alpha;r)]
 \right)
 \right\}.
-$$
-
+```
 **`ball_rero(..., mode="rdp")`**
 
-### 1.2 Direct Poisson Ball-SGD $\Rightarrow$ Ball-ReRo
+### 1.2 Direct Poisson Ball-SGD → Ball-ReRo
 The direct theorem composes
-$$
+```math
 \Gamma_t^{\mathrm{ball}}(\kappa;r)=\Psi_{\gamma_t,\Delta_t(r)/\nu_t}(\kappa)
-$$
+```
 into
-$$
+```math
 \Gamma_{1:T}^{\mathrm{ball}}(\kappa;r)
 =
 (\Gamma_1^{\mathrm{ball}}\circ\cdots\circ\Gamma_T^{\mathrm{ball}})(\kappa).
-$$
-
+```
 **`ball_rero(..., mode="ball_sgd_direct")`**
 
 In long adaptive traces this direct route is often looser than the RDP-based one.
@@ -220,15 +217,15 @@ print("alpha_opt_ball:", report_rdp.points[0].alpha_opt_ball)
 The expensive step is usually
 `subtract_known_batch_gradients(...)`, not the finite-prior score-each-candidate call.
 The rough attack scale is
-$$
+```math
 (\#\text{retained steps})\times(\text{avg retained batch size})
 +
 (\#\text{retained steps})\times(\#\text{candidates}).
-$$
-
+```
 Good demo defaults:
 - `batch_size = 128` or `256`
 - `capture_every = 10` or `20`
 - candidate support size `m = 8` to `16`
 
 The **known-inclusion** attack is best interpreted as an oracle stress test, not the default threat model.
+
