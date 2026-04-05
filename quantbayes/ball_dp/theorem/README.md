@@ -1,85 +1,67 @@
-# Theorem-backed nonconvex Ball-DP API
+# Theorem-only nonconvex API (dense + fixed-basis SVD)
 
-This package now has a **compact theory-scoped entry point**:
+This README is the focused guide for the compact theorem API:
 
 ```python
 from quantbayes.ball_dp.theorem import ...
 ```
 
-The goal of this API is narrow and explicit:
+It is intentionally narrow:
+- one-hidden-layer tanh families only;
+- dense and fixed-basis SVD parameterizations;
+- theorem-backed `L_z` certificates;
+- direct compatibility with the Ball-SGD release and Ball-ReRo report paths.
 
-1. instantiate exactly the one-hidden-layer tanh model families covered by the theorem files,
-2. train them with the existing `fit_ball_sgd(...)` release path,
-3. warm-start from dense checkpoints,
-4. convert dense hidden layers into fixed-basis `SVDDense` layers with frozen `U, V`,
-5. fine-tune either the default theorem-safe trainable set (`s`, hidden bias, output head) or only `s`,
-6. keep the README self-contained so the workflow is obvious without hunting through demo scripts.
+---
 
-## Model families
+## 1. Model families and theorem parameters
 
-All theorem families are represented by a single declarative spec:
+The declarative spec is
 
 ```python
-from quantbayes.ball_dp.theorem import TheoremModelSpec
+from quantbayes.ball_dp.theorem import TheoremModelSpec, TheoremBounds
 ```
 
 Supported families:
+- binary dense Frobenius
+- binary dense operator norm
+- binary fixed-basis SVD
+- multiclass dense Frobenius
+- multiclass dense operator norm
+- multiclass fixed-basis SVD
 
-- binary dense Frobenius: `task="binary", parameterization="dense", constraint="fro"`
-- binary dense operator-norm: `task="binary", parameterization="dense", constraint="op"`
-- binary fixed-basis SVD: `task="binary", parameterization="svd", constraint="op"`
-- multiclass dense Frobenius: `task="multiclass", parameterization="dense", constraint="fro"`
-- multiclass dense operator-norm: `task="multiclass", parameterization="dense", constraint="op"`
-- multiclass fixed-basis SVD: `task="multiclass", parameterization="svd", constraint="op"`
+The fixed-basis SVD hidden layer has the form
+$$
+W \approx U\,\operatorname{diag}(s)\,V^\top,
+$$
+with frozen orthonormal $U,V$ and private optimization over $s$ (plus typically hidden bias and output head).
 
-The fixed-basis SVD family is intentionally the operator-norm theorem family, because the theorem controls
-`||s||_∞ <= Lambda`, which is equivalent to the hidden operator norm when `U, V` are orthonormal.
+The theorem parameters are kept separate from the training configuration:
+- `bounds.B` — public input norm bound;
+- `bounds.A` — output-head norm bound;
+- `bounds.S` — dense Frobenius constraint;
+- `bounds.Lambda` — dense operator norm or fixed-basis diagonal/operator constraint;
+- `train_cfg.radius` — Ball policy radius.
 
-## Public theorem quantities vs. training quantities
+---
 
-Keep these separate:
+## 2. Rank invariance of the fixed-basis certificate
 
-- `bounds.B` is the public input norm bound from the theorem.
-- `bounds.A` bounds the output head norm.
-- `bounds.S` is only for the dense Frobenius theorem family.
-- `bounds.Lambda` is for the dense operator-norm and fixed-basis SVD theorem families.
-- `train_cfg.radius` is the Ball-DP radius `r` used by the release mechanism.
+In the fixed-basis theorem used here, the certified Lipschitz-in-data constant
+$$
+L_z^{(\mathrm{fb})}
+$$
+depends on the public norm bound and the parameter constraints, but **not on the chosen rank**.
 
-## Core API
+So if `B`, `A`, `Lambda`, and the hidden width are fixed, then changing rank should leave the theorem-backed privacy certificate unchanged.
+This means the rank sweep is a study of:
+- utility vs. rank,
+- empirical attack behavior vs. rank,
+- with a rank-invariant theorem-backed certificate.
 
-```python
-from quantbayes.ball_dp.theorem import (
-    TheoremBounds,
-    TheoremModelSpec,
-    TrainConfig,
-    certified_constants,
-    certified_lz,
-    check_constraints,
-    check_input_bound,
-    fit_release,
-    load_dense_checkpoint_as_svd,
-    load_model_checkpoint,
-    make_model,
-    make_optimizer,
-    make_projector,
-    replace_dense_with_svd,
-    save_model_checkpoint,
-)
-```
+---
 
-## Recommended defaults
-
-The compact API uses privacy-safer defaults than the old exploratory demos:
-
-- `TrainConfig.batch_sampler="poisson"`
-- `TrainConfig.accountant_subsampling="match_sampler"`
-
-This makes the public API line up with the accounting assumptions by default.
-It also means the final release is compatible with the theorem-backed direct
-Poisson Ball-SGD Ball-ReRo bound via `ball_rero(..., mode="ball_sgd_direct")`,
-provided you keep the default fixed normalization of the noisy sum.
-
-## 1) Binary dense model, trained directly
+## 3. Group 1: private-only dense training
 
 ```python
 import jax.random as jr
@@ -94,278 +76,92 @@ from quantbayes.ball_dp.theorem import (
     make_model,
 )
 
-X_train = np.asarray(X_train, dtype=np.float32)
-y_train = np.asarray(y_train, dtype=np.int32)
+X_priv = np.asarray(X_priv, dtype=np.float32)
+y_priv = np.asarray(y_priv, dtype=np.int32)
+X_priv_test = np.asarray(X_priv_test, dtype=np.float32)
+y_priv_test = np.asarray(y_priv_test, dtype=np.int32)
+
+num_classes = int(len(np.unique(y_priv)))
+feature_dim = int(X_priv.shape[1])
+B_all = float(max(np.linalg.norm(X_priv, axis=1).max(), np.linalg.norm(X_priv_test, axis=1).max()))
 
 spec = TheoremModelSpec(
-    d_in=X_train.shape[1],
-    hidden_dim=256,
-    task="binary",
+    d_in=feature_dim,
+    hidden_dim=128,
+    task="multiclass",
     parameterization="dense",
-    constraint="fro",
+    constraint="op",
+    num_classes=num_classes,
 )
-bounds = TheoremBounds(B=1.0, A=4.0, S=8.0)
+bounds = TheoremBounds(B=B_all, A=4.0, Lambda=4.0)
 model = make_model(spec, key=jr.PRNGKey(0), init_project=True, bounds=bounds)
 
 train_cfg = TrainConfig(
-    radius=0.5,
-    privacy="ball_dp",
-    epsilon=3.0,
+    radius=0.10,
+    privacy="ball_rdp",
     delta=1e-6,
-    num_steps=2000,
-    batch_size=128,
+    num_steps=400,
+    batch_size=min(128, len(X_priv)),
+    batch_sampler="poisson",
+    accountant_subsampling="match_sampler",
     clip_norm=1.0,
-    noise_multiplier=1.1,
+    noise_multiplier=1.0,
     learning_rate=3e-3,
+    eval_every=50,
+    normalize_noisy_sum_by="batch_size",
+    seed=0,
 )
 
 release = fit_release(
     model,
     spec,
     bounds,
-    X_train,
-    y_train,
+    X_priv,
+    y_priv,
+    X_eval=X_priv_test,
+    y_eval=y_priv_test,
     train_cfg=train_cfg,
 )
 
 print("L_z:", certified_lz(spec, bounds))
-print("train accuracy:", release.utility_metrics.get("train_accuracy"))
+print("utility:", release.utility_metrics)
 ```
 
-You can then compute either the optimized Ball-RDP -> Ball-ReRo curve or the
-direct Poisson Ball-SGD Ball-ReRo curve:
+---
 
-```python
-import numpy as np
+## 4. Group 2: public dense pretrain $\to$ private dense fine-tune
 
-from quantbayes.ball_dp import ball_rero, make_uniform_ball_prior, plot_rero_report
+Typical workflow:
+1. train a dense theorem model on public data;
+2. save the checkpoint;
+3. load it back and continue private fine-tuning on private data.
 
-u = np.asarray(X_train.mean(axis=0), dtype=np.float32)
-prior = make_uniform_ball_prior(center=u, radius=train_cfg.radius)
+Use the helpers:
+- `save_model_checkpoint(...)`
+- `load_model_checkpoint(...)`
 
-report_direct = ball_rero(
-    release,
-    prior=prior,
-    eta_grid=(0.05, 0.10, 0.20),
-    mode="ball_sgd_direct",
-)
+---
 
-plot_rero_report(report_direct)
-print(report_direct.metadata["ball_step_profiles"][0])
-```
+## 5. Group 3: public dense pretrain $\to$ fixed-basis SVD private fine-tune
 
-## 2) Binary fixed-basis SVD model from scratch
+Typical workflow:
+1. train a dense public model;
+2. convert the dense hidden layer into a frozen-basis `SVDDense` layer;
+3. choose ranks `r in {8, 16, 32, 64, ...}`;
+4. fine-tune only the theorem-safe trainable set (`s`, hidden bias, output head) on private data.
 
-This instantiates the SVD theorem model directly. The random initialization is created by sampling a dense hidden
-layer and factorizing it once; `U, V` are then treated as fixed.
+Key helpers:
+- `replace_dense_with_svd(...)`
+- `load_dense_checkpoint_as_svd(...)`
+- `fit_release(..., trainable="default")`
 
-```python
-spec = TheoremModelSpec(
-    d_in=X_train.shape[1],
-    hidden_dim=256,
-    task="binary",
-    parameterization="svd",
-    constraint="op",
-    rank=32,
-)
-bounds = TheoremBounds(B=1.0, A=4.0, Lambda=2.0)
-model = make_model(spec, key=jr.PRNGKey(1), init_project=True, bounds=bounds)
+The rank sweep is expected to keep the theorem-backed certificate fixed while changing approximation/optimization behavior.
 
-release = fit_release(
-    model,
-    spec,
-    bounds,
-    X_train,
-    y_train,
-    train_cfg=train_cfg,
-    trainable="default",   # freeze U,V; optimize s, hidden bias, output head
-)
-```
+---
 
-## 3) Public or pretrained dense checkpoint -> private dense fine-tuning
+## 6. ReRo reporting after theorem-backed training
 
-```python
-from quantbayes.ball_dp.theorem import save_model_checkpoint, load_model_checkpoint
-
-# Suppose release.payload is the public/pretrained dense model.
-dense_model = release.payload
-save_model_checkpoint(dense_model, spec, "./ckpt_dense")
-
-dense_model_2, dense_spec, dense_state, metadata = load_model_checkpoint("./ckpt_dense")
-
-dense_finetune = fit_release(
-    dense_model_2,
-    dense_spec,
-    bounds,
-    X_private,
-    y_private,
-    train_cfg=train_cfg,
-)
-```
-
-## 4) Dense -> fixed-basis SVD conversion -> second-stage fine-tuning
-
-This is the canonical theorem-aligned warm-start path:
-
-1. start from a dense model,
-2. convert the hidden layer to `SVDDense` via the SVD of the learned dense weight,
-3. keep `U, V` fixed,
-4. continue training the fixed-basis model.
-
-```python
-from quantbayes.ball_dp.theorem import replace_dense_with_svd
-
-dense_spec = TheoremModelSpec(
-    d_in=X_public.shape[1],
-    hidden_dim=256,
-    task="binary",
-    parameterization="dense",
-    constraint="fro",
-)
-dense_bounds = TheoremBounds(B=1.0, A=4.0, S=8.0)
-
-dense_model = make_model(dense_spec, key=jr.PRNGKey(0), init_project=True, bounds=dense_bounds)
-public_cfg = TrainConfig(
-    radius=0.5,
-    privacy="noiseless",
-    num_steps=1000,
-    batch_size=128,
-    clip_norm=1.0,
-    noise_multiplier=0.0,
-    learning_rate=3e-3,
-)
-public_release = fit_release(
-    dense_model,
-    dense_spec,
-    dense_bounds,
-    X_public,
-    y_public,
-    train_cfg=public_cfg,
-)
-
-svd_spec = dense_spec.to_svd(rank=32)
-svd_bounds = TheoremBounds(B=1.0, A=4.0, Lambda=2.0)
-svd_model = replace_dense_with_svd(
-    public_release.payload,
-    svd_spec,
-    init_project=True,
-    bounds=svd_bounds,
-)
-
-private_release = fit_release(
-    svd_model,
-    svd_spec,
-    svd_bounds,
-    X_private,
-    y_private,
-    train_cfg=train_cfg,
-    trainable="default",
-)
-```
-
-## 5) Load a dense checkpoint and convert it directly to SVD
-
-```python
-from quantbayes.ball_dp.theorem import load_dense_checkpoint_as_svd
-
-svd_bounds = TheoremBounds(B=1.0, A=4.0, Lambda=2.0)
-svd_model, svd_spec, state, metadata = load_dense_checkpoint_as_svd(
-    "./ckpt_dense",
-    rank=32,
-    bounds=svd_bounds,
-    init_project=True,
-)
-
-private_release = fit_release(
-    svd_model,
-    svd_spec,
-    svd_bounds,
-    X_private,
-    y_private,
-    train_cfg=train_cfg,
-    trainable="default",
-)
-```
-
-## 6) Train only `s`
-
-The fixed-basis SVD models expose two meaningful trainable modes:
-
-- `trainable="default"`: freeze `U, V`, train `s`, hidden bias, and output head.
-- `trainable="s_only"`: freeze everything except `hidden.s`.
-
-```python
-s_only_release = fit_release(
-    svd_model,
-    svd_spec,
-    svd_bounds,
-    X_private,
-    y_private,
-    train_cfg=train_cfg,
-    trainable="s_only",
-)
-```
-
-## 7) Multiclass dense and SVD models
-
-The multiclass workflow is exactly the same except for `task` and `num_classes`.
-
-```python
-multiclass_spec = TheoremModelSpec(
-    d_in=X_train.shape[1],
-    hidden_dim=256,
-    task="multiclass",
-    num_classes=10,
-    parameterization="dense",
-    constraint="op",
-)
-multiclass_bounds = TheoremBounds(B=1.0, A=6.0, Lambda=2.0)
-multiclass_model = make_model(
-    multiclass_spec,
-    key=jr.PRNGKey(2),
-    init_project=True,
-    bounds=multiclass_bounds,
-)
-
-multiclass_release = fit_release(
-    multiclass_model,
-    multiclass_spec,
-    multiclass_bounds,
-    X_train,
-    y_train,
-    train_cfg=train_cfg,
-)
-
-multiclass_svd_spec = multiclass_spec.to_svd(rank=64)
-multiclass_svd_model = replace_dense_with_svd(
-    multiclass_release.payload,
-    multiclass_svd_spec,
-    init_project=True,
-    bounds=multiclass_bounds,
-)
-```
-
-## 8) Explicit theorem constants
-
-```python
-consts = certified_constants(svd_spec, svd_bounds)
-print(consts)
-# {'kappa_tanh': ..., 'L_f': ..., 'G_f': ..., 'L_z': ...}
-```
-
-## 9) Constraint checks
-
-```python
-from quantbayes.ball_dp.theorem import check_constraints, check_input_bound
-
-check_input_bound(X_train, bounds)
-check_constraints(model, spec, bounds)
-```
-
-## Notes on warm-starts and privacy composition
-
-- If a first-stage dense model is trained **nonprivately on the same private dataset**, the overall pipeline is not DP for that dataset.
-- The clean theorem-facing use cases are:
-  - public pretraining,
-  - pretraining on disjoint data,
-  - or a first stage that is itself privately trained and accounted.
+Once you have a theorem-backed private release, the recommended report path is the same as in the main notebook:
+- finite-prior exact identification for the primary embedding result;
+- `mode="rdp"` for the main nonconvex certificate;
+- `mode="ball_sgd_direct"` as the direct transcript theorem.

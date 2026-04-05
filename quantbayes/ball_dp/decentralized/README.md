@@ -1,184 +1,100 @@
-# Decentralized Ball-DP helpers
+# Decentralized Ball privacy
 
-This subpackage is intentionally **adapter-first**.
-The uploaded repo does not contain an existing decentralized trainer, so the cleanest,
-least-invasive implementation is:
+This README is the focused guide for the decentralized path.
 
-1. keep your existing decentralized training code,
-2. log only the quantities required by the theorems,
-3. pass those logs into the helpers here.
+## 1. Observer-specific privacy notion
 
-That gives you theorem-aligned accounting and attacks without forcing a rewrite of your
-legacy decentralized code.
-
-## 1) Public-transcript decentralized Ball-SGD-RDP
-
-Under the public-transcript theorem, the privacy cost against a target at node `j`
-depends only on node `j`'s local Poisson-subsampled Gaussian schedule.
-Consensus / gossip / message passing after those releases is post-processing.
-
-```python
-from quantbayes.ball_dp.decentralized import (
-    LocalNodeSGDSchedule,
-    account_public_transcript_node_local_rdp,
-)
-
-schedule = LocalNodeSGDSchedule.from_noise_multipliers(
-    dataset_size=n_j,
-    batch_sizes=[64] * T,
-    clip_norms=[1.0] * T,
-    noise_multipliers=[1.2] * T,
-    radius=0.5,
-    lz=3.7,
-    orders=(2, 3, 4, 5, 8, 16, 32, 64, 128),
-    batch_sampler="poisson",
-    accountant_subsampling="match_sampler",
-    dp_delta=1e-6,
-)
-
-result = account_public_transcript_node_local_rdp(
-    schedule,
-    attacked_node=j,
-)
-
-ball_curve = result.ledger.ball.rdp_curve
-ball_dp = result.ledger.ball.dp_certificates[0]
-```
-
-If your decentralized code already computes a sharper per-step local sensitivity schedule
-than `min(L_z r, 2 C_t)`, pass it through `step_delta_ball=`.
-
-## 2) Observer-specific Ball-PN-RDP for a linear Gaussian view
-
-When the observer view has the theorem form
-
+Let node \$j\$ be the attacked node and \$A\$ the observer set.
+The observer sees
 $$
-Y_A = c_A(D_{-j}) + (H_{A \leftarrow j} \otimes I_p) s_j(D) + \zeta_A,
+\operatorname{View}_A(M(D)).
 $$
-
-you can account it directly.
-
-### Common efficient case: `Sigma_A = Sigma_time ⊗ I_p`
-
-Pass `covariance` with shape `(d_A, d_A)`.
-
-```python
-from quantbayes.ball_dp.decentralized import account_linear_gaussian_observer
-
-obs_result = account_linear_gaussian_observer(
-    transfer_matrix=H,
-    covariance=Sigma_time,
-    block_sensitivities=delta_blocks,
-    parameter_dim=p,
-    orders=(2, 3, 4, 5, 8, 16, 32, 64, 128),
-    radius=0.5,
-    dp_delta=1e-6,
-    attacked_node=j,
-    observer=tuple(A),
-)
-
-curve = obs_result.rdp_curve
-cert = obs_result.dp_certificate
-```
-
-Correctness notes:
-- The code returns an **exact** sensitivity only in theorem-safe special cases.
-- Otherwise it returns the theorem-backed **operator-norm upper bound**.
-- The result object tells you which case was used through `exact` and `method`.
-
-## 3) Gossip specialization
-
-For the linear recursion
-
+The decentralized privacy notion is observer-specific Ball-PN-RDP:
 $$
-x_{t+1} = W_t x_t + u_t + \xi_t,
+D_\alpha\Big(
+\operatorname{View}_A(M(D))
+\,\|\,
+\operatorname{View}_A(M(D'))
+\Big)
+\le
+\varepsilon_{A\leftarrow j}(\alpha;r)
 \qquad
-y_t = (S_A \otimes I_p) x_t,
+\text{for } D\sim_{r,j} D'.
 $$
 
-build the theorem transfer matrix as:
+This captures how much information about a Ball-local change at node \$j\$ reaches observer set \$A\$.
 
-```python
-from quantbayes.ball_dp.decentralized import selector_matrix, gossip_transfer_matrix
+---
 
-S_A = selector_matrix(A, num_nodes=m)
-H = gossip_transfer_matrix(
-    mixing_matrices=W_schedule,
-    observer_selector=S_A,
-    attacked_node=j,
-)
-```
+## 2. Linear-Gaussian observer theorem
 
-The returned `H` stacks the observer views `(y_1, ..., y_T)` and the attacked-node
-sensitive blocks `(u_0, ..., u_{T-1})`.
+When the observer view can be written as
+$$
+Y_A(D)
+=
+c_A(D_{-j}) + (H_{A\leftarrow j}\otimes I)s_j(D)+\zeta_A,
+\qquad
+\zeta_A\sim\mathcal N(0,\Sigma_A),
+$$
+with blockwise Ball sensitivities \$\Delta_{j,\ell}(r)\$, the theorem gives
+$$
+D_\alpha\big(Y_A(D)\|Y_A(D')\big)
+\le
+\frac\alpha2\,\Delta_{A\leftarrow j}(r)^2,
+$$
+where
+$$
+\Delta_{A\leftarrow j}(r)^2
+:=
+\sup_{\|\delta_\ell\|\le \Delta_{j,\ell}(r)}
+\Big\|\Sigma_A^{-1/2}(H_{A\leftarrow j}\otimes I)\delta\Big\|_2^2.
+$$
 
-## 4) Observer-specific Ball-ReRo from the Ball-PN-RDP curve
+So the topology and observer view enter explicitly through \$H_{A\leftarrow j}\$.
 
-```python
-from quantbayes.ball_dp.decentralized import compute_ball_pn_rero_report
-from quantbayes.ball_dp.evaluation.rero import FiniteExactIdentificationPrior
+---
 
-prior = FiniteExactIdentificationPrior(candidate_features, weights=None)
-report = compute_ball_pn_rero_report(curve, prior, eta_grid=(0.25, 0.5, 1.0))
-```
+## 3. Observer-specific Ball-ReRo
 
-## 5) Exact MAP attacks on decentralized Gaussian views
+The generic Ball-PN-RDP $\Rightarrow$ Ball-ReRo theorem gives
+$$
+p_{\mathrm{succ}}(\eta)
+\le
+\min\left\{1,\,(\kappa(\eta)e^{\varepsilon_{A\leftarrow j}(\alpha;r)})^{(\alpha-1)/\alpha}\right\}.
+$$
+For a uniform finite prior on \$m\$ candidates, \$\kappa=1/m\$.
 
-### Finite prior (exact theorem-aligned Bayes classification)
+So the decentralized finite-prior exact-identification result is still a scalar success-probability upper bound, but now it depends on the observer set through the observer-specific privacy curve.
 
-```python
-from quantbayes.ball_dp.decentralized import run_linear_gaussian_finite_prior_attack
+---
 
-attack = run_linear_gaussian_finite_prior_attack(
-    observed_view=y_A,
-    candidate_features=X_candidates,
-    candidate_labels=y_candidates,
-    mean_fn=mean_fn,
-    covariance=Sigma_time,          # or full covariance on the flattened view
-    true_record=true_record,
-)
-```
+## 4. Observer-specific exact MAP attack on a Gaussian view
 
-### Continuous Ball-constrained MAP
+Under the linear-Gaussian observer theorem, a MAP estimator solves
+$$
+\widehat z_A
+\in
+\arg\min_{z\in \mathcal B(u,r)}
+\left\{
+\frac12
+\left\|
+\Sigma_A^{-1/2}
+\big(y_A-c_A(D^-)-(H_{A\leftarrow j}\otimes I)s_j(z)\big)
+\right\|_2^2
+-
+\log \pi_{u,r}(z)
+\right\}.
+$$
 
-```python
-from quantbayes.ball_dp.decentralized import (
-    LinearGaussianMapAttackConfig,
-    run_linear_gaussian_ball_map_attack,
-)
-from quantbayes.ball_dp.attacks.ball_priors import UniformBallAttackPrior
+For a finite prior, this reduces to exact candidate scoring.
 
-attack = run_linear_gaussian_ball_map_attack(
-    observed_view=y_A,
-    prior=UniformBallAttackPrior(center=u, radius=r),
-    mean_fn=mean_fn,
-    covariance=Sigma_time,
-    cfg=LinearGaussianMapAttackConfig(
-        optimizer="adam",
-        num_steps=400,
-        learning_rate=1e-2,
-        num_restarts=5,
-        seed=0,
-    ),
-    known_label=target_label,
-    true_record=true_record,
-)
-```
+---
 
-## 6) Building `mean_fn` from the theorem decomposition
+## 5. Practical use
 
-If you already have a function that computes the attacked node's stacked sensitive blocks
-`s_j(z)` for a candidate record, use
+The decentralized code is most useful when you already have:
+- a node-local Ball sensitivity model;
+- an explicit observer set;
+- and either a public transcript or a linearized Gaussian observer view.
 
-```python
-from quantbayes.ball_dp.decentralized import make_linear_gaussian_mean_fn
-
-mean_fn = make_linear_gaussian_mean_fn(
-    transfer_matrix=H,
-    sensitive_blocks_fn=sensitive_blocks_fn,
-    base_offset=c_A,
-)
-```
-
-where `sensitive_blocks_fn(x, y)` returns the stacked blocks with shape `(q, p)`
-or flat shape `(q * p,)`.
+For the main centralized thesis notebook, you can ignore this path. For topology-aware experiments, start here.
