@@ -46,6 +46,10 @@ into
 ```
 **`ball_rero(..., mode="ball_sgd_direct")`**
 
+**`ball_rero(..., mode="ball_sgd_mix_comp")`** — exploratory hidden-mixture reference quantity; not theorem-backed for the raw replacement transcript without an additional domination argument.
+
+**`ball_rero(..., mode="ball_sgd_hayes")`** — theorem-backed global/product direct bound for the revealed-inclusion dominating pair (the alias `mode="ball_sgd_kaissis"` returns the same quantity in trade-off language).
+
 In long adaptive traces this direct route is often looser than the RDP-based one.
 
 ---

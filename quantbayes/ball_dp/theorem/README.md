@@ -164,5 +164,8 @@ The rank sweep is expected to keep the theorem-backed certificate fixed while ch
 Once you have a theorem-backed private release, the recommended report path is the same as in the main notebook:
 - finite-prior exact identification for the primary embedding result;
 - `mode="rdp"` for the main nonconvex certificate;
-- `mode="ball_sgd_direct"` as the direct transcript theorem.
+- `mode="ball_sgd_hayes"` for the theorem-backed global/product direct transcript bound for the revealed-inclusion dominating pair;
+- `mode="ball_sgd_kaissis"` as an alias emphasizing the equivalent trade-off-function interpretation of that same global/product quantity;
+- `mode="ball_sgd_mix_comp"` for the exploratory hidden-mixture composition reference quantity (not theorem-backed for the raw replacement transcript without an extra domination proof);
+- `mode="ball_sgd_direct"` for the closed-form revealed-bit direct bound.
 

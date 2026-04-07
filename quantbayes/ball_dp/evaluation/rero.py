@@ -17,7 +17,11 @@ from ..types import (
     ReRoReport,
     ReleaseArtifact,
 )
-from .direct_poisson import compute_ball_sgd_direct_rero_report
+from .direct_poisson import (
+    compute_ball_sgd_direct_rero_report,
+    compute_ball_sgd_global_mixture_rero_report,
+    compute_ball_sgd_mixture_composed_rero_report,
+)
 
 _STD_NORMAL = NormalDist()
 
@@ -33,12 +37,26 @@ def _normalize_rero_mode(mode: str) -> str:
         "sgd_direct": "ball_sgd_direct",
         "poisson_direct": "ball_sgd_direct",
         "poisson_ball_sgd_direct": "ball_sgd_direct",
+        "ball_sgd_mix_comp": "ball_sgd_mix_comp",
+        "mix_comp": "ball_sgd_mix_comp",
+        "ball_sgd_latent": "ball_sgd_mix_comp",
+        "latent_mix": "ball_sgd_mix_comp",
+        "ball_sgd_hayes_style": "ball_sgd_hayes",
+        "ball_sgd_hayes": "ball_sgd_hayes",
+        "hayes": "ball_sgd_hayes",
+        "ball_sgd_global": "ball_sgd_hayes",
+        "global_mix": "ball_sgd_hayes",
+        "ball_sgd_kaissis": "ball_sgd_kaissis",
+        "kaissis": "ball_sgd_kaissis",
+        "ball_sgd_tradeoff": "ball_sgd_kaissis",
+        "ball_sgd_htdp": "ball_sgd_kaissis",
     }
     try:
         return mapping[key]
     except KeyError as exc:
         raise ValueError(
-            "mode must be one of {'auto', 'dp', 'rdp', 'gaussian_direct', 'ball_sgd_direct'}."
+            "mode must be one of {'auto', 'dp', 'rdp', 'gaussian_direct', 'ball_sgd_direct', "
+            "'ball_sgd_mix_comp', 'ball_sgd_hayes', 'ball_sgd_kaissis'}."
         ) from exc
 
 
@@ -363,6 +381,23 @@ def compute_ball_rero_report(
             release,
             prior,
             eta_grid=eta_grid,
+        )
+        _save_rero_report(report, out_path)
+        return report
+    elif mode == "ball_sgd_mix_comp":
+        report = compute_ball_sgd_mixture_composed_rero_report(
+            release,
+            prior,
+            eta_grid=eta_grid,
+        )
+        _save_rero_report(report, out_path)
+        return report
+    elif mode in {"ball_sgd_hayes", "ball_sgd_kaissis"}:
+        report = compute_ball_sgd_global_mixture_rero_report(
+            release,
+            prior,
+            eta_grid=eta_grid,
+            mode_label=mode,
         )
         _save_rero_report(report, out_path)
         return report
