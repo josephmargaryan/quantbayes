@@ -15,17 +15,12 @@ import torchvision
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
-
-def get_jax_device(require_gpu: bool):
-    gpu_devices = [d for d in jax.devices() if d.platform == "gpu"]
-    if gpu_devices:
-        return gpu_devices[0]
-    if require_gpu:
-        raise RuntimeError(
-            "JAX does not see a GPU. Install a GPU-enabled JAX build and verify "
-            "`jax.devices()` reports a GPU."
-        )
-    return jax.devices()[0]
+from quantbayes.ball_dp.experiments.embedding_io import (
+    default_cache_dir,
+    get_jax_device,
+    load_embedding_npz,
+    save_embedding_npz,
+)
 
 
 def make_loader(
@@ -49,7 +44,7 @@ def l2_normalize_rows(x: np.ndarray, eps: float = 1e-12) -> np.ndarray:
 def build_feature_extractor(torch_device: torch.device):
     weights = torchvision.models.ResNet18_Weights.DEFAULT
     model = torchvision.models.resnet18(weights=weights)
-    model.fc = nn.Identity()  # output shape: [B, 512]
+    model.fc = nn.Identity()  # [B, 512]
     model.eval()
     model.to(torch_device)
 
@@ -69,7 +64,7 @@ def extract_embeddings(
     with torch.inference_mode():
         for images, labels in tqdm(loader, desc=desc):
             images = images.to(torch_device, non_blocking=(torch_device.type == "cuda"))
-            features = model(images)  # [B, 512]
+            features = model(images)
 
             all_embeddings.append(features.cpu().numpy().astype(np.float32, copy=False))
             all_labels.append(labels.numpy().astype(np.int32, copy=False))
@@ -80,30 +75,31 @@ def extract_embeddings(
     return X, y
 
 
-def load_cifar100_resnet18_embeddings(
+def default_output_path(data_root: str = "./data") -> Path:
+    return default_cache_dir(data_root) / "cifar10_resnet18_embeddings.npz"
+
+
+def load_cifar10_resnet18_embeddings(
     data_root: str = "./data",
     batch_size: int = 128,
     num_workers: int = 4,
     require_jax_gpu: bool = True,
 ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
     """
-    Returns:
-        X_train, y_train, X_test, y_test as JAX arrays.
-        X_* have shape [N, 512] and dtype float32.
-        y_* have shape [N] and dtype int32.
+    Compute embeddings from scratch and return JAX arrays.
     """
     torch_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     jax_device = get_jax_device(require_jax_gpu)
 
     model, transform = build_feature_extractor(torch_device)
 
-    train_dataset = torchvision.datasets.CIFAR100(
+    train_dataset = torchvision.datasets.CIFAR10(
         root=data_root,
         train=True,
         transform=transform,
         download=True,
     )
-    test_dataset = torchvision.datasets.CIFAR100(
+    test_dataset = torchvision.datasets.CIFAR10(
         root=data_root,
         train=False,
         transform=transform,
@@ -115,10 +111,10 @@ def load_cifar100_resnet18_embeddings(
     test_loader = make_loader(test_dataset, batch_size, num_workers, pin_memory)
 
     X_train_np, y_train_np = extract_embeddings(
-        train_loader, model, torch_device, desc="CIFAR-100 train"
+        train_loader, model, torch_device, desc="CIFAR-10 train"
     )
     X_test_np, y_test_np = extract_embeddings(
-        test_loader, model, torch_device, desc="CIFAR-100 test"
+        test_loader, model, torch_device, desc="CIFAR-10 test"
     )
 
     del model
@@ -129,30 +125,54 @@ def load_cifar100_resnet18_embeddings(
     y_train = jax.device_put(y_train_np, device=jax_device)
     X_test = jax.device_put(X_test_np, device=jax_device)
     y_test = jax.device_put(y_test_np, device=jax_device)
-
     return X_train, y_train, X_test, y_test
 
 
-def save_npz(output_path: Path, X_train, y_train, X_test, y_test) -> None:
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(
-        output_path,
-        X_train=np.asarray(jax.device_get(X_train), dtype=np.float32),
-        y_train=np.asarray(jax.device_get(y_train), dtype=np.int32),
-        X_test=np.asarray(jax.device_get(X_test), dtype=np.float32),
-        y_test=np.asarray(jax.device_get(y_test), dtype=np.int32),
+def load_or_create_cifar10_resnet18_embeddings(
+    data_root: str = "./data",
+    batch_size: int = 128,
+    num_workers: int = 4,
+    require_jax_gpu: bool = True,
+    cache_path: str | Path | None = None,
+    force_recompute: bool = False,
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+    if cache_path is None:
+        cache_path = default_output_path(data_root)
+    cache_path = Path(cache_path)
+
+    if cache_path.exists() and not force_recompute:
+        return load_embedding_npz(cache_path, require_jax_gpu=require_jax_gpu)
+
+    X_train, y_train, X_test, y_test = load_cifar10_resnet18_embeddings(
+        data_root=data_root,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        require_jax_gpu=require_jax_gpu,
     )
+    save_embedding_npz(cache_path, X_train, y_train, X_test, y_test)
+    return X_train, y_train, X_test, y_test
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Extract canonical-split CIFAR-100 embeddings with pretrained ResNet18 and return/save JAX arrays."
+        description=(
+            "Compute/cache canonical-split CIFAR-10 embeddings with pretrained ResNet18 "
+            "and return/save JAX arrays."
+        )
     )
     parser.add_argument("--data-root", type=str, default="./data")
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument(
-        "--output", type=str, default=None, help="Optional .npz output path"
+        "--output",
+        type=str,
+        default=None,
+        help="Optional .npz output path. Default: ./data/embeddings/cifar10_resnet18_embeddings.npz",
+    )
+    parser.add_argument(
+        "--force-recompute",
+        action="store_true",
+        help="Ignore existing cached .npz and recompute embeddings.",
     )
     parser.add_argument(
         "--allow-cpu-fallback",
@@ -164,12 +184,17 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    output_path = (
+        Path(args.output) if args.output else default_output_path(args.data_root)
+    )
 
-    X_train, y_train, X_test, y_test = load_cifar100_resnet18_embeddings(
+    X_train, y_train, X_test, y_test = load_or_create_cifar10_resnet18_embeddings(
         data_root=args.data_root,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         require_jax_gpu=not args.allow_cpu_fallback,
+        cache_path=output_path,
+        force_recompute=args.force_recompute,
     )
 
     print(f"JAX default backend: {jax.default_backend()}")
@@ -178,11 +203,14 @@ def main() -> None:
     print(f"y_train shape: {y_train.shape}, dtype: {y_train.dtype}")
     print(f"X_test shape:  {X_test.shape}, dtype: {X_test.dtype}")
     print(f"y_test shape:  {y_test.shape}, dtype: {y_test.dtype}")
-
-    if args.output is not None:
-        output_path = Path(args.output)
-        save_npz(output_path, X_train, y_train, X_test, y_test)
-        print(f"Saved host copies to: {output_path}")
+    print(f"Cache path: {output_path}")
+    print()
+    print("Notebook usage:")
+    print("from quantbayes.ball_dp.embedding_io import load_embedding_npz")
+    print(
+        f"X_train, y_train, X_test, y_test = "
+        f'load_embedding_npz(r"{output_path}", require_jax_gpu=False)'
+    )
 
 
 if __name__ == "__main__":

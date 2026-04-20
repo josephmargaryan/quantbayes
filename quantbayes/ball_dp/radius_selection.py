@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
+import matplotlib.pyplot as plt
 import numpy as np
 
 
@@ -362,3 +363,293 @@ def select_ball_radius(
         "Unsupported strategy. Use one of "
         "{'max_labelwise_quantile', 'pooled_quantile', 'mean_labelwise_quantile', 'global_max'}."
     )
+
+
+def plot_within_label_ecdfs(
+    X,
+    y,
+    *,
+    radius: float | None = None,
+    q: float = 0.80,
+    max_exact_pairs: int = 250_000,
+    max_sampled_pairs: int = 100_000,
+    seed: int = 0,
+):
+    """
+    Use as:
+        fig, ax = plot_within_label_ecdfs(
+            X_train,
+            y_train,
+            radius=radius,
+            q=0.80,
+            max_exact_pairs=250_000,
+            max_sampled_pairs=100_000,
+            seed=0,
+        )
+        plt.show()
+    """
+    X = np.asarray(X, dtype=np.float32)
+    if X.ndim < 2:
+        raise ValueError("X must have shape [N, d] or [N, ...].")
+    X = X.reshape(X.shape[0], -1)
+
+    labels, _ = _coerce_labels(np.asarray(y))
+    if labels.shape[0] != X.shape[0]:
+        raise ValueError("X and y must have the same leading dimension.")
+
+    rng = np.random.default_rng(seed)
+
+    per_label_curves = []
+    pooled_values = []
+    pooled_weights = []
+
+    for label in np.unique(labels):
+        Xc = X[labels == label]
+        n_c = int(Xc.shape[0])
+        total_pairs = n_c * (n_c - 1) // 2
+        if total_pairs == 0:
+            continue
+
+        if total_pairs <= max_exact_pairs:
+            d = _exact_pairwise_l2_distances(Xc)
+            mode = "exact"
+        else:
+            m = min(max_sampled_pairs, total_pairs)
+            d = _sample_pairwise_l2_distances(Xc, m, rng)
+            mode = "sampled_iid_pairs"
+
+        d = np.asarray(d, dtype=np.float64)
+        d_sorted = np.sort(d)
+        ecdf_y = np.arange(1, d_sorted.size + 1, dtype=np.float64) / d_sorted.size
+        qval = float(np.quantile(d_sorted, q))  # matches your current selection rule
+
+        per_label_curves.append(
+            {
+                "label": label,
+                "distances_sorted": d_sorted,
+                "ecdf_y": ecdf_y,
+                "qval": qval,
+                "mode": mode,
+                "n_examples": n_c,
+                "num_pairs_total": int(total_pairs),
+                "num_pairs_used": int(d_sorted.size),
+            }
+        )
+
+        weight_per_sample = float(total_pairs) / float(d_sorted.size)
+        pooled_values.append(d_sorted)
+        pooled_weights.append(
+            np.full(d_sorted.shape, weight_per_sample, dtype=np.float64)
+        )
+
+    if not per_label_curves:
+        raise ValueError("No label had at least two examples.")
+
+    # Winning class for the chosen quantile.
+    winner = max(per_label_curves, key=lambda row: row["qval"])
+
+    # Weighted pooled ECDF.
+    pv = np.concatenate(pooled_values, axis=0)
+    pw = np.concatenate(pooled_weights, axis=0)
+    order = np.argsort(pv)
+    pooled_x = pv[order]
+    pooled_y = np.cumsum(pw[order]) / np.sum(pw)
+
+    fig, ax = plt.subplots(figsize=(7.2, 4.8), constrained_layout=True)
+
+    # All classwise ECDFs.
+    for row in per_label_curves:
+        ax.step(
+            row["distances_sorted"],
+            row["ecdf_y"],
+            where="post",
+            linewidth=1.0,
+            alpha=0.20,
+        )
+
+    # Highlight the winning class.
+    ax.step(
+        winner["distances_sorted"],
+        winner["ecdf_y"],
+        where="post",
+        linewidth=2.5,
+        label=(
+            f"winning class={winner['label']}  "
+            f"Q_{q:.2f}={winner['qval']:.3f}  "
+            f"({winner['mode']})"
+        ),
+    )
+
+    # Pooled weighted ECDF.
+    ax.step(
+        pooled_x,
+        pooled_y,
+        where="post",
+        linewidth=3.0,
+        label="pooled weighted ECDF",
+    )
+
+    if radius is not None:
+        ax.axvline(
+            float(radius),
+            linestyle="--",
+            linewidth=2.0,
+            label=rf"chosen radius $r={float(radius):.3f}$",
+        )
+
+    ax.set_xlabel("Within-label pairwise distance")
+    ax.set_ylabel("Fraction of within-label pairs")
+    ax.set_title("Within-label pairwise-distance ECDFs")
+    ax.set_ylim(0.0, 1.0)
+    ax.legend(frameon=False)
+
+    return fig, ax
+
+
+def plot_ball_radius_ablation_ecdf(
+    X,
+    y,
+    *,
+    alphas=(0.5, 0.8, 0.9, 0.95, 0.99),
+    strategy="max_labelwise_quantile",
+    max_exact_pairs=250_000,
+    max_sampled_pairs=100_000,
+    seed=0,
+    show_classwise=True,
+):
+    """
+    Plot pooled/classwise within-label ECDFs once, with vertical lines for all
+    ablation radii r_alpha induced by the chosen selection rule.
+
+    Assumes the helper functions _coerce_labels, _exact_pairwise_l2_distances,
+    _sample_pairwise_l2_distances are available in scope.
+
+    Example usage:
+        fig, ax, radius_report, radii = plot_ball_radius_ablation_ecdf(
+        X_train,
+        y_train,
+        alphas=(0.5, 0.8, 0.9, 0.95, 0.99),
+        strategy="max_labelwise_quantile",
+        max_exact_pairs=250_000,
+        max_sampled_pairs=100_000,
+        seed=0,
+    )
+    plt.show()
+
+    print(radii)
+    """
+    X = np.asarray(X, dtype=np.float32)
+    if X.ndim < 2:
+        raise ValueError("X must have shape [N, d] or [N, ...].")
+    X = X.reshape(X.shape[0], -1)
+
+    labels, _ = _coerce_labels(np.asarray(y))
+    if labels.shape[0] != X.shape[0]:
+        raise ValueError("X and y must have the same leading dimension.")
+
+    rng = np.random.default_rng(seed)
+
+    # Build report once so all r_alpha come from the same underlying summary.
+    report = summarize_embedding_ball_radii(
+        X,
+        labels,
+        quantiles=alphas,
+        max_exact_pairs=max_exact_pairs,
+        max_sampled_pairs=max_sampled_pairs,
+        seed=seed,
+    )
+
+    radii = {
+        float(alpha): float(
+            select_ball_radius(
+                report,
+                strategy=strategy,
+                quantile=float(alpha),
+            )
+        )
+        for alpha in alphas
+    }
+
+    per_label_curves = []
+    pooled_values = []
+    pooled_weights = []
+
+    for label in np.unique(labels):
+        Xc = X[labels == label]
+        n_c = int(Xc.shape[0])
+        total_pairs = n_c * (n_c - 1) // 2
+        if total_pairs == 0:
+            continue
+
+        if total_pairs <= max_exact_pairs:
+            d = _exact_pairwise_l2_distances(Xc)
+        else:
+            m = min(max_sampled_pairs, total_pairs)
+            d = _sample_pairwise_l2_distances(Xc, m, rng)
+
+        d = np.asarray(d, dtype=np.float64)
+        d_sorted = np.sort(d)
+        ecdf_y = np.arange(1, d_sorted.size + 1, dtype=np.float64) / d_sorted.size
+
+        per_label_curves.append(
+            {
+                "label": label,
+                "x": d_sorted,
+                "y": ecdf_y,
+                "total_pairs": int(total_pairs),
+                "used_pairs": int(d_sorted.size),
+            }
+        )
+
+        weight_per_sample = float(total_pairs) / float(d_sorted.size)
+        pooled_values.append(d_sorted)
+        pooled_weights.append(
+            np.full(d_sorted.shape, weight_per_sample, dtype=np.float64)
+        )
+
+    if not per_label_curves:
+        raise ValueError("No label had at least two examples.")
+
+    pv = np.concatenate(pooled_values, axis=0)
+    pw = np.concatenate(pooled_weights, axis=0)
+    order = np.argsort(pv)
+    pooled_x = pv[order]
+    pooled_y = np.cumsum(pw[order]) / np.sum(pw)
+
+    fig, ax = plt.subplots(figsize=(7.2, 4.8), constrained_layout=True)
+
+    if show_classwise:
+        for row in per_label_curves:
+            ax.step(
+                row["x"],
+                row["y"],
+                where="post",
+                linewidth=1.0,
+                alpha=0.15,
+            )
+
+    ax.step(
+        pooled_x,
+        pooled_y,
+        where="post",
+        linewidth=3.0,
+        label="pooled weighted ECDF",
+    )
+
+    for alpha in alphas:
+        r = radii[float(alpha)]
+        ax.axvline(
+            r,
+            linestyle="--",
+            linewidth=1.8,
+            label=rf"$r_{{{alpha:.2f}}}={r:.3f}$",
+        )
+
+    ax.set_xlim(0.0, 2.0)  # because ||e_i||_2 <= 1 implies pairwise distances <= 2
+    ax.set_ylim(0.0, 1.0)
+    ax.set_xlabel("Within-label pairwise distance")
+    ax.set_ylabel("Fraction of within-label pairs")
+    ax.set_title("Within-label ECDF with ablation radii")
+    ax.legend(frameon=False, fontsize=9)
+
+    return fig, ax, report, radii
