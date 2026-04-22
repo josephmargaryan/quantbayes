@@ -16,6 +16,7 @@ from tqdm.auto import tqdm
 from transformers import AutoModel, AutoTokenizer
 
 from quantbayes.ball_dp.experiments.embedding_io import (
+    default_cache_dir,
     get_jax_device,
     load_embedding_npz,
     save_embedding_npz,
@@ -35,6 +36,30 @@ def slugify_name(name: str) -> str:
     while "__" in slug:
         slug = slug.replace("__", "_")
     return slug
+
+
+def build_text_embedding_cache_path(
+    *,
+    output_root: str | Path = "./data",
+    dataset_id: str,
+    model_name: str = DEFAULT_MODEL_NAME,
+    max_length: int = DEFAULT_MAX_LENGTH,
+    dataset_config_name: str | None = None,
+    dataset_revision: str | None = None,
+    extra_name_parts: tuple[str, ...] = (),
+) -> Path:
+    name_parts = [slugify_name(dataset_id)]
+    if dataset_config_name is not None:
+        name_parts.append(slugify_name(dataset_config_name))
+    if dataset_revision is not None:
+        name_parts.append(slugify_name(dataset_revision))
+    for part in extra_name_parts:
+        if part:
+            name_parts.append(slugify_name(part))
+    name_parts.append(slugify_name(model_name))
+    name_parts.append(f"len{max_length}")
+    filename = "_".join(name_parts) + "_embeddings.npz"
+    return default_cache_dir(output_root) / filename
 
 
 def l2_normalize_rows(x: np.ndarray, eps: float = 1e-12) -> np.ndarray:
@@ -166,19 +191,17 @@ def _load_hf_split(
     split: str,
     hf_cache_dir: str | None,
     dataset_config_name: str | None,
+    dataset_revision: str | None,
 ):
-    if dataset_config_name is None:
-        return load_dataset(
-            dataset_id,
-            split=split,
-            cache_dir=hf_cache_dir,
-        )
-    return load_dataset(
-        dataset_id,
-        name=dataset_config_name,
-        split=split,
-        cache_dir=hf_cache_dir,
-    )
+    kwargs: dict[str, object] = {
+        "split": split,
+        "cache_dir": hf_cache_dir,
+    }
+    if dataset_config_name is not None:
+        kwargs["name"] = dataset_config_name
+    if dataset_revision is not None:
+        kwargs["revision"] = dataset_revision
+    return load_dataset(dataset_id, **kwargs)
 
 
 def load_text_classification_embeddings(
@@ -194,6 +217,7 @@ def load_text_classification_embeddings(
     max_length: int = DEFAULT_MAX_LENGTH,
     hf_cache_dir: str | None = None,
     dataset_config_name: str | None = None,
+    dataset_revision: str | None = None,
     train_desc: str = "train",
     test_desc: str = "test",
 ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
@@ -217,12 +241,14 @@ def load_text_classification_embeddings(
         split=train_split,
         hf_cache_dir=hf_cache_dir,
         dataset_config_name=dataset_config_name,
+        dataset_revision=dataset_revision,
     )
     test_dataset = _load_hf_split(
         dataset_id=dataset_id,
         split=test_split,
         hf_cache_dir=hf_cache_dir,
         dataset_config_name=dataset_config_name,
+        dataset_revision=dataset_revision,
     )
 
     X_train_np, y_train_np = extract_embeddings(
@@ -274,6 +300,7 @@ def load_or_create_text_classification_embeddings(
     max_length: int = DEFAULT_MAX_LENGTH,
     hf_cache_dir: str | None = None,
     dataset_config_name: str | None = None,
+    dataset_revision: str | None = None,
     train_desc: str = "train",
     test_desc: str = "test",
 ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
@@ -294,6 +321,7 @@ def load_or_create_text_classification_embeddings(
         max_length=max_length,
         hf_cache_dir=hf_cache_dir,
         dataset_config_name=dataset_config_name,
+        dataset_revision=dataset_revision,
         train_desc=train_desc,
         test_desc=test_desc,
     )

@@ -206,7 +206,7 @@ def main() -> None:
     print(f"Cache path: {output_path}")
     print()
     print("Notebook usage:")
-    print("from quantbayes.ball_dp.embedding_io import load_embedding_npz")
+    print("from quantbayes.ball_dp.experiments.embedding_io import load_embedding_npz")
     print(
         f"X_train, y_train, X_test, y_test = "
         f'load_embedding_npz(r"{output_path}", require_jax_gpu=False)'

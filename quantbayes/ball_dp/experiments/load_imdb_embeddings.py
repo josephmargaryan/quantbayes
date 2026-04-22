@@ -6,15 +6,11 @@ from pathlib import Path
 
 import jax
 
-from quantbayes.ball_dp.experiments.embedding_io import (
-    default_cache_dir,
-    load_embedding_npz,
-)
 from quantbayes.ball_dp.experiments._text_embeddings_common import (
     DEFAULT_MAX_LENGTH,
     DEFAULT_MODEL_NAME,
+    build_text_embedding_cache_path,
     load_or_create_text_classification_embeddings,
-    slugify_name,
 )
 
 DEFAULT_DATASET_ID = "stanfordnlp/imdb"
@@ -27,9 +23,17 @@ def batch_to_texts(batch: dict[str, list]) -> list[str]:
 def default_output_path(
     output_root: str = "./data",
     model_name: str = DEFAULT_MODEL_NAME,
+    max_length: int = DEFAULT_MAX_LENGTH,
+    dataset_id: str = DEFAULT_DATASET_ID,
+    dataset_revision: str | None = None,
 ) -> Path:
-    model_slug = slugify_name(model_name)
-    return default_cache_dir(output_root) / f"imdb_{model_slug}_embeddings.npz"
+    return build_text_embedding_cache_path(
+        output_root=output_root,
+        dataset_id=dataset_id,
+        model_name=model_name,
+        max_length=max_length,
+        dataset_revision=dataset_revision,
+    )
 
 
 def load_or_create_imdb_text_embeddings(
@@ -42,14 +46,22 @@ def load_or_create_imdb_text_embeddings(
     cache_path: str | Path | None = None,
     force_recompute: bool = False,
     dataset_id: str = DEFAULT_DATASET_ID,
+    dataset_revision: str | None = None,
 ):
     if cache_path is None:
-        cache_path = default_output_path(output_root=output_root, model_name=model_name)
+        cache_path = default_output_path(
+            output_root=output_root,
+            model_name=model_name,
+            max_length=max_length,
+            dataset_id=dataset_id,
+            dataset_revision=dataset_revision,
+        )
 
     return load_or_create_text_classification_embeddings(
         cache_path=cache_path,
         force_recompute=force_recompute,
         dataset_id=dataset_id,
+        dataset_revision=dataset_revision,
         train_split="train",
         test_split="test",
         batch_to_texts=batch_to_texts,
@@ -74,6 +86,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hf-cache-dir", type=str, default=None)
     parser.add_argument("--output-root", type=str, default="./data")
     parser.add_argument("--dataset-id", type=str, default=DEFAULT_DATASET_ID)
+    parser.add_argument("--dataset-revision", type=str, default=None)
     parser.add_argument("--output", type=str, default=None)
     parser.add_argument("--force-recompute", action="store_true")
     parser.add_argument(
@@ -90,7 +103,11 @@ def main() -> None:
         Path(args.output)
         if args.output
         else default_output_path(
-            output_root=args.output_root, model_name=args.model_name
+            output_root=args.output_root,
+            model_name=args.model_name,
+            max_length=args.max_length,
+            dataset_id=args.dataset_id,
+            dataset_revision=args.dataset_revision,
         )
     )
 
@@ -104,9 +121,11 @@ def main() -> None:
         cache_path=output_path,
         force_recompute=args.force_recompute,
         dataset_id=args.dataset_id,
+        dataset_revision=args.dataset_revision,
     )
 
     print(f"dataset_id: {args.dataset_id}")
+    print(f"dataset_revision: {args.dataset_revision}")
     print(f"model: {args.model_name}")
     print(f"JAX default backend: {jax.default_backend()}")
     print(f"type(X_train): {type(X_train)}")
@@ -117,7 +136,7 @@ def main() -> None:
     print(f"Cache path: {output_path}")
     print()
     print("Notebook usage:")
-    print("from quantbayes.ball_dp.embedding_io import load_embedding_npz")
+    print("from quantbayes.ball_dp.experiments.embedding_io import load_embedding_npz")
     print(
         f"X_train, y_train, X_test, y_test = "
         f'load_embedding_npz(r"{output_path}", require_jax_gpu=False)'

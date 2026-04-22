@@ -6,15 +6,15 @@ from pathlib import Path
 
 import jax
 
-from quantbayes.ball_dp.experiments.embedding_io import default_cache_dir
 from quantbayes.ball_dp.experiments._text_embeddings_common import (
     DEFAULT_MAX_LENGTH,
     DEFAULT_MODEL_NAME,
+    build_text_embedding_cache_path,
     load_or_create_text_classification_embeddings,
-    slugify_name,
 )
 
 DEFAULT_DATASET_ID = "CogComp/trec"
+DEFAULT_DATASET_REVISION = "refs/convert/parquet"
 
 
 def batch_to_texts(batch: dict[str, list]) -> list[str]:
@@ -24,12 +24,18 @@ def batch_to_texts(batch: dict[str, list]) -> list[str]:
 def default_output_path(
     output_root: str = "./data",
     model_name: str = DEFAULT_MODEL_NAME,
+    max_length: int = DEFAULT_MAX_LENGTH,
+    dataset_id: str = DEFAULT_DATASET_ID,
+    dataset_revision: str | None = DEFAULT_DATASET_REVISION,
     label_space: str = "coarse",
 ) -> Path:
-    model_slug = slugify_name(model_name)
-    return (
-        default_cache_dir(output_root)
-        / f"trec_{label_space}_{model_slug}_embeddings.npz"
+    return build_text_embedding_cache_path(
+        output_root=output_root,
+        dataset_id=dataset_id,
+        model_name=model_name,
+        max_length=max_length,
+        dataset_revision=dataset_revision,
+        extra_name_parts=(label_space,),
     )
 
 
@@ -43,6 +49,7 @@ def load_or_create_trec_text_embeddings(
     cache_path: str | Path | None = None,
     force_recompute: bool = False,
     dataset_id: str = DEFAULT_DATASET_ID,
+    dataset_revision: str | None = DEFAULT_DATASET_REVISION,
     label_space: str = "coarse",
 ):
     if label_space not in {"coarse", "fine"}:
@@ -54,6 +61,9 @@ def load_or_create_trec_text_embeddings(
         cache_path = default_output_path(
             output_root=output_root,
             model_name=model_name,
+            max_length=max_length,
+            dataset_id=dataset_id,
+            dataset_revision=dataset_revision,
             label_space=label_space,
         )
 
@@ -61,6 +71,7 @@ def load_or_create_trec_text_embeddings(
         cache_path=cache_path,
         force_recompute=force_recompute,
         dataset_id=dataset_id,
+        dataset_revision=dataset_revision,
         train_split="train",
         test_split="test",
         batch_to_texts=batch_to_texts,
@@ -85,6 +96,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hf-cache-dir", type=str, default=None)
     parser.add_argument("--output-root", type=str, default="./data")
     parser.add_argument("--dataset-id", type=str, default=DEFAULT_DATASET_ID)
+    parser.add_argument(
+        "--dataset-revision",
+        type=str,
+        default=DEFAULT_DATASET_REVISION,
+    )
     parser.add_argument("--label-space", choices=["coarse", "fine"], default="coarse")
     parser.add_argument("--output", type=str, default=None)
     parser.add_argument("--force-recompute", action="store_true")
@@ -104,6 +120,9 @@ def main() -> None:
         else default_output_path(
             output_root=args.output_root,
             model_name=args.model_name,
+            max_length=args.max_length,
+            dataset_id=args.dataset_id,
+            dataset_revision=args.dataset_revision,
             label_space=args.label_space,
         )
     )
@@ -118,10 +137,12 @@ def main() -> None:
         cache_path=output_path,
         force_recompute=args.force_recompute,
         dataset_id=args.dataset_id,
+        dataset_revision=args.dataset_revision,
         label_space=args.label_space,
     )
 
     print(f"dataset_id: {args.dataset_id}")
+    print(f"dataset_revision: {args.dataset_revision}")
     print(f"label_space: {args.label_space}")
     print(f"model: {args.model_name}")
     print(f"JAX default backend: {jax.default_backend()}")
@@ -133,7 +154,7 @@ def main() -> None:
     print(f"Cache path: {output_path}")
     print()
     print("Notebook usage:")
-    print("from quantbayes.ball_dp.embedding_io import load_embedding_npz")
+    print("from quantbayes.ball_dp.experiments.embedding_io import load_embedding_npz")
     print(
         f"X_train, y_train, X_test, y_test = "
         f'load_embedding_npz(r"{output_path}", require_jax_gpu=False)'

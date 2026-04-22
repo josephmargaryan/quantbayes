@@ -6,7 +6,9 @@ from .load_cifar100_embeddings import load_or_create_cifar100_resnet18_embedding
 from .load_cifar10_embeddings import load_or_create_cifar10_resnet18_embeddings
 from .load_dbpedia14_embeddings import load_or_create_dbpedia14_text_embeddings
 from .load_emotion_embeddings import load_or_create_emotion_text_embeddings
-from .load_yelp_review_full_embeddings import load_or_create_yelp_review_full_text_embeddings
+from .load_yelp_review_full_embeddings import (
+    load_or_create_yelp_review_full_text_embeddings,
+)
 from .load_imdb_embeddings import load_or_create_imdb_text_embeddings
 from .load_trec_embeddings import load_or_create_trec_text_embeddings
 
