@@ -311,7 +311,7 @@ def rebuild_erm_dataset_outputs(
         eps_df,
         x_col="epsilon",
         x_label="$\\varepsilon$",
-        y_label="Exact-ID upper bound",
+        y_label=r"Exact-ID upper bound $\gamma$",
         y_specs=[
             (
                 "bound_direct_ball_mean",
@@ -329,16 +329,19 @@ def rebuild_erm_dataset_outputs(
                 "bound_direct_standard_mean",
                 "bound_direct_standard_ci_low",
                 "bound_direct_standard_ci_high",
-                "Standard direct",
+                "Standard direct (matched)",
             ),
             (
                 "bound_same_noise_standard_from_ball_mean",
                 "bound_same_noise_standard_from_ball_ci_low",
                 "bound_same_noise_standard_from_ball_ci_high",
-                "Same-noise standard",
+                r"Same-noise standard ($\sigma=\sigma_{Ball}$)",
             ),
         ],
-        title=f"ReRo bound vs $\\varepsilon$\n{dataset_title}, radius={fixed_radius_tag}, m={fixed_m}",
+        title=(
+            f"ReRo bound vs $\\varepsilon$\n{dataset_title}, radius={fixed_radius_tag}, "
+            f"m={fixed_m} (matched and same-noise comparators)"
+        ),
         stem_name=f"fig_bound_vs_epsilon_{dataset_tag}_{model_family}",
         xscale="log",
     )
@@ -351,7 +354,7 @@ def rebuild_erm_dataset_outputs(
         m_df,
         x_col="m",
         x_label="m",
-        y_label="Exact-ID upper bound",
+        y_label=r"Exact-ID upper bound $\gamma$",
         y_specs=[
             (
                 "bound_direct_ball_mean",
@@ -369,16 +372,19 @@ def rebuild_erm_dataset_outputs(
                 "bound_direct_standard_mean",
                 "bound_direct_standard_ci_low",
                 "bound_direct_standard_ci_high",
-                "Standard direct",
+                "Standard direct (matched)",
             ),
             (
                 "bound_same_noise_standard_from_ball_mean",
                 "bound_same_noise_standard_from_ball_ci_low",
                 "bound_same_noise_standard_from_ball_ci_high",
-                "Same-noise standard",
+                r"Same-noise standard ($\sigma=\sigma_{Ball}$)",
             ),
         ],
-        title=f"ReRo bound vs m\n{dataset_title}, radius={fixed_radius_tag}, $\\varepsilon$={fixed_epsilon:g}",
+        title=(
+            f"ReRo bound vs m\n{dataset_title}, radius={fixed_radius_tag}, "
+            f"$\\varepsilon$={fixed_epsilon:g} (matched and same-noise comparators)"
+        ),
         stem_name=f"fig_bound_vs_m_{dataset_tag}_{model_family}",
         xscale="log",
     )
@@ -435,7 +441,7 @@ def rebuild_erm_dataset_outputs(
         radius_df,
         x_col="radius_tag",
         x_label="Radius quantile",
-        y_label="Exact-ID upper bound",
+        y_label=r"Exact-ID upper bound $\gamma$",
         y_specs=[
             (
                 "bound_direct_ball_mean",
@@ -453,16 +459,19 @@ def rebuild_erm_dataset_outputs(
                 "bound_direct_standard_mean",
                 "bound_direct_standard_ci_low",
                 "bound_direct_standard_ci_high",
-                "Standard direct",
+                "Standard direct (matched)",
             ),
             (
                 "bound_same_noise_standard_from_ball_mean",
                 "bound_same_noise_standard_from_ball_ci_low",
                 "bound_same_noise_standard_from_ball_ci_high",
-                "Same-noise standard",
+                r"Same-noise standard ($\sigma=\sigma_{Ball}$)",
             ),
         ],
-        title=f"ReRo bound vs radius\n{dataset_title}, $\\varepsilon$={fixed_epsilon:g}, m={fixed_m}",
+        title=(
+            f"ReRo bound vs radius\n{dataset_title}, $\\varepsilon$={fixed_epsilon:g}, "
+            f"m={fixed_m} (matched and same-noise comparators)"
+        ),
         stem_name=f"fig_bound_vs_radius_{dataset_tag}_{model_family}",
         categorical_order=RADIUS_ORDER,
     )
