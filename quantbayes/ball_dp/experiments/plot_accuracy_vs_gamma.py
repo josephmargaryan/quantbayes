@@ -233,12 +233,13 @@ def plot_accuracy_vs_gamma(
         f"Accuracy vs direct exact-ID upper bound\n{dataset_name} · {model_family}, radius={radius_tag}, m={m}"
     )
     ax.legend(loc="best")
+    fig.subplots_adjust(bottom=0.22)
     fig.text(
         0.5,
-        0.01,
-        "Each point uses the same mechanism on both axes: matched-privacy direct Gaussian \u03b3 on x, matched-privacy accuracy on y. Same-noise comparators are intentionally excluded.",
+        -0.04,
+        "Each point uses the same mechanism on both axes: matched-privacy direct Gaussian γ on x, matched-privacy accuracy on y. Same-noise comparators are intentionally excluded.",
         ha="center",
-        va="bottom",
+        va="top",
         fontsize=9,
     )
     savefig_stem(fig, out_stem)
