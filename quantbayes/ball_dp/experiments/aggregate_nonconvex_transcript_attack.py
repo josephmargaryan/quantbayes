@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Aggregate Paper 2 nonconvex transcript utility/bound summaries."""
+"""Aggregate Paper 2 nonconvex transcript attack summaries."""
 from __future__ import annotations
 
 import argparse
@@ -21,21 +21,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--results-root", type=str, default="results_paper2")
     parser.add_argument("--model-tag", type=str, default=None)
     parser.add_argument(
-        "--out-name", type=str, default="aggregate_nonconvex_transcript_summary.csv"
+        "--out-name",
+        type=str,
+        default="aggregate_nonconvex_transcript_attack_summary.csv",
     )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    root = Path(args.results_root) / "paper2" / "nonconvex_transcript"
+    root = Path(args.results_root) / "paper2" / "nonconvex_transcript_attack"
     if args.model_tag:
         search_root = root / args.model_tag
     else:
         search_root = root
-    paths = sorted(search_root.glob("**/transcript_summary.csv"))
+    paths = sorted(search_root.glob("**/attack_summary.csv"))
     if not paths:
-        raise SystemExit(f"No transcript_summary.csv files found under {search_root}")
+        raise SystemExit(f"No attack_summary.csv files found under {search_root}")
 
     frames = []
     for path in paths:
@@ -43,10 +45,12 @@ def main() -> None:
         df["summary_path"] = str(path)
         frames.append(df)
     out = pd.concat(frames, ignore_index=True)
-    if {"dataset_tag", "mechanism", "epsilon", "m"}.issubset(out.columns):
-        out = out.sort_values(["dataset_tag", "mechanism", "epsilon", "m"]).reset_index(
-            drop=True
-        )
+    if {"dataset_tag", "mechanism", "attack_mode", "epsilon", "m"}.issubset(
+        out.columns
+    ):
+        out = out.sort_values(
+            ["dataset_tag", "mechanism", "attack_mode", "epsilon", "m"]
+        ).reset_index(drop=True)
     out_path = root / args.out_name
     save_dataframe(out, out_path, save_parquet_if_possible=False)
     print(f"Wrote {out_path} ({len(out)} rows)")

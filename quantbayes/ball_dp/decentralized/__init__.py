@@ -13,8 +13,25 @@ from .attacks import (
     run_linear_gaussian_ball_map_attack,
     run_linear_gaussian_finite_prior_attack,
 )
-from .gossip import selector_matrix, gossip_transfer_matrix
-from .rero import ball_pn_rdp_success_bound, compute_ball_pn_rero_report
+from .gossip import (
+    constant_mixing_matrices,
+    graph_distances,
+    gossip_noise_transfer_matrix,
+    gossip_observation_covariance,
+    gossip_observer_noise_covariance,
+    gossip_transfer_matrix,
+    make_graph_adjacency,
+    metropolis_mixing_matrix,
+    selector_matrix,
+)
+from .rero import (
+    ball_pn_rdp_success_bound,
+    compute_ball_pn_rero_report,
+    direct_gaussian_rero_success_bound,
+    direct_gaussian_rero_success_bound_from_sensitivity_sq,
+    gaussian_direct_success_bound,
+    gaussian_direct_success_bound_from_sensitivity_sq,
+)
 
 __all__ = [
     "LocalNodeSGDSchedule",
@@ -28,8 +45,19 @@ __all__ = [
     "make_gaussian_quadratic_form",
     "run_linear_gaussian_ball_map_attack",
     "run_linear_gaussian_finite_prior_attack",
-    "selector_matrix",
+    "constant_mixing_matrices",
+    "graph_distances",
+    "gossip_noise_transfer_matrix",
+    "gossip_observation_covariance",
+    "gossip_observer_noise_covariance",
     "gossip_transfer_matrix",
+    "make_graph_adjacency",
+    "metropolis_mixing_matrix",
+    "selector_matrix",
     "ball_pn_rdp_success_bound",
     "compute_ball_pn_rero_report",
+    "direct_gaussian_rero_success_bound",
+    "direct_gaussian_rero_success_bound_from_sensitivity_sq",
+    "gaussian_direct_success_bound",
+    "gaussian_direct_success_bound_from_sensitivity_sq",
 ]

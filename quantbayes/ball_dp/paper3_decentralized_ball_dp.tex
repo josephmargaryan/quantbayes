@@ -37,7 +37,6 @@
 \newcommand{\cV}{\mathcal{V}}
 \newcommand{\eps}{\varepsilon}
 \newcommand{\ind}[1]{\mathbf{1}\!\left\{#1\right\}}
-\newcommand{\todoresult}{\textbf{TBD}}
 
 % Safe figure inclusion: if the file is missing, insert a visible placeholder box instead of failing.
 \newcommand{\maybeincludegraphics}[2][]{%
@@ -550,94 +549,87 @@ Apply Bayes' rule to the Gaussian likelihood and drop additive constants indepen
 The transfer matrix determines which directions of the sensitive contribution are visible to the observer. If $H_{A\leftarrow j}$ is small, low rank, delayed, or masked by large covariance in $\Sigma_A$, the posterior is flatter and the ReRo bound is tighter.
 \end{remark}
 
-\section{Experimental Plan and Placeholders}
+
+\section{Experimental Protocol}
 \label{sec:experiments}
 
-This section gives the reporting structure for experiments. The key object is an observer-by-attacked-node matrix of privacy and reconstruction quantities.
+The experiments are designed to test the part of the theory that is genuinely decentralized: privacy and reconstruction are indexed by the observer.  The benchmark therefore reports matrices and ablations over attacked nodes $j$, observer sets $A$, graph topology, radius $r$, clipping level $C$, and Gaussian noise scale $\sigma$.  All attack experiments use the exact likelihood in Proposition~\ref{prop:map}; no learned or heuristic reconstructor is used for the main privacy-audit claim.
 
 \subsection{Network and protocol configurations}
 
-\begin{table}[t]
-\centering
-\caption{Decentralized protocol placeholders.}
-\label{tab:protocol-placeholders}
-\begin{tabular}{lrrrrr}
-\toprule
-Graph & nodes & rounds & degree & noise & mixing\\
-\midrule
-\todoresult & \todoresult & \todoresult & \todoresult & \todoresult & \todoresult\\
-\todoresult & \todoresult & \todoresult & \todoresult & \todoresult & \todoresult\\
-\todoresult & \todoresult & \todoresult & \todoresult & \todoresult & \todoresult\\
-\bottomrule
-\end{tabular}
-\end{table}
+We evaluate path, cycle, star, and complete graphs with lazy Metropolis mixing.  For a graph $G$ with mixing matrix $W$, the linear protocol is
+\[
+    x_{t+1}=Wx_t+u_t,
+    \qquad
+    y_{A,t}=S_A x_t+\zeta_{A,t},
+    \qquad
+    \zeta_{A,t}\sim\mathcal N(0,\sigma^2 I).
+\]
+The sensitive block $u_t$ is the clipped identity contribution of one embedding record, optionally multiplied by a deterministic round weight.  Thus the Ball and standard block sensitivities are
+\[
+    \Delta_t^{\mathrm{ball}}(r)=w_t\min\{L_z r,2C\},
+    \qquad
+    \Delta_t^{\mathrm{std}}=2w_t C.
+\]
+The default scripts use $w_t=1$ and $L_z=1$ for clipped Euclidean embeddings.  This keeps the experiment close to the theorem: all privacy numbers are computed from the certified transfer matrix $H_{A\leftarrow j}$ and covariance $\Sigma_A=\sigma^2I$.
 
 \subsection{Observer-specific privacy heatmaps}
 
-For each attacked node $j$ and observer set $A$, compute
+For each attacked node $j$ and observer set $A$, the accountant computes
 \[
-\Delta_{A\leftarrow j}(r),
+\Delta_{A\leftarrow j}(r)^2
+=\sup_{\|\delta_t\|\le \Delta_t(r)}
+\left\|\Sigma_A^{-1/2}(H_{A\leftarrow j}\otimes I_p)\delta\right\|_2^2,
 \qquad
 \eps_{A\leftarrow j}(\alpha;r)=\frac{\alpha}{2}\Delta_{A\leftarrow j}(r)^2.
 \]
-Report heatmaps over $(A,j)$ for fixed $r$ and over $r$ for representative observer sets.
+For nonnegative Metropolis transfers and diagonal observer noise, the reduced Gram matrix is entrywise nonnegative, so the implemented value is exact rather than merely the operator-norm upper bound.  The scripts also report the standard replacement-adjacent value obtained by replacing $\Delta_t^{\mathrm{ball}}(r)$ by $2C$.
 
 \begin{figure}[t]
 \centering
-\maybeincludegraphics[width=0.95\linewidth]{figures/paper3_privacy_heatmap_placeholder.pdf}
-\caption{Placeholder: observer-specific transferred sensitivity $\Delta_{A\leftarrow j}(r)$ over attacked nodes and observers.}
-\label{fig:privacy-heatmap-placeholder}
+\maybeincludegraphics[width=0.95\linewidth]{figures/paper3_privacy_heatmap.pdf}
+\caption{Observer-specific transferred sensitivity $\Delta_{A\leftarrow j}(r)$ over observer nodes and attacked nodes.  Rows correspond to observers and columns to attacked nodes.}
+\label{fig:privacy-heatmap}
 \end{figure}
 
-\subsection{Observer-specific reconstruction bounds}
+\subsection{Radius, noise, and standard-DP ablations}
 
-For finite-prior exact identification with $m$ candidates, report
+For finite-prior exact identification with $m$ candidates, the primary reported reconstruction bound is the direct Gaussian bound
 \[
 \gamma_{A\leftarrow j}(r;m)
 :=
 \Phi\!\left(\Phi^{-1}(1/m)+\Delta_{A\leftarrow j}(r)\right).
 \]
-
-\begin{table}[t]
-\centering
-\caption{Observer-specific finite-prior reconstruction bound placeholders.}
-\label{tab:rero-placeholders}
-\begin{tabular}{lrrrrr}
-\toprule
-Graph & observer $A$ & node $j$ & radius & $m$ & bound\\
-\midrule
-\todoresult & \todoresult & \todoresult & \todoresult & \todoresult & \todoresult\\
-\todoresult & \todoresult & \todoresult & \todoresult & \todoresult & \todoresult\\
-\todoresult & \todoresult & \todoresult & \todoresult & \todoresult & \todoresult\\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\subsection{MAP attacks}
-
-Evaluate Proposition~\ref{prop:map} for finite candidate sets and, where appropriate, continuous projected attacks. Report exact-identification success and compare it to $\gamma_{A\leftarrow j}(r;m)$.
+The radius ablation checks the policy knob: as $r$ increases, $\Delta_t^{\mathrm{ball}}(r)$ and therefore $\gamma_{A\leftarrow j}(r;m)$ should increase until the clipping ceiling $2C$ is reached.  The noise ablation checks the release mechanism: increasing $\sigma$ should decrease the transferred sensitivity and tighten the direct ReRo bound.  The standard replacement baseline is computed at the same $\sigma$ so that the comparison isolates the adjacency relation rather than changing the release distribution.  Because the observer view is Gaussian, the same transferred sensitivity is also the Gaussian-DP parameter $\mu_{A\leftarrow j}$; the scripts therefore export representative $f$-DP/GDP tradeoff values in addition to RDP-to-DP conversions.
 
 \begin{figure}[t]
 \centering
-\maybeincludegraphics[width=0.95\linewidth]{figures/paper3_attack_vs_bound_placeholder.pdf}
-\caption{Placeholder: observer-specific MAP attack success versus direct Gaussian ReRo bound.}
-\label{fig:attack-vs-bound-placeholder}
+\maybeincludegraphics[width=0.95\linewidth]{figures/paper3_radius_ablation.pdf}
+\caption{Radius ablation for Ball and standard replacement adjacency at fixed topology and noise.  Ball-DP should interpolate from small local sensitivity to the standard clipping ceiling.}
+\label{fig:radius-ablation}
 \end{figure}
 
-\begin{table}[t]
+\subsection{Exact MAP attacks}
+
+The attack benchmark samples a finite prior $S=\{z_1,\ldots,z_m\}\subset \mathcal B(u,r)$, draws the true candidate uniformly, releases the observer-specific Gaussian view, and scores every candidate using the exact objective in Proposition~\ref{prop:map}.  The reported attack success is exact-identification success, together with rank, reconstruction error, and the direct Gaussian ReRo bound.  This aligns the attack and the theorem: the adversary is statistically correct for the stated release model.
+
+\begin{figure}[t]
 \centering
-\caption{Observer-specific MAP attack placeholders.}
-\label{tab:attack-placeholders}
-\begin{tabular}{lrrrrr}
-\toprule
-Observer & attacked node & radius & success & bound & median error\\
-\midrule
-\todoresult & \todoresult & \todoresult & \todoresult & \todoresult & \todoresult\\
-\todoresult & \todoresult & \todoresult & \todoresult & \todoresult & \todoresult\\
-\todoresult & \todoresult & \todoresult & \todoresult & \todoresult & \todoresult\\
-\bottomrule
-\end{tabular}
-\end{table}
+\maybeincludegraphics[width=0.95\linewidth]{figures/paper3_attack_vs_bound.pdf}
+\caption{Exact finite-prior MAP attack success versus the direct Gaussian ReRo bound for several observer locations.}
+\label{fig:attack-vs-bound}
+\end{figure}
+
+\subsection{Utility/privacy tradeoff}
+
+To provide a lightweight decentralized utility benchmark, the official scripts include a noisy prototype learner.  Each node forms clipped class-sum vectors from its local embedding records, adds calibrated Gaussian noise, and runs deterministic gossip.  Counts are treated as public in this controlled benchmark, so the protected contribution is the feature vector conditional on label.  The final node prototypes are evaluated by nearest-prototype classification.  For a target $(\eps,\delta)$, Gaussian noise is calibrated separately under Ball sensitivity $\min\{L_zr,2C\}$ and standard sensitivity $2C$.  This gives a direct utility/privacy comparison: when $r<2C/L_z$, the Ball-local release needs less noise for the same nominal target and can preserve higher accuracy.
+
+\begin{figure}[t]
+\centering
+\maybeincludegraphics[width=0.95\linewidth]{figures/paper3_utility_privacy.pdf}
+\caption{Prototype utility/privacy tradeoff comparing Ball-local calibration to standard replacement calibration.}
+\label{fig:utility-privacy}
+\end{figure}
 
 \section{Discussion}
 

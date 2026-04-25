@@ -95,3 +95,26 @@ The decentralized code is most useful when you already have:
 - and either a public transcript or a linearized Gaussian observer view.
 
 For the main centralized thesis notebook, you can ignore this path. For topology-aware experiments, start here.
+
+---
+
+## 6. Official Paper 3 experiment scripts
+
+The Paper 3 experiment layer lives in `quantbayes/ball_dp/experiments`:
+
+- `run_decentralized_observer_experiment.py` computes observer-by-attacked-node transferred sensitivities, Ball-PN-RDP curves, direct Gaussian ReRo bounds, and standard replacement baselines.
+- `run_decentralized_map_attack_experiment.py` runs the exact finite-prior Bayes/MAP attack under the same Gaussian observer likelihood used by the theorem.
+- `run_decentralized_prototype_utility_experiment.py` runs a lightweight decentralized noisy prototype learner to show the utility/privacy tradeoff from Ball-local versus standard sensitivity calibration.
+- `aggregate_decentralized_paper3.py` aggregates all three outputs.
+
+The companion notebook is `quantbayes/ball_dp/mnist_decentralized_ball_dp_end_to_end_demo.ipynb`.
+
+## Paper 3 benchmark layer
+
+The repository now includes a small NumPy-only benchmark layer for the decentralized paper:
+
+- `topology.py` builds path/cycle/star/complete graphs, Metropolis mixing matrices, shortest-path distances, and observer-specific scalar transfer rows.
+- `prototypes.py` implements the decentralized noisy-prototype utility benchmark used by the official Paper 3 scripts.
+- `quantbayes/ball_dp/experiments/run_decentralized_observer_experiment.py` sweeps topology, radius, noise, and observer policy and reports observer-specific Ball-PN-RDP, DP conversion, and direct Gaussian ReRo bounds.
+- `quantbayes/ball_dp/experiments/run_decentralized_map_attack_experiment.py` runs the exact finite-prior MAP/Bayes attack under the same linear-Gaussian observation model used by the accountant.
+- `quantbayes/ball_dp/experiments/run_decentralized_prototype_utility_experiment.py` gives a utility/privacy tradeoff benchmark with a fair standard-replacement baseline.

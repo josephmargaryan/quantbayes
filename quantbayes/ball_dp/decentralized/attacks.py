@@ -6,7 +6,11 @@ from typing import Any, Callable, Dict, Optional, Sequence, Literal
 import jax
 import jax.numpy as jnp
 import numpy as np
-import optax
+
+try:
+    import optax
+except Exception:  # pragma: no cover - optional dependency for continuous MAP only.
+    optax = None
 
 from ..attacks.ball_priors import BallAttackPrior
 from ..metrics import reconstruction_metrics
@@ -37,7 +41,13 @@ class GaussianQuadraticForm:
     metadata: dict[str, Any]
 
 
-def _make_optimizer(name: str, learning_rate: float) -> optax.GradientTransformation:
+def _make_optimizer(name: str, learning_rate: float):
+    if optax is None:
+        raise ImportError(
+            "The continuous projected MAP attack requires optax. "
+            "Install optax, or use run_linear_gaussian_finite_prior_attack, "
+            "which does exact finite-prior MAP scoring without optax."
+        )
     key = str(name).lower()
     if key == "adam":
         return optax.adam(float(learning_rate))
