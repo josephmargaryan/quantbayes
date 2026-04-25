@@ -24,6 +24,7 @@ from .models.binary_logistic import (
 from .models.ridge_prototype import (
     PrototypeRelease,
     fit_ridge_prototypes,
+    prototype_count_aware_ball_sensitivity,
     prototype_exact_ball_sensitivity,
     prototype_predict,
 )
@@ -212,21 +213,46 @@ def _solve_nonprivate_erm(
 
 
 def _sensitivity(
-    cfg: ConvexReleaseConfig, *, n_total: int, opt_cert, lz: float
+    cfg: ConvexReleaseConfig,
+    *,
+    dataset: ArrayDataset,
+    opt_cert,
+    lz: float,
 ) -> tuple[float, Optional[float], str]:
+    n_total = int(len(dataset))
     std_radius = _standard_radius(cfg)
+
     if cfg.model_family == "ridge_prototype" and cfg.use_exact_sensitivity_if_available:
-        delta_ball = prototype_exact_ball_sensitivity(
-            radius=cfg.radius, lam=cfg.lam, n_total=n_total
-        )
-        delta_std = (
-            None
-            if std_radius is None
-            else prototype_exact_ball_sensitivity(
-                radius=std_radius, lam=cfg.lam, n_total=n_total
+        counts = dataset.class_counts(num_classes=cfg.num_classes)
+        mode = str(getattr(cfg, "ridge_sensitivity_mode", "global"))
+        if mode == "count_aware":
+            delta_ball = prototype_count_aware_ball_sensitivity(
+                radius=cfg.radius, lam=cfg.lam, n_total=n_total, counts=counts
             )
-        )
-        tag = "exact"
+            delta_std = (
+                None
+                if std_radius is None
+                else prototype_count_aware_ball_sensitivity(
+                    radius=std_radius, lam=cfg.lam, n_total=n_total, counts=counts
+                )
+            )
+            tag = "exact_count_aware_public_counts"
+        elif mode == "global":
+            delta_ball = prototype_exact_ball_sensitivity(
+                radius=cfg.radius, lam=cfg.lam, n_total=n_total
+            )
+            delta_std = (
+                None
+                if std_radius is None
+                else prototype_exact_ball_sensitivity(
+                    radius=std_radius, lam=cfg.lam, n_total=n_total
+                )
+            )
+            tag = "exact_global_count_worst_case"
+        else:
+            raise ValueError(
+                "ridge_sensitivity_mode must be one of {'global', 'count_aware'}."
+            )
     else:
         delta_ball = output_sensitivity_upper(
             lz=lz, lam=cfg.lam, n_total=n_total, radius=cfg.radius
@@ -316,6 +342,9 @@ def _artifact(
             "use_exact_sensitivity_if_available": bool(
                 cfg.use_exact_sensitivity_if_available
             ),
+            "ridge_sensitivity_mode": str(
+                getattr(cfg, "ridge_sensitivity_mode", "global")
+            ),
             "epsilon_requested": (None if cfg.epsilon is None else float(cfg.epsilon)),
             "delta_requested": (None if cfg.delta is None else float(cfg.delta)),
             "sigma_requested": (None if cfg.sigma is None else float(cfg.sigma)),
@@ -344,6 +373,10 @@ def _artifact(
                 int(v)
                 for v in np.unique(np.asarray(dataset.y, dtype=np.int64)).tolist()
             ),
+            "class_counts": tuple(
+                int(v)
+                for v in dataset.class_counts(num_classes=cfg.num_classes).tolist()
+            ),
         },
         utility_metrics=_utility_metrics(payload, cfg.model_family, utility_dataset),
         extra=extra,
@@ -363,7 +396,7 @@ def run_convex_ball_erm_dp(
     nonprivate, opt_cert, _ = _solve_nonprivate_erm(dataset, cfg, solve_key)
     lz, lz_source = _compute_lz(cfg)
     delta_ball, delta_std, tag = _sensitivity(
-        cfg, n_total=len(dataset), opt_cert=opt_cert, lz=lz
+        cfg, dataset=dataset, opt_cert=opt_cert, lz=lz
     )
     sigma = gaussian_sigma(
         delta_ball,
@@ -419,7 +452,7 @@ def run_convex_ball_erm_rdp(
     nonprivate, opt_cert, _ = _solve_nonprivate_erm(dataset, cfg, solve_key)
     lz, lz_source = _compute_lz(cfg)
     delta_ball, delta_std, tag = _sensitivity(
-        cfg, n_total=len(dataset), opt_cert=opt_cert, lz=lz
+        cfg, dataset=dataset, opt_cert=opt_cert, lz=lz
     )
     noisy_payload = _add_gaussian_noise_to_payload(nonprivate, cfg.sigma, noise_key)
     dual_ledger = build_convex_gaussian_ledgers(
@@ -466,7 +499,7 @@ def run_convex_noiseless_erm_release(
     nonprivate, opt_cert, _ = _solve_nonprivate_erm(dataset, cfg, key)
     lz, lz_source = _compute_lz(cfg)
     delta_ball, delta_std, tag = _sensitivity(
-        cfg, n_total=len(dataset), opt_cert=opt_cert, lz=lz
+        cfg, dataset=dataset, opt_cert=opt_cert, lz=lz
     )
     standard_radius = _standard_radius(cfg)
     dual_ledger = build_convex_gaussian_ledgers(

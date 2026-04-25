@@ -310,6 +310,136 @@ def gaussian_direct_ball_rero_bound(
     return float(min(1.0, max(0.0, _STD_NORMAL.cdf(z))))
 
 
+def _normal_cdf_stable(x: float) -> float:
+    x = float(x)
+    if x <= -38.0:
+        return 0.0
+    if x >= 38.0:
+        return 1.0
+    return float(_STD_NORMAL.cdf(x))
+
+
+def _normal_ppf_clipped(q: float) -> float:
+    q = float(q)
+    if q <= 0.0:
+        return float("-inf")
+    if q >= 1.0:
+        return float("inf")
+    return float(_STD_NORMAL.inv_cdf(q))
+
+
+def _gaussian_blowup(q: float, distance_over_sigma: float) -> float:
+    q = float(q)
+    d = float(distance_over_sigma)
+    if q <= 0.0:
+        return 0.0
+    if q >= 1.0:
+        return 1.0
+    if d <= 0.0:
+        return q
+    return _normal_cdf_stable(_normal_ppf_clipped(q) + d)
+
+
+def gaussian_direct_finite_prior_bound(
+    *,
+    weights: Sequence[float],
+    mean_distances_over_sigma: Sequence[float],
+    tol: float = 1e-12,
+) -> float:
+    """Direct finite-prior Gaussian exact-ID upper bound.
+
+    Consider hypotheses P_i = N(mu_i, sigma^2 I) with prior weights pi_i.
+    Fix any reference Gaussian Q = N(mu_ref, sigma^2 I), and let
+    d_i = ||mu_i - mu_ref|| / sigma. For any exact-identification rule with
+    decision events A_i, the events are disjoint, so sum_i Q(A_i) <= 1.
+    The Gaussian testing lemma gives
+
+        P_i(A_i) <= Phi(Phi^{-1}(q_i) + d_i),  q_i = Q(A_i).
+
+    Therefore every attack satisfies
+
+        p_success <= max_{q_i >= 0, sum q_i <= 1}
+                     sum_i pi_i Phi(Phi^{-1}(q_i) + d_i).
+
+    This function solves that one-dimensional KKT/water-filling problem. The
+    bound is support- and reference-dependent and is usually much tighter than a
+    worst-case sensitivity bound when the concrete candidate means are close.
+    """
+    w = np.asarray(tuple(float(v) for v in weights), dtype=np.float64)
+    d = np.asarray(tuple(float(v) for v in mean_distances_over_sigma), dtype=np.float64)
+
+    if w.ndim != 1 or d.ndim != 1 or w.shape != d.shape:
+        raise ValueError(
+            "weights and mean_distances_over_sigma must be 1D arrays with the same shape."
+        )
+    if w.size == 0:
+        raise ValueError("At least one hypothesis is required.")
+    if np.any(~np.isfinite(w)) or np.any(w <= 0.0):
+        raise ValueError("weights must be finite and strictly positive.")
+    if np.any(~np.isfinite(d)) or np.any(d < 0.0):
+        raise ValueError("mean_distances_over_sigma must be finite and nonnegative.")
+
+    w = w / float(np.sum(w))
+    pos = d > float(tol)
+
+    # If every hypothesis equals the reference distribution, the mechanism output
+    # contains no information; the optimal strategy is the best prior guess.
+    if not np.any(pos):
+        return float(np.max(w))
+
+    w_pos = w[pos]
+    d_pos = d[pos]
+    zero_best_weight = float(np.max(w[~pos])) if np.any(~pos) else -1.0
+
+    def q_pos_for_lambda(lam: float) -> np.ndarray:
+        lam = max(float(lam), np.finfo(np.float64).tiny)
+        # KKT: pi_i exp(-a_i d_i - d_i^2/2) = lambda, q_i = Phi(a_i).
+        a = (np.log(w_pos / lam) - 0.5 * d_pos * d_pos) / d_pos
+        return np.asarray([_normal_cdf_stable(float(v)) for v in a], dtype=np.float64)
+
+    def sum_q(lam: float) -> float:
+        return float(np.sum(q_pos_for_lambda(lam)))
+
+    lo = np.finfo(np.float64).tiny
+    hi = float(np.max(w_pos) * math.exp(0.5 * float(np.max(d_pos * d_pos)) + 8.0))
+    hi = max(hi, 1.0)
+    while sum_q(hi) > 1.0:
+        hi *= 2.0
+        if hi > 1e300:
+            break
+
+    # Root for the nonlinear hypotheses alone.
+    for _ in range(160):
+        mid = math.sqrt(lo * hi)
+        if not math.isfinite(mid) or mid <= 0.0:
+            mid = 0.5 * (lo + hi)
+        if sum_q(mid) > 1.0:
+            lo = mid
+        else:
+            hi = mid
+    lambda_root = hi
+
+    if zero_best_weight > 0.0 and lambda_root < zero_best_weight:
+        # Linear zero-distance hypotheses get leftover reference mass at slope
+        # max_i pi_i once the nonlinear marginal utilities fall to that slope.
+        lambda_use = zero_best_weight
+        q_pos = q_pos_for_lambda(lambda_use)
+        remaining = max(0.0, 1.0 - float(np.sum(q_pos)))
+        value = remaining * zero_best_weight
+    else:
+        q_pos = q_pos_for_lambda(lambda_root)
+        # Numerical cleanup: normalize if the sum overshoots by roundoff.
+        total = float(np.sum(q_pos))
+        if total > 1.0 and total > 0.0:
+            q_pos = q_pos / total
+        value = 0.0
+
+    for pi, di, qi in zip(w_pos, d_pos, q_pos, strict=True):
+        value += float(pi) * _gaussian_blowup(float(qi), float(di))
+
+    return float(min(1.0, max(float(np.max(w)), value)))
+
+
 def compute_ball_rero_report(
     release: ReleaseArtifact,
     prior: PriorFamily,

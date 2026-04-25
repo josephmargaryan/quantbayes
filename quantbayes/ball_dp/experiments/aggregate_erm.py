@@ -10,10 +10,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-BALL_COLOR = "#1f77b4"
-STANDARD_COLOR = "#d62728"
-BASELINE_COLOR = "#6b7280"
-RDP_COLOR = "#2ca02c"
+# Match the per-dataset plotting palette.
+BALL_COLOR = "#0072B2"  # blue
+STANDARD_COLOR = "#D55E00"  # vermillion
+BASELINE_COLOR = "#4D4D4D"  # dark gray
+RDP_COLOR = "#009E73"  # bluish green
 
 DEFAULT_RADIUS_TAG = "q80"
 DEFAULT_EPSILON = 1.0
@@ -250,6 +251,8 @@ def grouped_bar_figure(
     right_ci_low: Optional[str] = None,
     right_ci_high: Optional[str] = None,
     yscale: Optional[str] = None,
+    left_hatch: Optional[str] = None,
+    right_hatch: Optional[str] = None,
 ) -> None:
     if df.empty:
         return
@@ -274,38 +277,60 @@ def grouped_bar_figure(
         df[left_mean],
         width=width,
         color=left_color,
+        edgecolor="#222222",
+        linewidth=0.5,
+        hatch=left_hatch,
         label=left_label,
         yerr=left_yerr,
         capsize=3,
+        error_kw={"elinewidth": 0.9},
     )
     ax.bar(
         x + width / 2.0,
         df[right_mean],
         width=width,
         color=right_color,
+        edgecolor="#222222",
+        linewidth=0.5,
+        hatch=right_hatch,
         label=right_label,
         yerr=right_yerr,
         capsize=3,
+        error_kw={"elinewidth": 0.9},
     )
+
     ax.set_xticks(x)
     ax.set_xticklabels(df["dataset_name"], rotation=28, ha="right")
     ax.set_ylabel(y_label)
     ax.set_title(title)
+
     if yscale:
-        ax.set_yscale(yscale)
+        finite_positive = (
+            np.isfinite(df[left_mean].to_numpy(dtype=float))
+            & np.isfinite(df[right_mean].to_numpy(dtype=float))
+            & (df[left_mean].to_numpy(dtype=float) > 0)
+            & (df[right_mean].to_numpy(dtype=float) > 0)
+        )
+        if np.all(finite_positive):
+            ax.set_yscale(yscale)
+
     ax.legend(ncol=2)
     savefig_stem(fig, out_stem)
 
 
 def build_matched_privacy_table(df: pd.DataFrame) -> pd.DataFrame:
+    direct_abs_diff = np.abs(
+        df["bound_ball_direct"].to_numpy(dtype=float)
+        - df["bound_standard_direct"].to_numpy(dtype=float)
+    )
     return pd.DataFrame(
         {
             "Dataset": df["dataset_name"],
             "Acc (Ball)": df["accuracy_ball"],
             "Acc (Std matched)": df["accuracy_standard"],
             "Acc gain": df["accuracy_gain"],
-            "Bound (Ball matched)": df["bound_ball_direct"],
-            "Bound (Std matched)": df["bound_standard_direct"],
+            "Direct bound (matched; common)": df["bound_ball_direct"],
+            "Direct bound abs diff": direct_abs_diff,
             "$\\sigma$ (Ball)": df["sigma_ball"],
             "$\\sigma$ (Std matched)": df["sigma_standard"],
             "$\\sigma$ ratio": df["sigma_ratio_standard_over_ball"],
@@ -317,8 +342,8 @@ def build_same_noise_geometry_table(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(
         {
             "Dataset": df["dataset_name"],
-            "Bound (Ball @ $\\sigma_{Ball}$)": df["bound_ball_direct"],
-            "Bound (Std @ $\\sigma_{Ball}$)": df["bound_standard_same_noise"],
+            "Bound (Ball direct @ $\\sigma_{Ball}$)": df["bound_ball_direct"],
+            "Bound (Std direct @ $\\sigma_{Ball}$)": df["bound_standard_same_noise"],
             "Bound red. %": df["bound_reduction_same_noise_pct"],
             "$\\varepsilon_{\\mathrm{std}|\\sigma_{Ball}}$": df[
                 "same_noise_standard_epsilon_from_ball"
@@ -331,21 +356,42 @@ def build_same_noise_geometry_table(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_extended_table(df: pd.DataFrame) -> pd.DataFrame:
+    direct_abs_diff = np.abs(
+        df["bound_ball_direct"].to_numpy(dtype=float)
+        - df["bound_standard_direct"].to_numpy(dtype=float)
+    )
     return pd.DataFrame(
         {
             "Dataset": df["dataset_name"],
             "Acc (Ball)": df["accuracy_ball"],
             "Acc (Std)": df["accuracy_standard"],
-            "Bound (Ball direct)": df["bound_ball_direct"],
+            "Direct bound (matched; common)": df["bound_ball_direct"],
+            "Direct bound abs diff": direct_abs_diff,
             "Bound (Ball RDP)": df["bound_ball_rdp"],
-            "Bound (Std matched)": df["bound_standard_direct"],
             "Bound (Std same-noise)": df["bound_standard_same_noise"],
             "$\\sigma$ (Ball)": df["sigma_ball"],
             "$\\sigma$ (Std)": df["sigma_standard"],
             "$\\sigma$ ratio": df["sigma_ratio_standard_over_ball"],
-            "$\\varepsilon_{\\mathrm{std|same-noise}}$": df[
+            "$\\varepsilon_{\\mathrm{std}|\\sigma_{Ball}}$": df[
                 "same_noise_standard_epsilon_from_ball"
             ],
+        }
+    )
+
+
+def build_matched_direct_identity_table(df: pd.DataFrame) -> pd.DataFrame:
+    ball = df["bound_ball_direct"].to_numpy(dtype=float)
+    std = df["bound_standard_direct"].to_numpy(dtype=float)
+    abs_diff = np.abs(ball - std)
+    rel_diff = abs_diff / np.maximum(np.abs(ball), 1e-300)
+
+    return pd.DataFrame(
+        {
+            "Dataset": df["dataset_name"],
+            "Ball direct bound": ball,
+            "Std matched direct bound": std,
+            "Abs diff": abs_diff,
+            "Rel diff": rel_diff,
         }
     )
 
@@ -416,6 +462,10 @@ def main() -> None:
             out_dir / "aggregate_same_noise_geometry_table",
         )
         save_table(build_extended_table(agg_df), out_dir / "aggregate_extended_table")
+        save_table(
+            build_matched_direct_identity_table(agg_df),
+            out_dir / "aggregate_matched_direct_identity_check",
+        )
 
         sigma_vals = np.concatenate(
             [
@@ -436,7 +486,7 @@ def main() -> None:
             left_mean="sigma_ball",
             right_mean="sigma_standard",
             left_label="Ball-DP",
-            right_label="Standard DP",
+            right_label=r"Standard DP (matched $\varepsilon$)",
             left_color=BALL_COLOR,
             right_color=STANDARD_COLOR,
             y_label="Noise scale $\\sigma$",
@@ -453,23 +503,24 @@ def main() -> None:
             left_mean="bound_ball_direct",
             right_mean="bound_standard_same_noise",
             left_label="Ball direct",
-            right_label=r"Standard direct @ $\sigma_{Ball}$",
+            right_label=r"Standard direct @ same $\sigma$ as Ball",
             left_color=BALL_COLOR,
             right_color=BASELINE_COLOR,
             y_label=r"Exact-ID upper bound $\gamma$",
-            title="Direct exact-ID upper bound at Ball noise scale",
+            title=r"Direct exact-ID upper bound at Ball noise scale (same $\sigma$; privacy not matched)",
             out_stem=out_dir / "fig_agg_bound_same_noise_grouped_bar",
             left_ci_low="bound_ball_direct_ci_low",
             left_ci_high="bound_ball_direct_ci_high",
             right_ci_low="bound_standard_same_noise_ci_low",
             right_ci_high="bound_standard_same_noise_ci_high",
+            right_hatch="//",
         )
         grouped_bar_figure(
             agg_df,
             left_mean="accuracy_ball",
             right_mean="accuracy_standard",
             left_label="Ball-DP",
-            right_label="Standard DP",
+            right_label=r"Standard DP (matched $\varepsilon$)",
             left_color=BALL_COLOR,
             right_color=STANDARD_COLOR,
             y_label="Accuracy",
@@ -479,22 +530,6 @@ def main() -> None:
             left_ci_high="accuracy_ball_ci_high",
             right_ci_low="accuracy_standard_ci_low",
             right_ci_high="accuracy_standard_ci_high",
-        )
-        grouped_bar_figure(
-            agg_df,
-            left_mean="bound_ball_direct",
-            right_mean="bound_standard_direct",
-            left_label="Ball direct",
-            right_label="Standard direct",
-            left_color=BALL_COLOR,
-            right_color=STANDARD_COLOR,
-            y_label=r"Exact-ID upper bound $\gamma$",
-            title="Direct bound: matched Ball vs matched Standard privacy",
-            out_stem=out_dir / "fig_agg_bound_matched_privacy_grouped_bar",
-            left_ci_low="bound_ball_direct_ci_low",
-            left_ci_high="bound_ball_direct_ci_high",
-            right_ci_low="bound_standard_direct_ci_low",
-            right_ci_high="bound_standard_direct_ci_high",
         )
         grouped_bar_figure(
             agg_df,
@@ -511,6 +546,7 @@ def main() -> None:
             left_ci_high="bound_ball_direct_ci_high",
             right_ci_low="bound_ball_rdp_ci_low",
             right_ci_high="bound_ball_rdp_ci_high",
+            right_hatch="..",
         )
 
         summary_manifest["models"][model_family] = {
@@ -527,6 +563,8 @@ def main() -> None:
                 str(out_dir / "aggregate_same_noise_geometry_table.tex"),
                 str(out_dir / "aggregate_extended_table.csv"),
                 str(out_dir / "aggregate_extended_table.tex"),
+                str(out_dir / "aggregate_matched_direct_identity_check.csv"),
+                str(out_dir / "aggregate_matched_direct_identity_check.tex"),
                 str((out_dir / "fig_agg_sigma_grouped_bar").with_suffix(".pdf")),
                 str(
                     (out_dir / "fig_agg_bound_same_noise_grouped_bar").with_suffix(
@@ -534,11 +572,6 @@ def main() -> None:
                     )
                 ),
                 str((out_dir / "fig_agg_accuracy_grouped_bar").with_suffix(".pdf")),
-                str(
-                    (out_dir / "fig_agg_bound_matched_privacy_grouped_bar").with_suffix(
-                        ".pdf"
-                    )
-                ),
                 str(
                     (out_dir / "fig_agg_direct_vs_rdp_ball_grouped_bar").with_suffix(
                         ".pdf"

@@ -100,6 +100,9 @@ from .convex.ball_output_attacks import (
     run_convex_ball_output_finite_prior_attack,
     run_convex_ball_output_map_attack,
 )
+from .convex.finite_prior_diagnostics import (
+    compute_convex_finite_prior_diagnostics,
+)
 
 from .plots import plot_attack_result, plot_batch_reconstruction_grid
 from .radius_selection import (
@@ -132,6 +135,7 @@ __all__ = [
     "attack_nonconvex_ball_trace_finite_prior",
     "BallTraceMapAttackConfig",
     "BallOutputMapAttackConfig",
+    "diagnose_convex_ball_output_finite_prior",
 ]
 
 ConvexModelFamily = str
@@ -204,6 +208,7 @@ def fit_convex(
     num_classes: Optional[int] = None,
     lz: Optional[float] = None,
     standard_radius: Optional[float] = None,
+    ridge_sensitivity_mode: Literal["global", "count_aware"] = "global",
     gaussian_method: str = "analytic",
     gaussian_tol: float = 1e-12,
     orders: Sequence[float] = (2, 3, 4, 5, 8, 16, 32, 64, 128),
@@ -274,6 +279,7 @@ def fit_convex(
         lz_mode="provided" if lz is not None else "glm_bound",
         provided_lz=None if lz is None else float(lz),
         use_exact_sensitivity_if_available=True,
+        ridge_sensitivity_mode=str(ridge_sensitivity_mode),
         seed=int(seed),
         store_nonprivate_reference=False,
     )
@@ -946,6 +952,60 @@ def make_finite_identification_prior(
 ) -> FiniteExactIdentificationPrior:
     X = np.asarray(X, dtype=np.float32).reshape(len(X), -1)
     return FiniteExactIdentificationPrior(X, weights=weights)
+
+
+def diagnose_convex_ball_output_finite_prior(
+    release: ReleaseArtifact,
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    *,
+    target_index: int,
+    X_candidates: np.ndarray,
+    y_candidates: np.ndarray,
+    prior_weights: Optional[Sequence[float]] = None,
+    known_label: Optional[int] = None,
+    center_features: Optional[np.ndarray] = None,
+    center_label: Optional[int] = None,
+) -> dict[str, float | int | str | bool | None]:
+    """Compute theorem-aligned diagnostics for a finite-prior Gaussian attack.
+
+    The finite-prior MAP attack is already Bayes-optimal for the supplied support.
+    These diagnostics explain how hard that support is: they report model-space
+    candidate separation, the direct finite-Gaussian upper bound using the actual
+    candidate means, and ridge-specific inversion noise quantities when available.
+    """
+    ds = _as_dataset(X_train, y_train, name="train")
+    d_minus, _ = ds.remove_index(int(target_index))
+
+    Xc = np.asarray(X_candidates)
+    yc = np.asarray(y_candidates)
+    if len(Xc) != len(yc):
+        raise ValueError("X_candidates and y_candidates must have the same length.")
+    prior_records = [
+        Record(features=np.asarray(Xc[i]), label=int(yc[i]))
+        for i in range(int(len(Xc)))
+    ]
+
+    center_record = None
+    if center_features is not None:
+        if center_label is None:
+            if known_label is None:
+                raise ValueError(
+                    "center_label or known_label is required when center_features is provided."
+                )
+            center_label = int(known_label)
+        center_record = Record(
+            features=np.asarray(center_features), label=int(center_label)
+        )
+
+    return compute_convex_finite_prior_diagnostics(
+        release,
+        d_minus,
+        prior_records=prior_records,
+        prior_weights=prior_weights,
+        known_label=known_label,
+        center_record=center_record,
+    )
 
 
 def make_trace_metadata_from_release(

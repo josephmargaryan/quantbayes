@@ -1,0 +1,784 @@
+\documentclass[conference,compsoc]{IEEEtran}
+
+% Same submission-oriented style as Paper 1.
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{cite}
+\usepackage{graphicx}
+\usepackage[caption=false,font=footnotesize]{subfig}
+\usepackage{amsmath,amssymb,amsfonts,amsthm,mathtools}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{url}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage[hidelinks]{hyperref}
+\usepackage{microtype}
+
+\interdisplaylinepenalty=2500
+
+\newtheorem{definition}{Definition}
+\newtheorem{assumption}{Assumption}
+\newtheorem{theorem}{Theorem}
+\newtheorem{lemma}{Lemma}
+\newtheorem{proposition}{Proposition}
+\newtheorem{corollary}{Corollary}
+\newtheorem{remark}{Remark}
+
+\DeclareMathOperator{\Law}{Law}
+\DeclareMathOperator{\clip}{clip}
+\DeclareMathOperator{\supp}{supp}
+\DeclareMathOperator{\diag}{diag}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\N}{\mathcal{N}}
+\newcommand{\cZ}{\mathcal{Z}}
+\newcommand{\cB}{\mathcal{B}}
+\newcommand{\cT}{\mathcal{T}}
+\newcommand{\cV}{\mathcal{V}}
+\newcommand{\eps}{\varepsilon}
+\newcommand{\ind}[1]{\mathbf{1}\!\left\{#1\right\}}
+\newcommand{\todoresult}{\textbf{TBD}}
+
+% Safe figure inclusion: if the file is missing, insert a visible placeholder box instead of failing.
+\newcommand{\maybeincludegraphics}[2][]{%
+  \IfFileExists{#2}{\includegraphics[#1]{#2}}{%
+    \fbox{%
+      \parbox[c][0.22\textheight][c]{0.95\linewidth}{%
+        \centering
+        Missing figure file\\[2mm]
+        \texttt{\detokenize{#2}}
+      }%
+    }%
+  }%
+}
+
+\title{Observer-Specific r-Adjacency Privacy in Decentralized Learning}
+
+% Keep blank for anonymous submission.
+\author{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+The first two papers in this series study r-adjacency privacy for centralized learning: first for convex Gaussian output perturbation, then for nonconvex transcript releases. This paper develops the decentralized extension. In decentralized learning, there is no single universal view of the computation. A node, coalition, server, auditor, or eavesdropper may see only part of the protocol transcript. Privacy should therefore be indexed by both the attacked node and the observer.
+
+We introduce node-local r-adjacency and observer-specific Ball pairwise-network R\'enyi privacy (Ball-PN-RDP). The guarantee bounds the divergence between the view of an observer set $A$ when one record at node $j$ is changed within a radius-$r$ ball. We first prove a public-transcript bridge theorem: if all local noisy gradient releases are public, decentralized mixing and consensus add no privacy cost beyond the attacked node's own local subsampled-Gaussian accountant. All subsequent decentralized computation is post-processing.
+
+The main topology-aware contribution is a linear Gaussian view theorem. Whenever the observer's view can be written as
+\[
+Y_A(D)=c_A(D_{-j})+(H_{A\leftarrow j}\otimes I_p)s_j(D)+\zeta_A,
+\qquad
+\zeta_A\sim\mathcal N(0,\Sigma_A),
+\]
+the privacy loss from node $j$ to observer $A$ is controlled by a whitened transfer sensitivity
+\[
+\Delta_{A\leftarrow j}(r)^2
+=\sup_{\|\delta_\ell\|\le\Delta_{j,\ell}(r)}
+\left\|\Sigma_A^{-1/2}(H_{A\leftarrow j}\otimes I_p)\delta\right\|_2^2.
+\]
+This yields the observer-specific RDP bound
+\[
+D_\alpha(Y_A(D)\|Y_A(D'))\le \frac{\alpha}{2}\Delta_{A\leftarrow j}(r)^2.
+\]
+It also gives a direct reconstruction-robustness guarantee: every reconstructor using only observer $A$'s view succeeds with probability at most
+\[
+\Phi\!\left(\Phi^{-1}(\kappa)+\Delta_{A\leftarrow j}(r)\right),
+\]
+where $\kappa$ is the Ball-local anti-concentration of the target prior. We specialize the theorem to linear gossip dynamics, showing explicitly how graph distance, mixing matrices, and observer location enter through the transfer matrix. Placeholders for topology heatmaps, observer-specific attack results, and finite-prior reconstruction bounds are included.
+\end{abstract}
+
+\section{Introduction}
+
+In centralized learning, a privacy mechanism has a single output distribution. In decentralized learning, the situation is more nuanced. Different parties may see different transcripts: a node sees its local state and received messages; a server sees uploaded aggregates; a neighboring coalition sees messages crossing a cut; an external auditor may see only public checkpoints. A privacy statement that ignores the observer can be either too weak or too pessimistic.
+
+This paper develops an observer-specific extension of r-adjacency privacy. The protected event is local to a node: one record at node $j$ is replaced by another record within distance $r$ in the record metric. The observed object is local to an observer set $A$: whatever transcript, messages, states, and shared randomness are visible to $A$. The privacy question is therefore directional:
+\[
+\text{How much can observer }A\text{ learn about one radius-}r\text{ record change at node }j?
+\]
+
+This viewpoint matches how decentralized protocols are used. In a gossip protocol, information from a node can only reach distant observers after enough communication rounds. In a secure-aggregation protocol, an observer may see only a masked aggregate. In peer-to-peer training, coalitions can have very different views depending on graph position. The natural privacy quantity is not a single global number, but a matrix of observer-specific guarantees indexed by $(A,j)$.
+
+\paragraph{High-level picture.}
+There are two useful regimes.
+\begin{enumerate}[leftmargin=1.4em]
+    \item \emph{Public noisy-release regime.} If every local noisy gradient release is public, then decentralized learning is privacy-equivalent to local DP-SGD at the attacked node. Mixing, consensus, and model passing are post-processing.
+    \item \emph{Observer-specific linear Gaussian regime.} If an observer's view is a linear transformation of the attacked node's sensitive contribution plus Gaussian noise, then the topology appears as a transfer matrix. Privacy and reconstruction risk are controlled by the whitened norm of that transferred sensitivity.
+\end{enumerate}
+
+\paragraph{Contributions.}
+\begin{itemize}[leftmargin=1.4em]
+    \item We define node-local r-adjacency and Ball-PN-RDP, an observer-specific pairwise-network privacy notion.
+    \item We prove a public-transcript bridge theorem for decentralized Ball-SGD: public decentralized training has no extra privacy cost beyond the attacked node's local accountant.
+    \item We prove a topology-aware linear Gaussian view theorem for observer-specific Ball-PN-RDP.
+    \item We derive a direct observer-specific Ball-ReRo bound for linear Gaussian views and an exact MAP attack matching that likelihood.
+    \item We specialize the framework to linear gossip and show how graph distance and mixing weights determine the observer-specific transfer matrix.
+\end{itemize}
+
+\section{Node-Local r-Adjacency and Observer Views}
+\label{sec:setup}
+
+Let the communication network have node set $[m]:=\{1,\ldots,m\}$. Node $i$ holds a local dataset
+\[
+D_i=(z_{i,1},\ldots,z_{i,n_i})\in\cZ^{n_i},
+\qquad
+D=(D_1,\ldots,D_m).
+\]
+The record space $\cZ$ is equipped with a possibly extended metric $d$.
+
+\begin{definition}[Node-local r-adjacency]
+Fix a node $j\in[m]$ and radius $r>0$. We write $D\sim_{r,j}D'$ if
+\begin{enumerate}[leftmargin=1.4em]
+    \item $D_i=D_i'$ for every $i\ne j$;
+    \item $D_j$ and $D_j'$ differ in exactly one local index $k$;
+    \item the differing records satisfy $d(z_{j,k},z'_{j,k})\le r$.
+\end{enumerate}
+We write $D\sim_rD'$ if $D\sim_{r,j}D'$ for some $j$.
+\end{definition}
+
+A decentralized randomized algorithm $M$ produces local states, messages, public randomness, and possibly final models. An observer set $A\subseteq[m]$ sees some measurable function of the full execution.
+
+\begin{definition}[Observer view]
+The view of observer set $A$ is denoted
+\[
+\operatorname{View}_A(M(D)).
+\]
+It includes all local states, received messages, public randomness, shared secrets, and outputs available to nodes in $A$, according to the threat model.
+\end{definition}
+
+\begin{definition}[Ball-PN-RDP]
+Let $\alpha>1$. A decentralized mechanism $M$ satisfies
+\[
+(\alpha,\eps_{A\leftarrow j}(\alpha;r))\quad\text{Ball-PN-RDP}
+\]
+from attacked node $j$ to observer set $A$ if for every $D\sim_{r,j}D'$,
+\[
+D_\alpha\!\left(
+\operatorname{View}_A(M(D))
+\,\middle\|\,
+\operatorname{View}_A(M(D'))
+\right)
+\le
+\eps_{A\leftarrow j}(\alpha;r).
+\]
+\end{definition}
+
+The arrow $A\leftarrow j$ is intentional: the guarantee is directional. It measures what $A$ can observe about a protected change at node $j$.
+
+\begin{remark}[Relation to centralized r-adjacency privacy]
+If $m=1$ and $A=\{1\}$ sees the full output, Ball-PN-RDP reduces to centralized Ball-RDP. If all nodes see the same public transcript, then $\eps_{A\leftarrow j}$ is the same for every nonempty observer $A$.
+\end{remark}
+
+\section{A Public-Transcript Bridge Theorem}
+\label{sec:public-bridge}
+
+We first handle the simplest decentralized release surface: all noisy local gradient aggregates are public.
+
+At round $t$, node $i$ has a state $\theta_{i,t}$ determined by the previous public transcript $h_{t-1}$. It Poisson-subsamples local examples at rate $\gamma_{i,t}$, clips gradients at norm $C_{i,t}$, and releases
+\[
+\widetilde S_{i,t}
+=
+\sum_{k\in B_{i,t}}\bar g_{i,t}(z_{i,k})+\xi_{i,t},
+\qquad
+\xi_{i,t}\sim\N(0,\nu_{i,t}^2I_p),
+\]
+where
+\[
+\bar g_{i,t}(z):=\clip_{C_{i,t}}\bigl(\nabla_\theta\ell_i(\theta_{i,t};z)\bigr).
+\]
+The public round release is
+\[
+\widetilde S_t=(\widetilde S_{1,t},\ldots,\widetilde S_{m,t}),
+\qquad
+\cT_T=(\widetilde S_1,\ldots,\widetilde S_T).
+\]
+After these releases, the protocol may perform arbitrary decentralized post-processing: local updates, averaging, gossip, consensus, message passing, or checkpointing.
+
+Assume that at node $i$ and round $t$ the unclipped per-example gradient is Lipschitz in the record metric:
+\[
+\|\nabla_\theta\ell_i(\theta_{i,t};z)-\nabla_\theta\ell_i(\theta_{i,t};z')\|_2
+\le L_{i,t}d(z,z').
+\]
+Then the local r-adjacency clipped-gradient sensitivity is
+\[
+\Delta_{i,t}(r)
+:=
+\sup_{d(z,z')\le r}
+\|\bar g_{i,t}(z)-\bar g_{i,t}(z')\|_2
+\le
+\min\{L_{i,t}r,2C_{i,t}\}.
+\]
+
+\begin{theorem}[Public-transcript decentralized Ball-SGD-RDP]
+\label{thm:public-transcript}
+Fix an attacked node $j$. For every integer order $\alpha\ge2$ and every $D\sim_{r,j}D'$,
+\[
+D_\alpha(\cT_T(D)\|\cT_T(D'))
+\le
+\sum_{t=1}^T\eps_{j,t}^{\mathrm{ball}}(\alpha;r),
+\]
+where $\eps_{j,t}^{\mathrm{ball}}(\alpha;r)$ is the ordinary Poisson-subsampled Gaussian RDP term with local parameters $(\gamma_{j,t},\nu_{j,t},\Delta_{j,t}(r))$.
+Consequently, every final model or decentralized state computed from the public transcript satisfies the same RDP bound by post-processing.
+\end{theorem}
+
+For reference, one valid integer-order subsampled Gaussian term is
+\[
+\begin{aligned}
+\eps_{j,t}^{\mathrm{ball}}(\alpha;r)
+\le
+\frac1{\alpha-1}\log\Bigg(
+1
+&+
+\gamma_{j,t}^2\binom{\alpha}{2}
+\min\left\{
+4(e^{\eps_{j,t,2}^{\mathrm G}(r)}-1),
+2e^{\eps_{j,t,2}^{\mathrm G}(r)}
+\right\}\\
+&+
+\sum_{\ell=3}^{\alpha}
+\gamma_{j,t}^{\ell}\binom{\alpha}{\ell}
+2e^{(\ell-1)\eps_{j,t,\ell}^{\mathrm G}(r)}
+\Bigg),
+\end{aligned}
+\]
+with
+\[
+\eps_{j,t,\ell}^{\mathrm G}(r):=\frac{\ell\Delta_{j,t}(r)^2}{2\nu_{j,t}^2}.
+\]
+
+\begin{proof}
+Fix $D\sim_{r,j}D'$ and condition on a realized public history $h_{t-1}$. All node states $\theta_{i,t}$ are then fixed. Let $P_{i,t}^h$ and $Q_{i,t}^h$ be the conditional one-round laws of $\widetilde S_{i,t}$ under $D$ and $D'$. Current-round sampling and Gaussian noise are independent across nodes, so
+\[
+P_t^h=\bigotimes_{i=1}^m P_{i,t}^h,
+\qquad
+Q_t^h=\bigotimes_{i=1}^m Q_{i,t}^h.
+\]
+For every $i\ne j$, the local dataset is unchanged, hence $P_{i,t}^h=Q_{i,t}^h$. R\'enyi divergence adds over product measures, so
+\[
+D_\alpha(P_t^h\|Q_t^h)
+=D_\alpha(P_{j,t}^h\|Q_{j,t}^h).
+\]
+The node-$j$ factor is exactly a Poisson-subsampled Gaussian mechanism with sensitivity $\Delta_{j,t}(r)$, hence it is bounded by $\eps_{j,t}^{\mathrm{ball}}(\alpha;r)$. Adaptive composition over $t=1,\ldots,T$ gives the stated transcript bound. All subsequent decentralized computation is a measurable function of the transcript, so data processing gives the final-output statement.
+\end{proof}
+
+\begin{corollary}[No decentralization penalty for public noisy releases]
+In the public-transcript threat model, decentralization itself does not add privacy loss. The only privacy cost for a protected change at node $j$ is the local noisy release sequence of node $j$.
+\end{corollary}
+
+\section{Observer-Specific Linear Gaussian Views}
+\label{sec:linear-gaussian}
+
+The public-transcript theorem is useful but not topology-aware: if everyone sees everything, graph position is irrelevant. We now study the observer-specific case where the visible transcript is a linear Gaussian transformation of the attacked node's sensitive contribution.
+
+\subsection{Linear Gaussian view model}
+
+Fix an attacked node $j$ and observer set $A$. Suppose the observer view can be written as
+\[
+Y_A(D)
+=
+c_A(D_{-j})+(H_{A\leftarrow j}\otimes I_p)s_j(D)+\zeta_A,
+\qquad
+\zeta_A\sim\N(0,\Sigma_A),
+\]
+where:
+\begin{itemize}[leftmargin=1.4em]
+    \item $D_{-j}$ denotes all data except the target contribution at node $j$;
+    \item $s_j(D)=(s_{j,1}(D),\ldots,s_{j,q}(D))\in(\R^p)^q$ is a stacked vector of sensitive contributions from node $j$;
+    \item $H_{A\leftarrow j}\in\R^{d_A\times q}$ is a deterministic transfer matrix encoding topology, timing, mixing, and the observer's measurement map;
+    \item $\Sigma_A\succ0$ is the covariance of all Gaussian noise visible in the observer's view.
+\end{itemize}
+The term $c_A(D_{-j})$ may depend arbitrarily on non-target data, but it is common across neighboring datasets that differ only in the target record at node $j$.
+
+Assume that under $D\sim_{r,j}D'$, every sensitive block satisfies
+\[
+\|s_{j,\ell}(D)-s_{j,\ell}(D')\|_2\le\Delta_{j,\ell}(r),
+\qquad
+\ell=1,\ldots,q.
+\]
+
+\begin{definition}[Observer-specific transferred sensitivity]
+Define
+\[
+\Delta_{A\leftarrow j}(r)^2
+:=
+\sup_{\substack{\delta=(\delta_1,\ldots,\delta_q)\\
+\|\delta_\ell\|_2\le\Delta_{j,\ell}(r)}}
+\left\|
+\Sigma_A^{-1/2}(H_{A\leftarrow j}\otimes I_p)\delta
+\right\|_2^2.
+\]
+\end{definition}
+
+This quantity is the radius-$r$ sensitivity after it has passed through the network topology and has been measured in noise-whitened observer coordinates.
+
+\begin{theorem}[Observer-specific Ball-PN-RDP for linear Gaussian views]
+\label{thm:linear-gaussian-rdp}
+Under the linear Gaussian view model, for every order $\alpha>1$,
+\[
+D_\alpha(Y_A(D)\|Y_A(D'))
+\le
+\frac{\alpha}{2}\Delta_{A\leftarrow j}(r)^2
+\qquad\forall D\sim_{r,j}D'.
+\]
+Therefore the mechanism satisfies
+\[
+\left(\alpha,\frac{\alpha}{2}\Delta_{A\leftarrow j}(r)^2\right)
+\quad\text{Ball-PN-RDP from node }j\text{ to observer }A.
+\]
+Moreover,
+\[
+\Delta_{A\leftarrow j}(r)^2
+\le
+\lambda_{\max}\!\left((H_{A\leftarrow j}\otimes I_p)^\top\Sigma_A^{-1}(H_{A\leftarrow j}\otimes I_p)\right)
+\sum_{\ell=1}^q\Delta_{j,\ell}(r)^2.
+\]
+\end{theorem}
+
+\begin{proof}
+Fix $D\sim_{r,j}D'$ and write
+\[
+\delta:=s_j(D)-s_j(D').
+\]
+The observer laws are equal-covariance Gaussians with mean difference
+\[
+(H_{A\leftarrow j}\otimes I_p)\delta.
+\]
+For equal-covariance Gaussians,
+\[
+D_\alpha(\N(\mu_0,\Sigma_A)\|\N(\mu_1,\Sigma_A))
+=
+\frac{\alpha}{2}(\mu_0-\mu_1)^\top\Sigma_A^{-1}(\mu_0-\mu_1).
+\]
+Thus
+\[
+D_\alpha(Y_A(D)\|Y_A(D'))
+=
+\frac{\alpha}{2}
+\left\|
+\Sigma_A^{-1/2}(H_{A\leftarrow j}\otimes I_p)\delta
+\right\|_2^2.
+\]
+The block bounds on $\delta$ imply this is at most $\alpha\Delta_{A\leftarrow j}(r)^2/2$.
+
+For the operator-norm upper bound, set
+\[
+M:=\Sigma_A^{-1/2}(H_{A\leftarrow j}\otimes I_p).
+\]
+Then
+\[
+\|M\delta\|_2^2\le\lambda_{\max}(M^\top M)\|\delta\|_2^2
+\le
+\lambda_{\max}(M^\top M)\sum_{\ell=1}^q\Delta_{j,\ell}(r)^2.
+\]
+This proves the final display.
+\end{proof}
+
+\subsection{Direct observer-specific reconstruction robustness}
+
+Let $Z\sim\pi_{u,r}$ be the target record at node $j$, with $\supp(\pi_{u,r})\subseteq\cB_d(u,r)$. Let $D^-$ denote all non-target records across the network. A reconstructor observes $Y_A$ and outputs $R(Y_A,D^-)$.
+
+Define
+\[
+\kappa_{\pi_{u,r},\rho}(\eta)
+:=
+\sup_{z_0\in\cZ}
+\Pr_{Z\sim\pi_{u,r}}[\rho(Z,z_0)\le\eta].
+\]
+
+\begin{theorem}[Direct Ball-ReRo for linear Gaussian observer views]
+\label{thm:linear-gaussian-rero}
+Under the assumptions of Theorem~\ref{thm:linear-gaussian-rdp}, every measurable reconstructor using only observer $A$'s view satisfies
+\[
+\Pr_{Z\sim\pi_{u,r},\ Y_A\sim\Law(Y_A(D^-\cup\{Z\}))}
+\bigl[\rho(Z,R(Y_A,D^-))\le\eta\bigr]
+\le
+\Phi\!\left(
+\Phi^{-1}(\kappa_{\pi_{u,r},\rho}(\eta))+
+\Delta_{A\leftarrow j}(r)
+\right),
+\]
+with boundary cases $\kappa\in\{0,1\}$ interpreted by continuity.
+\end{theorem}
+
+\begin{proof}
+For each candidate $z\in\supp(\pi_{u,r})$, let $P_z$ be the law of $Y_A$ under $D^-\cup\{z\}$, and let $Q_u$ be the law under $D^-\cup\{u\}$. Since $d(z,u)\le r$, the whitened mean distance between $P_z$ and $Q_u$ is at most $\Delta_{A\leftarrow j}(r)$.
+
+For equal-covariance Gaussian laws with whitened mean distance $c$, the test blow-up function is
+\[
+B_\kappa^{\mathrm{test}}=
+\Phi(\Phi^{-1}(\kappa)+c).
+\]
+Therefore
+\[
+B_\kappa^{\mathrm{test}}(P_z,Q_u)
+\le
+\Phi\!\left(\Phi^{-1}(\kappa)+\Delta_{A\leftarrow j}(r)\right)
+=:G(\kappa),
+\]
+where $G$ is nondecreasing and concave in $\kappa$.
+
+For each $z$, define the success event
+\[
+E_z:=\{y:\rho(z,R(y,D^-))\le\eta\}.
+\]
+Then
+\[
+P_z(E_z)\le B_{Q_u(E_z)}^{\mathrm{test}}(P_z,Q_u)
+\le G(Q_u(E_z)).
+\]
+Averaging over $Z$ and applying Jensen gives
+\[
+p_{\mathrm{succ}}
+\le
+G\left(\mathbb E_Z[Q_u(E_Z)]\right).
+\]
+Finally,
+\[
+\mathbb E_Z[Q_u(E_Z)]
+=
+\mathbb E_{Y\sim Q_u}
+\Pr_{Z\sim\pi_{u,r}}[\rho(Z,R(Y,D^-))\le\eta]
+\le
+\kappa_{\pi_{u,r},\rho}(\eta).
+\]
+Monotonicity of $G$ completes the proof.
+\end{proof}
+
+\begin{corollary}[Uniform finite prior exact identification]
+\label{cor:finite-direct}
+Let $S=\{z_1,\ldots,z_m\}\subseteq\cB_d(u,r)$ and let $\pi_S$ be uniform on $S$. With exact-identification loss $\rho(z,z')=\ind{z\ne z'}$ and any $\eta<1$,
+\[
+\Pr[\widehat Z=Z]
+\le
+\Phi\!\left(\Phi^{-1}(1/m)+\Delta_{A\leftarrow j}(r)\right).
+\]
+\end{corollary}
+
+\section{Gossip Specialization}
+\label{sec:gossip}
+
+We now show how $H_{A\leftarrow j}$ arises in a standard linear gossip model. Let $x_t\in(\R^p)^m$ be the stacked node state at round $t$. Consider
+\[
+x_{t+1}=(W_t\otimes I_p)x_t+u_t(D)+\xi_t,
+\qquad
+\xi_t\sim\N(0,\Sigma_t),
+\]
+where $W_t\in\R^{m\times m}$ is a graph-sparse mixing matrix and $u_t(D)$ is a data-dependent local update. Suppose observer $A$ sees
+\[
+y_t=(S_A\otimes I_p)x_t,
+\]
+where $S_A$ selects the observed nodes. Stack the observations as $Y_A=(y_1,\ldots,y_T)$.
+
+Assume that under $D\sim_{r,j}D'$, only the $j$-th node block of $u_t$ may change and
+\[
+\|u_{t,j}(D)-u_{t,j}(D')\|_2\le\Delta_{j,t}(r).
+\]
+Define
+\[
+P_{\tau+1:t-1}:=W_{t-1}W_{t-2}\cdots W_{\tau+1},
+\]
+with the identity convention when $\tau=t-1$.
+
+\begin{corollary}[Transfer matrix for linear gossip]
+\label{cor:gossip-transfer}
+In the linear gossip model, Theorem~\ref{thm:linear-gaussian-rdp} applies with a block lower-triangular transfer matrix whose $(t,\tau)$ block is
+\[
+[H_{A\leftarrow j}]_{t,\tau}
+=
+S_A P_{\tau+1:t-1}e_j
+\qquad(\tau<t),
+\]
+and zero otherwise. If each $W_t$ respects the communication graph, then
+\[
+[H_{A\leftarrow j}]_{t,\tau}=0
+\]
+whenever every node in $A$ is at graph distance strictly larger than $t-\tau-1$ from node $j$.
+\end{corollary}
+
+\begin{proof}
+Unroll the recursion:
+\[
+x_t=(P_{0:t-1}\otimes I_p)x_0
++
+\sum_{\tau=0}^{t-1}(P_{\tau+1:t-1}\otimes I_p)u_\tau(D)
++
+\sum_{\tau=0}^{t-1}(P_{\tau+1:t-1}\otimes I_p)\xi_\tau.
+\]
+Applying the observer selector $S_A\otimes I_p$ gives the displayed transfer block from the node-$j$ update at time $\tau$ to the observation at time $t$.
+
+If the matrices $W_t$ are graph-sparse, then a product of $k$ such matrices has a nonzero $(a,j)$ entry only if there is a walk of length at most $k$ from $j$ to $a$. Hence the transfer to observer set $A$ is zero until information has had enough rounds to reach $A$.
+\end{proof}
+
+\begin{remark}[Topology as privacy amplification]
+The graph does not create privacy by itself. It attenuates or delays the sensitive contribution before it reaches a particular observer. The actual privacy gain is measured only after whitening by the noise covariance $\Sigma_A$.
+\end{remark}
+
+\section{Observer-Specific Attacks}
+\label{sec:attacks}
+
+The linear Gaussian view model also gives an exact posterior attack. Given an observed view $y_A$, a Ball-local prior $\pi_{u,r}$, and known non-target data $D^-$, the likelihood is
+\[
+y_A\mid z,D^-
+\sim
+\N\left(c_A(D^-)+(H_{A\leftarrow j}\otimes I_p)s_j(z),\Sigma_A\right).
+\]
+
+\begin{proposition}[Exact MAP attack for a decentralized Gaussian view]
+\label{prop:map}
+Under the linear Gaussian view model, a MAP estimate is any minimizer of
+\[
+\widehat z_A\in
+\arg\min_{z\in\cB_d(u,r)}
+\left\{
+\frac12
+\left\|
+\Sigma_A^{-1/2}
+\left(y_A-c_A(D^-)-(H_{A\leftarrow j}\otimes I_p)s_j(z)\right)
+\right\|_2^2
+-
+\log\pi_{u,r}(z)
+\right\}.
+\]
+For a finite prior $S=\{z_1,\ldots,z_m\}$, the exact Bayes classifier scores each candidate by the same displayed objective and returns the minimizer.
+\end{proposition}
+
+\begin{proof}
+Apply Bayes' rule to the Gaussian likelihood and drop additive constants independent of $z$.
+\end{proof}
+
+\begin{remark}[Interpretation]
+The transfer matrix determines which directions of the sensitive contribution are visible to the observer. If $H_{A\leftarrow j}$ is small, low rank, delayed, or masked by large covariance in $\Sigma_A$, the posterior is flatter and the ReRo bound is tighter.
+\end{remark}
+
+\section{Experimental Plan and Placeholders}
+\label{sec:experiments}
+
+This section gives the reporting structure for experiments. The key object is an observer-by-attacked-node matrix of privacy and reconstruction quantities.
+
+\subsection{Network and protocol configurations}
+
+\begin{table}[t]
+\centering
+\caption{Decentralized protocol placeholders.}
+\label{tab:protocol-placeholders}
+\begin{tabular}{lrrrrr}
+\toprule
+Graph & nodes & rounds & degree & noise & mixing\\
+\midrule
+\todoresult & \todoresult & \todoresult & \todoresult & \todoresult & \todoresult\\
+\todoresult & \todoresult & \todoresult & \todoresult & \todoresult & \todoresult\\
+\todoresult & \todoresult & \todoresult & \todoresult & \todoresult & \todoresult\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Observer-specific privacy heatmaps}
+
+For each attacked node $j$ and observer set $A$, compute
+\[
+\Delta_{A\leftarrow j}(r),
+\qquad
+\eps_{A\leftarrow j}(\alpha;r)=\frac{\alpha}{2}\Delta_{A\leftarrow j}(r)^2.
+\]
+Report heatmaps over $(A,j)$ for fixed $r$ and over $r$ for representative observer sets.
+
+\begin{figure}[t]
+\centering
+\maybeincludegraphics[width=0.95\linewidth]{figures/paper3_privacy_heatmap_placeholder.pdf}
+\caption{Placeholder: observer-specific transferred sensitivity $\Delta_{A\leftarrow j}(r)$ over attacked nodes and observers.}
+\label{fig:privacy-heatmap-placeholder}
+\end{figure}
+
+\subsection{Observer-specific reconstruction bounds}
+
+For finite-prior exact identification with $m$ candidates, report
+\[
+\gamma_{A\leftarrow j}(r;m)
+:=
+\Phi\!\left(\Phi^{-1}(1/m)+\Delta_{A\leftarrow j}(r)\right).
+\]
+
+\begin{table}[t]
+\centering
+\caption{Observer-specific finite-prior reconstruction bound placeholders.}
+\label{tab:rero-placeholders}
+\begin{tabular}{lrrrrr}
+\toprule
+Graph & observer $A$ & node $j$ & radius & $m$ & bound\\
+\midrule
+\todoresult & \todoresult & \todoresult & \todoresult & \todoresult & \todoresult\\
+\todoresult & \todoresult & \todoresult & \todoresult & \todoresult & \todoresult\\
+\todoresult & \todoresult & \todoresult & \todoresult & \todoresult & \todoresult\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{MAP attacks}
+
+Evaluate Proposition~\ref{prop:map} for finite candidate sets and, where appropriate, continuous projected attacks. Report exact-identification success and compare it to $\gamma_{A\leftarrow j}(r;m)$.
+
+\begin{figure}[t]
+\centering
+\maybeincludegraphics[width=0.95\linewidth]{figures/paper3_attack_vs_bound_placeholder.pdf}
+\caption{Placeholder: observer-specific MAP attack success versus direct Gaussian ReRo bound.}
+\label{fig:attack-vs-bound-placeholder}
+\end{figure}
+
+\begin{table}[t]
+\centering
+\caption{Observer-specific MAP attack placeholders.}
+\label{tab:attack-placeholders}
+\begin{tabular}{lrrrrr}
+\toprule
+Observer & attacked node & radius & success & bound & median error\\
+\midrule
+\todoresult & \todoresult & \todoresult & \todoresult & \todoresult & \todoresult\\
+\todoresult & \todoresult & \todoresult & \todoresult & \todoresult & \todoresult\\
+\todoresult & \todoresult & \todoresult & \todoresult & \todoresult & \todoresult\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Discussion}
+
+The decentralized extension separates three effects that are often conflated. The first is local record geometry, encoded by the radius $r$ and local sensitivities $\Delta_{j,\ell}(r)$. The second is protocol topology, encoded by $H_{A\leftarrow j}$. The third is noise visibility and correlation, encoded by $\Sigma_A$. The observer-specific privacy quantity is the combination of all three in whitened transfer coordinates.
+
+This separation is useful for design. To improve privacy for a particular observer, one can reduce the local sensitivity, reduce the transfer from the attacked node to that observer, or add noise in the directions that the observer sees. Conversely, a global privacy number can hide important variation: a nearby observer may have a much larger $\Delta_{A\leftarrow j}(r)$ than a distant observer.
+
+\section{Ethics Considerations}
+
+This paper studies privacy guarantees and reconstruction attacks in decentralized learning. The attack formulations are intended for privacy auditing and protocol design. In real deployments, observer sets may correspond to users, servers, or coalitions; experiments should avoid exposing sensitive reconstructed records, and qualitative reconstructions should be handled as confidential security artifacts.
+
+\section{LLM Usage Considerations}
+
+LLM tools may have been used to help draft and organize the manuscript text. All mathematical statements, proofs, protocol assumptions, and experimental claims should be independently checked by the authors before submission.
+
+\appendices
+
+\section{RDP-to-ReRo for Observer-Specific Views}
+\label{app:rdp-rero}
+
+The direct Gaussian ReRo theorem is the main bound for linear Gaussian views. For completeness, we also record the generic RDP-to-ReRo conversion.
+
+\begin{theorem}[Ball-PN-RDP implies observer-specific Ball-ReRo]
+\label{thm:pn-rdp-rero}
+Fix an attacked node $j$, observer set $A$, prior $\pi_{u,r}$, loss $\rho$, and threshold $\eta>0$. Let
+\[
+\kappa:=\kappa_{\pi_{u,r},\rho}(\eta).
+\]
+If the mechanism satisfies $(\alpha,\eps_{A\leftarrow j}(\alpha;r))$ Ball-PN-RDP, then every reconstructor using only $\operatorname{View}_A$ satisfies
+\[
+\Pr[\rho(Z,R(\operatorname{View}_A,D^-))\le\eta]
+\le
+\min\left\{1,\left(\kappa e^{\eps_{A\leftarrow j}(\alpha;r)}\right)^{(\alpha-1)/\alpha}\right\}.
+\]
+\end{theorem}
+
+\begin{proof}
+For each candidate $z$, let $P_z$ be the law of $\operatorname{View}_A(M(D^-\cup\{z\}))$, and let $P_u$ be the law at the prior center $u$. Since $z\in\cB_d(u,r)$, Ball-PN-RDP gives
+\[
+D_\alpha(P_z\|P_u)\le\eps_{A\leftarrow j}(\alpha;r)
+\]
+for $\pi_{u,r}$-almost every $z$.
+
+Let
+\[
+A(z,y):=\ind{\rho(z,R(y,D^-))\le\eta}.
+\]
+The success probability is
+\[
+p=\int\int A(z,y)P_z(dy)\pi_{u,r}(dz).
+\]
+Write $\Lambda_z=dP_z/dP_u$. Then
+\[
+p=\int\int A(z,y)\Lambda_z(y)\pi_{u,r}(dz)P_u(dy).
+\]
+For fixed $y$, H\"older's inequality with conjugate exponents $\alpha$ and $\alpha/(\alpha-1)$ gives
+\[
+\int A(z,y)\Lambda_z(y)\pi(dz)
+\le
+\left(\int A(z,y)\pi(dz)\right)^{(\alpha-1)/\alpha}
+\left(\int \Lambda_z(y)^\alpha\pi(dz)\right)^{1/\alpha}.
+\]
+The first factor is at most $\kappa^{(\alpha-1)/\alpha}$. Jensen's inequality over $P_u$ then gives
+\[
+p^\alpha\kappa^{-(\alpha-1)}
+\le
+\int\int \Lambda_z(y)^\alpha P_u(dy)\pi(dz).
+\]
+For each $z$,
+\[
+\int \Lambda_z(y)^\alpha P_u(dy)
+=\exp((\alpha-1)D_\alpha(P_z\|P_u))
+\le\exp((\alpha-1)\eps_{A\leftarrow j}(\alpha;r)).
+\]
+Rearranging yields
+\[
+p\le(\kappa e^{\eps_{A\leftarrow j}(\alpha;r)})^{(\alpha-1)/\alpha}.
+\]
+The minimum with $1$ is trivial.
+\end{proof}
+
+\section{Gaussian Blow-Up Formula}
+\label{app:gaussian-blowup}
+
+\begin{lemma}[Equal-covariance Gaussian ROC]
+\label{lem:gaussian-roc}
+Let $P=\N(\mu_1,\Sigma)$ and $Q=\N(\mu_0,\Sigma)$ with $\Sigma\succ0$. Define
+\[
+c:=\|\Sigma^{-1/2}(\mu_1-\mu_0)\|_2.
+\]
+Then
+\[
+B_\kappa^{\mathrm{test}}(P,Q)=\Phi(\Phi^{-1}(\kappa)+c).
+\]
+\end{lemma}
+
+\begin{proof}
+After whitening and rotating coordinates, it suffices to consider $Q=\N(0,I)$ and $P=\N(ce_1,I)$. The likelihood ratio is monotone in the first coordinate $x_1$. By the Neyman--Pearson lemma, the most powerful test at false-positive level $\kappa$ is an upper-tail threshold in $x_1$. If $Q[x_1\ge t]=\kappa$, then $t=\Phi^{-1}(1-\kappa)$. Under $P$, $x_1\sim\N(c,1)$, so the power is
+\[
+P[x_1\ge t]
+=1-\Phi(t-c)
+=\Phi(\Phi^{-1}(\kappa)+c).
+\]
+\end{proof}
+
+\section{Computing the Transferred Sensitivity}
+\label{app:computing-delta}
+
+The exact transferred sensitivity is the convex maximization
+\[
+\Delta_{A\leftarrow j}(r)^2
+=
+\sup_{\|\delta_\ell\|_2\le\Delta_{j,\ell}(r)}
+\delta^\top
+(H_{A\leftarrow j}\otimes I_p)^\top\Sigma_A^{-1}(H_{A\leftarrow j}\otimes I_p)
+\delta.
+\]
+The operator-norm upper bound in Theorem~\ref{thm:linear-gaussian-rdp} is simple and dimension-free in the block structure, but it may be loose. In experiments one can compute tighter upper bounds by semidefinite relaxation, projected power iteration over the product of Euclidean balls, or exact methods when $q$ is small. The theorem remains valid for any certified upper bound on this supremum.
+
+\begin{thebibliography}{10}
+
+\bibitem{balle2022informed}
+B.~Balle, G.~Cherubin, and J.~Hayes.
+\newblock Reconstructing training data with informed adversaries.
+\newblock In \emph{IEEE Symposium on Security and Privacy}, 2022.
+
+\bibitem{dong2022gdp}
+J.~Dong, A.~Roth, and W.~J. Su.
+\newblock Gaussian differential privacy.
+\newblock \emph{Journal of the Royal Statistical Society: Series B}, 84(1):3--37, 2022.
+
+\bibitem{mironov2017renyi}
+I.~Mironov.
+\newblock R\'enyi differential privacy.
+\newblock In \emph{IEEE Computer Security Foundations Symposium}, 2017.
+
+\bibitem{dwork2014algorithmic}
+C.~Dwork and A.~Roth.
+\newblock The algorithmic foundations of differential privacy.
+\newblock \emph{Foundations and Trends in Theoretical Computer Science}, 9(3--4):211--407, 2014.
+
+\end{thebibliography}
+
+\end{document}

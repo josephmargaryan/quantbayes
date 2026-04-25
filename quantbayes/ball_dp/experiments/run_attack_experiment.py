@@ -9,7 +9,7 @@ import math
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Iterable, Optional, Sequence
+from typing import Any, Optional, Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -24,6 +24,7 @@ import jax
 
 from quantbayes.ball_dp import (
     attack_convex_ball_output_finite_prior,
+    diagnose_convex_ball_output_finite_prior,
     ball_rero,
     fit_convex,
     make_finite_identification_prior,
@@ -36,12 +37,16 @@ DEFAULT_EPS_GRID = (0.5, 1.0, 2.0, 4.0, 8.0)
 DEFAULT_M_GRID = (8, 16, 32, 64)
 DEFAULT_RELEASE_SEEDS = (0, 1, 2)
 DEFAULT_RADIUS_TAG = "q80"
-DEFAULT_FIXED_EPSILON = 1.0
-DEFAULT_FIXED_M = 16
+DEFAULT_FIXED_EPSILON = 4.0
+DEFAULT_FIXED_M = 8
 DEFAULT_DELTA = 1e-6
 DEFAULT_EMBEDDING_BOUND = 1.0
 DEFAULT_LAM = 1e-2
 DEFAULT_MAX_ITER = 100
+DEFAULT_RIDGE_SENSITIVITY_MODE = "global"
+DEFAULT_SUPPORT_SELECTION = "random"
+DEFAULT_ANCHOR_SELECTION = "random"
+DEFAULT_STANDARD_RADIUS_SOURCE = "empirical_diameter"
 DEFAULT_ORDERS = tuple(list(range(2, 65)) + [80, 96, 128, 160, 192, 256])
 
 MODEL_ALIASES = {
@@ -235,10 +240,6 @@ def as_int_list(values: Sequence[int]) -> list[int]:
     return [int(v) for v in values]
 
 
-def qkey(value: float) -> str:
-    return f"q{float(value):.2f}".replace(".", "")
-
-
 def slugify(text: str) -> str:
     out = []
     for ch in str(text).lower():
@@ -301,6 +302,14 @@ def finite_prior_hash(X: np.ndarray, y: np.ndarray) -> str:
     return h.hexdigest()[:16]
 
 
+def support_source_hash(source_ids: Sequence[str]) -> str:
+    h = hashlib.sha1()
+    for sid in source_ids:
+        h.update(str(sid).encode("utf-8"))
+        h.update(b"\n")
+    return h.hexdigest()[:16]
+
+
 @dataclass
 class LoadedDataset:
     spec: DatasetSpec
@@ -316,13 +325,13 @@ class LoadedDataset:
 
 
 @dataclass
-class TargetPool:
-    target_index: int
-    target_label: int
-    target_vector: np.ndarray
-    distractor_vectors: np.ndarray
-    distractor_source_ids: list[str]
-    distractor_distances: np.ndarray
+class SupportBank:
+    anchor_index: int
+    anchor_label: int
+    anchor_vector: np.ndarray
+    bank_vectors: np.ndarray
+    bank_source_ids: list[str]
+    bank_distances: np.ndarray
 
 
 def load_embeddings(args: argparse.Namespace, spec: DatasetSpec) -> LoadedDataset:
@@ -369,7 +378,6 @@ def load_embeddings(args: argparse.Namespace, spec: DatasetSpec) -> LoadedDatase
     X_test_np = np.asarray(jax.device_get(X_test), dtype=np.float32)
     y_test_np = np.asarray(jax.device_get(y_test), dtype=np.int32).reshape(-1)
 
-    # Ensure contiguous class labels shared across train/test.
     label_values = np.unique(np.concatenate([y_train_np, y_test_np], axis=0))
     mapping = {int(v): i for i, v in enumerate(label_values.tolist())}
     y_train_np = np.asarray([mapping[int(v)] for v in y_train_np], dtype=np.int32)
@@ -417,11 +425,39 @@ def radius_value_from_report(report: dict[str, Any], radius_tag: str) -> float:
     )
 
 
+def standard_radius_value_from_report(
+    report: dict[str, Any],
+    *,
+    source: str,
+    embedding_bound: float,
+) -> float:
+    key = str(source).strip().lower()
+    if key == "embedding_bound":
+        return float(2.0 * float(embedding_bound))
+    if key == "empirical_diameter":
+        return float(
+            select_ball_radius(
+                report,
+                strategy="global_max",
+                quantile=1.0,
+                allow_observed_max=True,
+            )
+        )
+    raise ValueError(
+        "standard_radius_source must be one of {'empirical_diameter', 'embedding_bound'}."
+    )
+
+
 def make_run_id(args: argparse.Namespace, spec: DatasetSpec, model_family: str) -> str:
     payload = {
         "dataset": spec.tag,
         "model": model_family,
         "radius": args.radius,
+        "support_source": args.support_source,
+        "support_selection": args.support_selection,
+        "anchor_selection": args.anchor_selection,
+        "standard_radius_source": args.standard_radius_source,
+        "ridge_sensitivity_mode": args.ridge_sensitivity_mode,
         "lam": float(args.lam),
         "delta": float(args.delta),
         "eps_grid": as_float_list(args.epsilon_grid),
@@ -429,9 +465,9 @@ def make_run_id(args: argparse.Namespace, spec: DatasetSpec, model_family: str) 
         "fixed_epsilon": float(args.fixed_epsilon),
         "fixed_m": int(args.fixed_m),
         "release_seeds": as_int_list(args.release_seeds),
-        "num_targets": int(args.num_targets),
-        "candidate_draws": int(args.candidate_draws),
-        "target_seed": int(args.target_seed),
+        "num_supports": int(args.num_supports),
+        "support_draws": int(args.support_draws),
+        "anchor_seed": int(args.anchor_seed),
         "solver": str(args.solver),
         "max_iter": int(args.max_iter),
     }
@@ -445,27 +481,19 @@ def seed_seq(*parts: int) -> np.random.Generator:
     return np.random.default_rng(np.random.SeedSequence([int(p) for p in parts]))
 
 
-def dedup_vectors(
+def dedup_vectors_and_ids(
     vectors: np.ndarray,
     source_ids: Sequence[str],
     distances: np.ndarray,
     *,
-    exclude_value: Optional[np.ndarray] = None,
     rounding_decimals: int = 7,
 ) -> tuple[np.ndarray, list[str], np.ndarray]:
     seen: set[bytes] = set()
     kept_vectors: list[np.ndarray] = []
     kept_ids: list[str] = []
     kept_dists: list[float] = []
-    exclude_key = None
-    if exclude_value is not None:
-        exclude_key = np.round(
-            np.asarray(exclude_value, dtype=np.float32), rounding_decimals
-        ).tobytes()
     for vec, src, dist in zip(vectors, source_ids, distances, strict=True):
         key = np.round(np.asarray(vec, dtype=np.float32), rounding_decimals).tobytes()
-        if exclude_key is not None and key == exclude_key:
-            continue
         if key in seen:
             continue
         seen.add(key)
@@ -485,156 +513,263 @@ def dedup_vectors(
     )
 
 
-def build_target_pool(
+def remove_train_index(
+    X: np.ndarray, y: np.ndarray, index: int
+) -> tuple[np.ndarray, np.ndarray]:
+    idx = int(index)
+    return (
+        np.concatenate([X[:idx], X[idx + 1 :]], axis=0),
+        np.concatenate([y[:idx], y[idx + 1 :]], axis=0),
+    )
+
+
+def build_support_bank(
     data: LoadedDataset,
     *,
-    target_index: int,
+    anchor_index: int,
     radius_value: float,
+    source_mode: str,
     tol: float = 1e-7,
-) -> TargetPool:
-    x_target = np.asarray(data.X_train[target_index], dtype=np.float32)
-    target_label = int(data.y_train[target_index])
+) -> SupportBank:
+    anchor_index = int(anchor_index)
+    anchor_vec = np.asarray(data.X_train[anchor_index], dtype=np.float32)
+    anchor_label = int(data.y_train[anchor_index])
 
-    train_same = np.where(data.y_train == target_label)[0]
-    train_same = train_same[train_same != int(target_index)]
-    test_same = np.where(data.y_test == target_label)[0]
+    # The anchor defines the center u and the reduced dataset D^- = D \ {u},
+    # but it is not forced into the finite support S. This keeps the empirical
+    # protocol aligned with the fixed-support uniform-prior model used in the theory.
+    vectors: list[np.ndarray] = []
+    source_ids: list[str] = []
+    distances: list[float] = []
 
-    train_vectors = data.X_train[train_same]
-    test_vectors = data.X_test[test_same]
-    train_dists = (
-        np.linalg.norm(train_vectors - x_target[None, :], axis=1)
-        if train_vectors.size
-        else np.zeros((0,), dtype=np.float32)
+    test_same = np.where(data.y_test == anchor_label)[0]
+    if test_same.size:
+        test_vectors = np.asarray(data.X_test[test_same], dtype=np.float32)
+        test_dists = np.linalg.norm(test_vectors - anchor_vec[None, :], axis=1)
+        keep_test = test_dists <= float(radius_value) + float(tol)
+        for idx, vec, dist in zip(
+            test_same[keep_test].tolist(),
+            test_vectors[keep_test],
+            test_dists[keep_test],
+            strict=True,
+        ):
+            vectors.append(np.asarray(vec, dtype=np.float32))
+            source_ids.append(f"test:{int(idx)}")
+            distances.append(float(dist))
+
+    if source_mode == "train_and_public":
+        train_same = np.where(data.y_train == anchor_label)[0]
+        train_same = train_same[train_same != anchor_index]
+        if train_same.size:
+            train_vectors = np.asarray(data.X_train[train_same], dtype=np.float32)
+            train_dists = np.linalg.norm(train_vectors - anchor_vec[None, :], axis=1)
+            keep_train = train_dists <= float(radius_value) + float(tol)
+            for idx, vec, dist in zip(
+                train_same[keep_train].tolist(),
+                train_vectors[keep_train],
+                train_dists[keep_train],
+                strict=True,
+            ):
+                vectors.append(np.asarray(vec, dtype=np.float32))
+                source_ids.append(f"train:{int(idx)}")
+                distances.append(float(dist))
+
+    if vectors:
+        vec_arr = np.stack(vectors, axis=0).astype(np.float32, copy=False)
+        dist_arr = np.asarray(distances, dtype=np.float32)
+        vec_arr, source_ids, dist_arr = dedup_vectors_and_ids(
+            vec_arr,
+            source_ids,
+            dist_arr,
+        )
+    else:
+        vec_arr = np.zeros((0, int(data.feature_dim)), dtype=np.float32)
+        source_ids = []
+        dist_arr = np.zeros((0,), dtype=np.float32)
+
+    return SupportBank(
+        anchor_index=anchor_index,
+        anchor_label=anchor_label,
+        anchor_vector=anchor_vec,
+        bank_vectors=vec_arr,
+        bank_source_ids=source_ids,
+        bank_distances=dist_arr,
     )
-    test_dists = (
-        np.linalg.norm(test_vectors - x_target[None, :], axis=1)
-        if test_vectors.size
-        else np.zeros((0,), dtype=np.float32)
-    )
-
-    keep_train = train_dists <= float(radius_value) + float(tol)
-    keep_test = test_dists <= float(radius_value) + float(tol)
-
-    kept_vectors = np.concatenate(
-        [train_vectors[keep_train], test_vectors[keep_test]], axis=0
-    )
-    kept_ids = [f"train:{int(i)}" for i in train_same[keep_train].tolist()] + [
-        f"test:{int(i)}" for i in test_same[keep_test].tolist()
-    ]
-    kept_dists = np.concatenate(
-        [train_dists[keep_train], test_dists[keep_test]], axis=0
-    )
-
-    kept_vectors, kept_ids, kept_dists = dedup_vectors(
-        kept_vectors,
-        kept_ids,
-        kept_dists,
-        exclude_value=x_target,
-    )
-
-    return TargetPool(
-        target_index=int(target_index),
-        target_label=target_label,
-        target_vector=x_target,
-        distractor_vectors=kept_vectors,
-        distractor_source_ids=kept_ids,
-        distractor_distances=kept_dists,
-    )
 
 
-def find_feasible_targets(
+def find_feasible_support_banks(
     data: LoadedDataset,
     *,
     radius_value: float,
     max_required_m: int,
-    num_targets: int,
-    target_seed: int,
+    num_supports: int,
+    anchor_seed: int,
+    source_mode: str,
     max_search: Optional[int],
-    explicit_target_indices: Optional[Sequence[int]] = None,
+    explicit_anchor_indices: Optional[Sequence[int]] = None,
     strict: bool = False,
-) -> list[TargetPool]:
-    if explicit_target_indices:
-        candidate_indices = [int(i) for i in explicit_target_indices]
+    anchor_selection: str = "random",
+) -> list[SupportBank]:
+    strategy = str(anchor_selection).strip().lower()
+    if strategy not in {"random", "rare_class", "large_bank"}:
+        raise ValueError(
+            "anchor_selection must be one of {'random', 'rare_class', 'large_bank'}."
+        )
+
+    rng = np.random.default_rng(int(anchor_seed))
+    if explicit_anchor_indices:
+        candidate_indices = [int(i) for i in explicit_anchor_indices]
     else:
-        rng = np.random.default_rng(int(target_seed))
-        candidate_indices = rng.permutation(len(data.X_train)).tolist()
-        if max_search is not None:
+        if strategy == "rare_class":
+            counts = np.bincount(
+                np.asarray(data.y_train, dtype=np.int64),
+                minlength=int(data.num_classes),
+            )
+            jitter = rng.random(len(data.X_train))
+            candidate_indices = sorted(
+                range(len(data.X_train)),
+                key=lambda i: (int(counts[int(data.y_train[i])]), float(jitter[i])),
+            )
+        else:
+            candidate_indices = rng.permutation(len(data.X_train)).tolist()
+        if max_search is not None and strategy != "large_bank":
             candidate_indices = candidate_indices[: int(max_search)]
 
-    pools: list[TargetPool] = []
-    for idx in candidate_indices:
-        pool = build_target_pool(
-            data, target_index=int(idx), radius_value=float(radius_value)
-        )
-        if int(pool.distractor_vectors.shape[0]) >= int(max_required_m) - 1:
-            pools.append(pool)
-        if len(pools) >= int(num_targets):
-            break
+    banks: list[SupportBank] = []
+    if strategy == "large_bank" and not explicit_anchor_indices:
+        scored: list[tuple[int, SupportBank]] = []
+        search_indices = candidate_indices
+        if max_search is not None:
+            search_indices = search_indices[: int(max_search)]
+        for idx in search_indices:
+            bank = build_support_bank(
+                data,
+                anchor_index=int(idx),
+                radius_value=float(radius_value),
+                source_mode=str(source_mode),
+            )
+            if int(bank.bank_vectors.shape[0]) >= int(max_required_m):
+                scored.append((int(bank.bank_vectors.shape[0]), bank))
+        scored.sort(key=lambda kv: kv[0], reverse=True)
+        banks = [bank for _, bank in scored[: int(num_supports)]]
+    else:
+        for idx in candidate_indices:
+            bank = build_support_bank(
+                data,
+                anchor_index=int(idx),
+                radius_value=float(radius_value),
+                source_mode=str(source_mode),
+            )
+            if int(bank.bank_vectors.shape[0]) >= int(max_required_m):
+                banks.append(bank)
+            if len(banks) >= int(num_supports):
+                break
 
-    if len(pools) < int(num_targets) and strict:
+    if len(banks) < int(num_supports) and strict:
         raise RuntimeError(
-            f"Requested {num_targets} feasible targets, but found only {len(pools)} "
-            f"for radius {radius_value:.6f} and m_max={max_required_m}."
+            f"Requested {num_supports} feasible support anchors, but found only {len(banks)} "
+            f"for radius {radius_value:.6f}, m_max={max_required_m}, source_mode={source_mode!r}, "
+            f"and anchor_selection={strategy!r}."
         )
-    if not pools:
+    if not banks:
         raise RuntimeError(
-            f"No feasible targets found for radius {radius_value:.6f} and m_max={max_required_m}."
+            f"No feasible support anchors found for radius {radius_value:.6f}, "
+            f"m_max={max_required_m}, source_mode={source_mode!r}, and anchor_selection={strategy!r}."
         )
-    return pools
+    return banks
 
 
-def make_candidate_set(
-    pool: TargetPool,
+def _greedy_farthest_positions(
+    vectors: np.ndarray,
+    *,
+    m: int,
+    rng: np.random.Generator,
+    anchor_distances: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    X = np.asarray(vectors, dtype=np.float32)
+    n = int(X.shape[0])
+    if n < int(m):
+        raise ValueError("not enough vectors for farthest-point support selection")
+
+    if anchor_distances is None:
+        first = int(rng.integers(0, n))
+    else:
+        # Stress choice with replicate diversity: start from a random member of
+        # the farthest tail from the Ball center, then run max-min packing.
+        d_anchor = np.asarray(anchor_distances, dtype=np.float64)
+        top_k = min(n, max(int(m), 4 * int(m)))
+        farthest_tail = np.argsort(-d_anchor)[:top_k]
+        first = int(rng.choice(farthest_tail))
+
+    selected = [first]
+    min_d = np.linalg.norm(X - X[first][None, :], axis=1)
+    min_d[first] = -np.inf
+    while len(selected) < int(m):
+        # Random tie-breaking avoids systematic index artifacts while preserving
+        # the max-min packing objective.
+        best_val = float(np.max(min_d))
+        candidates = np.flatnonzero(np.isclose(min_d, best_val, rtol=1e-7, atol=1e-7))
+        nxt = int(rng.choice(candidates)) if candidates.size else int(np.argmax(min_d))
+        selected.append(nxt)
+        d_new = np.linalg.norm(X - X[nxt][None, :], axis=1)
+        min_d = np.minimum(min_d, d_new)
+        min_d[selected] = -np.inf
+    return np.asarray(selected, dtype=np.int64)
+
+
+def make_support_set(
+    bank: SupportBank,
     *,
     m: int,
     draw_index: int,
     base_seed: int,
+    selection: str = "random",
 ) -> tuple[np.ndarray, np.ndarray, list[str], np.ndarray]:
     if int(m) < 2:
+        raise ValueError("m must be at least 2.")
+    available = int(bank.bank_vectors.shape[0])
+    if available < int(m):
         raise ValueError(
-            "m must be at least 2 so the support contains the truth and at least one distractor."
-        )
-    available = int(pool.distractor_vectors.shape[0])
-    need = int(m) - 1
-    if available < need:
-        raise ValueError(
-            f"Target {pool.target_index} only has {available} distractors in-radius, but m={m} needs {need}."
+            f"Anchor {bank.anchor_index} only has bank size {available}, but m={m}."
         )
 
-    rng = seed_seq(base_seed, pool.target_index, draw_index)
-    perm = rng.permutation(available)
-    chosen = perm[:need]
-    distractors = np.asarray(pool.distractor_vectors[chosen], dtype=np.float32)
-    distractor_ids = [pool.distractor_source_ids[int(i)] for i in chosen.tolist()]
-    distractor_dists = np.asarray(pool.distractor_distances[chosen], dtype=np.float32)
+    rng = seed_seq(base_seed, bank.anchor_index, draw_index, int(m), 991)
+    mode = str(selection).strip().lower()
+    if mode == "random":
+        positions = rng.permutation(available)[: int(m)]
+    elif mode == "farthest":
+        positions = _greedy_farthest_positions(
+            bank.bank_vectors,
+            m=int(m),
+            rng=rng,
+            anchor_distances=bank.bank_distances,
+        )
+    elif mode == "nearest":
+        positions = np.argsort(np.asarray(bank.bank_distances, dtype=np.float64))[
+            : int(m)
+        ]
+    else:
+        raise ValueError(
+            "support selection must be one of {'random', 'farthest', 'nearest'}."
+        )
 
-    X_candidates = np.concatenate(
-        [distractors, pool.target_vector[None, :]],
-        axis=0,
-    ).astype(np.float32, copy=False)
-    y_candidates = np.full((int(m),), int(pool.target_label), dtype=np.int32)
-    source_ids = list(distractor_ids) + [f"target:{pool.target_index}"]
-    dists = np.concatenate(
-        [distractor_dists, np.array([0.0], dtype=np.float32)], axis=0
-    )
-
-    # Randomize final candidate order to avoid a fixed truth position.
-    shuffle_rng = seed_seq(base_seed, pool.target_index, draw_index, int(m), 17)
-    order = shuffle_rng.permutation(int(m))
-    X_candidates = X_candidates[order]
-    y_candidates = y_candidates[order]
-    source_ids = [source_ids[int(i)] for i in order.tolist()]
-    dists = dists[order]
-    return X_candidates, y_candidates, source_ids, dists
+    X_support = np.asarray(bank.bank_vectors[positions], dtype=np.float32)
+    y_support = np.full((int(m),), int(bank.anchor_label), dtype=np.int32)
+    source_ids = [bank.bank_source_ids[int(i)] for i in positions.tolist()]
+    dists = np.asarray(bank.bank_distances[positions], dtype=np.float32)
+    return X_support, y_support, source_ids, dists
 
 
 def fit_release_for_mechanism(
     *,
-    data: LoadedDataset,
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    num_classes: int,
     model_family: str,
     mechanism: str,
     epsilon: float,
     local_radius_value: float,
+    standard_radius_value: float,
     embedding_bound: float,
     lam: float,
     delta: float,
@@ -642,19 +777,18 @@ def fit_release_for_mechanism(
     seed: int,
     orders: Sequence[float],
     solver: str,
+    ridge_sensitivity_mode: str,
 ) -> Any:
     if mechanism == "ball":
         release_radius = float(local_radius_value)
     elif mechanism == "standard":
-        release_radius = float(2.0 * embedding_bound)
+        release_radius = float(standard_radius_value)
     else:
         raise ValueError(f"Unknown mechanism {mechanism!r}")
 
     return fit_convex(
-        data.X_train,
-        data.y_train,
-        X_eval=data.X_test,
-        y_eval=data.y_test,
+        X_train,
+        y_train,
         model_family=model_family,
         privacy="ball_dp",
         radius=float(release_radius),
@@ -662,7 +796,9 @@ def fit_release_for_mechanism(
         epsilon=float(epsilon),
         delta=float(delta),
         embedding_bound=float(embedding_bound),
-        num_classes=int(data.num_classes),
+        standard_radius=float(standard_radius_value),
+        ridge_sensitivity_mode=str(ridge_sensitivity_mode),
+        num_classes=int(num_classes),
         orders=tuple(float(v) for v in orders),
         max_iter=int(max_iter),
         solver=str(solver),
@@ -783,6 +919,10 @@ def rebuild_attack_dataset_outputs(
         "candidate_radius_tag",
         "candidate_radius_value",
         "release_radius_value",
+        "standard_radius_value",
+        "support_source_mode",
+        "support_selection",
+        "ridge_sensitivity_mode",
         "epsilon",
         "m",
         "delta",
@@ -796,13 +936,13 @@ def rebuild_attack_dataset_outputs(
     summary = trial_group.agg(
         n_runs=("run_id", "nunique"),
         n_trials=("exact_identification_success", "count"),
-        num_targets=("target_index", "nunique"),
-        candidate_draws=("candidate_draw_index", "nunique"),
+        num_support_anchors=("anchor_index", "nunique"),
+        support_draws=("support_draw_index", "nunique"),
         release_seeds=("release_seed", "nunique"),
         exact_id_mean=("exact_identification_success", "mean"),
         oblivious_kappa=("oblivious_kappa", "mean"),
-        candidate_pool_size_mean=("candidate_pool_size", "mean"),
-        candidate_max_distance_mean=("candidate_max_distance", "mean"),
+        support_bank_size_mean=("support_bank_size", "mean"),
+        support_max_distance_mean=("support_max_distance", "mean"),
     ).reset_index()
 
     ci_bounds = [
@@ -813,6 +953,86 @@ def rebuild_attack_dataset_outputs(
     summary["exact_id_ci_high"] = [hi for _, hi in ci_bounds]
     summary["attack_advantage"] = summary["exact_id_mean"] - summary["oblivious_kappa"]
 
+    diag_rows: list[dict[str, Any]] = []
+    for key, frame in trial_group:
+        diag = {col: val for col, val in zip(config_cols, key, strict=True)}
+        if "predicted_source_id" in frame.columns:
+            pred_ids = frame["predicted_source_id"].fillna("<missing>").astype(str)
+            counts = pred_ids.value_counts(dropna=False)
+            mode_count = int(counts.iloc[0]) if not counts.empty else 0
+            diag["predicted_source_unique_count"] = int(len(counts))
+            diag["predicted_source_mode_share"] = (
+                float(mode_count / float(len(frame))) if len(frame) else float("nan")
+            )
+            diag["predicted_source_mode_id"] = (
+                str(counts.index[0]) if not counts.empty else None
+            )
+        else:
+            diag["predicted_source_unique_count"] = float("nan")
+            diag["predicted_source_mode_share"] = float("nan")
+            diag["predicted_source_mode_id"] = None
+        if {"predicted_source_id", "target_source_id"}.issubset(frame.columns):
+            diag["predicted_matches_target_rate"] = float(
+                np.mean(
+                    frame["predicted_source_id"]
+                    .fillna("<missing>")
+                    .astype(str)
+                    .to_numpy()
+                    == frame["target_source_id"]
+                    .fillna("<missing>")
+                    .astype(str)
+                    .to_numpy()
+                )
+            )
+        else:
+            diag["predicted_matches_target_rate"] = float("nan")
+        if "predicted_source_is_anchor" in frame.columns:
+            diag["predicted_anchor_rate"] = float(
+                np.mean(frame["predicted_source_is_anchor"].astype(float))
+            )
+        else:
+            diag["predicted_anchor_rate"] = float("nan")
+        if "support_contains_anchor" in frame.columns:
+            diag["support_contains_anchor_rate"] = float(
+                np.mean(frame["support_contains_anchor"].astype(float))
+            )
+        else:
+            diag["support_contains_anchor_rate"] = float("nan")
+
+        mean_metric_cols = [
+            "posterior_top1_probability",
+            "posterior_true_probability",
+            "posterior_entropy",
+            "posterior_effective_candidates",
+            "log_score_gap_top2",
+            "log_score_gap_truth_to_top",
+            "bound_direct_instance_center_max",
+            "bound_direct_instance_finite_opt",
+            "model_center_radius_over_sigma_max",
+            "model_center_radius_over_sigma_mean",
+            "model_pairwise_snr_median",
+            "model_pairwise_snr_mean",
+            "model_nn_snr_median",
+            "model_nn_snr_mean",
+            "feature_pairwise_distance_median",
+            "feature_nn_distance_median",
+            "ridge_inverse_noise_tau",
+            "ridge_inverse_noise_tau_over_radius",
+            "ridge_count_dilution",
+            "ridge_feature_pairwise_snr_median",
+            "ridge_feature_nn_snr_median",
+        ]
+        for col in mean_metric_cols:
+            if col in frame.columns:
+                diag[f"{col}_mean"] = float(np.nanmean(frame[col].astype(float)))
+            else:
+                diag[f"{col}_mean"] = float("nan")
+        diag_rows.append(diag)
+
+    diag_df = pd.DataFrame(diag_rows)
+    if not diag_df.empty:
+        summary = summary.merge(diag_df, on=config_cols, how="left")
+
     if not release_df.empty:
         release_metric_cols = [
             "dataset_tag",
@@ -822,6 +1042,10 @@ def rebuild_attack_dataset_outputs(
             "candidate_radius_tag",
             "candidate_radius_value",
             "release_radius_value",
+            "standard_radius_value",
+            "support_source_mode",
+            "support_selection",
+            "ridge_sensitivity_mode",
             "epsilon",
             "m",
             "delta",
@@ -875,7 +1099,6 @@ def rebuild_attack_dataset_outputs(
     figures_dir = ensure_dir(dataset_dir / "figures")
     dataset_title = f"{spec.display_name} · {model_family}"
 
-    # Exact-ID vs epsilon (fixed m).
     eps_mask = (summary["candidate_radius_tag"] == plot_radius_tag) & (
         summary["m"] == int(fixed_m)
     )
@@ -909,7 +1132,7 @@ def rebuild_attack_dataset_outputs(
             color=BASELINE_COLOR,
             linestyle="--",
             linewidth=2.0,
-            label=f"Oblivious baseline = 1/{fixed_m}",
+            label=f"Uniform-prior baseline = 1/{fixed_m}",
         )
         ax.set_xscale("log", base=2)
         ax.set_xlabel("$\\varepsilon$")
@@ -924,7 +1147,6 @@ def rebuild_attack_dataset_outputs(
             figures_dir / f"fig_attack_exactid_vs_epsilon_{spec.tag}_{model_family}",
         )
 
-    # Exact-ID vs m (fixed epsilon).
     m_mask = (summary["candidate_radius_tag"] == plot_radius_tag) & np.isclose(
         summary["epsilon"], float(fixed_epsilon)
     )
@@ -958,7 +1180,7 @@ def rebuild_attack_dataset_outputs(
                 linestyle="--",
                 linewidth=2.0,
                 marker="s",
-                label="Oblivious baseline = 1/m",
+                label="Uniform-prior baseline = 1/m",
             )
         ax.set_xscale("log", base=2)
         ax.set_xlabel("m")
@@ -976,9 +1198,9 @@ def rebuild_attack_dataset_outputs(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Run convex finite-prior exact-identification attack experiments for Ball-DP "
-            "and the matched standard-DP comparator. Candidate supports are target-centered, "
-            "same-label, and constrained to the selected local Ball radius."
+            "Run theorem-aligned convex finite-prior exact-identification attack experiments. "
+            "For each anchor record u, the script fixes a support S inside the local Ball around u, "
+            "then evaluates every target choice in S under a uniform prior while holding D^- fixed."
         )
     )
     parser.add_argument("--dataset", required=True, type=str)
@@ -999,6 +1221,52 @@ def parse_args() -> argparse.Namespace:
         choices=("lbfgs_fullbatch", "gd_fullbatch"),
         default="lbfgs_fullbatch",
     )
+    parser.add_argument(
+        "--support-source",
+        choices=("public_only", "train_and_public"),
+        default="public_only",
+        help=(
+            "Candidate bank used to form fixed supports. 'public_only' uses same-label "
+            "test/public embeddings inside the selected Ball. 'train_and_public' additionally allows same-label "
+            "training embeddings inside the Ball."
+        ),
+    )
+    parser.add_argument(
+        "--support-selection",
+        choices=("random", "farthest", "nearest"),
+        default=DEFAULT_SUPPORT_SELECTION,
+        help=(
+            "How to choose the finite support from the feasible candidate bank. "
+            "'farthest' is the strongest simple stress test: a greedy max-min packing inside the Ball."
+        ),
+    )
+    parser.add_argument(
+        "--anchor-selection",
+        choices=("random", "rare_class", "large_bank"),
+        default=DEFAULT_ANCHOR_SELECTION,
+        help=(
+            "How to choose Ball centers/anchors. 'rare_class' stresses the ridge prototype by preferring "
+            "classes with smaller training counts; 'large_bank' maximizes candidate availability."
+        ),
+    )
+    parser.add_argument(
+        "--standard-radius-source",
+        choices=("empirical_diameter", "embedding_bound"),
+        default=DEFAULT_STANDARD_RADIUS_SOURCE,
+        help=(
+            "Radius used for the standard global comparator. 'empirical_diameter' matches the paper's "
+            "same-label observed diameter; 'embedding_bound' uses the conservative 2B comparator."
+        ),
+    )
+    parser.add_argument(
+        "--ridge-sensitivity-mode",
+        choices=("global", "count_aware"),
+        default=DEFAULT_RIDGE_SENSITIVITY_MODE,
+        help=(
+            "Ridge-prototype sensitivity calibration. 'global' uses 2r/(2+lambda n); "
+            "'count_aware' uses the exact public-count sensitivity max_c 2r/(2n_c+lambda n)."
+        ),
+    )
 
     parser.add_argument(
         "--epsilon-grid", nargs="+", type=float, default=list(DEFAULT_EPS_GRID)
@@ -1014,12 +1282,34 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--release-seeds", nargs="*", type=int, default=list(DEFAULT_RELEASE_SEEDS)
     )
-    parser.add_argument("--num-targets", type=int, default=8)
-    parser.add_argument("--candidate-draws", type=int, default=3)
-    parser.add_argument("--target-seed", type=int, default=0)
+    parser.add_argument(
+        "--num-supports", "--num-targets", dest="num_supports", type=int, default=8
+    )
+    parser.add_argument(
+        "--support-draws",
+        "--candidate-draws",
+        dest="support_draws",
+        type=int,
+        default=3,
+    )
+    parser.add_argument(
+        "--anchor-seed", "--target-seed", dest="anchor_seed", type=int, default=0
+    )
     parser.add_argument("--max-feasible-search", type=int, default=None)
-    parser.add_argument("--target-indices", nargs="*", type=int, default=None)
-    parser.add_argument("--strict-feasible-targets", action="store_true")
+    parser.add_argument(
+        "--anchor-indices",
+        "--target-indices",
+        dest="anchor_indices",
+        nargs="*",
+        type=int,
+        default=None,
+    )
+    parser.add_argument(
+        "--strict-feasible-supports",
+        "--strict-feasible-targets",
+        dest="strict_feasible_supports",
+        action="store_true",
+    )
 
     parser.add_argument("--data-root", type=str, default="./data")
     parser.add_argument("--embedding-cache-path", type=str, default=None)
@@ -1072,9 +1362,14 @@ def main() -> None:
         quantiles=(0.50, 0.80, 0.95),
         max_exact_pairs=int(args.max_exact_pairs),
         max_sampled_pairs=int(args.max_sampled_pairs),
-        seed=int(args.target_seed),
+        seed=int(args.anchor_seed),
     )
     local_radius_value = radius_value_from_report(radius_report, args.radius)
+    standard_radius_value = standard_radius_value_from_report(
+        radius_report,
+        source=str(args.standard_radius_source),
+        embedding_bound=float(args.embedding_bound),
+    )
 
     unique_epsilons = set()
     if args.sweep in {"epsilon", "both"}:
@@ -1091,15 +1386,17 @@ def main() -> None:
     required_ms = sorted(required_ms)
     max_required_m = max(required_ms)
 
-    feasible_pools = find_feasible_targets(
+    feasible_banks = find_feasible_support_banks(
         data,
         radius_value=float(local_radius_value),
         max_required_m=int(max_required_m),
-        num_targets=int(args.num_targets),
-        target_seed=int(args.target_seed),
+        num_supports=int(args.num_supports),
+        anchor_seed=int(args.anchor_seed),
+        source_mode=str(args.support_source),
         max_search=args.max_feasible_search,
-        explicit_target_indices=args.target_indices,
-        strict=bool(args.strict_feasible_targets),
+        explicit_anchor_indices=args.anchor_indices,
+        strict=bool(args.strict_feasible_supports),
+        anchor_selection=str(args.anchor_selection),
     )
 
     results_root = Path(args.results_root)
@@ -1129,127 +1426,62 @@ def main() -> None:
             "public_embedding_bound": float(args.embedding_bound),
             "candidate_radius_tag": args.radius,
             "candidate_radius_value": float(local_radius_value),
+            "standard_radius_source": str(args.standard_radius_source),
+            "standard_radius_value": float(standard_radius_value),
+            "support_source_mode": str(args.support_source),
+            "support_selection": str(args.support_selection),
+            "anchor_selection": str(args.anchor_selection),
+            "ridge_sensitivity_mode": str(args.ridge_sensitivity_mode),
             "backend": data.backend,
             "release_seeds": as_int_list(args.release_seeds),
-            "num_feasible_targets": int(len(feasible_pools)),
+            "num_feasible_support_anchors": int(len(feasible_banks)),
+            "support_excludes_anchor_from_candidates": True,
         },
     )
 
-    # Precompute candidate sets and save inspectable metadata.
-    candidate_sets_meta: list[dict[str, Any]] = []
-    candidate_sets: dict[
-        tuple[int, int, int], tuple[np.ndarray, np.ndarray, list[str], np.ndarray]
+    support_sets_meta: list[dict[str, Any]] = []
+    support_sets: dict[
+        tuple[int, int, int], tuple[np.ndarray, np.ndarray, list[str], np.ndarray, str]
     ] = {}
-    for pool in feasible_pools:
-        for draw_index in range(int(args.candidate_draws)):
+    for bank in feasible_banks:
+        for draw_index in range(int(args.support_draws)):
             for m in required_ms:
-                Xc, yc, source_ids, dists = make_candidate_set(
-                    pool,
+                Xs, ys, source_ids, dists = make_support_set(
+                    bank,
                     m=int(m),
                     draw_index=int(draw_index),
-                    base_seed=int(args.target_seed),
+                    base_seed=int(args.anchor_seed),
+                    selection=str(args.support_selection),
                 )
-                c_hash = finite_prior_hash(Xc, yc)
-                candidate_sets[(pool.target_index, int(draw_index), int(m))] = (
-                    Xc,
-                    yc,
+                support_hash = support_source_hash(source_ids)
+                support_sets[(bank.anchor_index, int(draw_index), int(m))] = (
+                    Xs,
+                    ys,
                     source_ids,
                     dists,
+                    support_hash,
                 )
-                candidate_sets_meta.append(
+                support_sets_meta.append(
                     {
-                        "target_index": int(pool.target_index),
-                        "target_label": int(pool.target_label),
-                        "candidate_draw_index": int(draw_index),
+                        "anchor_index": int(bank.anchor_index),
+                        "anchor_label": int(bank.anchor_label),
+                        "support_draw_index": int(draw_index),
                         "m": int(m),
-                        "candidate_set_hash": c_hash,
-                        "candidate_source_ids": source_ids,
-                        "candidate_max_distance": float(np.max(dists)),
-                        "candidate_mean_distance": float(np.mean(dists)),
-                        "candidate_min_distance": float(np.min(dists)),
-                        "candidate_pool_size": int(pool.distractor_vectors.shape[0]),
+                        "support_set_hash": support_hash,
+                        "support_source_ids": source_ids,
+                        "support_max_distance": float(np.max(dists)),
+                        "support_mean_distance": float(np.mean(dists)),
+                        "support_min_distance": float(np.min(dists)),
+                        "support_bank_size": int(bank.bank_vectors.shape[0]),
+                        "support_source_mode": str(args.support_source),
+                        "support_selection": str(args.support_selection),
+                        "support_contains_anchor": any(
+                            str(s).startswith("anchor:") for s in source_ids
+                        ),
                     }
                 )
-    write_json(run_dir / "candidate_sets.json", candidate_sets_meta)
+    write_json(run_dir / "support_sets.json", support_sets_meta)
 
-    # Precompute releases for every mechanism/epsilon/seed pair.
-    releases: dict[tuple[str, float, int], Any] = {}
-    release_rows: list[dict[str, Any]] = []
-    for mechanism in mechanisms:
-        for epsilon in unique_epsilons:
-            for release_seed in as_int_list(args.release_seeds):
-                release = fit_release_for_mechanism(
-                    data=data,
-                    model_family=model_family,
-                    mechanism=mechanism,
-                    epsilon=float(epsilon),
-                    local_radius_value=float(local_radius_value),
-                    embedding_bound=float(args.embedding_bound),
-                    lam=float(args.lam),
-                    delta=float(args.delta),
-                    max_iter=int(args.max_iter),
-                    seed=int(release_seed),
-                    orders=DEFAULT_ORDERS,
-                    solver=str(args.solver),
-                )
-                releases[(mechanism, float(epsilon), int(release_seed))] = release
-
-                for m in required_ms:
-                    bound_metrics = compute_release_bound_metrics(
-                        release,
-                        m=int(m),
-                        feature_dim=int(data.feature_dim),
-                    )
-                    release_radius_value = (
-                        float(local_radius_value)
-                        if mechanism == "ball"
-                        else float(2.0 * float(args.embedding_bound))
-                    )
-                    release_key_payload = {
-                        "dataset": spec.tag,
-                        "model": model_family,
-                        "mechanism": mechanism,
-                        "epsilon": float(epsilon),
-                        "m": int(m),
-                        "release_seed": int(release_seed),
-                        "candidate_radius_tag": args.radius,
-                        "candidate_radius_value": float(local_radius_value),
-                        "release_radius_value": float(release_radius_value),
-                        "lam": float(args.lam),
-                        "delta": float(args.delta),
-                        "solver": str(args.solver),
-                        "max_iter": int(args.max_iter),
-                    }
-                    release_key = hashlib.sha1(
-                        json.dumps(release_key_payload, sort_keys=True).encode("utf-8")
-                    ).hexdigest()[:20]
-                    release_rows.append(
-                        {
-                            **release_key_payload,
-                            "run_id": run_id,
-                            "dataset_tag": spec.tag,
-                            "dataset_name": spec.display_name,
-                            "model_family": model_family,
-                            "embedding_bound": float(args.embedding_bound),
-                            "release_sigma": maybe_float(release.privacy.ball.sigma),
-                            "release_accuracy": maybe_float(
-                                release.utility_metrics.get("accuracy")
-                            ),
-                            "actual_ball_epsilon": actual_ball_epsilon(release),
-                            "same_noise_standard_epsilon": actual_standard_epsilon_same_noise(
-                                release
-                            ),
-                            **bound_metrics,
-                            "release_key": release_key,
-                        }
-                    )
-
-    release_df = pd.DataFrame(release_rows)
-    save_dataframe(
-        release_df, run_dir / "release_rows.csv", save_parquet_if_possible=False
-    )
-
-    trial_rows: list[dict[str, Any]] = []
     config_pairs: list[tuple[float, int]] = []
     if args.sweep in {"epsilon", "both"}:
         config_pairs.extend((float(eps), int(args.fixed_m)) for eps in eps_grid)
@@ -1257,130 +1489,416 @@ def main() -> None:
         config_pairs.extend((float(args.fixed_epsilon), int(m)) for m in m_grid)
     config_pairs = sorted(set(config_pairs))
 
+    release_rows: list[dict[str, Any]] = []
+    trial_rows: list[dict[str, Any]] = []
+    release_cache: dict[tuple[int, str, float, str, int], Any] = {}
+    release_key_cache: dict[tuple[int, str, float, str, int, int], str] = {}
+    bound_cache: dict[tuple[int, str, float, str, int, int], dict[str, float]] = {}
+    diagnostics_cache: dict[tuple[int, str, float, str, int, int], dict[str, Any]] = {}
+
     for epsilon, m in config_pairs:
-        for mechanism in mechanisms:
-            release_radius_value = (
-                float(local_radius_value)
-                if mechanism == "ball"
-                else float(2.0 * float(args.embedding_bound))
+        for bank in feasible_banks:
+            X_minus, y_minus = remove_train_index(
+                data.X_train, data.y_train, bank.anchor_index
             )
-            for pool in feasible_pools:
-                for draw_index in range(int(args.candidate_draws)):
-                    X_candidates, y_candidates, source_ids, candidate_dists = (
-                        candidate_sets[(pool.target_index, int(draw_index), int(m))]
+            for draw_index in range(int(args.support_draws)):
+                X_support, y_support, source_ids, support_dists, support_hash = (
+                    support_sets[(bank.anchor_index, int(draw_index), int(m))]
+                )
+                for target_pos, target_sid in enumerate(source_ids):
+                    x_target = np.asarray(X_support[target_pos], dtype=np.float32)
+                    y_target = int(y_support[target_pos])
+                    X_full = np.concatenate(
+                        [X_minus, x_target[None, :]], axis=0
+                    ).astype(np.float32, copy=False)
+                    y_full = np.concatenate(
+                        [y_minus, np.asarray([y_target], dtype=np.int32)], axis=0
                     )
-                    candidate_hash = finite_prior_hash(X_candidates, y_candidates)
-                    for release_seed in as_int_list(args.release_seeds):
-                        release = releases[
-                            (mechanism, float(epsilon), int(release_seed))
-                        ]
-                        attack, _, _ = attack_convex_ball_output_finite_prior(
-                            release,
-                            data.X_train,
-                            data.y_train,
-                            target_index=int(pool.target_index),
-                            X_candidates=X_candidates,
-                            y_candidates=y_candidates,
-                            prior_weights=None,
-                            known_label=int(pool.target_label),
-                            eta_grid=(0.5,),
+                    target_index = int(len(X_full) - 1)
+
+                    for mechanism in mechanisms:
+                        release_radius_value = (
+                            float(local_radius_value)
+                            if mechanism == "ball"
+                            else float(standard_radius_value)
                         )
-                        exact_success = float(
-                            attack.metrics.get(
-                                "exact_identification_success", float("nan")
+                        for release_seed in as_int_list(args.release_seeds):
+                            cache_key = (
+                                int(bank.anchor_index),
+                                str(target_sid),
+                                float(epsilon),
+                                str(mechanism),
+                                int(release_seed),
                             )
-                        )
-                        release_key_payload = {
-                            "dataset": spec.tag,
-                            "model": model_family,
-                            "mechanism": mechanism,
-                            "epsilon": float(epsilon),
-                            "m": int(m),
-                            "release_seed": int(release_seed),
-                            "candidate_radius_tag": args.radius,
-                            "candidate_radius_value": float(local_radius_value),
-                            "release_radius_value": float(release_radius_value),
-                            "lam": float(args.lam),
-                            "delta": float(args.delta),
-                            "solver": str(args.solver),
-                            "max_iter": int(args.max_iter),
-                        }
-                        release_key = hashlib.sha1(
-                            json.dumps(release_key_payload, sort_keys=True).encode(
-                                "utf-8"
+                            release = release_cache.get(cache_key)
+                            if release is None:
+                                release = fit_release_for_mechanism(
+                                    X_train=X_full,
+                                    y_train=y_full,
+                                    num_classes=int(data.num_classes),
+                                    model_family=model_family,
+                                    mechanism=mechanism,
+                                    epsilon=float(epsilon),
+                                    local_radius_value=float(local_radius_value),
+                                    standard_radius_value=float(standard_radius_value),
+                                    embedding_bound=float(args.embedding_bound),
+                                    lam=float(args.lam),
+                                    delta=float(args.delta),
+                                    max_iter=int(args.max_iter),
+                                    seed=int(release_seed),
+                                    orders=DEFAULT_ORDERS,
+                                    solver=str(args.solver),
+                                    ridge_sensitivity_mode=str(
+                                        args.ridge_sensitivity_mode
+                                    ),
+                                )
+                                release_cache[cache_key] = release
+
+                            release_key_lookup = (
+                                int(bank.anchor_index),
+                                str(target_sid),
+                                float(epsilon),
+                                str(mechanism),
+                                int(release_seed),
+                                int(m),
                             )
-                        ).hexdigest()[:20]
-                        trial_key_payload = {
-                            **release_key_payload,
-                            "target_index": int(pool.target_index),
-                            "candidate_draw_index": int(draw_index),
-                            "candidate_set_hash": candidate_hash,
-                        }
-                        trial_key = hashlib.sha1(
-                            json.dumps(trial_key_payload, sort_keys=True).encode(
-                                "utf-8"
+                            release_key = release_key_cache.get(release_key_lookup)
+                            if release_key is None:
+                                release_key_payload = {
+                                    "dataset": spec.tag,
+                                    "model": model_family,
+                                    "mechanism": mechanism,
+                                    "epsilon": float(epsilon),
+                                    "m": int(m),
+                                    "release_seed": int(release_seed),
+                                    "candidate_radius_tag": args.radius,
+                                    "candidate_radius_value": float(local_radius_value),
+                                    "release_radius_value": float(release_radius_value),
+                                    "standard_radius_value": float(
+                                        standard_radius_value
+                                    ),
+                                    "support_source_mode": str(args.support_source),
+                                    "support_selection": str(args.support_selection),
+                                    "ridge_sensitivity_mode": str(
+                                        args.ridge_sensitivity_mode
+                                    ),
+                                    "anchor_index": int(bank.anchor_index),
+                                    "target_source_id": str(target_sid),
+                                    "lam": float(args.lam),
+                                    "delta": float(args.delta),
+                                    "solver": str(args.solver),
+                                    "max_iter": int(args.max_iter),
+                                }
+                                release_key = hashlib.sha1(
+                                    json.dumps(
+                                        release_key_payload, sort_keys=True
+                                    ).encode("utf-8")
+                                ).hexdigest()[:20]
+                                release_key_cache[release_key_lookup] = release_key
+
+                                bound_key = release_key_lookup
+                                bound_metrics = bound_cache.get(bound_key)
+                                if bound_metrics is None:
+                                    bound_metrics = compute_release_bound_metrics(
+                                        release,
+                                        m=int(m),
+                                        feature_dim=int(data.feature_dim),
+                                    )
+                                    bound_cache[bound_key] = bound_metrics
+                                release_rows.append(
+                                    {
+                                        **release_key_payload,
+                                        "run_id": run_id,
+                                        "dataset_tag": spec.tag,
+                                        "dataset_name": spec.display_name,
+                                        "model_family": model_family,
+                                        "embedding_bound": float(args.embedding_bound),
+                                        "standard_radius_value": float(
+                                            standard_radius_value
+                                        ),
+                                        "support_selection": str(
+                                            args.support_selection
+                                        ),
+                                        "ridge_sensitivity_mode": str(
+                                            args.ridge_sensitivity_mode
+                                        ),
+                                        "release_sigma": maybe_float(
+                                            release.privacy.ball.sigma
+                                        ),
+                                        "release_accuracy": maybe_float(
+                                            release.utility_metrics.get("accuracy")
+                                        ),
+                                        "actual_ball_epsilon": actual_ball_epsilon(
+                                            release
+                                        ),
+                                        "same_noise_standard_epsilon": actual_standard_epsilon_same_noise(
+                                            release
+                                        ),
+                                        **bound_metrics,
+                                        "release_key": release_key,
+                                    }
+                                )
+
+                            attack, _, _ = attack_convex_ball_output_finite_prior(
+                                release,
+                                X_full,
+                                y_full,
+                                target_index=target_index,
+                                X_candidates=X_support,
+                                y_candidates=y_support,
+                                prior_weights=None,
+                                known_label=int(bank.anchor_label),
+                                eta_grid=(0.5,),
                             )
-                        ).hexdigest()[:20]
-                        trial_rows.append(
-                            {
-                                "trial_key": trial_key,
+                            exact_success = float(
+                                attack.metrics.get(
+                                    "exact_identification_success", float("nan")
+                                )
+                            )
+                            diagnostics_key = (
+                                int(bank.anchor_index),
+                                str(support_hash),
+                                float(epsilon),
+                                str(mechanism),
+                                int(release_seed),
+                                int(m),
+                            )
+                            support_diagnostics = diagnostics_cache.get(diagnostics_key)
+                            if support_diagnostics is None:
+                                support_diagnostics = (
+                                    diagnose_convex_ball_output_finite_prior(
+                                        release,
+                                        X_full,
+                                        y_full,
+                                        target_index=target_index,
+                                        X_candidates=X_support,
+                                        y_candidates=y_support,
+                                        prior_weights=None,
+                                        known_label=int(bank.anchor_label),
+                                        center_features=np.asarray(
+                                            bank.anchor_vector, dtype=np.float32
+                                        ),
+                                        center_label=int(bank.anchor_label),
+                                    )
+                                )
+                                diagnostics_cache[diagnostics_key] = dict(
+                                    support_diagnostics
+                                )
+                            pred_idx_raw = attack.diagnostics.get(
+                                "predicted_prior_index"
+                            )
+                            pred_idx = (
+                                int(pred_idx_raw) if pred_idx_raw is not None else None
+                            )
+                            true_idx_raw = attack.diagnostics.get("true_prior_index")
+                            true_idx = (
+                                int(true_idx_raw) if true_idx_raw is not None else None
+                            )
+                            if pred_idx is not None and 0 <= pred_idx < len(source_ids):
+                                predicted_source_id = str(source_ids[pred_idx])
+                            else:
+                                predicted_source_id = None
+                            support_contains_anchor = any(
+                                str(s).startswith("anchor:") for s in source_ids
+                            )
+
+                            trial_key_payload = {
                                 "release_key": release_key,
-                                "run_id": run_id,
-                                "dataset_tag": spec.tag,
-                                "dataset_name": spec.display_name,
-                                "model_family": model_family,
-                                "mechanism": mechanism,
-                                "candidate_radius_tag": args.radius,
-                                "candidate_radius_value": float(local_radius_value),
-                                "release_radius_value": float(release_radius_value),
-                                "epsilon": float(epsilon),
-                                "m": int(m),
-                                "delta": float(args.delta),
-                                "lam": float(args.lam),
-                                "embedding_bound": float(args.embedding_bound),
-                                "solver": str(args.solver),
-                                "max_iter": int(args.max_iter),
-                                "target_index": int(pool.target_index),
-                                "target_label": int(pool.target_label),
-                                "candidate_draw_index": int(draw_index),
-                                "release_seed": int(release_seed),
-                                "candidate_pool_size": int(
-                                    pool.distractor_vectors.shape[0]
-                                ),
-                                "candidate_set_hash": candidate_hash,
-                                "candidate_source_ids": json.dumps(source_ids),
-                                "candidate_max_distance": float(
-                                    np.max(candidate_dists)
-                                ),
-                                "candidate_mean_distance": float(
-                                    np.mean(candidate_dists)
-                                ),
-                                "candidate_min_distance": float(
-                                    np.min(candidate_dists)
-                                ),
-                                "exact_identification_success": exact_success,
-                                "prior_rank": maybe_float(
-                                    attack.metrics.get("prior_rank")
-                                ),
-                                "prior_hit_at_1": maybe_float(
-                                    attack.metrics.get("prior_hit@1")
-                                ),
-                                "prior_hit_at_5": maybe_float(
-                                    attack.metrics.get("prior_hit@5")
-                                ),
-                                "oblivious_kappa": 1.0 / float(m),
-                                "release_sigma": maybe_float(
-                                    release.privacy.ball.sigma
-                                ),
-                                "release_accuracy": maybe_float(
-                                    release.utility_metrics.get("accuracy")
-                                ),
-                                "actual_ball_epsilon": actual_ball_epsilon(release),
-                                "same_noise_standard_epsilon": actual_standard_epsilon_same_noise(
-                                    release
-                                ),
+                                "support_set_hash": support_hash,
+                                "target_source_id": str(target_sid),
+                                "target_position": int(target_pos),
                             }
-                        )
+                            trial_key = hashlib.sha1(
+                                json.dumps(trial_key_payload, sort_keys=True).encode(
+                                    "utf-8"
+                                )
+                            ).hexdigest()[:20]
+                            trial_rows.append(
+                                {
+                                    "trial_key": trial_key,
+                                    "release_key": release_key,
+                                    "run_id": run_id,
+                                    "dataset_tag": spec.tag,
+                                    "dataset_name": spec.display_name,
+                                    "model_family": model_family,
+                                    "mechanism": mechanism,
+                                    "candidate_radius_tag": args.radius,
+                                    "candidate_radius_value": float(local_radius_value),
+                                    "release_radius_value": float(release_radius_value),
+                                    "standard_radius_value": float(
+                                        standard_radius_value
+                                    ),
+                                    "support_source_mode": str(args.support_source),
+                                    "support_selection": str(args.support_selection),
+                                    "ridge_sensitivity_mode": str(
+                                        args.ridge_sensitivity_mode
+                                    ),
+                                    "epsilon": float(epsilon),
+                                    "m": int(m),
+                                    "delta": float(args.delta),
+                                    "lam": float(args.lam),
+                                    "embedding_bound": float(args.embedding_bound),
+                                    "solver": str(args.solver),
+                                    "max_iter": int(args.max_iter),
+                                    "anchor_index": int(bank.anchor_index),
+                                    "anchor_label": int(bank.anchor_label),
+                                    "support_draw_index": int(draw_index),
+                                    "release_seed": int(release_seed),
+                                    "target_position": int(target_pos),
+                                    "target_source_id": str(target_sid),
+                                    "target_source_is_anchor": float(
+                                        str(target_sid).startswith("anchor:")
+                                    ),
+                                    "predicted_prior_index": (
+                                        pred_idx if pred_idx is not None else np.nan
+                                    ),
+                                    "true_prior_index": (
+                                        true_idx if true_idx is not None else np.nan
+                                    ),
+                                    "predicted_source_id": predicted_source_id,
+                                    "predicted_source_is_anchor": (
+                                        float(
+                                            str(predicted_source_id).startswith(
+                                                "anchor:"
+                                            )
+                                        )
+                                        if predicted_source_id is not None
+                                        else np.nan
+                                    ),
+                                    "support_contains_anchor": float(
+                                        support_contains_anchor
+                                    ),
+                                    "support_bank_size": int(
+                                        bank.bank_vectors.shape[0]
+                                    ),
+                                    "support_set_hash": support_hash,
+                                    "support_source_ids": json.dumps(source_ids),
+                                    "support_max_distance": float(
+                                        np.max(support_dists)
+                                    ),
+                                    "support_mean_distance": float(
+                                        np.mean(support_dists)
+                                    ),
+                                    "support_min_distance": float(
+                                        np.min(support_dists)
+                                    ),
+                                    "exact_identification_success": exact_success,
+                                    "prior_rank": maybe_float(
+                                        attack.metrics.get("prior_rank")
+                                    ),
+                                    "prior_hit_at_1": maybe_float(
+                                        attack.metrics.get("prior_hit@1")
+                                    ),
+                                    "prior_hit_at_5": maybe_float(
+                                        attack.metrics.get("prior_hit@5")
+                                    ),
+                                    "posterior_top1_probability": maybe_float(
+                                        attack.metrics.get("posterior_top1_probability")
+                                    ),
+                                    "posterior_true_probability": maybe_float(
+                                        attack.metrics.get("posterior_true_probability")
+                                    ),
+                                    "posterior_entropy": maybe_float(
+                                        attack.metrics.get("posterior_entropy")
+                                    ),
+                                    "posterior_effective_candidates": maybe_float(
+                                        attack.metrics.get(
+                                            "posterior_effective_candidates"
+                                        )
+                                    ),
+                                    "log_score_gap_top2": maybe_float(
+                                        attack.metrics.get("log_score_gap_top2")
+                                    ),
+                                    "log_score_gap_truth_to_top": maybe_float(
+                                        attack.metrics.get("log_score_gap_truth_to_top")
+                                    ),
+                                    "oblivious_kappa": 1.0 / float(m),
+                                    "bound_direct_instance_center_max": maybe_float(
+                                        support_diagnostics.get(
+                                            "bound_direct_instance_center_max"
+                                        )
+                                    ),
+                                    "bound_direct_instance_finite_opt": maybe_float(
+                                        support_diagnostics.get(
+                                            "bound_direct_instance_finite_opt"
+                                        )
+                                    ),
+                                    "model_center_radius_over_sigma_max": maybe_float(
+                                        support_diagnostics.get(
+                                            "model_center_radius_over_sigma_max"
+                                        )
+                                    ),
+                                    "model_center_radius_over_sigma_mean": maybe_float(
+                                        support_diagnostics.get(
+                                            "model_center_radius_over_sigma_mean"
+                                        )
+                                    ),
+                                    "model_pairwise_snr_median": maybe_float(
+                                        support_diagnostics.get(
+                                            "model_pairwise_snr_median"
+                                        )
+                                    ),
+                                    "model_pairwise_snr_mean": maybe_float(
+                                        support_diagnostics.get(
+                                            "model_pairwise_snr_mean"
+                                        )
+                                    ),
+                                    "model_nn_snr_median": maybe_float(
+                                        support_diagnostics.get("model_nn_snr_median")
+                                    ),
+                                    "model_nn_snr_mean": maybe_float(
+                                        support_diagnostics.get("model_nn_snr_mean")
+                                    ),
+                                    "feature_pairwise_distance_median": maybe_float(
+                                        support_diagnostics.get(
+                                            "feature_pairwise_distance_median"
+                                        )
+                                    ),
+                                    "feature_nn_distance_median": maybe_float(
+                                        support_diagnostics.get(
+                                            "feature_nn_distance_median"
+                                        )
+                                    ),
+                                    "ridge_inverse_noise_tau": maybe_float(
+                                        support_diagnostics.get(
+                                            "ridge_inverse_noise_tau"
+                                        )
+                                    ),
+                                    "ridge_inverse_noise_tau_over_radius": maybe_float(
+                                        support_diagnostics.get(
+                                            "ridge_inverse_noise_tau_over_radius"
+                                        )
+                                    ),
+                                    "ridge_count_dilution": maybe_float(
+                                        support_diagnostics.get("ridge_count_dilution")
+                                    ),
+                                    "ridge_feature_pairwise_snr_median": maybe_float(
+                                        support_diagnostics.get(
+                                            "ridge_feature_pairwise_snr_median"
+                                        )
+                                    ),
+                                    "ridge_feature_nn_snr_median": maybe_float(
+                                        support_diagnostics.get(
+                                            "ridge_feature_nn_snr_median"
+                                        )
+                                    ),
+                                    "release_sigma": maybe_float(
+                                        release.privacy.ball.sigma
+                                    ),
+                                    "release_accuracy": maybe_float(
+                                        release.utility_metrics.get("accuracy")
+                                    ),
+                                    "actual_ball_epsilon": actual_ball_epsilon(release),
+                                    "same_noise_standard_epsilon": actual_standard_epsilon_same_noise(
+                                        release
+                                    ),
+                                }
+                            )
+
+    release_df = pd.DataFrame(release_rows)
+    save_dataframe(
+        release_df, run_dir / "release_rows.csv", save_parquet_if_possible=False
+    )
 
     trial_df = pd.DataFrame(trial_rows)
     save_dataframe(
@@ -1407,7 +1925,13 @@ def main() -> None:
                 "run_dir": str(run_dir),
                 "candidate_radius_tag": args.radius,
                 "candidate_radius_value": float(local_radius_value),
-                "num_feasible_targets": int(len(feasible_pools)),
+                "standard_radius_source": str(args.standard_radius_source),
+                "standard_radius_value": float(standard_radius_value),
+                "support_source_mode": str(args.support_source),
+                "support_selection": str(args.support_selection),
+                "anchor_selection": str(args.anchor_selection),
+                "ridge_sensitivity_mode": str(args.ridge_sensitivity_mode),
+                "num_feasible_support_anchors": int(len(feasible_banks)),
                 "num_trial_rows": int(len(trial_df)),
                 "num_release_rows": int(len(release_df)),
             },

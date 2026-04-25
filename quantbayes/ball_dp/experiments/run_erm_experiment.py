@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 from typing import Any, Sequence
 
+from matplotlib.lines import Line2D
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -22,13 +23,10 @@ from quantbayes.ball_dp import (
     ball_rero,
     fit_convex,
     make_finite_identification_prior,
-    select_ball_radius,
     summarize_embedding_ball_radii,
 )
 from quantbayes.ball_dp.serialization import save_dataframe
 from quantbayes.ball_dp.experiments.run_attack_experiment import (
-    BALL_COLOR,
-    BASELINE_COLOR,
     DEFAULT_DELTA,
     DEFAULT_EMBEDDING_BOUND,
     DEFAULT_EPS_GRID,
@@ -38,7 +36,6 @@ from quantbayes.ball_dp.experiments.run_attack_experiment import (
     DEFAULT_M_GRID,
     DEFAULT_MAX_ITER,
     DEFAULT_ORDERS,
-    STANDARD_COLOR,
     actual_ball_epsilon,
     actual_standard_epsilon_same_noise,
     canonicalize_model,
@@ -54,6 +51,71 @@ from quantbayes.ball_dp.experiments.run_attack_experiment import (
 
 RADIUS_ORDER = ("q50", "q80", "q95")
 RADIUS_POSITION = {tag: i for i, tag in enumerate(RADIUS_ORDER)}
+
+# Colorblind-friendlier Okabe-Ito-style palette.
+BALL_COLOR = "#0072B2"  # blue
+STANDARD_COLOR = "#D55E00"  # vermillion
+BASELINE_COLOR = "#4D4D4D"  # dark gray
+RDP_COLOR = "#009E73"  # bluish green
+
+LABEL_BALL_DP = "Ball-DP"
+LABEL_STANDARD_DP = "Standard DP"
+LABEL_BALL_DIRECT = "Ball direct"
+LABEL_BALL_RDP = "Ball RDP"
+LABEL_STANDARD_MATCHED = r"Standard direct (matched $\varepsilon$)"
+LABEL_STANDARD_SAME_NOISE = r"Standard direct @ same $\sigma$ as Ball"
+
+MATCHED_DIRECT_IDENTITY_NOTE = "Std direct at matched privacy equals Ball direct under Gaussian calibration; omitted."
+
+SERIES_STYLES: dict[str, dict[str, Any]] = {
+    LABEL_BALL_DP: {
+        "color": BALL_COLOR,
+        "linestyle": "-",
+        "marker": "o",
+        "linewidth": 2.2,
+    },
+    LABEL_STANDARD_DP: {
+        "color": STANDARD_COLOR,
+        "linestyle": "-",
+        "marker": "s",
+        "linewidth": 2.2,
+    },
+    LABEL_BALL_DIRECT: {
+        "color": BALL_COLOR,
+        "linestyle": "-",
+        "marker": "o",
+        "linewidth": 2.2,
+    },
+    LABEL_BALL_RDP: {
+        "color": RDP_COLOR,
+        "linestyle": "-.",
+        "marker": "^",
+        "linewidth": 2.2,
+    },
+    LABEL_STANDARD_MATCHED: {
+        "color": STANDARD_COLOR,
+        "linestyle": "-",
+        "marker": "s",
+        "linewidth": 2.2,
+    },
+    LABEL_STANDARD_SAME_NOISE: {
+        "color": BASELINE_COLOR,
+        "linestyle": "--",
+        "marker": "D",
+        "linewidth": 2.2,
+    },
+}
+
+DEFAULT_SERIES_STYLE: dict[str, Any] = {
+    "color": "#000000",
+    "linestyle": "-",
+    "marker": "o",
+    "linewidth": 2.2,
+}
+
+
+def get_series_style(label: str) -> dict[str, Any]:
+    return dict(SERIES_STYLES.get(label, DEFAULT_SERIES_STYLE))
 
 
 def fit_release(
@@ -206,6 +268,23 @@ def rebuild_erm_dataset_outputs(
     figures_dir = ensure_dir(dataset_dir / "figures")
     dataset_title = f"{dataset_name} · {model_family}"
 
+    def _series_equal(
+        y1: np.ndarray,
+        lo1: np.ndarray,
+        hi1: np.ndarray,
+        y2: np.ndarray,
+        lo2: np.ndarray,
+        hi2: np.ndarray,
+        *,
+        atol: float = 1e-12,
+        rtol: float = 1e-8,
+    ) -> bool:
+        return (
+            np.allclose(y1, y2, atol=atol, rtol=rtol, equal_nan=True)
+            and np.allclose(lo1, lo2, atol=atol, rtol=rtol, equal_nan=True)
+            and np.allclose(hi1, hi2, atol=atol, rtol=rtol, equal_nan=True)
+        )
+
     def plot_line(
         df: pd.DataFrame,
         *,
@@ -217,15 +296,17 @@ def rebuild_erm_dataset_outputs(
         stem_name: str,
         xscale: str | None = None,
         categorical_order: Sequence[str] | None = None,
+        note: str | None = None,
     ) -> None:
         if df.empty:
             return
+
         fig, ax = plt.subplots()
         plot_df = df.copy()
+
         if categorical_order is not None:
-            plot_df["_x"] = plot_df[x_col].map(
-                {tag: i for i, tag in enumerate(categorical_order)}
-            )
+            pos_map = {tag: i for i, tag in enumerate(categorical_order)}
+            plot_df["_x"] = plot_df[x_col].map(pos_map)
             plot_df = plot_df.sort_values("_x")
             x_vals = plot_df["_x"].to_numpy(dtype=float)
             ax.set_xticks(range(len(categorical_order)))
@@ -233,34 +314,141 @@ def rebuild_erm_dataset_outputs(
         else:
             plot_df = plot_df.sort_values(x_col)
             x_vals = plot_df[x_col].to_numpy(dtype=float)
+
+        plotted: list[dict[str, Any]] = []
+        overlap_notes: list[str] = []
+        legend_handles: list[Line2D] = []
+
         for mean_col, low_col, high_col, label in y_specs:
-            if mean_col not in plot_df.columns:
+            if (
+                mean_col not in plot_df.columns
+                or low_col not in plot_df.columns
+                or high_col not in plot_df.columns
+            ):
                 continue
+
             y = plot_df[mean_col].to_numpy(dtype=float)
             lo = plot_df[low_col].to_numpy(dtype=float)
             hi = plot_df[high_col].to_numpy(dtype=float)
+
             if np.all(np.isnan(y)):
                 continue
-            if "Ball direct" in label:
-                color = BALL_COLOR
-            elif "Ball RDP" in label:
-                color = "#2ca02c"
-            elif "Same-noise" in label:
-                color = BASELINE_COLOR
-            else:
-                color = STANDARD_COLOR
-            linestyle = "--" if "Same-noise" in label else "-"
+
+            style = get_series_style(label)
+
+            overlapped_with = None
+            for prev in plotted:
+                if _series_equal(y, lo, hi, prev["y"], prev["lo"], prev["hi"]):
+                    overlapped_with = prev["label"]
+                    break
+
+            if overlapped_with is not None:
+                overlap_notes.append(f"{label} overlaps {overlapped_with}")
+                continue
+
             ax.plot(
-                x_vals, y, marker="o", color=color, linestyle=linestyle, label=label
+                x_vals,
+                y,
+                label=label,
+                color=style["color"],
+                linestyle=style["linestyle"],
+                marker=style["marker"],
+                linewidth=style["linewidth"],
+                markersize=6,
             )
-            ax.fill_between(x_vals, lo, hi, color=color, alpha=0.14)
+            ax.fill_between(x_vals, lo, hi, color=style["color"], alpha=0.10)
+
+            legend_handles.append(
+                Line2D(
+                    [0],
+                    [0],
+                    color=style["color"],
+                    linestyle=style["linestyle"],
+                    marker=style["marker"],
+                    linewidth=style["linewidth"],
+                    markersize=6,
+                    label=label,
+                )
+            )
+
+            plotted.append(
+                {
+                    "label": label,
+                    "y": y,
+                    "lo": lo,
+                    "hi": hi,
+                }
+            )
+
         if xscale:
-            ax.set_xscale(xscale, base=2)
+            finite_positive = np.isfinite(x_vals) & (x_vals > 0)
+            if np.all(finite_positive):
+                ax.set_xscale(xscale, base=2)
+
         ax.set_xlabel(x_label)
         ax.set_ylabel(y_label)
         ax.set_title(title)
-        ax.legend()
+
+        if legend_handles:
+            ax.legend(handles=legend_handles, handlelength=3.2)
+
+        rendered_notes: list[str] = []
+        if note:
+            rendered_notes.append(note)
+        if overlap_notes:
+            rendered_notes.append(
+                "Overlapping series not redrawn:\n"
+                + "\n".join(f"- {msg}" for msg in overlap_notes)
+            )
+
+        if rendered_notes:
+            ax.text(
+                0.01,
+                0.01,
+                "\n".join(rendered_notes),
+                transform=ax.transAxes,
+                ha="left",
+                va="bottom",
+                fontsize=8.5,
+                bbox={
+                    "boxstyle": "round,pad=0.3",
+                    "facecolor": "white",
+                    "edgecolor": "none",
+                    "alpha": 0.78,
+                },
+            )
+
         savefig_stem(fig, figures_dir / stem_name)
+
+    matched_privacy_bound_specs = [
+        (
+            "bound_direct_ball_mean",
+            "bound_direct_ball_ci_low",
+            "bound_direct_ball_ci_high",
+            LABEL_BALL_DIRECT,
+        ),
+        (
+            "bound_rdp_ball_mean",
+            "bound_rdp_ball_ci_low",
+            "bound_rdp_ball_ci_high",
+            LABEL_BALL_RDP,
+        ),
+    ]
+
+    same_noise_bound_specs = [
+        (
+            "bound_direct_ball_mean",
+            "bound_direct_ball_ci_low",
+            "bound_direct_ball_ci_high",
+            LABEL_BALL_DIRECT,
+        ),
+        (
+            "bound_same_noise_standard_from_ball_mean",
+            "bound_same_noise_standard_from_ball_ci_low",
+            "bound_same_noise_standard_from_ball_ci_high",
+            LABEL_STANDARD_SAME_NOISE,
+        ),
+    ]
 
     eps_df = summary[
         (summary["radius_tag"] == fixed_radius_tag)
@@ -272,12 +460,17 @@ def rebuild_erm_dataset_outputs(
         x_label="$\\varepsilon$",
         y_label=r"Noise scale $\sigma$",
         y_specs=[
-            ("sigma_ball_mean", "sigma_ball_ci_low", "sigma_ball_ci_high", "Ball-DP"),
+            (
+                "sigma_ball_mean",
+                "sigma_ball_ci_low",
+                "sigma_ball_ci_high",
+                LABEL_BALL_DP,
+            ),
             (
                 "sigma_standard_mean",
                 "sigma_standard_ci_low",
                 "sigma_standard_ci_high",
-                "Standard DP",
+                LABEL_STANDARD_DP,
             ),
         ],
         title=f"Noise scale vs $\\varepsilon$\n{dataset_title}, radius={fixed_radius_tag}, m={fixed_m}",
@@ -294,13 +487,13 @@ def rebuild_erm_dataset_outputs(
                 "accuracy_ball_mean",
                 "accuracy_ball_ci_low",
                 "accuracy_ball_ci_high",
-                "Ball-DP",
+                LABEL_BALL_DP,
             ),
             (
                 "accuracy_standard_mean",
                 "accuracy_standard_ci_low",
                 "accuracy_standard_ci_high",
-                "Standard DP",
+                LABEL_STANDARD_DP,
             ),
         ],
         title=f"Accuracy vs $\\varepsilon$\n{dataset_title}, radius={fixed_radius_tag}, m={fixed_m}",
@@ -312,37 +505,26 @@ def rebuild_erm_dataset_outputs(
         x_col="epsilon",
         x_label="$\\varepsilon$",
         y_label=r"Exact-ID upper bound $\gamma$",
-        y_specs=[
-            (
-                "bound_direct_ball_mean",
-                "bound_direct_ball_ci_low",
-                "bound_direct_ball_ci_high",
-                "Ball direct",
-            ),
-            (
-                "bound_rdp_ball_mean",
-                "bound_rdp_ball_ci_low",
-                "bound_rdp_ball_ci_high",
-                "Ball RDP",
-            ),
-            (
-                "bound_direct_standard_mean",
-                "bound_direct_standard_ci_low",
-                "bound_direct_standard_ci_high",
-                "Standard direct (matched)",
-            ),
-            (
-                "bound_same_noise_standard_from_ball_mean",
-                "bound_same_noise_standard_from_ball_ci_low",
-                "bound_same_noise_standard_from_ball_ci_high",
-                r"Same-noise standard ($\sigma=\sigma_{Ball}$)",
-            ),
-        ],
+        y_specs=matched_privacy_bound_specs,
         title=(
-            f"ReRo bound vs $\\varepsilon$\n{dataset_title}, radius={fixed_radius_tag}, "
-            f"m={fixed_m} (matched and same-noise comparators)"
+            f"ReRo bound vs $\\varepsilon$ (matched privacy)\n"
+            f"{dataset_title}, radius={fixed_radius_tag}, m={fixed_m}"
         ),
         stem_name=f"fig_bound_vs_epsilon_{dataset_tag}_{model_family}",
+        xscale="log",
+        note=MATCHED_DIRECT_IDENTITY_NOTE,
+    )
+    plot_line(
+        eps_df,
+        x_col="epsilon",
+        x_label="$\\varepsilon$",
+        y_label=r"Exact-ID upper bound $\gamma$",
+        y_specs=same_noise_bound_specs,
+        title=(
+            f"ReRo bound vs $\\varepsilon$ (same noise; privacy not matched)\n"
+            f"{dataset_title}, radius={fixed_radius_tag}, m={fixed_m}"
+        ),
+        stem_name=f"fig_bound_same_noise_vs_epsilon_{dataset_tag}_{model_family}",
         xscale="log",
     )
 
@@ -355,37 +537,26 @@ def rebuild_erm_dataset_outputs(
         x_col="m",
         x_label="m",
         y_label=r"Exact-ID upper bound $\gamma$",
-        y_specs=[
-            (
-                "bound_direct_ball_mean",
-                "bound_direct_ball_ci_low",
-                "bound_direct_ball_ci_high",
-                "Ball direct",
-            ),
-            (
-                "bound_rdp_ball_mean",
-                "bound_rdp_ball_ci_low",
-                "bound_rdp_ball_ci_high",
-                "Ball RDP",
-            ),
-            (
-                "bound_direct_standard_mean",
-                "bound_direct_standard_ci_low",
-                "bound_direct_standard_ci_high",
-                "Standard direct (matched)",
-            ),
-            (
-                "bound_same_noise_standard_from_ball_mean",
-                "bound_same_noise_standard_from_ball_ci_low",
-                "bound_same_noise_standard_from_ball_ci_high",
-                r"Same-noise standard ($\sigma=\sigma_{Ball}$)",
-            ),
-        ],
+        y_specs=matched_privacy_bound_specs,
         title=(
-            f"ReRo bound vs m\n{dataset_title}, radius={fixed_radius_tag}, "
-            f"$\\varepsilon$={fixed_epsilon:g} (matched and same-noise comparators)"
+            f"ReRo bound vs m (matched privacy)\n"
+            f"{dataset_title}, radius={fixed_radius_tag}, $\\varepsilon$={fixed_epsilon:g}"
         ),
         stem_name=f"fig_bound_vs_m_{dataset_tag}_{model_family}",
+        xscale="log",
+        note=MATCHED_DIRECT_IDENTITY_NOTE,
+    )
+    plot_line(
+        m_df,
+        x_col="m",
+        x_label="m",
+        y_label=r"Exact-ID upper bound $\gamma$",
+        y_specs=same_noise_bound_specs,
+        title=(
+            f"ReRo bound vs m (same noise; privacy not matched)\n"
+            f"{dataset_title}, radius={fixed_radius_tag}, $\\varepsilon$={fixed_epsilon:g}"
+        ),
+        stem_name=f"fig_bound_same_noise_vs_m_{dataset_tag}_{model_family}",
         xscale="log",
     )
 
@@ -402,12 +573,17 @@ def rebuild_erm_dataset_outputs(
         x_label="Radius quantile",
         y_label=r"Noise scale $\sigma$",
         y_specs=[
-            ("sigma_ball_mean", "sigma_ball_ci_low", "sigma_ball_ci_high", "Ball-DP"),
+            (
+                "sigma_ball_mean",
+                "sigma_ball_ci_low",
+                "sigma_ball_ci_high",
+                LABEL_BALL_DP,
+            ),
             (
                 "sigma_standard_mean",
                 "sigma_standard_ci_low",
                 "sigma_standard_ci_high",
-                "Standard DP",
+                LABEL_STANDARD_DP,
             ),
         ],
         title=f"Noise scale vs radius\n{dataset_title}, $\\varepsilon$={fixed_epsilon:g}, m={fixed_m}",
@@ -424,13 +600,13 @@ def rebuild_erm_dataset_outputs(
                 "accuracy_ball_mean",
                 "accuracy_ball_ci_low",
                 "accuracy_ball_ci_high",
-                "Ball-DP",
+                LABEL_BALL_DP,
             ),
             (
                 "accuracy_standard_mean",
                 "accuracy_standard_ci_low",
                 "accuracy_standard_ci_high",
-                "Standard DP",
+                LABEL_STANDARD_DP,
             ),
         ],
         title=f"Accuracy vs radius\n{dataset_title}, $\\varepsilon$={fixed_epsilon:g}, m={fixed_m}",
@@ -442,37 +618,26 @@ def rebuild_erm_dataset_outputs(
         x_col="radius_tag",
         x_label="Radius quantile",
         y_label=r"Exact-ID upper bound $\gamma$",
-        y_specs=[
-            (
-                "bound_direct_ball_mean",
-                "bound_direct_ball_ci_low",
-                "bound_direct_ball_ci_high",
-                "Ball direct",
-            ),
-            (
-                "bound_rdp_ball_mean",
-                "bound_rdp_ball_ci_low",
-                "bound_rdp_ball_ci_high",
-                "Ball RDP",
-            ),
-            (
-                "bound_direct_standard_mean",
-                "bound_direct_standard_ci_low",
-                "bound_direct_standard_ci_high",
-                "Standard direct (matched)",
-            ),
-            (
-                "bound_same_noise_standard_from_ball_mean",
-                "bound_same_noise_standard_from_ball_ci_low",
-                "bound_same_noise_standard_from_ball_ci_high",
-                r"Same-noise standard ($\sigma=\sigma_{Ball}$)",
-            ),
-        ],
+        y_specs=matched_privacy_bound_specs,
         title=(
-            f"ReRo bound vs radius\n{dataset_title}, $\\varepsilon$={fixed_epsilon:g}, "
-            f"m={fixed_m} (matched and same-noise comparators)"
+            f"ReRo bound vs radius (matched privacy)\n"
+            f"{dataset_title}, $\\varepsilon$={fixed_epsilon:g}, m={fixed_m}"
         ),
         stem_name=f"fig_bound_vs_radius_{dataset_tag}_{model_family}",
+        categorical_order=RADIUS_ORDER,
+        note=MATCHED_DIRECT_IDENTITY_NOTE,
+    )
+    plot_line(
+        radius_df,
+        x_col="radius_tag",
+        x_label="Radius quantile",
+        y_label=r"Exact-ID upper bound $\gamma$",
+        y_specs=same_noise_bound_specs,
+        title=(
+            f"ReRo bound vs radius (same noise; privacy not matched)\n"
+            f"{dataset_title}, $\\varepsilon$={fixed_epsilon:g}, m={fixed_m}"
+        ),
+        stem_name=f"fig_bound_same_noise_vs_radius_{dataset_tag}_{model_family}",
         categorical_order=RADIUS_ORDER,
     )
 

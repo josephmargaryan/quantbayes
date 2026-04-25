@@ -129,6 +129,7 @@ class ConvexReleaseConfig:
     ] = "paper_default"
     provided_lz: Optional[float] = None
     use_exact_sensitivity_if_available: bool = True
+    ridge_sensitivity_mode: Literal["global", "count_aware"] = "global"
     seed: int = 0
     store_nonprivate_reference: bool = False
 

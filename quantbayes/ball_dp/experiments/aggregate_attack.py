@@ -15,8 +15,10 @@ STANDARD_COLOR = "#d62728"
 BASELINE_COLOR = "#6b7280"
 
 DEFAULT_RADIUS_TAG = "q80"
-DEFAULT_EPSILON = 1.0
-DEFAULT_M = 16
+DEFAULT_EPSILON = 4.0
+DEFAULT_M = 8
+DEFAULT_SUPPORT_SELECTION = None
+DEFAULT_RIDGE_SENSITIVITY_MODE = None
 
 PAPER_DATASET_ORDER = [
     "AG News-embeddings",
@@ -113,6 +115,9 @@ def load_model_rows(
     radius_tag: str,
     epsilon: float,
     m: int,
+    support_source_mode: Optional[str],
+    support_selection: Optional[str],
+    ridge_sensitivity_mode: Optional[str],
     strict: bool,
 ) -> tuple[pd.DataFrame, list[dict[str, Any]]]:
     rows: list[dict[str, Any]] = []
@@ -137,6 +142,17 @@ def load_model_rows(
             & close_enough(summary["epsilon"], float(epsilon))
             & (summary["m"].astype(int) == int(m))
         )
+        if support_source_mode is not None and "support_source_mode" in summary.columns:
+            mask = mask & (summary["support_source_mode"] == str(support_source_mode))
+        if support_selection is not None and "support_selection" in summary.columns:
+            mask = mask & (summary["support_selection"] == str(support_selection))
+        if (
+            ridge_sensitivity_mode is not None
+            and "ridge_sensitivity_mode" in summary.columns
+        ):
+            mask = mask & (
+                summary["ridge_sensitivity_mode"] == str(ridge_sensitivity_mode)
+            )
         sub = summary[mask].copy()
         if sub.empty:
             issues.append(
@@ -147,6 +163,9 @@ def load_model_rows(
                         "radius_tag": radius_tag,
                         "epsilon": float(epsilon),
                         "m": int(m),
+                        "support_source_mode": support_source_mode,
+                        "support_selection": support_selection,
+                        "ridge_sensitivity_mode": ridge_sensitivity_mode,
                     },
                 }
             )
@@ -175,6 +194,13 @@ def load_model_rows(
                 "radius_tag": str(radius_tag),
                 "epsilon": float(epsilon),
                 "m": int(m),
+                "support_source_mode": str(
+                    ball_row.get("support_source_mode", "unknown")
+                ),
+                "support_selection": str(ball_row.get("support_selection", "unknown")),
+                "ridge_sensitivity_mode": str(
+                    ball_row.get("ridge_sensitivity_mode", "unknown")
+                ),
                 "exact_id_ball": float(ball_row["exact_id_mean"]),
                 "exact_id_ball_ci_low": float(ball_row["exact_id_ci_low"]),
                 "exact_id_ball_ci_high": float(ball_row["exact_id_ci_high"]),
@@ -186,9 +212,34 @@ def load_model_rows(
                 "advantage_standard": float(std_row["attack_advantage"]),
                 "n_trials_ball": int(ball_row["n_trials"]),
                 "n_trials_standard": int(std_row["n_trials"]),
-                "num_targets": int(ball_row["num_targets"]),
-                "candidate_draws": int(ball_row["candidate_draws"]),
-                "release_seeds": int(ball_row["release_seeds"]),
+                "num_support_anchors_ball": int(
+                    ball_row.get("num_support_anchors", np.nan)
+                ),
+                "num_support_anchors_standard": int(
+                    std_row.get("num_support_anchors", np.nan)
+                ),
+                "support_draws_ball": int(ball_row.get("support_draws", np.nan)),
+                "support_draws_standard": int(std_row.get("support_draws", np.nan)),
+                "release_seeds_ball": int(ball_row["release_seeds"]),
+                "release_seeds_standard": int(std_row["release_seeds"]),
+                "predicted_source_mode_share_ball": float(
+                    ball_row.get("predicted_source_mode_share", np.nan)
+                ),
+                "predicted_source_mode_share_standard": float(
+                    std_row.get("predicted_source_mode_share", np.nan)
+                ),
+                "predicted_anchor_rate_ball": float(
+                    ball_row.get("predicted_anchor_rate", np.nan)
+                ),
+                "predicted_anchor_rate_standard": float(
+                    std_row.get("predicted_anchor_rate", np.nan)
+                ),
+                "support_contains_anchor_rate_ball": float(
+                    ball_row.get("support_contains_anchor_rate", np.nan)
+                ),
+                "support_contains_anchor_rate_standard": float(
+                    std_row.get("support_contains_anchor_rate", np.nan)
+                ),
                 "sigma_ball": float(ball_row.get("release_sigma_mean", np.nan)),
                 "sigma_standard": float(std_row.get("release_sigma_mean", np.nan)),
                 "accuracy_ball": float(ball_row.get("release_accuracy_mean", np.nan)),
@@ -201,6 +252,36 @@ def load_model_rows(
                 ),
                 "bound_direct_standard_same_noise": float(
                     ball_row.get("bound_direct_standard_same_noise_mean", np.nan)
+                ),
+                "bound_direct_instance_ball": float(
+                    ball_row.get("bound_direct_instance_finite_opt_mean", np.nan)
+                ),
+                "bound_direct_instance_standard": float(
+                    std_row.get("bound_direct_instance_finite_opt_mean", np.nan)
+                ),
+                "model_pairwise_snr_ball": float(
+                    ball_row.get("model_pairwise_snr_median_mean", np.nan)
+                ),
+                "model_pairwise_snr_standard": float(
+                    std_row.get("model_pairwise_snr_median_mean", np.nan)
+                ),
+                "ridge_count_dilution_ball": float(
+                    ball_row.get("ridge_count_dilution_mean", np.nan)
+                ),
+                "ridge_count_dilution_standard": float(
+                    std_row.get("ridge_count_dilution_mean", np.nan)
+                ),
+                "ridge_inverse_tau_ball": float(
+                    ball_row.get("ridge_inverse_noise_tau_mean", np.nan)
+                ),
+                "ridge_inverse_tau_standard": float(
+                    std_row.get("ridge_inverse_noise_tau_mean", np.nan)
+                ),
+                "posterior_effective_candidates_ball": float(
+                    ball_row.get("posterior_effective_candidates_mean", np.nan)
+                ),
+                "posterior_effective_candidates_standard": float(
+                    std_row.get("posterior_effective_candidates_mean", np.nan)
                 ),
             }
         )
@@ -259,13 +340,13 @@ def make_attack_vs_baseline_figure(df: pd.DataFrame, out_stem: str | Path) -> No
         df["oblivious_baseline"],
         width=width,
         color=BASELINE_COLOR,
-        label="Best oblivious guess",
+        label="Uniform-prior baseline 1/m",
     )
     ax.set_xticks(x)
     ax.set_xticklabels(df["dataset_name"], rotation=28, ha="right")
     ax.set_ylabel("Empirical exact-ID")
     ax.set_ylim(0.0, 1.0)
-    ax.set_title("Empirical exact identification vs oblivious baseline")
+    ax.set_title("Empirical exact identification vs uniform-prior baseline")
     ax.legend(ncol=3)
     savefig_stem(fig, out_stem)
 
@@ -295,7 +376,7 @@ def make_advantage_figure(df: pd.DataFrame, out_stem: str | Path) -> None:
     ax.set_xticks(x)
     ax.set_xticklabels(df["dataset_name"], rotation=28, ha="right")
     ax.set_ylabel("Attack advantage over 1/m")
-    ax.set_title("Exact-ID advantage over the best oblivious guess")
+    ax.set_title("Exact-ID advantage over the uniform-prior baseline")
     ax.legend(ncol=2)
     savefig_stem(fig, out_stem)
 
@@ -306,7 +387,9 @@ def build_publication_table(df: pd.DataFrame) -> pd.DataFrame:
             "Dataset": df["dataset_name"],
             "Empirical exact-ID (Ball)": df["exact_id_ball"],
             "Empirical exact-ID (Std)": df["exact_id_standard"],
-            "Oblivious baseline": df["oblivious_baseline"],
+            "Uniform prior baseline": df["oblivious_baseline"],
+            "Instance bound (Ball)": df["bound_direct_instance_ball"],
+            "Instance bound (Std)": df["bound_direct_instance_standard"],
             "Advantage (Ball)": df["advantage_ball"],
             "Advantage (Std)": df["advantage_standard"],
             "Trials (Ball)": df["n_trials_ball"],
@@ -316,12 +399,40 @@ def build_publication_table(df: pd.DataFrame) -> pd.DataFrame:
     return pub
 
 
+def build_diagnostic_table(df: pd.DataFrame) -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "Dataset": df["dataset_name"],
+            "Support source": df["support_source_mode"],
+            "Support selection": df["support_selection"],
+            "Ridge sens mode": df["ridge_sensitivity_mode"],
+            "Instance bound (Ball)": df["bound_direct_instance_ball"],
+            "Instance bound (Std)": df["bound_direct_instance_standard"],
+            "Median model SNR (Ball)": df["model_pairwise_snr_ball"],
+            "Median model SNR (Std)": df["model_pairwise_snr_standard"],
+            "Ridge count dilution (Ball)": df["ridge_count_dilution_ball"],
+            "Ridge tau (Ball)": df["ridge_inverse_tau_ball"],
+            "Posterior eff candidates (Ball)": df[
+                "posterior_effective_candidates_ball"
+            ],
+            "Pred mode share (Ball)": df["predicted_source_mode_share_ball"],
+            "Pred mode share (Std)": df["predicted_source_mode_share_standard"],
+            "Pred anchor rate (Ball)": df["predicted_anchor_rate_ball"],
+            "Pred anchor rate (Std)": df["predicted_anchor_rate_standard"],
+            "Support contains anchor (Ball)": df["support_contains_anchor_rate_ball"],
+            "Support contains anchor (Std)": df[
+                "support_contains_anchor_rate_standard"
+            ],
+        }
+    )
+
+
 def main() -> None:
     configure_matplotlib()
 
     parser = argparse.ArgumentParser(
         description=(
-            "Aggregate per-dataset convex attack results into model-specific publication tables and figures."
+            "Aggregate per-dataset fixed-support finite-prior attack results into model-specific publication tables and figures."
         )
     )
     parser.add_argument("--results-root", type=str, default="results")
@@ -329,6 +440,13 @@ def main() -> None:
     parser.add_argument("--radius", type=str, default=DEFAULT_RADIUS_TAG)
     parser.add_argument("--epsilon", type=float, default=DEFAULT_EPSILON)
     parser.add_argument("--m", type=int, default=DEFAULT_M)
+    parser.add_argument("--support-source", type=str, default="public_only")
+    parser.add_argument(
+        "--support-selection", type=str, default=DEFAULT_SUPPORT_SELECTION
+    )
+    parser.add_argument(
+        "--ridge-sensitivity-mode", type=str, default=DEFAULT_RIDGE_SENSITIVITY_MODE
+    )
     parser.add_argument("--strict", action="store_true")
     args = parser.parse_args()
 
@@ -342,6 +460,15 @@ def main() -> None:
         "radius": str(args.radius),
         "epsilon": float(args.epsilon),
         "m": int(args.m),
+        "support_source": str(args.support_source),
+        "support_selection": (
+            None if args.support_selection is None else str(args.support_selection)
+        ),
+        "ridge_sensitivity_mode": (
+            None
+            if args.ridge_sensitivity_mode is None
+            else str(args.ridge_sensitivity_mode)
+        ),
         "models": {},
     }
 
@@ -361,6 +488,15 @@ def main() -> None:
             radius_tag=str(args.radius),
             epsilon=float(args.epsilon),
             m=int(args.m),
+            support_source_mode=str(args.support_source),
+            support_selection=(
+                None if args.support_selection is None else str(args.support_selection)
+            ),
+            ridge_sensitivity_mode=(
+                None
+                if args.ridge_sensitivity_mode is None
+                else str(args.ridge_sensitivity_mode)
+            ),
             strict=bool(args.strict),
         )
         if agg_df.empty:
@@ -376,6 +512,9 @@ def main() -> None:
         save_table(
             build_publication_table(agg_df), out_dir / "aggregate_publication_table"
         )
+        save_table(
+            build_diagnostic_table(agg_df), out_dir / "aggregate_diagnostic_table"
+        )
 
         make_attack_vs_baseline_figure(agg_df, out_dir / "fig_agg_attack_vs_baseline")
         make_advantage_figure(agg_df, out_dir / "fig_agg_attack_advantage_bar")
@@ -390,6 +529,8 @@ def main() -> None:
                 str(out_dir / "aggregate_summary.csv"),
                 str(out_dir / "aggregate_publication_table.csv"),
                 str(out_dir / "aggregate_publication_table.tex"),
+                str(out_dir / "aggregate_diagnostic_table.csv"),
+                str(out_dir / "aggregate_diagnostic_table.tex"),
                 str((out_dir / "fig_agg_attack_vs_baseline").with_suffix(".pdf")),
                 str((out_dir / "fig_agg_attack_advantage_bar").with_suffix(".pdf")),
             ],

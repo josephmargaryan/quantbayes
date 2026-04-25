@@ -1,0 +1,2339 @@
+\documentclass[conference,compsoc]{IEEEtran}
+
+% IEEE S\&P 2026 template notes:
+% - anonymous submission uses \author{}
+% - keep the main body within 13 pages
+% - references + appendix may use up to 5 extra pages
+% - ethics considerations are required and do not count toward the main-body page limit
+% - if LLMs were used in preparing the paper, an "LLM usage considerations" section is required
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{cite}
+\usepackage{graphicx}
+\usepackage[caption=false,font=footnotesize]{subfig}
+\usepackage{amsmath,amssymb,amsfonts,amsthm,mathtools}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{url}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage[hidelinks]{hyperref}
+\usepackage{microtype}
+
+\interdisplaylinepenalty=2500
+
+\newtheorem{definition}{Definition}
+\newtheorem{assumption}{Assumption}
+\newtheorem{theorem}{Theorem}
+\newtheorem{lemma}{Lemma}
+\newtheorem{proposition}{Proposition}
+\newtheorem{corollary}{Corollary}
+\newtheorem{remark}{Remark}
+
+\DeclareMathOperator{\Law}{Law}
+\DeclareMathOperator{\softmax}{softmax}
+\DeclareMathOperator{\Vol}{Vol}
+\newcommand{\ind}[1]{\mathbf{1}\!\left\{#1\right\}}
+\newcommand{\ball}[2]{\mathcal{B}_{#1}(#2)}
+\newcommand{\todoresult}{\textbf{TBD}}
+
+% Safe figure inclusion: if the file is missing, insert a visible placeholder box instead of failing.
+\newcommand{\maybeincludegraphics}[2][]{%
+  \IfFileExists{#2}{\includegraphics[#1]{#2}}{%
+    \fbox{%
+      \parbox[c][0.22\textheight][c]{0.95\linewidth}{%
+        \centering
+        Missing figure file\\[2mm]
+        \texttt{\detokenize{#2}}
+      }%
+    }%
+  }%
+}
+
+\newcommand{\ridgefig}[3]{fig_#1_#2_ridge_prototype.#3}
+
+\title{r-Adjacency Differential Privacy:\\Convex Learning, Gaussian Release, and Reconstruction Robustness}
+
+% Keep blank for anonymous IEEE S&P submission.
+\author{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Standard differential privacy typically protects all single-record changes under a fixed global adjacency notion. In structured domains such as text, vision, and tabular embedding spaces, this can be unnecessarily coarse: the policy-relevant perturbations are often local in a record metric, not arbitrary worst-case replacements. We introduce \emph{r-adjacency differential privacy}, a thresholded metric notion that keeps the standard $(\varepsilon,\delta)$-DP semantics but restricts neighboring datasets to single-record substitutions whose record distance is at most $r$. This turns privacy design into an explicit policy choice over a protected neighborhood.
+
+For strongly convex empirical risk minimization (ERM), we show that r-adjacency sensitivity scales linearly with $r$ under a Lipschitz-in-data gradient condition. Our main convex model is a ridge-regularized class-prototype learner in embedding space. For this model we prove three exact results: the gradient Lipschitz constant is exactly $L_z=2$, the output sensitivity is exactly $\Delta_{\mathrm{proto}}(r)=2r/(2+\lambda n)$, and a noiseless release is exactly invertible by an informed adversary. These identities make the model an unusually clean laboratory for studying local privacy, Gaussian output perturbation, and reconstruction risk.
+
+For Gaussian releases we derive both Rényi-style and direct reconstruction-robustness guarantees. In particular, for a finite prior over $m$ candidate records inside the policy ball, the exact-identification success probability is upper bounded in closed form by a Gaussian testing expression depending only on $\Delta_2(r)/\sigma$. We also show that the corresponding finite-prior MAP attack is the exact Bayes-optimal attack for the Gaussian release, so the empirical attack protocol is directly aligned with the theory.
+
+On nine embedding benchmarks, matched-privacy experiments with the ridge-prototype model show that r-adjacency privacy can materially reduce the Gaussian noise scale, tighten reconstruction bounds, and often improve predictive accuracy relative to a standard global-replacement comparator. At a representative $q80$ radius and $\varepsilon=1$, the Ball mechanism reduces the noise scale by $1.42\times$ to $3.11\times$ and lowers the direct exact-identification upper bound against a same-noise standard comparator by $15.8\%$ to $54.2\%$ across the completed runs.
+\end{abstract}
+
+\section{Introduction}
+Differential privacy (DP) protects individuals by requiring that adjacent datasets induce similar output distributions. The usefulness of the guarantee depends critically on the chosen adjacency relation. In most machine-learning deployments, adjacency is global: two datasets are adjacent if one record is added, removed, or arbitrarily replaced. This is often the right choice when one wants to hide membership or arbitrary substitutions, but it can be overly conservative when the application policy is local in a metric space. For instance, in an embedding-space classifier, the policy may be to hide changes within a neighborhood of semantically similar records, while still allowing utility to track the geometry of the embedding space.
+
+This paper studies a simple way to make that policy explicit. We fix a record metric $d$ and a radius $r>0$, and define neighboring datasets to differ in one record by at most distance $r$. We call the resulting guarantee \emph{r-adjacency differential privacy}. The key point is that this is still standard $(\varepsilon,\delta)$-DP---only the adjacency relation changes. The radius $r$ is therefore a policy parameter rather than a new privacy parameter: smaller radii protect a smaller neighborhood and permit less noise, while larger radii recover stronger, more global protection. When records obey a public norm bound, the usual bounded-replacement setting appears as the special case $r=2B$.
+
+Our main use case is private learning from fixed embeddings. In that regime, the two questions that matter are tightly coupled. First, how much Gaussian noise is required to privatize the trained model? Second, how much does the resulting release help an informed adversary reconstruct a hidden training example? The existing reconstruction literature already shows that convex models can be fragile in the noiseless setting and that DP can be used to control reconstruction attacks \cite{balle2022informed,hayes2023bounding}. Our goal is to make this analysis local in a policy metric and to do so in a form that is experimentally clean.
+
+The star model of the paper is a ridge-regularized class-prototype learner. It is intentionally simple: each class is represented by a learned prototype in the embedding space, training is closed-form, inference is fast, and the privacy analysis is exact rather than upper-bounded. These properties are unusually attractive from a security-and-privacy perspective. They let us separate the geometric effect of the adjacency relation from confounders such as optimization error, nonconvexity, or attack-model mismatch. They also yield a finite-prior attack that is not a heuristic decoder or generative inversion method: it is the exact Bayes-optimal attack under the Gaussian release model.
+
+The paper makes the following contributions.
+\begin{itemize}[leftmargin=1.5em]
+    \item We introduce \emph{r-adjacency DP} (also called \emph{Ball-DP}) as a thresholded metric privacy notion for single-record substitutions, and position it as a policy-chosen local adjacency relation rather than a different privacy calculus.
+    \item For strongly convex ERM, we prove a generic sensitivity theorem under a Lipschitz-in-data gradient condition. This gives Gaussian output perturbation directly once $L_z$ is controlled.
+    \item For the ridge-prototype model, we prove three exact identities: $L_z=2$, $\Delta_{\mathrm{proto}}(r)=2r/(2+\lambda n)$, and exact informed-adversary reconstruction from a noiseless release.
+    \item For Gaussian output perturbation, we derive r-adjacency Rényi-DP guarantees and direct Ball-ReRo bounds. In the finite-prior exact-identification setting, the direct Gaussian bound has a closed form and the corresponding MAP attack is exact.
+    \item We evaluate the framework on nine embedding benchmarks. Across the completed ridge-prototype runs, the local mechanism consistently reduces Gaussian noise and tightens reconstruction bounds relative to a standard global comparator, and frequently improves classification accuracy at the same $(\varepsilon,\delta)$.
+\end{itemize}
+
+The paper is deliberately scoped to the convex, Gaussian-release setting. Nonconvex models, private SGD transcripts, and transcript-level reconstruction bounds are deferred to a companion paper.
+
+\section{Problem Setup and r-Adjacency Privacy}
+\label{sec:setup}
+
+Let records live in a space $\mathcal{Z}$ endowed with a (possibly extended) metric
+\[
+d:\mathcal{Z}\times\mathcal{Z}\to[0,\infty].
+\]
+A dataset is an ordered tuple $D=(z_1,\dots,z_n)\in\mathcal{Z}^n$.
+
+\begin{definition}[r-adjacency / Ball adjacency]
+For a radius $r>0$, datasets $D,D'\in\mathcal{Z}^n$ are \emph{r-adjacent}, written $D\sim_r D'$, if they differ in exactly one index $j$ and the differing records satisfy
+\[
+d(z_j,z'_j)\le r.
+\]
+\end{definition}
+
+\begin{remark}[Empirical metric used in the experiments]
+\label{rem:label-preserving-metric}
+Throughout the embedding-space experiments we use a label-preserving Euclidean record metric. Writing records as $(x,y)$ and $(x',y')$, we define
+\[
+d\big((x,y),(x',y')\big)=
+\begin{cases}
+\|x-x'\|_2, & y=y',\\
+\infty, & y\neq y'.
+\end{cases}
+\]
+All radii, feasible attack sets, and reconstruction errors reported in the experiments are computed in this metric.
+\end{remark}
+
+\begin{definition}[r-adjacency differential privacy]
+A randomized mechanism $M$ satisfies \emph{$(\varepsilon,\delta)$ r-adjacency DP at radius $r$} if for every measurable set $S$ and every pair $D\sim_r D'$,
+\[
+\Pr[M(D)\in S]\le e^{\varepsilon}\Pr[M(D')\in S]+\delta.
+\]
+\end{definition}
+
+We will also use the term \emph{Ball-DP} for the same notion when the radius-$r$ neighborhood is emphasized.
+
+\begin{remark}[Monotonicity in the policy radius]
+If $0<r'\le r$ and a mechanism is $(\varepsilon,\delta)$ r-adjacency DP at radius $r$, then it is also $(\varepsilon,\delta)$ r-adjacency DP at radius $r'$. Indeed, the set of $r'$-adjacent pairs is a subset of the set of $r$-adjacent pairs.
+\end{remark}
+
+\begin{proposition}[Bounded replacement as a special case]
+Suppose records satisfy a public norm bound $\|z\|_2\le B$ and the record metric is Euclidean: $d(z,z')=\|z-z'\|_2$. Then every single-record replacement obeys $d(z,z')\le 2B$. Consequently, the usual bounded-replacement privacy guarantee is recovered by choosing $r=2B$.
+\end{proposition}
+
+\begin{proof}
+If $\|z\|_2\le B$ and $\|z'\|_2\le B$, then the triangle inequality gives
+\[
+\|z-z'\|_2\le \|z\|_2+\|z'\|_2\le 2B.
+\]
+Therefore every single-record replacement is $2B$-adjacent.
+\end{proof}
+
+\paragraph{A standard global comparator.}
+In the experiments we compare the local mechanism against a standard global bounded-replacement comparator built from the same empirical metric. For the label-preserving metric of Remark~\ref{rem:label-preserving-metric}, define the within-class distance multiset
+\[
+S_c:=\{d(x_i,x_j): y_i=y_j=c,\ i<j\}.
+\]
+The local radii are quantiles of these within-class distances,
+\[
+r_\alpha:=\max_c \bar Q_c(\alpha),
+\]
+where $\bar Q_c(\alpha)$ is the empirical $\alpha$-quantile of $S_c$. The standard global comparator replaces $r_\alpha$ by the same-label empirical diameter
+\[
+r_{\max}:=\max_c \max S_c.
+\]
+This isolates the effect of protecting a local neighborhood rather than the full observed same-label replacement range.
+
+\section{Convex ERM under r-Adjacency}
+\label{sec:erm}
+
+We study $\ell_2$-regularized empirical risk minimization (ERM):
+\[
+F_D(\theta):=\frac{1}{n}\sum_{i=1}^n \ell(\theta;z_i)+\frac{\lambda}{2}\|\theta\|_2^2,
+\qquad
+\hat\theta(D)\in\arg\min_\theta F_D(\theta),
+\]
+with regularization parameter $\lambda>0$.
+
+\begin{assumption}[Lipschitz-in-data gradients on the relevant parameter set]
+\label{ass:lz}
+There exists a parameter set $\Theta\subseteq\mathbb{R}^p$ containing all ERM minimizers of interest and a constant $L_z\ge 0$ such that for every $\theta\in\Theta$ and all $z,z'\in\mathcal{Z}$,
+\[
+\|\nabla_\theta \ell(\theta;z)-\nabla_\theta \ell(\theta;z')\|_2\le L_z\,d(z,z').
+\]
+\end{assumption}
+
+\begin{theorem}[r-adjacency sensitivity of strongly convex ERM]
+\label{thm:erm-sensitivity}
+Assume that $F_D$ is $\lambda$-strongly convex for every dataset $D$ and that Assumption~\ref{ass:lz} holds. Then every pair $D\sim_r D'$ satisfies
+\[
+\|\hat\theta(D)-\hat\theta(D')\|_2\le \frac{L_z}{\lambda n}\,r.
+\]
+\end{theorem}
+
+Theorem~\ref{thm:erm-sensitivity} is the generic entry point for Gaussian output perturbation under r-adjacency privacy. The proof is elementary but worth spelling out carefully because it is the backbone of the paper; it is deferred to Appendix~\ref{app:proof-erm-sensitivity}.
+
+\paragraph{Gaussian output perturbation.}
+Let
+\[
+\Delta_2(r):=\sup_{D\sim_r D'} \|\hat\theta(D)-\hat\theta(D')\|_2.
+\]
+Releasing
+\[
+\widetilde\theta(D)=\hat\theta(D)+\xi,
+\qquad
+\xi\sim\mathcal{N}(0,\sigma^2 I),
+\]
+with $\sigma$ calibrated to $\Delta_2(r)$ gives $(\varepsilon,\delta)$ r-adjacency DP. In the experiments we use the analytic Gaussian calibration of Balle and Wang \cite{balle2018analytic}, which returns the smallest $\sigma$ that achieves the target $(\varepsilon,\delta)$ guarantee for a given $\Delta_2(r)$. All theory below depends only on the actual released noise scale $\sigma$ and does not assume a particular calibration routine.
+
+\begin{proposition}[Privacy loss outside the policy ball under classical calibration]
+\label{prop:outside-ball}
+Suppose the Gaussian mechanism for strongly convex ERM is calibrated at radius $r$ using the classical sufficient bound together with Theorem~\ref{thm:erm-sensitivity}, namely
+\[
+\sigma\ge \frac{\Delta_r}{\varepsilon}\sqrt{2\log(1.25/\delta)},
+\qquad
+\Delta_r:=\frac{L_z}{\lambda n}r.
+\]
+If a single-record replacement has distance $t$ instead of $r$, then the same fixed mechanism satisfies an $(\varepsilon(t),\delta)$ guarantee with
+\[
+\varepsilon(t)=\varepsilon\,\frac{t}{r}.
+\]
+\end{proposition}
+
+Proposition~\ref{prop:outside-ball} shows that the policy radius is not a binary cliff for the Gaussian mechanism: when the perturbation distance exceeds $r$, the privacy loss grows continuously with the distance. We do not rely on this proposition for the experimental comparisons, but it is conceptually useful when interpreting the choice of $r$.
+
+\subsection{Secondary convex heads}
+\label{sec:secondary-heads}
+
+The main experiments of this paper use the ridge-prototype model of Section~\ref{sec:ridge}. The same framework also covers standard convex heads. We spell out the softmax case because it illustrates one technical point that matters for applying Assumption~\ref{ass:lz}: the gradient-in-record Lipschitz constant is uniform only on a bounded parameter set. For regularized ERM, such a bounded set is obtained from first-order optimality at the minimizer.
+
+\begin{theorem}[Softmax logistic regression: explicit $L_z$ bounds on bounded parameter sets]
+\label{thm:softmax-lz}
+Let $z\in\mathbb{R}^d$, let $y\in\{1,\dots,K\}$, and define the augmented feature
+\[
+\widetilde z=(z,1)
+\]
+so that the bias is absorbed into the parameter matrix
+\[
+\widetilde W\in\mathbb{R}^{K\times(d+1)}.
+\]
+Assume $\|z\|_2\le B$, hence
+\[
+\|\widetilde z\|_2\le \widetilde B:=\sqrt{B^2+1}.
+\]
+For $\ell_2$-regularized softmax logistic regression, the per-example loss is
+\[
+\ell(\widetilde W;\widetilde z,y)
+=
+-(\widetilde w_y^\top \widetilde z)
++
+\log\!\Big(\sum_{c=1}^K e^{\widetilde w_c^\top \widetilde z}\Big).
+\]
+
+For any finite radius $R<\infty$, define the bounded parameter set
+\[
+\Theta_R
+:=
+\{\widetilde W\in\mathbb{R}^{K\times(d+1)}:\|\widetilde W\|_F\le R\}.
+\]
+Then, for every $\widetilde W\in\Theta_R$ and every same-label pair $(z,y),(z',y)$,
+\[
+\|\nabla_{\widetilde W}\ell(\widetilde W;\widetilde z,y)
+-
+\nabla_{\widetilde W}\ell(\widetilde W;\widetilde z',y)\|_F
+\le
+L_z(R)\,\|z-z'\|_2,
+\]
+where
+\[
+L_z(R):=\sqrt{2}+\frac{\widetilde B R}{2}.
+\]
+Equivalently, under the label-preserving metric of Remark~\ref{rem:label-preserving-metric}, Assumption~\ref{ass:lz} holds on $\Theta_R$ with this value of $L_z(R)$.
+
+Now consider the regularized ERM objective
+\[
+F_D(\widetilde W)
+=
+\frac{1}{n}\sum_{i=1}^n
+\ell(\widetilde W;\widetilde z_i,y_i)
++
+\frac{\lambda}{2}\|\widetilde W\|_F^2.
+\]
+Let $\Theta_{\mathrm{ERM}}$ be the set of minimizers of this objective over all datasets satisfying $\|z_i\|_2\le B$. Every
+$\widetilde W^\star\in\Theta_{\mathrm{ERM}}$ satisfies
+\[
+\|\widetilde W^\star\|_F
+\le
+\frac{\sqrt{2}\,\widetilde B}{\lambda}.
+\]
+Consequently, Assumption~\ref{ass:lz} holds on the relevant ERM-minimizer set $\Theta_{\mathrm{ERM}}$ with
+\[
+L_z
+\le
+\sqrt{2}\Bigl(1+\frac{\widetilde B^2}{2\lambda}\Bigr)
+=
+\sqrt{2}\Bigl(1+\frac{B^2+1}{2\lambda}\Bigr).
+\]
+\end{theorem}
+
+Taking $\Theta=\Theta_{\mathrm{ERM}}$ in Assumption~\ref{ass:lz}, Theorem~\ref{thm:softmax-lz} implies the r-adjacency sensitivity bound
+\[
+\|\widehat{\widetilde W}(D)-\widehat{\widetilde W}(D')\|_F
+\le
+\frac{L_z}{\lambda n}\,r
+\qquad \text{for all }D\sim_r D',
+\]
+where $L_z$ is the ERM-minimizer bound from Theorem~\ref{thm:softmax-lz}. More generally, if one works on any parameter set $\Theta$ satisfying
+\[
+\sup_{\widetilde W\in\Theta}\|\widetilde W\|_F\le R,
+\]
+then the same conclusion holds with
+\[
+L_z=\sqrt{2}+\frac{\widetilde B R}{2}.
+\]
+For space, we keep the submission focused on the ridge prototype and the softmax head; binary logistic and squared-hinge variants can be added to an extended version without changing the main framework.
+
+\section{The Ridge-Prototype Model}
+\label{sec:ridge}
+
+Our primary model learns one prototype per class in the embedding space. Let $z\in\mathbb{R}^d$ and $y\in\{1,\dots,C\}$. Write $\mu=(\mu_1,\dots,\mu_C)$ with $\mu_c\in\mathbb{R}^d$, and consider the objective
+\begin{equation}
+\label{eq:ridge-proto-objective}
+F_D(\mu)=\frac{1}{n}\sum_{i=1}^n \|z_i-\mu_{y_i}\|_2^2+\frac{\lambda}{2}\sum_{c=1}^C \|\mu_c\|_2^2.
+\end{equation}
+Prediction is by nearest prototype:
+\[
+\widehat y(x)=\arg\min_{c\in\{1,\dots,C\}} \|x-\mu_c\|_2^2.
+\]
+This model is attractive for our purposes because training is closed-form, the sensitivity analysis is exact, and the noiseless informed-adversary attack reduces to direct equation solving.
+
+\begin{theorem}[The exact gradient Lipschitz constant for ridge prototypes]
+\label{thm:proto-lz}
+Under the label-preserving metric of Remark~\ref{rem:label-preserving-metric}, Assumption~\ref{ass:lz} holds for the ridge-prototype loss
+\[
+\ell(\mu;(z,y))=\|z-\mu_y\|_2^2
+\]
+with the exact constant
+\[
+L_z=2.
+\]
+\end{theorem}
+
+\begin{corollary}[Exact r-adjacency sensitivity of the ridge-prototype ERM]
+\label{cor:proto-sensitivity}
+Let $\widehat\mu(D)$ be the unique minimizer of~\eqref{eq:ridge-proto-objective}. Then the exact sensitivity at radius $r$ is
+\[
+\Delta_{\mathrm{proto}}(r)
+:=
+\sup_{D\sim_r D'} \|\widehat\mu(D)-\widehat\mu(D')\|_2
+=
+\frac{2r}{2+\lambda n}.
+\]
+In particular, this is sharper than the generic upper bound from Theorem~\ref{thm:erm-sensitivity}.
+\end{corollary}
+
+\begin{proposition}[Count-aware ridge-prototype sensitivity]
+\label{prop:proto-count-aware-sensitivity}
+Under the label-preserving adjacency relation, the label sequence and hence the class-count vector are invariant along every adjacency edge. Conditional on a public count vector $(n_1,\ldots,n_C)$, the exact ridge-prototype sensitivity is
+\[
+\Delta_{\mathrm{proto}}(r;n_1,\ldots,n_C)
+=
+\max_{c:n_c>0}\frac{2r}{2n_c+\lambda n}.
+\]
+Equivalently, writing $n_{\min}:=\min\{n_c:n_c>0\}$,
+\[
+\Delta_{\mathrm{proto}}(r;n_1,\ldots,n_C)
+=
+\frac{2r}{2n_{\min}+\lambda n}.
+\]
+This is a valid calibration whenever the count vector is treated as public or as invariant component metadata of the adjacency graph. The global sensitivity in Corollary~\ref{cor:proto-sensitivity} is the count-worst-case value obtained by setting $n_{\min}=1$.
+\end{proposition}
+
+
+\begin{remark}[Why this model is the paper's main laboratory]
+The ridge-prototype model simultaneously gives (i) a closed-form optimizer, (ii) an exact rather than upper-bounded sensitivity formula, and (iii) an exact informed-adversary inversion result in the noiseless setting. This combination lets us test the local privacy framework without confounding approximation error from either training or the attack.
+\end{remark}
+
+\begin{theorem}[Exact reconstruction from a noiseless ridge-prototype release]
+\label{thm:proto-exact-recon}
+Let $D=D^-\cup\{(z,y)\}$ and suppose an informed adversary knows $D^-$, $n$, $\lambda$, and the noiseless optimum $\widehat\mu(D)$. Then:
+\begin{enumerate}[leftmargin=1.4em]
+    \item If the missing label $y$ is known, the missing record is recovered exactly as
+    \[
+    z=\frac{2(n_y^-+1)+\lambda n}{2}\,\widehat\mu_y(D)-\sum_{(z',y')\in D^-:\,y'=y} z',
+    \]
+    where $n_y^-$ is the number of label-$y$ examples in $D^-$.
+    \item If there is a unique class $c$ for which the released prototype differs from the $D^-$-implied baseline prototype,
+    then that class is the missing label and the formula above reconstructs the missing record exactly.
+\end{enumerate}
+The only obstruction to label identification is the degenerate event that the missing example equals the $D^-$-implied prototype of its own class.
+\end{theorem}
+
+Theorem~\ref{thm:proto-exact-recon} is useful for two reasons. First, it shows that the unperturbed release is genuinely vulnerable in the informed-adversary model of Balle, Cherubin, and Hayes \cite{balle2022informed}. Second, it justifies the Gaussian release as the natural protection mechanism: the Gaussian posterior attack is exactly the noisy version of the same inverse problem.
+
+\begin{corollary}[Known-label noisy inversion for ridge prototypes]
+\label{cor:ridge-noisy-inversion}
+Fix $D^-$ and suppose the missing label $y$ is known. Let
+\[
+A_y:=2(n_y^-+1)+\lambda n,
+\qquad
+S_y^-:=\sum_{(z',y')\in D^-:y'=y}z'.
+\]
+For the Gaussian ridge-prototype release, define the linearly inverted observation
+\[
+W_y:=\frac{A_y}{2}\,\widetilde\mu_y-S_y^-.
+\]
+If the hidden record is $Z$, then
+\[
+W_y=Z+\eta_y,
+\qquad
+\eta_y\sim\mathcal N\!\left(0,\tau_y^2 I\right),
+\qquad
+\tau_y=\frac{A_y}{2}\sigma.
+\]
+Consequently, for a uniform finite prior $S$ with common known label $y$, the exact MAP attack is nearest-neighbor decoding of $W_y$ over $S$.
+\end{corollary}
+
+\section{Gaussian Release, Finite-Prior MAP Attacks, and Ball-ReRo}
+\label{sec:gaussian-rero}
+
+This section keeps the threat model aligned with the informed-adversary setting of Balle, Cherubin, and Hayes \cite{balle2022informed}. The adversary knows all training records except one target record, knows the training algorithm and its hyperparameters, and observes the released model. Our paper focuses on the one-shot Gaussian release
+\[
+\widetilde\theta = \widehat\theta(D^-\cup\{z^\star\})+\xi,
+\qquad
+\xi\sim\mathcal{N}(0,\sigma^2 I).
+\]
+
+\subsection{A theorem-aligned finite-prior attack}
+
+In embedding space, a natural audit question is not ``can a decoder synthesize a plausible input?'', but rather ``can the release identify the hidden record among a finite set of plausible candidates?'' This corresponds exactly to the finite-prior Ball-ReRo setting. It is also practically relevant whenever side information, retrieval, or domain constraints produce a shortlist of feasible candidate embeddings.
+
+Let
+\[
+S=\{z_1,\dots,z_m\}\subseteq \ball{d}{u,r}
+\]
+be a finite candidate set containing the true target, with prior weights $\pi_1,\dots,\pi_m$.
+
+\begin{proposition}[Exact finite-prior MAP attack for a Gaussian release]
+\label{prop:finite-map}
+For the Gaussian release above, any Bayes-optimal exact-identification attack under the prior $\pi_S=\sum_{i=1}^m \pi_i\delta_{z_i}$ is of the form
+\[
+\widehat z_{\mathrm{MAP}}
+\in
+\arg\max_{z_i\in S}
+\left\{
+\log \pi_i
+-
+\frac{1}{2\sigma^2}
+\bigl\|
+\widetilde\theta-\widehat\theta(D^-\cup\{z_i\})
+\bigr\|_2^2
+\right\}.
+\]
+If the prior is uniform on $S$, the attack reduces to constrained least squares over the candidate set.
+\end{proposition}
+
+\paragraph{Why this attack is interesting.}
+The attack of Proposition~\ref{prop:finite-map} is not a heuristic inversion routine. It is the exact Bayes decision rule for the same finite prior that appears in the theory below. This matters experimentally: any attack success reflects information in the release, not the quality of an auxiliary generator or decoder. For the ridge-prototype model the objective is especially clean because each candidate score can be evaluated in closed form.
+
+\subsection{Ball-local priors and reconstruction robustness}
+
+\begin{definition}[Ball-local prior]
+A family of priors $\{\pi_{u,r}\}$ is \emph{Ball-local} if each $\pi_{u,r}$ is supported on the policy ball
+\[
+\ball{d}{u,r}:=\{z\in\mathcal{Z}: d(z,u)\le r\}.
+\]
+\end{definition}
+
+\begin{definition}[Ball-local reconstruction robustness (Ball-ReRo)]
+\label{def:ball-rero}
+Fix a reconstruction loss $\rho:\mathcal{Z}\times\mathcal{Z}\to[0,\infty)$ and a threshold $\eta>0$. A mechanism $M:\mathcal{Z}^n\to\Theta$ is \emph{$(\eta,\gamma)$ Ball-ReRo at radius $r$} with respect to the prior family $\{\pi_{u,r}\}$ if for every $D^-\in\mathcal{Z}^{n-1}$, every center $u\in\mathcal{Z}$, and every reconstructor $R$,
+\[
+\Pr_{Z\sim\pi_{u,r},\,\theta\sim M(D^-\cup\{Z\})}
+\big[\rho(Z,R(\theta,D^-))\le \eta\big]
+\le \gamma.
+\]
+\end{definition}
+
+\begin{definition}[Anti-concentration at scale $\eta$]
+\label{def:kappa}
+For a prior $\pi$ and reconstruction loss $\rho$, define
+\[
+\kappa_{\pi,\rho}(\eta)
+:=
+\sup_{z_0\in\mathcal{Z}}
+\Pr_{Z\sim\pi}[\rho(Z,z_0)\le \eta].
+\]
+\end{definition}
+
+The quantity $\kappa_{\pi,\rho}(\eta)$ is the best success probability of an \emph{oblivious} attack that ignores the mechanism output and always returns a fixed guess.
+
+\begin{theorem}[r-adjacency DP implies Ball-ReRo]
+\label{thm:ball-dp-rero}
+Fix $D^-\in\mathcal{Z}^{n-1}$, a center $u\in\mathcal{Z}$, a Ball-local prior $\pi_{u,r}$, a loss $\rho$, and a threshold $\eta$. Let
+\[
+\kappa:=\kappa_{\pi_{u,r},\rho}(\eta).
+\]
+If $M$ satisfies $(\varepsilon,\delta)$ r-adjacency DP at radius $r$, then every reconstructor $R$ satisfies
+\[
+\Pr_{Z\sim\pi_{u,r},\,\theta\sim M(D^-\cup\{Z\})}
+\big[\rho(Z,R(\theta,D^-))\le \eta\big]
+\le e^{\varepsilon}\kappa+\delta.
+\]
+\end{theorem}
+
+Theorem~\ref{thm:ball-dp-rero} is the local analogue of the standard observation that DP limits all downstream attacks, including reconstruction. For Gaussian output perturbation, however, one can say more by using either Rényi-DP or a direct Gaussian testing argument.
+
+\subsection{Ball-RDP for Gaussian output perturbation}
+
+\begin{definition}[Ball-RDP at radius $r$]
+A mechanism $M$ satisfies \emph{$(\alpha,\varepsilon_\alpha)$ Ball-RDP at radius $r$} if for every $D\sim_r D'$,
+\[
+D_\alpha\big(M(D)\,\|\,M(D')\big)\le \varepsilon_\alpha,
+\qquad \alpha>1.
+\]
+\end{definition}
+
+\begin{lemma}[Gaussian Ball-RDP]
+\label{lem:gaussian-ball-rdp}
+Let $M(D)=f(D)+\xi$ with $\xi\sim\mathcal{N}(0,\sigma^2 I)$ and r-adjacency sensitivity
+\[
+\Delta_2(r):=\sup_{D\sim_r D'}\|f(D)-f(D')\|_2.
+\]
+Then for every order $\alpha>1$,
+\[
+D_\alpha\big(M(D)\,\|\,M(D')\big)
+\le
+\frac{\alpha\,\Delta_2(r)^2}{2\sigma^2}
+\qquad \text{for all }D\sim_r D'.
+\]
+\end{lemma}
+
+\begin{theorem}[Ball-RDP implies Ball-ReRo]
+\label{thm:ball-rdp-rero}
+Fix a Ball-local prior $\pi_{u,r}$ and let $\kappa:=\kappa_{\pi_{u,r},\rho}(\eta)$. If a mechanism satisfies $(\alpha,\varepsilon)$ Ball-RDP at radius $r$ for some $\alpha>1$, then every reconstructor $R$ obeys
+\[
+\Pr_{Z\sim\pi_{u,r},\,\theta\sim M(D^-\cup\{Z\})}
+\big[\rho(Z,R(\theta,D^-))\le \eta\big]
+\le
+\min\Big\{1,\big(\kappa e^{\varepsilon}\big)^{\frac{\alpha-1}{\alpha}}\Big\}.
+\]
+\end{theorem}
+
+Applying Theorem~\ref{thm:ball-rdp-rero} to the Gaussian mechanism together with Lemma~\ref{lem:gaussian-ball-rdp} yields an order-dependent exact-identification upper bound. In the experiments we optimize this bound over a discrete order grid to obtain the curve labeled \emph{RDP Ball}.
+
+\subsection{A direct Gaussian Ball-ReRo bound}
+
+The direct bound is sharper for Gaussian releases because it works with the exact Gaussian testing problem rather than going through a divergence relaxation.
+
+\begin{theorem}[Direct Gaussian Ball-ReRo]
+\label{thm:direct-gaussian-rero}
+Let
+\[
+M(D)=f(D)+\xi,
+\qquad
+\xi\sim\mathcal{N}(0,\sigma^2 I),
+\]
+and let $\Delta_2(r)$ denote the r-adjacency sensitivity of $f$. Then for every Ball-local prior $\pi_{u,r}$, every reconstruction loss $\rho$, every threshold $\eta$, and every reconstructor $R$,
+\[
+\Pr_{Z\sim\pi_{u,r},\,\theta\sim M(D^-\cup\{Z\})}
+\big[\rho(Z,R(\theta,D^-))\le \eta\big]
+\le
+\Phi\!\left(
+\Phi^{-1}\!\big(\kappa_{\pi_{u,r},\rho}(\eta)\big)
++
+\frac{\Delta_2(r)}{\sigma}
+\right),
+\]
+with the boundary cases interpreted by continuity.
+\end{theorem}
+
+\begin{corollary}[Uniform finite prior under exact identification]
+\label{cor:uniform-finite-prior}
+Suppose $\pi_S$ is the uniform prior on $m$ candidates,
+\[
+\pi_S=\frac{1}{m}\sum_{i=1}^m \delta_{z_i},
+\qquad
+S\subseteq \ball{d}{u,r},
+\]
+and take the exact-identification loss
+\[
+\rho_{0/1}(z,z'):=\ind{z\neq z'}.
+\]
+Then every reconstructor satisfies
+\[
+\Pr_{Z\sim\pi_S,\,\theta\sim M(D^-\cup\{Z\})}
+\big[R(\theta,D^-)=Z\big]
+\le
+\Phi\!\left(
+\Phi^{-1}(1/m)+\frac{\Delta_2(r)}{\sigma}
+\right).
+\]
+The oblivious baseline in this setting is exactly $\kappa=1/m$.
+\end{corollary}
+
+Corollary~\ref{cor:uniform-finite-prior} is the quantity plotted in the direct-bound figures. For the standard same-noise comparator, we plug the standard global sensitivity $\Delta_{\mathrm{std}}$ into the same formula while holding the Ball mechanism's noise scale $\sigma$ fixed; this isolates the geometric benefit of local sensitivity under a common noise level.
+
+
+\paragraph{Support-specific finite-Gaussian diagnostics.}
+The bound in Corollary~\ref{cor:uniform-finite-prior} is deliberately worst-case: it uses the global r-adjacency sensitivity $\Delta_2(r)$ and is therefore uniform over all supports in the policy ball. For a fixed finite support used in an audit, a sharper Gaussian testing certificate is available.
+
+\begin{theorem}[Support-specific finite-Gaussian exact-ID bound]
+\label{thm:finite-gaussian-support-bound}
+Let $P_i=\mathcal N(\mu_i,\sigma^2 I)$ be the release law under candidate $z_i$, with prior weights $\pi_i>0$ and $\sum_i\pi_i=1$. Fix any reference Gaussian $Q=\mathcal N(\mu_0,\sigma^2 I)$ and define
+\[
+d_i:=\frac{\|\mu_i-\mu_0\|_2}{\sigma}.
+\]
+Then every exact-identification rule satisfies
+\[
+\Pr[\widehat Z=Z]
+\le
+\max_{q_1,\ldots,q_m\ge 0:\,\sum_i q_i\le 1}
+\sum_{i=1}^m
+\pi_i\,\Phi\!\left(\Phi^{-1}(q_i)+d_i\right),
+\]
+with boundary cases interpreted by continuity. In particular, if $\pi_i=1/m$ and $d_i\le R$ for all $i$, then
+\[
+\Pr[\widehat Z=Z]
+\le
+\Phi\!\left(\Phi^{-1}(1/m)+R\right).
+\]
+\end{theorem}
+
+For ridge prototypes with known label and Ball center $u$, take $\mu_0=\widehat\mu(D^-\cup\{u\})$. Corollary~\ref{cor:ridge-noisy-inversion} gives
+\[
+d_i
+=\frac{2\|z_i-u\|_2}{(2(n_y^-+1)+\lambda n)\sigma}
+\le
+\frac{2r}{(2(n_y^-+1)+\lambda n)\sigma}.
+\]
+Thus the support-specific ridge bound replaces the global worst-case ratio
+\[
+\frac{2r}{(2+\lambda n)\sigma}
+\]
+by the class-count-diluted ratio
+\[
+\frac{2r}{(2(n_y^-+1)+\lambda n)\sigma}.
+\]
+This explains why the worst-case direct Ball-ReRo curve can be much looser than the empirical finite-prior attack on common classes: the actual released prototype moves like a class average, not like the count-worst-case class of size one.
+
+\section{Experimental Methodology}
+\label{sec:experiments}
+
+\subsection{Goals and scope}
+The empirical evaluation asks four questions.
+\begin{enumerate}[leftmargin=1.5em]
+    \item \textbf{Utility at matched privacy:} at the same target $(\varepsilon,\delta)$, how much smaller is the Gaussian noise scale under r-adjacency privacy than under the standard global comparator, and what accuracy does that translate into?
+    \item \textbf{Worst-case reconstruction certificates:} how do the direct Gaussian Ball-ReRo bound and the optimized RDP Ball bound vary with the radius, the candidate-set size $m$, and $\varepsilon$?
+    \item \textbf{Instance-level audit diagnostics:} for a concrete finite support $S$ and known $D^-$, how large is the actual model-space signal-to-noise ratio, and how much tighter is the support-specific finite-Gaussian bound of Theorem~\ref{thm:finite-gaussian-support-bound}?
+    \item \textbf{Empirical exact identification:} when the release is Gaussian and the adversary is restricted to a finite candidate set, how much better is the exact MAP attack than the oblivious baseline $1/m$?
+\end{enumerate}
+
+The completed experiments currently cover the ridge-prototype model on nine embedding datasets. All mechanisms in the reported comparisons use the same common $\delta$ within each experimental sweep, while $\varepsilon$, the policy radius, and the candidate-set size are ablated as described below. The LaTeX below also includes figure hooks and table placeholders for the finite-prior attack study and for a secondary softmax-logistic baseline, so the manuscript can be populated as soon as those runs finish.
+
+\subsection{Datasets, metric, and policy radii}
+Each example is embedded in a fixed Euclidean representation space, and all privacy calculations use the label-preserving metric from Remark~\ref{rem:label-preserving-metric}. For a class $c$, let
+\[
+S_c:=\{d(x_i,x_j): y_i=y_j=c,\ i<j\}.
+\]
+For $\alpha\in\{0.50,0.80,0.95\}$, define the policy radius
+\[
+r_\alpha:=\max_c \bar Q_c(\alpha).
+\]
+In the ERM experiments we ablate $\alpha\in\{q50,q80,q95\}$; the default local policy used in the aggregate summaries is $q80$. The global standard comparator uses the same-label empirical diameter $r_{\max}=\max_c\max S_c$.
+
+\subsection{Models and privacy mechanisms}
+\paragraph{Ridge prototype.}
+The main model is the class-prototype ERM of Section~\ref{sec:ridge}, trained with regularization parameter $\lambda=0.01$ in the completed runs. For this model, training is closed-form and the exact count-worst-case local sensitivity is
+\[
+\Delta_{\mathrm{proto}}(r)=\frac{2r}{2+\lambda n}.
+\]
+When explicitly stated, we also run the count-aware calibration of Proposition~\ref{prop:proto-count-aware-sensitivity}, which is valid when label counts are treated as public/invariant metadata under the label-preserving adjacency graph.
+
+\paragraph{Softmax logistic regression.}
+The paper is written to accommodate a secondary convex baseline using the softmax-logistic bound from Theorem~\ref{thm:softmax-lz}. The corresponding figures and tables can be added in the same format once those runs are finalized.
+
+\paragraph{Gaussian release.}
+Given a trained parameter $\widehat\theta(D)$, we release
+\[
+\widetilde\theta(D)=\widehat\theta(D)+\xi,
+\qquad
+\xi\sim\mathcal{N}(0,\sigma^2 I),
+\]
+with $\sigma$ calibrated from the target $(\varepsilon,\delta)$ and the relevant sensitivity. The manuscript assumes the analytic Gaussian calibration of Balle and Wang \cite{balle2018analytic}; the direct and RDP reconstruction bounds use only the realized $\sigma$.
+
+\subsection{Metrics and plotted quantities}
+\paragraph{Accuracy.}
+We report test accuracy for the Ball mechanism and the standard global comparator at matched $(\varepsilon,\delta)$.
+
+\paragraph{Noise scale.}
+We report both $\sigma_{\mathrm{Ball}}$ and the standard comparator's $\sigma_{\mathrm{Std}}$ at the same $(\varepsilon,\delta)$, as well as the ratio $\sigma_{\mathrm{Std}}/\sigma_{\mathrm{Ball}}$.
+
+\paragraph{Theorem-backed exact-identification upper bounds.}
+For a uniform prior on $m$ candidates, the direct Ball bound is the closed-form quantity from Corollary~\ref{cor:uniform-finite-prior}. The \emph{RDP Ball} curve is obtained by combining Lemma~\ref{lem:gaussian-ball-rdp} with Theorem~\ref{thm:ball-rdp-rero} and optimizing over the order grid.
+
+At matched $(\varepsilon,\delta)$, the direct Gaussian exact-identification bound is identical for the Ball and standard mechanisms under homogeneous Gaussian calibration. Indeed, the bound depends on the ratio $\Delta_2/\sigma$, and Gaussian calibration sets $\sigma$ proportional to $\Delta_2$ at fixed $(\varepsilon,\delta)$. Thus the matched-privacy direct standard bound is a calibration sanity check, not a separate reconstruction curve. We omit the redundant matched-standard direct curve from the figures.
+
+The \emph{same-noise standard} comparator evaluates the direct Gaussian bound with the standard global sensitivity but the Ball mechanism's noise scale $\sigma_{\mathrm{Ball}}$. This comparison is not matched in privacy; rather, it isolates the geometric effect of replacing the global sensitivity by the local radius-$r$ sensitivity.
+
+For finite-prior attack experiments we additionally report the support-specific bound from Theorem~\ref{thm:finite-gaussian-support-bound}, the median model-space pairwise signal-to-noise ratio, and for ridge prototypes the inversion noise $\tau_y$ and count-dilution factor
+\[
+\frac{2+\lambda n}{2(n_y^-+1)+\lambda n}.
+\]
+These diagnostics distinguish a weak attack implementation from a genuinely low-signal finite-prior problem.
+
+\paragraph{Empirical finite-prior attack.}
+For the attack experiments we draw a finite candidate set
+\[
+S_j=\{z_{j,1},\dots,z_{j,m}\}
+\]
+for each target index $j$, ensuring that the true target is included. The default audit samples supports from public same-label records inside the policy ball; the stress-test audit uses a greedy farthest-point packing inside the same feasible bank to maximize candidate separation without leaving the policy ball. The Gaussian release is sampled independently across seeds. The finite-prior MAP attack of Proposition~\ref{prop:finite-map} returns a candidate $\widehat Z_{jks}$ for target $j$, candidate-set draw $k$, and Gaussian seed $s$. The exact-identification rate is then
+\[
+\bar p_{\mathrm{exact}}
+=
+\frac{1}{NKS}\sum_{j=1}^{N}\sum_{k=1}^{K}\sum_{s=1}^{S}
+\ind{\widehat Z_{jks}=Z_{jk}}.
+\]
+The baseline is the best oblivious guess $1/m$.
+
+\section{Results}
+\label{sec:results}
+
+\subsection{Aggregate ERM comparison}
+Table~\ref{tab:aggregate-summary} summarizes the completed ridge-prototype runs. Every row corresponds to one dataset and uses the representative $q80$, $\varepsilon=1$ configuration from the $\varepsilon$-ablation. The local mechanism reduces the Gaussian noise scale for every dataset, often by a substantial margin, and the direct exact-identification bound improves in lockstep because the relevant signal-to-noise ratio is $\Delta_2(r)/\sigma$.
+
+\begin{table*}[t]
+\centering
+\caption{Aggregate ridge-prototype comparison across datasets at the representative $q80$, $\varepsilon=1$ setting. The Ball mechanism consistently lowers the Gaussian noise scale at matched privacy. The bound columns report the direct exact-identification upper bound for Ball and for the same-noise standard comparator, i.e., the standard sensitivity evaluated at $\sigma_{\mathrm{Ball}}$. This same-noise comparison isolates the geometric effect of local sensitivity and is not a matched-privacy comparison. Under matched Gaussian calibration, the Ball and standard direct bounds are identical and are therefore not shown as separate bound columns.}
+\label{tab:aggregate-summary}
+\scriptsize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lrrrrrrrrr}
+\toprule
+Dataset & Acc (Ball) & Acc (Std) & Acc gain & Bound (Ball) & Bound (Std @ $\sigma_{\mathrm{Ball}}$) & Bound red. \% & $\sigma$ (Ball) & $\sigma$ (Std) & $\sigma$ ratio \\
+\midrule
+AG News-embeddings            & 0.8345 & 0.8186 & 0.0159 & 0.0972 & 0.1155 & 15.78 & 0.0099 & 0.0141 & 1.4201 \\
+BANKING77-embeddings          & 0.1234 & 0.0328 & 0.0906 & 0.0972 & 0.1241 & 21.61 & 0.1034 & 0.1656 & 1.6019 \\
+CIFAR-10-embeddings           & 0.6977 & 0.4572 & 0.2405 & 0.0972 & 0.1673 & 41.87 & 0.0140 & 0.0337 & 2.4048 \\
+DBpedia-14-embeddings         & 0.9353 & 0.9347 & 0.0007 & 0.0972 & 0.1164 & 16.47 & 0.0021 & 0.0030 & 1.4407 \\
+Emotion-embeddings            & 0.2145 & 0.2075 & 0.0070 & 0.0972 & 0.1180 & 17.56 & 0.0708 & 0.1043 & 1.4740 \\
+IMDb-embeddings               & 0.5668 & 0.5316 & 0.0351 & 0.0972 & 0.1225 & 20.65 & 0.0427 & 0.0671 & 1.5706 \\
+MNIST-embeddings              & 0.8150 & 0.5490 & 0.2660 & 0.0972 & 0.2121 & 54.15 & 0.0090 & 0.0281 & 3.1051 \\
+TREC-6-embeddings             & 0.1000 & 0.0700 & 0.0300 & 0.0972 & 0.1158 & 16.00 & 0.2096 & 0.2990 & 1.4267 \\
+Yelp Review Full-embeddings   & 0.4293 & 0.4284 & 0.0008 & 0.0972 & 0.1204 & 19.21 & 0.0017 & 0.0026 & 1.5251 \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+Two patterns stand out. First, the exact ridge sensitivity formula translates almost linearly into lower released noise at matched $(\varepsilon,\delta)$, which in turn often improves accuracy by a visible margin. The effect is largest on datasets where the global same-label diameter is much larger than the chosen local policy radius. Second, the matched-privacy direct Gaussian bound is identical for the Ball and standard mechanisms, as expected from the ratio $\Delta_2/\sigma$ under Gaussian calibration. The reconstruction-geometry advantage appears in the same-noise comparison: when the standard global sensitivity is evaluated at $\sigma_{\mathrm{Ball}}$, its direct exact-identification bound is consistently worse than the Ball bound.
+
+\begin{figure*}[t]
+\centering
+\subfloat[Gaussian noise scale at matched privacy.\label{fig:agg-sigma}]{%
+  \maybeincludegraphics[width=0.32\linewidth]{fig_agg_sigma_grouped_bar.pdf}}
+\hfill
+\subfloat[Direct exact-identification upper bound.\label{fig:agg-bound}]{%
+  \maybeincludegraphics[width=0.32\linewidth]{fig_agg_bound_same_noise_grouped_bar.pdf}}
+\hfill
+\subfloat[Test accuracy.\label{fig:agg-acc}]{%
+  \maybeincludegraphics[width=0.32\linewidth]{fig_agg_accuracy_grouped_bar.pdf}}
+\caption{Aggregate ridge-prototype comparison across datasets at the representative $q80$, $\varepsilon=1$ setting. The Ball mechanism consistently lowers the Gaussian noise scale at matched privacy. The reconstruction-bound panel uses the same-noise standard comparator, evaluating the standard global sensitivity at $\sigma_{\mathrm{Ball}}$ to isolate the effect of local geometry.}
+\label{fig:agg-results}
+\end{figure*}
+
+\subsection{Per-dataset ERM trends}
+The aggregate figures compress several recurring dataset-level trends. As $\varepsilon$ increases, both mechanisms reduce their noise scale, but the Ball curve remains uniformly below the standard curve because the exact local sensitivity is smaller. Varying the radius shows the expected privacy--utility trade-off: larger quantiles give larger local radii, larger sensitivity, and hence larger $\sigma$, but the local mechanism remains substantially below the global comparator as long as the chosen quantile stays well below the empirical diameter. In the per-dataset bound plots, the matched-standard direct curve is omitted because it coincides exactly with the Ball direct curve under Gaussian calibration; the separate same-noise plots show the standard global sensitivity evaluated at $\sigma_{\mathrm{Ball}}$.
+
+\begin{figure}[t]
+\centering
+\subfloat[Noise scale vs. $\varepsilon$.]{\maybeincludegraphics[width=0.48\linewidth]{\ridgefig{sigma_vs_epsilon}{mnist}{pdf}}}
+\hfill
+\subfloat[Accuracy vs. $\varepsilon$.]{\maybeincludegraphics[width=0.48\linewidth]{\ridgefig{accuracy_vs_epsilon}{mnist}{png}}}
+\caption{Representative per-dataset ridge-prototype trends on MNIST embeddings. This figure is meant as a main-text example; the appendix includes hooks for the full per-dataset panels.}
+\label{fig:mnist-example}
+\end{figure}
+
+\subsection{Finite-prior exact-identification attack protocol}
+\label{sec:attack-protocol}
+The empirical reconstruction study uses the exact Gaussian finite-prior MAP attack of Proposition~\ref{prop:finite-map}. For each target record we draw candidate sets $S_j$ of size $m$ containing the truth, release a Gaussian-perturbed model under a target $\varepsilon\in\{0.6,1,2,4,8\}$, score every candidate by its exact Gaussian likelihood, and record whether the MAP candidate equals the ground truth. Averaging over targets, candidate-set draws, and Gaussian seeds yields $\bar p_{\mathrm{exact}}$.
+
+This setup is especially appropriate in embedding space. We are not asking a generative model to decode an image or sentence from a latent vector. Instead, we ask the theorem-aligned question that the finite-prior Ball-ReRo bound directly addresses: given a short list of plausible candidates, how often does the release identify the right one? The baseline $1/m$ is therefore not a straw man; it is the exact oblivious optimum from Definition~\ref{def:kappa}.
+
+\begin{table}[t]
+\centering
+\caption{Placeholder for the aggregate finite-prior exact-identification attack results. Replace the \textbf{TBD} entries after running the Gaussian MAP attack sweep.}
+\label{tab:attack-aggregate}
+\footnotesize
+\begin{tabular}{lccc}
+\toprule
+Dataset & Empirical $\bar p_{\mathrm{exact}}$ & Oblivious baseline $1/m$ & Advantage \\
+\midrule
+AG News-embeddings          & \todoresult & \todoresult & \todoresult \\
+BANKING77-embeddings        & \todoresult & \todoresult & \todoresult \\
+CIFAR-10-embeddings         & \todoresult & \todoresult & \todoresult \\
+DBpedia-14-embeddings       & \todoresult & \todoresult & \todoresult \\
+Emotion-embeddings          & \todoresult & \todoresult & \todoresult \\
+IMDb-embeddings             & \todoresult & \todoresult & \todoresult \\
+MNIST-embeddings            & \todoresult & \todoresult & \todoresult \\
+TREC-6-embeddings           & \todoresult & \todoresult & \todoresult \\
+Yelp Review Full-embeddings & \todoresult & \todoresult & \todoresult \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[t]
+\centering
+\subfloat[Aggregate empirical attack vs. oblivious baseline.]{\maybeincludegraphics[width=0.48\linewidth]{fig_agg_attack_vs_baseline.pdf}}
+\hfill
+\subfloat[Optional attack advantage over $1/m$.]{\maybeincludegraphics[width=0.48\linewidth]{fig_agg_attack_advantage_bar.pdf}}
+\caption{Placeholder hooks for the aggregate finite-prior attack figures. Edit the filenames if the final plotting script uses a different naming convention.}
+\label{fig:attack-aggregate}
+\end{figure}
+
+\begin{figure}[t]
+\centering
+\subfloat[Exact identification vs. $\varepsilon$.]{\maybeincludegraphics[width=0.48\linewidth]{fig_attack_exactid_vs_epsilon_mnist_ridge_prototype.pdf}}
+\hfill
+\subfloat[Exact identification vs. candidate-set size $m$.]{\maybeincludegraphics[width=0.48\linewidth]{fig_attack_exactid_vs_m_mnist_ridge_prototype.pdf}}
+\caption{Placeholder hooks for the per-dataset finite-prior attack figures. The filenames are suggestions; edit them to match the final export names if needed.}
+\label{fig:attack-per-dataset}
+\end{figure}
+
+\section{Related Work}
+\label{sec:related}
+
+\paragraph{Adjacency design beyond the global worst case.}
+The choice of adjacency is central to the meaning of DP \cite{dwork2014book}. Metric formulations such as $d_X$-privacy and later work on metric DP replace the uniform adjacency graph by guarantees that depend on a record metric, especially in location and embedding domains \cite{chatzikokolakis2013metrics,imola2022metricdp}. Our notion is simpler and more policy-oriented: it keeps the standard $(\varepsilon,\delta)$-DP semantics unchanged, but restricts the protected substitutions to a radius-$r$ neighborhood. This makes the privacy statement easy to interpret and experimentally compare against a standard global replacement baseline.
+
+\paragraph{Private convex ERM and output perturbation.}
+Private ERM under convexity has a long history, including output perturbation and objective perturbation methods \cite{chaudhuri2011erm}. In the Gaussian output-perturbation regime, analytic calibration significantly improves over the classical tail-bound formula \cite{balle2018analytic}. Our generic ERM sensitivity theorem can be read as the local counterpart of the usual output-perturbation analysis, while the ridge-prototype model yields an exact equality rather than an upper bound.
+
+\paragraph{Reconstruction attacks and reconstruction robustness.}
+Balle, Cherubin, and Hayes formalized the informed-adversary reconstruction setting and showed that convex models can admit exact or near-exact inversion from noiseless releases \cite{balle2022informed}. Hayes, Mahloujifar, and Balle derived reconstruction bounds and matching attacks for DP-SGD \cite{hayes2023bounding}. The hypothesis-testing view of privacy, developed in the $f$-DP line of work, provides a natural route from privacy guarantees to attack bounds \cite{dong2022fdp}. Kaissis \emph{et al.} used this perspective to derive direct reconstruction bounds for Gaussian and subsampled mechanisms \cite{kaissis2023rero}. Our Gaussian Ball-ReRo result is the local, radius-thresholded analogue of that direct Gaussian testing argument.
+
+\paragraph{Prototype-based private learning.}
+Prototype representations are common in classical nearest-centroid classifiers and in modern embedding-based learning \cite{snell2017prototypical}. Recent private-learning work has also explored prototype releases in transfer-learning settings \cite{wahdany2025dppl}. Our use of prototypes is different: the model is chosen not for transfer learning but because its convex structure yields an exact local sensitivity formula and a direct equation-solving informed-adversary attack.
+
+\section{Conclusion}
+\label{sec:conclusion}
+
+This paper introduced r-adjacency differential privacy as a local, metric-aware adjacency relation for single-record substitutions. The framework is intentionally conservative in one sense and intentionally minimal in another. It is conservative because it retains the standard $(\varepsilon,\delta)$-DP semantics within the chosen neighborhood. It is minimal because the only new design ingredient is the policy radius $r$.
+
+In the convex Gaussian-release regime, this change already has substantial consequences. The generic ERM sensitivity theorem shows that utility tracks the local geometry through $L_z r$. The ridge-prototype model sharpens this further by making the key quantities exact: exact gradient Lipschitz constant, exact sensitivity, and exact informed-adversary inversion in the noiseless limit. Those identities make it possible to cleanly connect privacy calibration, direct Gaussian Ball-ReRo bounds, and an exact finite-prior MAP attack in a single experimental pipeline.
+
+The resulting picture is encouraging. On the completed ridge-prototype runs, local privacy reduces Gaussian noise, tightens theorem-backed reconstruction bounds, and often improves predictive accuracy at matched $(\varepsilon,\delta)$. The companion paper will extend this viewpoint to private SGD transcripts and nonconvex models, where the same policy question remains but the mechanism is no longer a one-shot Gaussian release.
+
+\begin{thebibliography}{10}
+
+\bibitem{dwork2014book}
+C. Dwork and A. Roth.
+\newblock {\em The Algorithmic Foundations of Differential Privacy}.
+\newblock Foundations and Trends in Theoretical Computer Science, 9(3--4):211--407, 2014.
+
+\bibitem{chatzikokolakis2013metrics}
+K. Chatzikokolakis, M. E. Andres, N. Bordenabe, and C. Palamidessi.
+\newblock Broadening the scope of differential privacy using metrics.
+\newblock In {\em Proceedings of the 13th Privacy Enhancing Technologies Symposium (PETS)}, pages 82--102, 2013.
+
+\bibitem{imola2022metricdp}
+J. Imola, S. P. Kasiviswanathan, S. White, A. Aggarwal, and N. Teissier.
+\newblock Balancing utility and scalability in metric differential privacy.
+\newblock In {\em Proceedings of the 25th International Conference on Artificial Intelligence and Statistics (AISTATS)}, pages 3936--3968, 2022.
+
+\bibitem{chaudhuri2011erm}
+K. Chaudhuri, C. Monteleoni, and A. D. Sarwate.
+\newblock Differentially private empirical risk minimization.
+\newblock {\em Journal of Machine Learning Research}, 12:1069--1109, 2011.
+
+\bibitem{balle2018analytic}
+B. Balle and Y.-X. Wang.
+\newblock Improving the Gaussian mechanism for differential privacy: Analytical calibration and optimal denoising.
+\newblock In {\em Proceedings of the 35th International Conference on Machine Learning (ICML)}, pages 394--403, 2018.
+
+\bibitem{balle2022informed}
+B. Balle, G. Cherubin, and J. Hayes.
+\newblock Reconstructing training data with informed adversaries.
+\newblock In {\em 2022 IEEE Symposium on Security and Privacy (S\&P)}, pages 1138--1156, 2022.
+
+\bibitem{hayes2023bounding}
+J. Hayes, S. Mahloujifar, and B. Balle.
+\newblock Bounding training data reconstruction in {DP-SGD}.
+\newblock In {\em Advances in Neural Information Processing Systems 36 (NeurIPS)}, 2023.
+
+\bibitem{dong2022fdp}
+J. Dong, A. Roth, and W. J. Su.
+\newblock Gaussian differential privacy.
+\newblock {\em Journal of the Royal Statistical Society: Series B}, 84(1):3--37, 2022.
+
+\bibitem{kaissis2023rero}
+G. Kaissis, J. Hayes, A. Ziller, and D. Rueckert.
+\newblock Bounding data reconstruction attacks with the hypothesis testing interpretation of differential privacy.
+\newblock {\em arXiv preprint arXiv:2307.03928}, 2023.
+
+\bibitem{snell2017prototypical}
+J. Snell, K. Swersky, and R. Zemel.
+\newblock Prototypical networks for few-shot learning.
+\newblock In {\em Advances in Neural Information Processing Systems 30 (NeurIPS)}, pages 4077--4087, 2017.
+
+\bibitem{wahdany2025dppl}
+D. Wahdany, M. Jagielski, A. Dziedzic, and F. Boenisch.
+\newblock Differentially private prototypes for imbalanced transfer learning.
+\newblock In {\em Proceedings of the AAAI Conference on Artificial Intelligence}, 2025.
+
+\end{thebibliography}
+
+\section*{Ethics considerations}
+This paper studies privacy guarantees and reconstruction attacks for machine-learning models trained on potentially sensitive data. The experiments use fixed embedding representations and theorem-aligned attack protocols whose purpose is to audit privacy leakage under controlled assumptions, not to facilitate unauthorized extraction of personal data from deployed systems. We recommend that any empirical attack evaluation be run only on datasets for which the researchers have authorization and that all released artifacts omit raw private records. No human-subject intervention is involved in the analysis reported here. The completed experiments do not rely on recovered raw images or text; they evaluate candidate identification in embedding space. 
+
+\section*{LLM usage considerations}
+All technical claims, proofs, theorem statements, derivations, experiments, numerical results were made exlusively by the responsibility of the human authors.
+
+\appendices
+
+\section{Proof of Theorem~\ref{thm:erm-sensitivity}}
+\label{app:proof-erm-sensitivity}
+
+\begin{proof}
+Fix two r-adjacent datasets $D\sim_r D'$. Write
+\[
+u:=\hat\theta(D),
+\qquad
+v:=\hat\theta(D').
+\]
+We will prove
+\[
+\|u-v\|_2\le \frac{L_z}{\lambda n}r.
+\]
+
+Because $F_D$ is differentiable and $\lambda$-strongly convex, its gradient is $\lambda$-strongly monotone. Thus, for all parameter vectors $a,b$,
+\[
+\big\langle \nabla F_D(a)-\nabla F_D(b),\,a-b\big\rangle
+\ge
+\lambda\|a-b\|_2^2.
+\]
+Apply this inequality with $a=u$ and $b=v$:
+\begin{equation}
+\label{eq:strong-monotonicity-uv}
+\big\langle \nabla F_D(u)-\nabla F_D(v),\,u-v\big\rangle
+\ge
+\lambda\|u-v\|_2^2.
+\end{equation}
+Since $u=\hat\theta(D)$ minimizes $F_D$, first-order optimality gives
+\[
+\nabla F_D(u)=0.
+\]
+Substituting this into~\eqref{eq:strong-monotonicity-uv} gives
+\[
+\big\langle -\nabla F_D(v),\,u-v\big\rangle
+\ge
+\lambda\|u-v\|_2^2.
+\]
+By Cauchy--Schwarz,
+\[
+\big\langle -\nabla F_D(v),\,u-v\big\rangle
+\le
+\|\nabla F_D(v)\|_2\,\|u-v\|_2.
+\]
+Therefore,
+\[
+\lambda\|u-v\|_2^2
+\le
+\|\nabla F_D(v)\|_2\,\|u-v\|_2.
+\]
+If $u=v$, the desired bound is immediate. Otherwise, divide both sides by $\|u-v\|_2$ to obtain
+\begin{equation}
+\label{eq:distance-controlled-by-gradient}
+\lambda\|u-v\|_2
+\le
+\|\nabla F_D(v)\|_2.
+\end{equation}
+
+Now use the fact that $v=\hat\theta(D')$ minimizes $F_{D'}$. First-order optimality gives
+\[
+\nabla F_{D'}(v)=0.
+\]
+Hence
+\begin{equation}
+\label{eq:gradient-rewrite}
+\|\nabla F_D(v)\|_2
+=
+\|\nabla F_D(v)-\nabla F_{D'}(v)\|_2.
+\end{equation}
+
+Let the two datasets differ only at index $j$. Thus
+\[
+D=(z_1,\dots,z_j,\dots,z_n),
+\qquad
+D'=(z_1,\dots,z'_j,\dots,z_n),
+\]
+with
+\[
+d(z_j,z'_j)\le r.
+\]
+For any parameter vector $\theta$,
+\[
+F_D(\theta)
+=
+\frac{1}{n}\sum_{i=1}^n \ell(\theta;z_i)
++
+\frac{\lambda}{2}\|\theta\|_2^2,
+\]
+and
+\[
+F_{D'}(\theta)
+=
+\frac{1}{n}
+\left(
+\sum_{i\neq j}\ell(\theta;z_i)
++
+\ell(\theta;z'_j)
+\right)
++
+\frac{\lambda}{2}\|\theta\|_2^2.
+\]
+Taking gradients gives
+\[
+\nabla F_D(\theta)
+=
+\frac{1}{n}\sum_{i=1}^n \nabla_\theta \ell(\theta;z_i)
++
+\lambda\theta,
+\]
+and
+\[
+\nabla F_{D'}(\theta)
+=
+\frac{1}{n}
+\left(
+\sum_{i\neq j}\nabla_\theta \ell(\theta;z_i)
++
+\nabla_\theta \ell(\theta;z'_j)
+\right)
++
+\lambda\theta.
+\]
+Subtracting cancels the regularizer and all unchanged records:
+\[
+\nabla F_D(\theta)-\nabla F_{D'}(\theta)
+=
+\frac{1}{n}
+\left(
+\nabla_\theta \ell(\theta;z_j)
+-
+\nabla_\theta \ell(\theta;z'_j)
+\right).
+\]
+Evaluate at $\theta=v$:
+\[
+\nabla F_D(v)-\nabla F_{D'}(v)
+=
+\frac{1}{n}
+\left(
+\nabla_\theta \ell(v;z_j)
+-
+\nabla_\theta \ell(v;z'_j)
+\right).
+\]
+Taking norms,
+\[
+\|\nabla F_D(v)-\nabla F_{D'}(v)\|_2
+=
+\frac{1}{n}
+\left\|
+\nabla_\theta \ell(v;z_j)
+-
+\nabla_\theta \ell(v;z'_j)
+\right\|_2.
+\]
+By Assumption~\ref{ass:lz},
+\[
+\left\|
+\nabla_\theta \ell(v;z_j)
+-
+\nabla_\theta \ell(v;z'_j)
+\right\|_2
+\le
+L_z\,d(z_j,z'_j).
+\]
+Since $D\sim_r D'$, we have $d(z_j,z'_j)\le r$. Therefore,
+\begin{equation}
+\label{eq:gradient-gap-final-bound}
+\|\nabla F_D(v)-\nabla F_{D'}(v)\|_2
+\le
+\frac{L_z}{n}r.
+\end{equation}
+
+Combining~\eqref{eq:distance-controlled-by-gradient},
+\eqref{eq:gradient-rewrite}, and~\eqref{eq:gradient-gap-final-bound}, we get
+\[
+\lambda\|u-v\|_2
+\le
+\frac{L_z}{n}r.
+\]
+Dividing by $\lambda$ yields
+\[
+\|u-v\|_2
+\le
+\frac{L_z}{\lambda n}r.
+\]
+Finally, substituting back $u=\hat\theta(D)$ and $v=\hat\theta(D')$ gives
+\[
+\|\hat\theta(D)-\hat\theta(D')\|_2
+\le
+\frac{L_z}{\lambda n}r.
+\]
+This proves the claimed r-adjacency sensitivity bound.
+\end{proof}
+
+\section{Proof of Proposition~\ref{prop:outside-ball}}
+\label{app:proof-outside-ball}
+
+\begin{proof}
+Under the classical sufficient analysis of the Gaussian mechanism, a release with sensitivity $\Delta$ and noise scale $\sigma$ is $(\varepsilon,\delta)$-DP whenever
+\[
+\sigma\ge \frac{\Delta}{\varepsilon}\sqrt{2\log(1.25/\delta)}.
+\]
+By assumption, the mechanism was calibrated at radius $r$ using the sensitivity upper bound
+\[
+\Delta_r=\frac{L_z}{\lambda n}r.
+\]
+Now consider a pair of datasets whose differing records are at distance $t$ instead of $r$. The same proof as Theorem~\ref{thm:erm-sensitivity} gives the sensitivity upper bound
+\[
+\Delta_t\le \frac{L_z}{\lambda n}t.
+\]
+Define
+\[
+\varepsilon(t):=\varepsilon\frac{t}{r}.
+\]
+Then
+\[
+\frac{\Delta_t}{\varepsilon(t)}
+\le
+\frac{(L_z/(\lambda n))t}{\varepsilon(t/r)}
+=
+\frac{L_z r}{\lambda n\,\varepsilon}
+=
+\frac{\Delta_r}{\varepsilon}.
+\]
+Hence the chosen $\sigma$ also satisfies
+\[
+\sigma\ge \frac{\Delta_t}{\varepsilon(t)}\sqrt{2\log(1.25/\delta)}.
+\]
+Applying the classical sufficient condition again shows that the same mechanism is $(\varepsilon(t),\delta)$-DP for substitutions at distance $t$.
+\end{proof}
+
+\section{Proofs for the Ridge-Prototype Model}
+\label{app:proof-ridge}
+
+\subsection{Proof of Theorem~\ref{thm:proto-lz}}
+
+\begin{proof}
+We identify the parameter $\mu=(\mu_1,\dots,\mu_C)$ with the concatenated vector in $\mathbb{R}^{Cd}$ obtained by stacking the class blocks. Under this identification, the per-example loss is
+\[
+\ell(\mu;(z,y))=\|z-\mu_y\|_2^2.
+\]
+Fix a class index $c\in\{1,\dots,C\}$. The gradient of $\ell$ with respect to block $\mu_c$ is
+\[
+\nabla_{\mu_c}\ell(\mu;(z,y))
+=
+2(\mu_y-z)\,\ind{c=y}.
+\]
+Now take two records $(z,y)$ and $(z',y')$ and subtract their blockwise gradients:
+\[
+\nabla_{\mu_c}\ell(\mu;(z,y))-
+\nabla_{\mu_c}\ell(\mu;(z',y'))
+=
+2(\mu_y-z)\,\ind{c=y}-2(\mu_{y'}-z')\,\ind{c=y'}.
+\]
+Under the label-preserving metric of Remark~\ref{rem:label-preserving-metric}, finite record distance occurs only when $y=y'$. Therefore the only nonvacuous case is $y=y'$. In that case the display above simplifies to
+\[
+\nabla_{\mu_c}\ell(\mu;(z,y))-
+\nabla_{\mu_c}\ell(\mu;(z',y))
+=
+2(z'-z)\,\ind{c=y}.
+\]
+This means that all blocks are zero except the block indexed by $y$. The full gradient difference therefore has exactly one nonzero block, equal to $2(z'-z)$. Its Euclidean norm is thus
+\[
+\|\nabla_\mu \ell(\mu;(z,y))-
+\nabla_\mu \ell(\mu;(z',y))\|_2
+=
+2\|z-z'\|_2.
+\]
+By the definition of the label-preserving metric,
+\[
+d\big((z,y),(z',y)\big)=\|z-z'\|_2.
+\]
+Substituting this identity into the previous display yields
+\[
+\|\nabla_\mu \ell(\mu;(z,y))-
+\nabla_\mu \ell(\mu;(z',y))\|_2
+=
+2\,d\big((z,y),(z',y)\big).
+\]
+Hence Assumption~\ref{ass:lz} holds with $L_z=2$.
+
+To see that the constant is exact, choose any same-label pair with $z\neq z'$. The last display becomes an equality, so no smaller constant can work uniformly.
+\end{proof}
+
+\subsection{Proof of Corollary~\ref{cor:proto-sensitivity}}
+
+\begin{proof}
+Let
+\[
+\widehat\mu(D)\in\arg\min_\mu F_D(\mu)
+\]
+be the unique minimizer of the ridge-prototype objective. For each class $c$, define the class sum and class count
+\[
+S_c(D):=\sum_{i:y_i=c} z_i,
+\qquad
+n_c(D):=\#\{i:y_i=c\}.
+\]
+Because the objective separates over the class blocks, we can write
+\[
+F_D(\mu)
+=
+\sum_{c=1}^C
+\left[
+\frac{1}{n}\sum_{i:y_i=c}\|z_i-\mu_c\|_2^2
++
+\frac{\lambda}{2}\|\mu_c\|_2^2
+\right].
+\]
+Fix a class $c$. Differentiating the $c$th summand with respect to $\mu_c$ gives
+\[
+\nabla_{\mu_c}F_D(\mu)
+=
+\frac{2}{n}\sum_{i:y_i=c}(\mu_c-z_i)+\lambda\mu_c.
+\]
+Expand the sum:
+\[
+\nabla_{\mu_c}F_D(\mu)
+=
+\frac{2n_c(D)}{n}\mu_c-
+\frac{2}{n}S_c(D)+\lambda\mu_c.
+\]
+Group the $\mu_c$ terms:
+\[
+\nabla_{\mu_c}F_D(\mu)
+=
+\left(\frac{2n_c(D)}{n}+\lambda\right)\mu_c-
+\frac{2}{n}S_c(D).
+\]
+At the optimum this gradient is zero, so
+\[
+\left(\frac{2n_c(D)}{n}+\lambda\right)\widehat\mu_c(D)=\frac{2}{n}S_c(D).
+\]
+Multiply both sides by $n$:
+\[
+\bigl(2n_c(D)+\lambda n\bigr)\widehat\mu_c(D)=2S_c(D).
+\]
+Therefore the closed-form optimizer is
+\begin{equation}
+\label{eq:proto-closed-form}
+\widehat\mu_c(D)=\frac{2S_c(D)}{2n_c(D)+\lambda n}.
+\end{equation}
+
+Now let $D'$ be obtained from $D$ by replacing one record $(z,y)$ by $(z',y)$ with $\|z-z'\|_2\le r$. Because the label is preserved, the class counts do not change:
+\[
+n_c(D')=n_c(D)\qquad \text{for every class }c.
+\]
+The class sums are also unchanged for all classes except the affected class $y$:
+\[
+S_c(D')=S_c(D)\qquad \text{for }c\neq y,
+\]
+while for the affected class,
+\[
+S_y(D')=S_y(D)-z+z'.
+\]
+Substituting these identities into~\eqref{eq:proto-closed-form} shows that
+\[
+\widehat\mu_c(D')=\widehat\mu_c(D)\qquad \text{for every }c\neq y,
+\]
+and
+\[
+\widehat\mu_y(D')-
+\widehat\mu_y(D)
+=
+\frac{2\bigl(S_y(D')-S_y(D)\bigr)}{2n_y(D)+\lambda n}
+=
+\frac{2(z'-z)}{2n_y(D)+\lambda n}.
+\]
+Thus the full parameter difference has exactly one nonzero block, namely the $y$th block. Its norm is therefore
+\[
+\|\widehat\mu(D')-\widehat\mu(D)\|_2
+=
+\|\widehat\mu_y(D')-\widehat\mu_y(D)\|_2
+=
+\frac{2\|z'-z\|_2}{2n_y(D)+\lambda n}.
+\]
+Since the changed record itself belongs to class $y$, we have $n_y(D)\ge 1$. Hence
+\[
+\|\widehat\mu(D')-\widehat\mu(D)\|_2
+\le
+\frac{2r}{2n_y(D)+\lambda n}
+\le
+\frac{2r}{2+\lambda n}.
+\]
+This proves the upper bound
+\[
+\Delta_{\mathrm{proto}}(r)\le \frac{2r}{2+\lambda n}.
+\]
+
+To prove equality, choose a dataset in which the modified record is the \emph{only} example from its class, so that $n_y(D)=1$. Choose the replacement so that $\|z-z'\|_2=r$. For this pair,
+\[
+\|\widehat\mu(D')-\widehat\mu(D)\|_2
+=
+\frac{2r}{2+\lambda n}.
+\]
+Therefore the upper bound is attained, and
+\[
+\Delta_{\mathrm{proto}}(r)=\frac{2r}{2+\lambda n}.
+\]
+\end{proof}
+
+\subsection{Proof of Proposition~\ref{prop:proto-count-aware-sensitivity}}
+
+\begin{proof}
+The proof of Corollary~\ref{cor:proto-sensitivity} shows that, for a same-label replacement in class $y$,
+\[
+\|\widehat\mu(D')-\widehat\mu(D)\|_2
+=
+\frac{2\|z'-z\|_2}{2n_y(D)+\lambda n}.
+\]
+Under the label-preserving metric, adjacent datasets have the same labels and therefore the same count vector. Conditional on the public count vector, the largest possible change over all radius-$r$ replacements is therefore
+\[
+\max_{c:n_c>0}\frac{2r}{2n_c+\lambda n}.
+\]
+Since the denominator is increasing in $n_c$, this equals $2r/(2n_{\min}+\lambda n)$ where $n_{\min}=\min\{n_c:n_c>0\}$. The bound is attained by choosing a class with count $n_{\min}$ and a replacement at distance exactly $r$.
+\end{proof}
+
+
+\subsection{Proof of Theorem~\ref{thm:proto-exact-recon}}
+
+\begin{proof}
+For each class $c\in\{1,\dots,C\}$, define the class sum and class count in the known dataset $D^-$ by
+\[
+S_c^-:=\sum_{(z',y')\in D^-:\,y'=c} z',
+\qquad
+n_c^-:=\#\{(z',y')\in D^-:\,y'=c\}.
+\]
+Since the full dataset is $D=D^-\cup\{(z,y)\}$, the full-data class statistics are
+\[
+S_c(D)=S_c^-+z\,\ind{c=y},
+\qquad
+n_c(D)=n_c^-+\ind{c=y}.
+\]
+
+As shown in the proof of Corollary~\ref{cor:proto-sensitivity}, the released prototype satisfies
+\[
+\widehat\mu_c(D)=\frac{2S_c(D)}{2n_c(D)+\lambda n}.
+\]
+We now prove the two claims separately.
+
+\paragraph{Part 1: exact record reconstruction when the label is known.}
+Assume the adversary knows the missing label $y$. Then for the affected class,
+\[
+S_y(D)=S_y^-+z,
+\qquad
+n_y(D)=n_y^-+1.
+\]
+Substituting these identities into the closed-form optimizer gives
+\[
+\widehat\mu_y(D)=\frac{2(S_y^-+z)}{2(n_y^-+1)+\lambda n}.
+\]
+Multiply both sides by the denominator:
+\[
+\bigl(2(n_y^-+1)+\lambda n\bigr)\widehat\mu_y(D)=2(S_y^-+z).
+\]
+Expand the right-hand side:
+\[
+\bigl(2(n_y^-+1)+\lambda n\bigr)\widehat\mu_y(D)=2S_y^-+2z.
+\]
+Subtract $2S_y^-$ from both sides:
+\[
+\bigl(2(n_y^-+1)+\lambda n\bigr)\widehat\mu_y(D)-2S_y^-=2z.
+\]
+Finally divide by $2$:
+\[
+z=\frac{2(n_y^-+1)+\lambda n}{2}\,\widehat\mu_y(D)-S_y^-.
+\]
+Since $S_y^-=
+\sum_{(z',y')\in D^-:\,y'=y} z'$, this is exactly the displayed reconstruction formula.
+
+\paragraph{Part 2: label identification from the changed prototype.}
+For any class $c\neq y$, the missing record does not affect class $c$. Thus
+\[
+S_c(D)=S_c^-,
+\qquad
+n_c(D)=n_c^-.
+\]
+Substituting into the closed-form optimizer gives
+\[
+\widehat\mu_c(D)=\frac{2S_c^-}{2n_c^-+\lambda n}.
+\]
+Define the $D^-$-implied baseline prototype
+\[
+\mu_c^-:=\frac{2S_c^-}{2n_c^-+\lambda n}.
+\]
+Then we have shown that
+\[
+\widehat\mu_c(D)=\mu_c^- \qquad \text{for every }c\neq y.
+\]
+Therefore, if there is a unique class $c^\star$ such that
+\[
+\widehat\mu_{c^\star}(D)\neq \mu_{c^\star}^-,
+\]
+that class must be the true missing class: $c^\star=y$. Once the label is identified, Part~1 reconstructs the record exactly.
+
+It remains to characterize the only case where the missing class fails to move. Suppose
+\[
+\widehat\mu_y(D)=\mu_y^-.
+\]
+Using the formulas above, this means
+\[
+\frac{2(S_y^-+z)}{2(n_y^-+1)+\lambda n}
+=
+\frac{2S_y^-}{2n_y^-+\lambda n}.
+\]
+Cancel the common factor $2$:
+\[
+\frac{S_y^-+z}{2(n_y^-+1)+\lambda n}
+=
+\frac{S_y^-}{2n_y^-+\lambda n}.
+\]
+Cross-multiply:
+\[
+(S_y^-+z)(2n_y^-+\lambda n)
+=
+S_y^-(2n_y^-+2+\lambda n).
+\]
+Expand the left-hand side:
+\[
+S_y^-(2n_y^-+\lambda n)+z(2n_y^-+\lambda n)
+=
+S_y^-(2n_y^-+\lambda n)+2S_y^-.
+\]
+Subtract the common term $S_y^-(2n_y^-+\lambda n)$ from both sides:
+\[
+z(2n_y^-+\lambda n)=2S_y^-.
+\]
+Finally divide by $2n_y^-+\lambda n$ to get
+\[
+z=\frac{2S_y^-}{2n_y^-+\lambda n}=\mu_y^-.
+\]
+Thus,
+\[
+\widehat\mu_y(D)=\mu_y^- \quad \Longrightarrow \quad z=\mu_y^-.
+\]
+The converse is immediate: if $z=\mu_y^-$, then substituting this into the formula for $\widehat\mu_y(D)$ gives back $\mu_y^-$. Hence
+\[
+\widehat\mu_y(D)=\mu_y^- \quad \Longleftrightarrow \quad z=\mu_y^-.
+\]
+So the only obstruction to label identification is the degenerate case in which the missing record equals the $D^-$-implied prototype of its class.
+\end{proof}
+
+\subsection{Proof of Corollary~\ref{cor:ridge-noisy-inversion}}
+
+\begin{proof}
+By the closed-form optimizer in~\eqref{eq:proto-closed-form}, if the missing record is $(Z,y)$ then
+\[
+\widehat\mu_y(D^-\cup\{(Z,y)\})=\frac{2(S_y^-+Z)}{A_y},
+\qquad
+A_y=2(n_y^-+1)+\lambda n.
+\]
+The Gaussian release gives
+\[
+\widetilde\mu_y=\frac{2(S_y^-+Z)}{A_y}+\xi_y,
+\qquad
+\xi_y\sim\mathcal N(0,\sigma^2 I).
+\]
+Multiplying by $A_y/2$ and subtracting $S_y^-$ yields
+\[
+W_y=\frac{A_y}{2}\widetilde\mu_y-S_y^-
+=Z+\frac{A_y}{2}\xi_y.
+\]
+Thus $W_y=Z+\eta_y$ with $\eta_y\sim\mathcal N(0,(A_y\sigma/2)^2I)$.
+For a uniform finite prior with common known label, the Gaussian likelihood is proportional to
+\[
+\exp\!\left(-\frac{\|W_y-z_i\|_2^2}{2\tau_y^2}\right),
+\]
+so MAP decoding is nearest-neighbor decoding over the candidate set.
+\end{proof}
+
+
+\section{Proof of Theorem~\ref{thm:softmax-lz}}
+\label{app:proof-softmax}
+
+\begin{proof}
+Fix a label $y$ and a parameter matrix $\widetilde W\in\mathbb{R}^{K\times(d+1)}$. For a feature vector $\widetilde z$, define
+\[
+p(\widetilde z):=\softmax(\widetilde W\widetilde z),
+\qquad
+a(\widetilde z):=p(\widetilde z)-e_y,
+\]
+where $e_y$ is the $y$th standard basis vector. Then the gradient of the softmax loss is
+\[
+\nabla_{\widetilde W}\ell(\widetilde W;\widetilde z,y)
+=
+a(\widetilde z)\,\widetilde z^\top.
+\]
+Let
+\[
+a:=a(\widetilde z),
+\qquad
+a':=a(\widetilde z').
+\]
+Subtract the gradients:
+\[
+\nabla_{\widetilde W}\ell(\widetilde W;\widetilde z,y)
+-
+\nabla_{\widetilde W}\ell(\widetilde W;\widetilde z',y)
+=
+a\widetilde z^\top-a'\widetilde z'^\top.
+\]
+Add and subtract $a\widetilde z'^\top$:
+\[
+a\widetilde z^\top-a'\widetilde z'^\top
+=
+a(\widetilde z-\widetilde z')^\top+(a-a')\widetilde z'^\top.
+\]
+Taking Frobenius norms and using the triangle inequality gives
+\[
+\bigl\|
+\nabla_{\widetilde W}\ell(\widetilde W;\widetilde z,y)
+-
+\nabla_{\widetilde W}\ell(\widetilde W;\widetilde z',y)
+\bigr\|_F
+\le
+\|a(\widetilde z-\widetilde z')^\top\|_F
++
+\|(a-a')\widetilde z'^\top\|_F.
+\]
+For any vectors $u,v$, the Frobenius norm of $uv^\top$ is $\|u\|_2\|v\|_2$. Therefore
+\begin{equation}
+\label{eq:softmax-split}
+\bigl\|
+\nabla_{\widetilde W}\ell(\widetilde W;\widetilde z,y)
+-
+\nabla_{\widetilde W}\ell(\widetilde W;\widetilde z',y)
+\bigr\|_F
+\le
+\|a\|_2\,\|\widetilde z-\widetilde z'\|_2
++
+\|a-a'\|_2\,\|\widetilde z'\|_2.
+\end{equation}
+
+We now bound the two factors on the right-hand side.
+
+\paragraph{Step 1: bound $\|a\|_2$.}
+Because $a=p(\widetilde z)-e_y$ and $p(\widetilde z)$ is a probability vector,
+\[
+\|a\|_2^2
+=
+(1-p_y(\widetilde z))^2+\sum_{c\neq y}p_c(\widetilde z)^2.
+\]
+The sum of squares of nonnegative numbers is at most the square of their sum, so
+\[
+\sum_{c\neq y}p_c(\widetilde z)^2
+\le
+\left(\sum_{c\neq y}p_c(\widetilde z)\right)^2
+=
+(1-p_y(\widetilde z))^2.
+\]
+Therefore
+\[
+\|a\|_2^2
+\le
+2(1-p_y(\widetilde z))^2
+\le
+2,
+\]
+and hence
+\begin{equation}
+\label{eq:a-bound}
+\|a\|_2\le \sqrt{2}.
+\end{equation}
+
+\paragraph{Step 2: bound $\|a-a'\|_2$.}
+Since
+\[
+a-a'=p(\widetilde z)-p(\widetilde z'),
+\]
+it suffices to bound the Lipschitz constant of the softmax map under $\ell_2$. Let $p=\softmax(x)$. The Jacobian of softmax at $x$ is
+\[
+J(x)=\operatorname{Diag}(p)-pp^\top.
+\]
+This matrix is symmetric. For a fixed row $i$,
+\[
+\sum_{j=1}^K |J_{ij}(x)|
+=
+p_i(1-p_i)+\sum_{j\neq i}p_ip_j.
+\]
+Because
+\[
+\sum_{j\neq i}p_j=1-p_i,
+\]
+the previous display becomes
+\[
+p_i(1-p_i)+p_i(1-p_i)
+=
+2p_i(1-p_i)
+\le
+\frac{1}{2}.
+\]
+Thus every absolute row sum is at most $1/2$, so
+\[
+\|J(x)\|_\infty\le \frac{1}{2}.
+\]
+Since $J(x)$ is symmetric, its spectral norm is bounded by its maximum absolute row sum:
+\[
+\|J(x)\|_2\le \|J(x)\|_\infty\le \frac{1}{2}.
+\]
+Applying the mean-value theorem to the map $x\mapsto\softmax(x)$ along the segment joining $\widetilde W\widetilde z$ and $\widetilde W\widetilde z'$ gives
+\[
+\|p(\widetilde z)-p(\widetilde z')\|_2
+\le
+\frac{1}{2}\|\widetilde W(\widetilde z-\widetilde z')\|_2.
+\]
+Using
+\[
+\|\widetilde W(\widetilde z-\widetilde z')\|_2
+\le
+\|\widetilde W\|_F\,\|\widetilde z-\widetilde z'\|_2,
+\]
+we obtain
+\begin{equation}
+\label{eq:aa-bound}
+\|a-a'\|_2
+\le
+\frac{1}{2}\|\widetilde W\|_F\,\|\widetilde z-\widetilde z'\|_2.
+\end{equation}
+
+\paragraph{Step 3: obtain the bounded-parameter Lipschitz bound.}
+Substitute~\eqref{eq:a-bound} and~\eqref{eq:aa-bound} into~\eqref{eq:softmax-split}. Since $\|\widetilde z'\|_2\le \widetilde B$, we get
+\[
+\bigl\|
+\nabla_{\widetilde W}\ell(\widetilde W;\widetilde z,y)
+-
+\nabla_{\widetilde W}\ell(\widetilde W;\widetilde z',y)
+\bigr\|_F
+\le
+\left(
+\sqrt{2}
++
+\frac{\widetilde B}{2}\|\widetilde W\|_F
+\right)
+\|\widetilde z-\widetilde z'\|_2.
+\]
+The augmented coordinate is constant and equal to $1$, so
+\[
+\|\widetilde z-\widetilde z'\|_2
+=
+\|(z,1)-(z',1)\|_2
+=
+\|z-z'\|_2.
+\]
+Therefore
+\[
+\bigl\|
+\nabla_{\widetilde W}\ell(\widetilde W;\widetilde z,y)
+-
+\nabla_{\widetilde W}\ell(\widetilde W;\widetilde z',y)
+\bigr\|_F
+\le
+\left(
+\sqrt{2}
++
+\frac{\widetilde B}{2}\|\widetilde W\|_F
+\right)
+\|z-z'\|_2.
+\]
+In particular, on the bounded parameter set
+\[
+\Theta_R
+=
+\{\widetilde W:\|\widetilde W\|_F\le R\},
+\]
+the gradient-in-record Lipschitz bound holds uniformly with
+\[
+L_z(R)
+=
+\sqrt{2}+\frac{\widetilde B R}{2}.
+\]
+This proves the first part of the theorem. Under the label-preserving metric, different-label pairs have infinite distance and hence impose no additional finite constraint.
+
+\paragraph{Step 4: bound the norm of regularized ERM minimizers.}
+Now let $\widetilde W^\star$ minimize the regularized empirical objective
+\[
+F_D(\widetilde W)
+=
+\frac{1}{n}\sum_{i=1}^n
+\ell(\widetilde W;\widetilde z_i,y_i)
++
+\frac{\lambda}{2}\|\widetilde W\|_F^2.
+\]
+First-order optimality gives
+\[
+0
+=
+\frac{1}{n}\sum_{i=1}^n
+\nabla_{\widetilde W}\ell(\widetilde W^\star;\widetilde z_i,y_i)
++
+\lambda\widetilde W^\star.
+\]
+Rearranging,
+\[
+\lambda\widetilde W^\star
+=
+-
+\frac{1}{n}\sum_{i=1}^n
+\nabla_{\widetilde W}\ell(\widetilde W^\star;\widetilde z_i,y_i).
+\]
+Taking Frobenius norms and applying the triangle inequality,
+\[
+\lambda\|\widetilde W^\star\|_F
+\le
+\frac{1}{n}\sum_{i=1}^n
+\|\nabla_{\widetilde W}\ell(\widetilde W^\star;\widetilde z_i,y_i)\|_F.
+\]
+For a single example,
+\[
+\nabla_{\widetilde W}\ell(\widetilde W^\star;\widetilde z_i,y_i)
+=
+\bigl(p(\widetilde z_i)-e_{y_i}\bigr)\widetilde z_i^\top.
+\]
+Therefore
+\[
+\|\nabla_{\widetilde W}\ell(\widetilde W^\star;\widetilde z_i,y_i)\|_F
+=
+\|p(\widetilde z_i)-e_{y_i}\|_2\,\|\widetilde z_i\|_2.
+\]
+By Step~1,
+\[
+\|p(\widetilde z_i)-e_{y_i}\|_2\le \sqrt{2},
+\]
+and by the feature bound,
+\[
+\|\widetilde z_i\|_2\le \widetilde B.
+\]
+Hence
+\[
+\|\nabla_{\widetilde W}\ell(\widetilde W^\star;\widetilde z_i,y_i)\|_F
+\le
+\sqrt{2}\,\widetilde B.
+\]
+Substituting this into the previous average gives
+\[
+\lambda\|\widetilde W^\star\|_F
+\le
+\sqrt{2}\,\widetilde B.
+\]
+Thus every regularized ERM minimizer satisfies
+\[
+\|\widetilde W^\star\|_F
+\le
+\frac{\sqrt{2}\,\widetilde B}{\lambda}.
+\]
+
+\paragraph{Step 5: specialize the bounded-parameter result to ERM minimizers.}
+The relevant parameter set for applying Theorem~\ref{thm:erm-sensitivity} is the set of possible ERM minimizers. By Step~4, this set is contained in the Frobenius ball of radius
+\[
+R_{\mathrm{ERM}}
+:=
+\frac{\sqrt{2}\,\widetilde B}{\lambda}.
+\]
+Apply the bounded-parameter Lipschitz bound from Step~3 with $R=R_{\mathrm{ERM}}$. This gives
+\[
+L_z
+\le
+\sqrt{2}
++
+\frac{\widetilde B}{2}
+\cdot
+\frac{\sqrt{2}\,\widetilde B}{\lambda}.
+\]
+Therefore
+\[
+L_z
+\le
+\sqrt{2}
++
+\frac{\sqrt{2}\,\widetilde B^2}{2\lambda}
+=
+\sqrt{2}\left(1+\frac{\widetilde B^2}{2\lambda}\right).
+\]
+Since
+\[
+\widetilde B^2=B^2+1,
+\]
+we obtain
+\[
+L_z
+\le
+\sqrt{2}\left(1+\frac{B^2+1}{2\lambda}\right).
+\]
+This proves the stated ERM-minimizer bound and completes the proof.
+\end{proof}
+\section{Proofs for Ball-ReRo}
+\label{app:proof-ball-rero}
+
+\subsection{Proof of Theorem~\ref{thm:ball-dp-rero}}
+
+\begin{proof}
+For each record $z\in\mathcal{Z}$, define the completed dataset
+\[
+D_z:=D^-\cup\{z\}.
+\]
+Let $P_z$ denote the law of the mechanism output when the completed dataset is $D_z$:
+\[
+P_z:=\Law\big(M(D_z)\big).
+\]
+Define the success indicator
+\[
+A(z,\theta):=\ind{\rho(z,R(\theta,D^-))\le \eta}.
+\]
+Then the success probability of the reconstruction attack is
+\[
+p_{\mathrm{succ}}
+=
+\mathbb{E}_{Z\sim\pi_{u,r}}
+\mathbb{E}_{\theta\sim P_Z}[A(Z,\theta)].
+\]
+Because $\pi_{u,r}$ is supported on the radius-$r$ ball around $u$, every $z$ in its support satisfies $d(z,u)\le r$. Hence the completed datasets $D_z$ and $D_u$ are r-adjacent. Since $M$ is $(\varepsilon,\delta)$ r-adjacency DP, for every such $z$ and every measurable event $E$ we have
+\[
+P_z(E)\le e^{\varepsilon}P_u(E)+\delta.
+\]
+Apply this inequality to the event
+\[
+E_z:=\{\theta: \rho(z,R(\theta,D^-))\le \eta\}.
+\]
+Then
+\[
+\mathbb{E}_{\theta\sim P_z}[A(z,\theta)]
+=
+P_z(E_z)
+\le
+ e^{\varepsilon}P_u(E_z)+\delta
+=
+ e^{\varepsilon}\mathbb{E}_{\theta\sim P_u}[A(z,\theta)]+\delta.
+\]
+Average over $Z\sim\pi_{u,r}$:
+\[
+p_{\mathrm{succ}}
+\le
+ e^{\varepsilon}
+\mathbb{E}_{Z\sim\pi_{u,r}}
+\mathbb{E}_{\theta\sim P_u}[A(Z,\theta)]
++\delta.
+\]
+Swap the expectations using Tonelli's theorem (the integrand is nonnegative):
+\[
+p_{\mathrm{succ}}
+\le
+ e^{\varepsilon}
+\mathbb{E}_{\theta\sim P_u}
+\mathbb{E}_{Z\sim\pi_{u,r}}[A(Z,\theta)]
++\delta.
+\]
+Now fix the mechanism output $\theta$. The inner expectation is
+\[
+\mathbb{E}_{Z\sim\pi_{u,r}}[A(Z,\theta)]
+=
+\Pr_{Z\sim\pi_{u,r}}[\rho(Z,R(\theta,D^-))\le \eta].
+\]
+The right-hand side is at most the best oblivious success probability at scale $\eta$, namely
+\[
+\Pr_{Z\sim\pi_{u,r}}[\rho(Z,R(\theta,D^-))\le \eta]
+\le
+\sup_{z_0\in\mathcal{Z}} \Pr_{Z\sim\pi_{u,r}}[\rho(Z,z_0)\le \eta]
+=
+\kappa_{\pi_{u,r},\rho}(\eta)
+=
+\kappa.
+\]
+Substitute this bound into the previous display:
+\[
+p_{\mathrm{succ}}\le e^{\varepsilon}\kappa+\delta.
+\]
+This is exactly the claimed Ball-ReRo guarantee.
+\end{proof}
+
+\subsection{Proof of Lemma~\ref{lem:gaussian-ball-rdp}}
+
+\begin{proof}
+Fix a pair of r-adjacent datasets $D\sim_r D'$. Write
+\[
+\mu_0:=f(D),
+\qquad
+\mu_1:=f(D').
+\]
+Then the two released distributions are
+\[
+M(D)\sim \mathcal{N}(\mu_0,\sigma^2 I),
+\qquad
+M(D')\sim \mathcal{N}(\mu_1,\sigma^2 I).
+\]
+For two Gaussians with the same covariance matrix, the order-$\alpha$ Rényi divergence is
+\[
+D_\alpha\big(\mathcal{N}(\mu_0,\sigma^2 I)\,\|\,\mathcal{N}(\mu_1,\sigma^2 I)\big)
+=
+\frac{\alpha}{2\sigma^2}\|\mu_0-\mu_1\|_2^2.
+\]
+Applying this identity gives
+\[
+D_\alpha\big(M(D)\,\|\,M(D')\big)
+=
+\frac{\alpha}{2\sigma^2}\|f(D)-f(D')\|_2^2.
+\]
+By the definition of r-adjacency sensitivity,
+\[
+\|f(D)-f(D')\|_2\le \Delta_2(r).
+\]
+Substitute this into the previous display to obtain
+\[
+D_\alpha\big(M(D)\,\|\,M(D')\big)
+\le
+\frac{\alpha\,\Delta_2(r)^2}{2\sigma^2}.
+\]
+This is the claimed Ball-RDP bound.
+\end{proof}
+
+\subsection{Proof of Theorem~\ref{thm:ball-rdp-rero}}
+
+\begin{proof}
+For each candidate record $z$, let
+\[
+D_z:=D^-\cup\{z\},
+\qquad
+P_z:=\Law\big(M(D_z)\big).
+\]
+Define the success indicator
+\[
+A(z,\theta):=\ind{\rho(z,R(\theta,D^-))\le \eta}.
+\]
+The reconstruction success probability is
+\[
+p_{\mathrm{succ}}
+=
+\int_{\mathcal{Z}}\int_{\Theta} A(z,\theta)\,P_z(d\theta)\,\pi_{u,r}(dz).
+\]
+Because $\pi_{u,r}$ is supported on the radius-$r$ ball around $u$, every $z$ in its support satisfies $D_z\sim_r D_u$. By Ball-RDP,
+\[
+D_\alpha(P_z\|P_u)\le \varepsilon.
+\]
+In particular, $P_z$ is absolutely continuous with respect to $P_u$, so the likelihood ratio
+\[
+\Lambda_z(\theta):=\frac{dP_z}{dP_u}(\theta)
+\]
+is defined for $P_u$-almost every $\theta$. Rewrite $p_{\mathrm{succ}}$ using $P_u$ as the reference measure:
+\[
+p_{\mathrm{succ}}
+=
+\int_{\Theta}
+\left[
+\int_{\mathcal{Z}} A(z,\theta)\Lambda_z(\theta)\,\pi_{u,r}(dz)
+\right]
+P_u(d\theta).
+\]
+Now fix $\theta$ and apply Hölder's inequality to the inner integral with conjugate exponents $\alpha$ and $\alpha' = \alpha/(\alpha-1)$:
+\[
+\int_{\mathcal{Z}} A(z,\theta)\Lambda_z(\theta)\,\pi_{u,r}(dz)
+\le
+\left(\int_{\mathcal{Z}} A(z,\theta)\,\pi_{u,r}(dz)\right)^{1/\alpha'}
+\left(\int_{\mathcal{Z}} \Lambda_z(\theta)^\alpha\,\pi_{u,r}(dz)\right)^{1/\alpha}.
+\]
+The first factor is bounded by the anti-concentration term:
+\[
+\int_{\mathcal{Z}} A(z,\theta)\,\pi_{u,r}(dz)
+=
+\Pr_{Z\sim\pi_{u,r}}[\rho(Z,R(\theta,D^-))\le \eta]
+\le
+\kappa_{\pi_{u,r},\rho}(\eta)=\kappa.
+\]
+Therefore
+\[
+p_{\mathrm{succ}}
+\le
+\kappa^{1/\alpha'}
+\int_{\Theta}
+\left(\int_{\mathcal{Z}} \Lambda_z(\theta)^\alpha\,\pi_{u,r}(dz)\right)^{1/\alpha}
+P_u(d\theta).
+\]
+Define
+\[
+H(\theta):=\int_{\mathcal{Z}} \Lambda_z(\theta)^\alpha\,\pi_{u,r}(dz).
+\]
+Since the map $x\mapsto x^{1/\alpha}$ is concave for $\alpha>1$, Jensen's inequality gives
+\[
+\left(
+\int_{\Theta} H(\theta)^{1/\alpha}P_u(d\theta)
+\right)^\alpha
+\le
+\int_{\Theta} H(\theta)P_u(d\theta).
+\]
+Hence
+\[
+\left(\frac{p_{\mathrm{succ}}}{\kappa^{1/\alpha'}}\right)^\alpha
+\le
+\int_{\mathcal{Z}}
+\left[
+\int_{\Theta} \Lambda_z(\theta)^\alpha P_u(d\theta)
+\right]
+\pi_{u,r}(dz).
+\]
+By the definition of Rényi divergence,
+\[
+\int_{\Theta} \Lambda_z(\theta)^\alpha P_u(d\theta)
+=
+\exp\big((\alpha-1)D_\alpha(P_z\|P_u)\big)
+\le
+ e^{(\alpha-1)\varepsilon}.
+\]
+Substitute this bound into the previous display:
+\[
+\left(\frac{p_{\mathrm{succ}}}{\kappa^{1/\alpha'}}\right)^\alpha
+\le
+ e^{(\alpha-1)\varepsilon}.
+\]
+Take the $\alpha$th root:
+\[
+\frac{p_{\mathrm{succ}}}{\kappa^{1/\alpha'}}
+\le
+ e^{(\alpha-1)\varepsilon/\alpha}.
+\]
+Multiply both sides by $\kappa^{1/\alpha'}$. Since $1/\alpha'=(\alpha-1)/\alpha$, we obtain
+\[
+p_{\mathrm{succ}}
+\le
+\kappa^{(\alpha-1)/\alpha}e^{(\alpha-1)\varepsilon/\alpha}
+=
+\big(\kappa e^{\varepsilon}\big)^{(\alpha-1)/\alpha}.
+\]
+Finally, a probability is always at most $1$, so
+\[
+p_{\mathrm{succ}}
+\le
+\min\Big\{1,\big(\kappa e^{\varepsilon}\big)^{(\alpha-1)/\alpha}\Big\}.
+\]
+This is the claimed Ball-ReRo bound.
+\end{proof}
+
+\subsection{A Gaussian testing lemma}
+
+\begin{lemma}[Blow-up function for equal-covariance Gaussians]
+\label{lem:gaussian-blowup}
+Let
+\[
+P=\mathcal{N}(\mu_1,\sigma^2 I),
+\qquad
+Q=\mathcal{N}(\mu_0,\sigma^2 I),
+\qquad
+\Delta:=\|\mu_1-\mu_0\|_2.
+\]
+Then for every $\kappa\in[0,1]$,
+\[
+\sup\{P(E): Q(E)\le \kappa\}
+=
+\Phi\!\left(\Phi^{-1}(\kappa)+\frac{\Delta}{\sigma}\right),
+\]
+with the boundary cases interpreted by continuity.
+\end{lemma}
+
+\begin{proof}
+By translation and orthogonal invariance of Gaussian measures, it is enough to consider the special case
+\[
+Q=\mathcal{N}(0,\sigma^2 I),
+\qquad
+P=\mathcal{N}(\Delta e_1,\sigma^2 I),
+\]
+where $e_1$ is the first standard basis vector. In this coordinate system the log-likelihood ratio is
+\[
+\log\frac{dP}{dQ}(x)
+=
+\frac{\Delta}{\sigma^2}x_1-\frac{\Delta^2}{2\sigma^2}.
+\]
+This is an increasing function of the first coordinate $x_1$. Therefore, by the Neyman--Pearson lemma, the most powerful test at any fixed type-I level is a threshold on $x_1$, that is, a half-space of the form
+\[
+E_t:=\{x: x_1\ge t\}.
+\]
+Choose $t$ so that $Q(E_t)=\kappa$. Under $Q$, the first coordinate is $\mathcal{N}(0,\sigma^2)$, so
+\[
+\kappa=Q(E_t)=\Pr_{X\sim\mathcal{N}(0,\sigma^2)}[X\ge t]
+=1-\Phi(t/\sigma).
+\]
+Hence
+\[
+t=\sigma\Phi^{-1}(1-\kappa).
+\]
+Under $P$, the first coordinate is $\mathcal{N}(\Delta,\sigma^2)$, so
+\[
+P(E_t)
+=
+\Pr_{X\sim\mathcal{N}(\Delta,\sigma^2)}[X\ge t]
+=
+1-\Phi\!\left(\frac{t-\Delta}{\sigma}\right).
+\]
+Substitute the expression for $t$:
+\[
+P(E_t)
+=
+1-\Phi\!\left(\Phi^{-1}(1-\kappa)-\frac{\Delta}{\sigma}\right).
+\]
+Using the identity $1-\Phi(a)=\Phi(-a)$ and $-\Phi^{-1}(1-\kappa)=\Phi^{-1}(\kappa)$, we get
+\[
+P(E_t)
+=
+\Phi\!\left(\Phi^{-1}(\kappa)+\frac{\Delta}{\sigma}\right).
+\]
+Since $E_t$ is optimal at type-I level $\kappa$, this is exactly the blow-up function value.
+\end{proof}
+
+\subsection{Proof of Theorem~\ref{thm:direct-gaussian-rero}}
+
+\begin{proof}
+Fix $D^-\in\mathcal{Z}^{n-1}$ and a center $u\in\mathcal{Z}$. For each candidate record $z$ in the support of the Ball-local prior, define
+\[
+D_z:=D^-\cup\{z\},
+\qquad
+D_u:=D^-\cup\{u\}.
+\]
+Let
+\[
+P_z:=\Law(M(D_z)),
+\qquad
+Q_u:=\Law(M(D_u)).
+\]
+Because the mechanism is Gaussian output perturbation,
+\[
+P_z=\mathcal{N}(f(D_z),\sigma^2 I),
+\qquad
+Q_u=\mathcal{N}(f(D_u),\sigma^2 I).
+\]
+Since $z$ lies in the radius-$r$ ball around $u$, the completed datasets $D_z$ and $D_u$ are r-adjacent. Hence
+\[
+\|f(D_z)-f(D_u)\|_2\le \Delta_2(r).
+\]
+By Lemma~\ref{lem:gaussian-blowup}, for every measurable event family with $Q_u$-mass at most $\kappa$,
+\[
+\sup\{P_z(E):Q_u(E)\le \kappa\}
+=
+\Phi\!\left(\Phi^{-1}(\kappa)+\frac{\|f(D_z)-f(D_u)\|_2}{\sigma}\right)
+\le
+\Phi\!\left(\Phi^{-1}(\kappa)+\frac{\Delta_2(r)}{\sigma}\right).
+\]
+This upper bound is uniform over all $z$ in the support of the prior.
+
+Now define, for each $z$,
+\[
+E_z:=\{\theta: \rho(z,R(\theta,D^-))\le \eta\}.
+\]
+The attack success probability is
+\[
+p_{\mathrm{succ}}
+=
+\mathbb{E}_{Z\sim\pi_{u,r}}[P_Z(E_Z)].
+\]
+For each fixed $z$,
+\[
+P_z(E_z)
+\le
+\sup\{P_z(E):Q_u(E)\le Q_u(E_z)\}
+\le
+\Phi\!\left(\Phi^{-1}(Q_u(E_z))+\frac{\Delta_2(r)}{\sigma}\right).
+\]
+Therefore
+\[
+p_{\mathrm{succ}}
+\le
+\mathbb{E}_{Z\sim\pi_{u,r}}
+\left[
+\Phi\!\left(\Phi^{-1}(Q_u(E_Z))+\frac{\Delta_2(r)}{\sigma}\right)
+\right].
+\]
+The function
+\[
+g(t):=\Phi\!\left(\Phi^{-1}(t)+\frac{\Delta_2(r)}{\sigma}\right)
+\]
+is nondecreasing and concave on $[0,1]$. Hence Jensen's inequality gives
+\[
+p_{\mathrm{succ}}
+\le
+\Phi\!\left(
+\Phi^{-1}\!\left(\mathbb{E}_{Z\sim\pi_{u,r}}[Q_u(E_Z)]\right)+\frac{\Delta_2(r)}{\sigma}
+\right).
+\]
+It remains to bound the expectation inside $\Phi^{-1}$. By Tonelli's theorem,
+\[
+\mathbb{E}_{Z\sim\pi_{u,r}}[Q_u(E_Z)]
+=
+\mathbb{E}_{\theta\sim Q_u}
+\Pr_{Z\sim\pi_{u,r}}[\rho(Z,R(\theta,D^-))\le \eta].
+\]
+For each fixed $\theta$, the inner probability is at most the anti-concentration term
+\[
+\Pr_{Z\sim\pi_{u,r}}[\rho(Z,R(\theta,D^-))\le \eta]
+\le
+\kappa_{\pi_{u,r},\rho}(\eta).
+\]
+Therefore
+\[
+\mathbb{E}_{Z\sim\pi_{u,r}}[Q_u(E_Z)]
+\le
+\kappa_{\pi_{u,r},\rho}(\eta).
+\]
+Using the monotonicity of $g$ now yields
+\[
+p_{\mathrm{succ}}
+\le
+\Phi\!\left(
+\Phi^{-1}\!\big(\kappa_{\pi_{u,r},\rho}(\eta)\big)+\frac{\Delta_2(r)}{\sigma}
+\right).
+\]
+This is the claimed direct Gaussian Ball-ReRo bound.
+\end{proof}
+
+\subsection{Proof of Corollary~\ref{cor:uniform-finite-prior}}
+
+\begin{proof}
+Under the exact-identification loss $\rho_{0/1}(z,z')=\ind{z\neq z'}$ and any threshold $\eta<1$, the event
+\[
+\rho_{0/1}(Z,R(\theta,D^-))\le \eta
+\]
+is exactly the event
+\[
+R(\theta,D^-)=Z.
+\]
+For the uniform prior on $m$ candidates,
+\[
+\pi_S=\frac{1}{m}\sum_{i=1}^m \delta_{z_i},
+\]
+the best oblivious strategy is to guess any single candidate, and its success probability is exactly $1/m$. Hence
+\[
+\kappa_{\pi_S,\rho_{0/1}}(\eta)=\frac{1}{m}.
+\]
+Substituting this value into Theorem~\ref{thm:direct-gaussian-rero} gives
+\[
+\Pr[R(\theta,D^-)=Z]
+\le
+\Phi\!\left(\Phi^{-1}(1/m)+\frac{\Delta_2(r)}{\sigma}\right).
+\]
+This is the claimed exact-identification bound.
+\end{proof}
+
+\subsection{Proof of Theorem~\ref{thm:finite-gaussian-support-bound}}
+
+\begin{proof}
+Let $A_i$ be the event that the attack outputs candidate $z_i$. The events $A_1,\ldots,A_m$ are disjoint, and therefore
+\[
+\sum_{i=1}^m Q(A_i)\le 1.
+\]
+Write $q_i:=Q(A_i)$. By Lemma~\ref{lem:gaussian-blowup}, applied to $P_i=\mathcal N(\mu_i,\sigma^2 I)$ and $Q=\mathcal N(\mu_0,\sigma^2 I)$,
+\[
+P_i(A_i)\le \Phi\!\left(\Phi^{-1}(q_i)+d_i\right),
+\qquad
+ d_i=\frac{\|\mu_i-\mu_0\|_2}{\sigma}.
+\]
+The exact-identification success probability is
+\[
+p_{\mathrm{succ}}=\sum_{i=1}^m \pi_i P_i(A_i).
+\]
+Combining the previous two displays gives
+\[
+p_{\mathrm{succ}}
+\le
+\sum_{i=1}^m \pi_i\Phi\!\left(\Phi^{-1}(q_i)+d_i\right)
+\]
+for some nonnegative $q_i$ with $\sum_i q_i\le 1$. Maximizing over all such $q_i$ proves the first claim.
+
+For the uniform-prior specialization, assume $d_i\le R$ for all $i$. Since the map $q\mapsto \Phi(\Phi^{-1}(q)+R)$ is nondecreasing and concave on $[0,1]$, Jensen's inequality gives
+\[
+\frac{1}{m}\sum_{i=1}^m
+\Phi\!\left(\Phi^{-1}(q_i)+d_i\right)
+\le
+\frac{1}{m}\sum_{i=1}^m
+\Phi\!\left(\Phi^{-1}(q_i)+R\right)
+\le
+\Phi\!\left(\Phi^{-1}\!\left(\frac{1}{m}\sum_i q_i\right)+R\right).
+\]
+Because $\sum_i q_i\le 1$ and the same map is nondecreasing,
+\[
+p_{\mathrm{succ}}
+\le
+\Phi\!\left(\Phi^{-1}(1/m)+R\right).
+\]
+This proves the stated finite-Gaussian support bound.
+\end{proof}
+
+
+\section{Proof of Proposition~\ref{prop:finite-map}}
+\label{app:proof-finite-map}
+
+\begin{proof}
+Fix a finite candidate set $S=\{z_1,\dots,z_m\}$ and prior weights $\pi_1,\dots,\pi_m$. For each candidate $z_i$, the Gaussian release density is
+\[
+p(\widetilde\theta\mid z_i,D^-)
+=
+(2\pi\sigma^2)^{-p/2}
+\exp\!\left(
+-\frac{1}{2\sigma^2}\bigl\|\widetilde\theta-\widehat\theta(D^-\cup\{z_i\})\bigr\|_2^2
+\right),
+\]
+where $p$ is the parameter dimension. By Bayes' rule,
+\[
+p(z_i\mid \widetilde\theta,D^-)
+\propto
+\pi_i\,p(\widetilde\theta\mid z_i,D^-).
+\]
+Take logarithms:
+\[
+\log p(z_i\mid \widetilde\theta,D^-)
+=
+\log \pi_i
+-
+\frac{1}{2\sigma^2}\bigl\|\widetilde\theta-\widehat\theta(D^-\cup\{z_i\})\bigr\|_2^2
++
+C(\widetilde\theta),
+\]
+where $C(\widetilde\theta)$ is a constant independent of the candidate index $i$. Since the MAP rule chooses the candidate with the largest posterior probability, and since $C(\widetilde\theta)$ is the same for every candidate, any MAP estimator is of the form
+\[
+\arg\max_{z_i\in S}
+\left\{
+\log \pi_i
+-
+\frac{1}{2\sigma^2}\bigl\|\widetilde\theta-\widehat\theta(D^-\cup\{z_i\})\bigr\|_2^2
+\right\}.
+\]
+If the prior is uniform, then $\log \pi_i$ is the same for every candidate and can be dropped, leaving the least-squares objective.
+\end{proof}
+
+
+\section{Appendix Figures}
+\label{app:figures}
+
+\[
+\texttt{fig\_<plot\_name>\_<dataset\_tag>\_ridge\_prototype.<ext>}.
+\]
+Representative examples already used in the main text include
+\texttt{fig\_agg\_sigma\_grouped\_bar.pdf},
+\texttt{fig\_agg\_bound\_same\_noise\_grouped\_bar.pdf},
+\texttt{fig\_agg\_accuracy\_grouped\_bar.pdf}, and the per-dataset hooks
+\texttt{fig\_sigma\_vs\_epsilon\_mnist\_ridge\_prototype.pdf} and
+\texttt{fig\_accuracy\_vs\_epsilon\_mnist\_ridge\_prototype.png}.
+
+\end{document}

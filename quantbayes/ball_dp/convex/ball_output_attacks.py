@@ -233,6 +233,7 @@ def _convex_cfg_from_release(release: ReleaseArtifact) -> ConvexReleaseConfig:
         use_exact_sensitivity_if_available=bool(
             train_cfg.get("use_exact_sensitivity_if_available", True)
         ),
+        ridge_sensitivity_mode=str(train_cfg.get("ridge_sensitivity_mode", "global")),
         seed=int(train_cfg.get("seed", 0)),
         store_nonprivate_reference=False,
     )
@@ -826,6 +827,23 @@ def run_convex_ball_output_finite_prior_attack(
     best_idx = int(np.argmax(log_scores_arr))
     best_record = filtered_records[best_idx]
 
+    # Posterior diagnostics. These do not change the MAP decision, but they make
+    # near-chance regimes easier to diagnose: a correct but flat posterior is very
+    # different from a confident top-1 error.
+    shifted = log_scores_arr - float(np.max(log_scores_arr))
+    posterior = np.exp(shifted)
+    posterior = posterior / float(np.sum(posterior))
+    posterior_entropy = float(
+        -np.sum(posterior * np.log(np.maximum(posterior, 1e-300)))
+    )
+    posterior_effective_candidates = float(np.exp(posterior_entropy))
+    sorted_scores = np.sort(log_scores_arr)[::-1]
+    top2_gap = (
+        float(sorted_scores[0] - sorted_scores[1])
+        if sorted_scores.size >= 2
+        else float("inf")
+    )
+
     metrics = (
         {}
         if true_record is None
@@ -836,6 +854,10 @@ def run_convex_ball_output_finite_prior_attack(
         )
     )
     metrics["oblivious_kappa"] = float(np.max(probs))
+    metrics["posterior_top1_probability"] = float(posterior[best_idx])
+    metrics["posterior_entropy"] = posterior_entropy
+    metrics["posterior_effective_candidates"] = posterior_effective_candidates
+    metrics["log_score_gap_top2"] = top2_gap
 
     true_prior_index = None
     if true_record is not None:
@@ -858,6 +880,10 @@ def run_convex_ball_output_finite_prior_attack(
             rank = int(np.where(order == true_prior_index)[0][0]) + 1
             metrics["prior_exact_hit"] = float(best_idx == true_prior_index)
             metrics["prior_rank"] = float(rank)
+            metrics["posterior_true_probability"] = float(posterior[true_prior_index])
+            metrics["log_score_gap_truth_to_top"] = float(
+                log_scores_arr[true_prior_index] - log_scores_arr[best_idx]
+            )
             for kk in (1, 5, 10):
                 metrics[f"prior_hit@{kk}"] = float(rank <= kk)
 
@@ -878,7 +904,14 @@ def run_convex_ball_output_finite_prior_attack(
         "prior_weights": probs.astype(float).tolist(),
         "oblivious_kappa": float(np.max(probs)),
         "candidate_log_scores": log_scores_arr.astype(float).tolist(),
+        "candidate_log_posteriors": np.log(np.maximum(posterior, 1e-300))
+        .astype(float)
+        .tolist(),
+        "candidate_posterior_probs": posterior.astype(float).tolist(),
         "candidate_objectives": (-log_scores_arr).astype(float).tolist(),
+        "posterior_entropy": posterior_entropy,
+        "posterior_effective_candidates": posterior_effective_candidates,
+        "log_score_gap_top2": top2_gap,
         "predicted_prior_index": int(best_idx),
         "true_prior_index": true_prior_index,
         "true_record_in_prior": bool(true_prior_index is not None),

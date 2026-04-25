@@ -1,0 +1,1203 @@
+\documentclass[conference,compsoc]{IEEEtran}
+
+% Same submission-oriented style as Paper 1.
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{cite}
+\usepackage{graphicx}
+\usepackage[caption=false,font=footnotesize]{subfig}
+\usepackage{amsmath,amssymb,amsfonts,amsthm,mathtools}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{url}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage[hidelinks]{hyperref}
+\usepackage{microtype}
+
+\interdisplaylinepenalty=2500
+
+\newtheorem{definition}{Definition}
+\newtheorem{assumption}{Assumption}
+\newtheorem{theorem}{Theorem}
+\newtheorem{lemma}{Lemma}
+\newtheorem{proposition}{Proposition}
+\newtheorem{corollary}{Corollary}
+\newtheorem{remark}{Remark}
+
+\DeclareMathOperator{\Law}{Law}
+\DeclareMathOperator{\softmax}{softmax}
+\DeclareMathOperator{\clip}{clip}
+\DeclareMathOperator{\supp}{supp}
+\DeclareMathOperator{\diag}{diag}
+\newcommand{\ind}[1]{\mathbf{1}\!\left\{#1\right\}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\N}{\mathcal{N}}
+\newcommand{\cT}{\mathcal{T}}
+\newcommand{\cZ}{\mathcal{Z}}
+\newcommand{\cB}{\mathcal{B}}
+\newcommand{\cX}{\mathcal{X}}
+\newcommand{\cY}{\mathcal{Y}}
+\newcommand{\cC}{\mathcal{C}}
+\newcommand{\eps}{\varepsilon}
+\newcommand{\todoresult}{\textbf{TBD}}
+
+% Safe figure inclusion: if the file is missing, insert a visible placeholder box instead of failing.
+\newcommand{\maybeincludegraphics}[2][]{%
+  \IfFileExists{#2}{\includegraphics[#1]{#2}}{%
+    \fbox{%
+      \parbox[c][0.22\textheight][c]{0.95\linewidth}{%
+        \centering
+        Missing figure file\\[2mm]
+        \texttt{\detokenize{#2}}
+      }%
+    }%
+  }%
+}
+
+\title{r-Adjacency Differential Privacy for Nonconvex Learning:\\Transcript Releases and Kernel Reconstruction Bounds}
+
+% Keep blank for anonymous submission.
+\author{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Metric-local adjacency lets a privacy policy protect only those single-record changes that lie inside a chosen record-space ball. A first paper in this series develops the convex Gaussian-output case. This paper studies the nonconvex training setting in which the released object is the noisy DP-SGD transcript itself. The central challenge is that a full transcript is adaptive: each noisy gradient release determines the next iterate, so the next release law depends on the previous transcript.
+
+We give a self-contained treatment of r-adjacency privacy for nonconvex gradient training under Poisson subsampling, gradient clipping, and Gaussian noise. The per-step r-adjacency sensitivity is controlled by
+\[
+\Delta_t(r)\le \min\{L_t r,2C_t\},
+\]
+where $L_t$ is a Lipschitz-in-record constant for the unclipped per-example gradient at the current iterate and $C_t$ is the clipping norm. For projected one-hidden-layer tanh networks, we provide explicit operator-norm certificates for both binary logistic and multiclass softmax losses.
+
+The main result is a direct reconstruction-robustness theorem for the full transcript release. Rather than converting through R\'enyi DP, we construct an explicit product reference experiment
+\[
+\nu^\star=\bigotimes_{t=1}^T\Law(I_t,G_t),
+\qquad
+\mu_r^\star=\bigotimes_{t=1}^T\Law(I_t,I_t\Delta_t(r)/\nu_t+G_t),
+\]
+where $I_t\sim\mathrm{Bernoulli}(\gamma_t)$ and $G_t\sim\mathcal N(0,1)$. For every candidate target record in the protected ball, the true adaptive transcript experiment is a probability-kernel post-processing of this simple product reference experiment. By the data-processing theorem for hypothesis-testing trade-off functions, every reconstruction attack against the true transcript is therefore bounded by the blow-up/ROC curve of the product reference law. This yields a clean finite-prior exact-identification bound and a theorem-aligned Bayesian transcript attack. Placeholders for empirical transcript attacks and bound evaluations are included so that numerical results can be inserted without changing the theory.
+\end{abstract}
+
+\section{Introduction}
+
+The first paper in this series studies r-adjacency differential privacy for convex learning with Gaussian output perturbation. That setting is deliberately clean: the trained model is the release, the release law is a single Gaussian shift family, and reconstruction robustness can be analyzed by a one-shot Gaussian testing problem.
+
+This paper moves to the next setting: nonconvex learning trained by noisy gradient methods. The released object is no longer a single Gaussian-perturbed parameter vector. It is the full noisy training transcript
+\[
+\cT_T=(\widetilde S_1,\ldots,\widetilde S_T),
+\]
+where each $\widetilde S_t$ is a clipped, subsampled, Gaussian-noisy gradient aggregate. This creates two difficulties.
+First, the model can be nonconvex, so global ERM sensitivity is not the right primitive.
+Second, the transcript law is adaptive: the distribution of $\widetilde S_t$ depends on the earlier releases through the current iterate.
+
+The privacy primitive is nevertheless simple. At a fixed iterate $\theta_t$, if the per-example gradient is Lipschitz in the record metric with constant $L_t$, then replacing one record by another record within distance $r$ changes its clipped gradient by at most
+\[
+\Delta_t(r)\le \min\{L_t r,2C_t\}.
+\]
+This is the nonconvex analogue of the convex sensitivity result from Paper 1. It does not require convexity of the loss, uniqueness of a minimizer, or stability of the final model. It is purely a per-step statement about the released noisy gradient aggregate.
+
+The main contribution is a direct reconstruction theorem for the transcript law. We do not use an RDP-to-ReRo conversion as the main bound. Instead, we build an explicit, low-dimensional reference experiment that dominates every candidate transcript experiment inside the policy ball. The proof is easiest to understand through probability kernels:
+\begin{itemize}[leftmargin=1.4em]
+    \item a probability kernel is a randomized post-processing map;
+    \item kernels compose;
+    \item adaptive transcript generation can be written as a recursion of kernels;
+    \item the Ionescu--Tulcea extension theorem guarantees that such a recursion defines a unique product-path law;
+    \item hypothesis-testing trade-off functions are monotone under kernel post-processing \cite{dong2022gdp}.
+\end{itemize}
+Once the true adaptive transcript law is realized as a kernel image of a simpler product reference law, the reconstruction bound follows from ordinary hypothesis testing.
+
+\paragraph{Scope.}
+This paper is about transcript releases and nonconvex gradient training. 
+\paragraph{Contributions.}
+\begin{itemize}[leftmargin=1.4em]
+    \item We define r-adjacency DP for full nonconvex DP-SGD transcripts and derive the per-step sensitivity certificate $\Delta_t(r)\le\min\{L_t r,2C_t\}$.
+    \item We provide explicit operator-norm $L_t$ certificates for one-hidden-layer tanh networks with binary logistic and multiclass softmax losses.
+    \item We develop a pedagogical probability-kernel proof of the direct transcript reconstruction bound. The true transcript law is shown to be a kernel post-processing of a product Bernoulli--Gaussian shift reference law.
+    \item We specialize the theorem to finite-prior exact identification, obtaining a directly computable upper bound on the success probability of any transcript reconstructor.
+    \item We give theorem-aligned transcript MAP attacks, including finite-prior exact Bayesian scoring and continuous Ball-constrained optimization templates. Result tables and figure placeholders are included for later experimental insertion.
+\end{itemize}
+
+\section{r-Adjacency and Transcript Releases}
+\label{sec:setup}
+
+Let records live in a metric space $(\cZ,d)$, where $d$ may take the value $\infty$. A dataset is
+\[
+D=(z_1,\ldots,z_n)\in\cZ^n.
+\]
+
+\begin{definition}[r-adjacency]
+Datasets $D,D'\in\cZ^n$ are r-adjacent, written $D\sim_r D'$, if they differ in exactly one index $j$ and the differing records satisfy
+\[
+d(z_j,z'_j)\le r.
+\]
+\end{definition}
+
+\begin{definition}[r-adjacency DP]
+A randomized mechanism $M$ satisfies $(\eps,\delta)$ r-adjacency DP at radius $r$ if for every measurable set $A$ and every $D\sim_r D'$,
+\[
+\Pr[M(D)\in A]\le e^\eps\Pr[M(D')\in A]+\delta.
+\]
+\end{definition}
+
+In the embedding experiments we use the label-preserving Euclidean metric
+\[
+d\big((x,y),(x',y')\big)=
+\begin{cases}
+\|x-x'\|_2, & y=y',\\
+\infty, & y\ne y'.
+\end{cases}
+\]
+The policy radius $r$ therefore defines a same-label protected ball in embedding space.
+
+\subsection{Poisson-subsampled noisy gradient transcript}
+
+At step $t$, the iterate $\theta_t$ is a deterministic function of the previous transcript $h_{t-1}=(\widetilde S_1,\ldots,\widetilde S_{t-1})$ and public hyperparameters. The trainer samples each index independently with probability $\gamma_t\in(0,1]$:
+\[
+I_{t,i}\sim\mathrm{Bernoulli}(\gamma_t),
+\qquad
+B_t:=\{i:I_{t,i}=1\}.
+\]
+Let
+\[
+g_t(z):=\nabla_\theta \ell(\theta_t;z),
+\qquad
+\bar g_t(z):=\clip_{C_t}(g_t(z)),
+\]
+where Euclidean clipping is
+\[
+\clip_C(v):=v\min\left\{1,\frac{C}{\|v\|_2}\right\}.
+\]
+The released noisy sum is
+\[
+S_t(D):=\sum_{i\in B_t}\bar g_t(z_i),
+\qquad
+\widetilde S_t(D):=S_t(D)+\xi_t,
+\qquad
+\xi_t\sim\N(0,\nu_t^2 I_p).
+\]
+The full transcript is
+\[
+\cT_T(D):=(\widetilde S_1(D),\ldots,\widetilde S_T(D)).
+\]
+Any final model obtained by applying the public update rule to the transcript is post-processing of $\cT_T$.
+
+\begin{remark}[Noisy sums versus noisy means]
+If the implementation stores a noisy batch mean rather than a noisy sum, it uses a deterministic normalization, for example the target batch size $m_t=\gamma_t n$. This is only a deterministic rescaling. All statements below apply after replacing $\nu_t$ and $\Delta_t(r)$ by the corresponding rescaled quantities.
+\end{remark}
+
+\subsection{Per-step r-adjacency sensitivity}
+
+\begin{assumption}[Per-step Lipschitz-in-record gradient]
+\label{ass:step-lz}
+For each step $t$ and every realized history $h_{t-1}$, the iterate $\theta_t(h_{t-1})$ lies in a parameter set on which there is a constant $L_t$ such that
+\[
+\|\nabla_\theta\ell(\theta_t;z)-\nabla_\theta\ell(\theta_t;z')\|_2
+\le L_t d(z,z')
+\qquad\forall z,z'\in\cZ.
+\]
+\end{assumption}
+
+\begin{lemma}[Clipped gradient r-sensitivity]
+\label{lem:clipped-sensitivity}
+Under Assumption~\ref{ass:step-lz}, for every pair $z,z'$ with $d(z,z')\le r$,
+\[
+\|\bar g_t(z)-\bar g_t(z')\|_2
+\le
+\Delta_t(r)
+:=\min\{L_t r,2C_t\}.
+\]
+\end{lemma}
+
+\begin{proof}
+Euclidean clipping is the metric projection onto the closed Euclidean ball of radius $C_t$, and metric projections onto closed convex sets in Hilbert space are non-expansive. Hence
+\[
+\|\bar g_t(z)-\bar g_t(z')\|_2
+\le
+\|g_t(z)-g_t(z')\|_2
+\le L_t d(z,z')
+\le L_t r.
+\]
+Also $\|\bar g_t(z)\|_2\le C_t$ and $\|\bar g_t(z')\|_2\le C_t$, so
+\[
+\|\bar g_t(z)-\bar g_t(z')\|_2
+\le \|\bar g_t(z)\|_2+\|\bar g_t(z')\|_2
+\le 2C_t.
+\]
+Taking the better of the two bounds gives the claim.
+\end{proof}
+
+\begin{remark}[What changes relative to standard DP-SGD]
+The standard replacement analysis uses the clipping-only sensitivity $2C_t$. The r-adjacency analysis replaces it by $\min\{L_t r,2C_t\}$. When $L_t r<2C_t$, the local metric structure gives a strictly smaller one-step signal-to-noise ratio.
+\end{remark}
+
+\section{Operator-Norm Certificates for Tanh Networks}
+\label{sec:tanh-certificates}
+
+This section gives explicit $L_t$ certificates for projected one-hidden-layer tanh models. The role of the projection or constraint is to ensure that the iterates stay in a set where the record-gradient map is Lipschitz.
+
+\subsection{Binary logistic tanh network}
+
+Consider
+\[
+f_\theta(x)=\frac{1}{\sqrt H}a^\top\tanh(Wx+b),
+\qquad
+\theta=(W,b,a),
+\]
+with binary logistic loss
+\[
+\ell(\theta;(x,y))=\log\bigl(1+\exp(-y f_\theta(x))\bigr),
+\qquad y\in\{-1,+1\}.
+\]
+Assume $\|x\|_2\le B$, $\|W\|_{2\to2}\le \Lambda$, and $\|a\|_2\le A$. The bias $b$ is unrestricted. Parameter space is equipped with
+\[
+\|(\Delta W,\Delta b,\Delta a)\|_2^2
+=\|\Delta W\|_F^2+\|\Delta b\|_2^2+\|\Delta a\|_2^2.
+\]
+
+\begin{theorem}[Binary tanh network: operator-norm $L_z$]
+\label{thm:binary-tanh-op}
+Let
+\[
+K_{\tanh}:=\sup_{u\in\R}|\tanh''(u)|=\frac{4}{3\sqrt 3},
+\]
+\[
+L_f^{\mathrm{bin}}
+:=
+\frac{1}{\sqrt H}
+\sqrt{
+\Lambda^2
++A^2K_{\tanh}^2\Lambda^2
++A^2(K_{\tanh}\Lambda B+1)^2
+},
+\]
+\[
+G_f^{\mathrm{bin}}
+:=\sqrt{1+\frac{A^2(1+B^2)}{H}},
+\qquad
+L_z^{\mathrm{bin}}
+:=L_f^{\mathrm{bin}}+\frac{A\Lambda}{4\sqrt H}G_f^{\mathrm{bin}}.
+\]
+Then for every same-label pair $(x,y),(x',y)$,
+\[
+\|\nabla_\theta\ell(\theta;(x,y))-\nabla_\theta\ell(\theta;(x',y))\|_2
+\le L_z^{\mathrm{bin}}\|x-x'\|_2.
+\]
+Consequently, for the label-preserving metric, Assumption~\ref{ass:step-lz} holds with $L_t=L_z^{\mathrm{bin}}$ whenever the current iterate satisfies $\|W_t\|_{2\to2}\le\Lambda$ and $\|a_t\|_2\le A$.
+\end{theorem}
+
+\subsection{Multiclass softmax tanh network}
+
+Now consider the multiclass model
+\[
+f_\theta(x)=\frac{1}{\sqrt H}M^\top\tanh(Wx+b)\in\R^K,
+\qquad
+\theta=(W,b,M),
+\]
+with softmax loss
+\[
+\ell(\theta;(x,y))=-f_\theta(x)_y+\log\sum_{k=1}^K\exp(f_\theta(x)_k).
+\]
+Assume $\|x\|_2\le B$, $\|W\|_{2\to2}\le\Lambda$, and $\|M\|_F\le A$. Parameter space is equipped with
+\[
+\|(\Delta W,\Delta b,\Delta M)\|_2^2
+=\|\Delta W\|_F^2+\|\Delta b\|_2^2+\|\Delta M\|_F^2.
+\]
+
+\begin{theorem}[Multiclass tanh network: operator-norm $L_z$]
+\label{thm:multiclass-tanh-op}
+Let
+\[
+L_f^{\mathrm{mc}}
+:=
+\frac{1}{\sqrt H}
+\sqrt{
+\Lambda^2
++A^2K_{\tanh}^2\Lambda^2
++A^2(K_{\tanh}\Lambda B+1)^2
+},
+\]
+\[
+G_f^{\mathrm{mc}}
+:=\sqrt{1+\frac{A^2(1+B^2)}{H}},
+\qquad
+L_z^{\mathrm{mc}}
+:=\sqrt 2\,L_f^{\mathrm{mc}}+\frac{A\Lambda}{2\sqrt H}G_f^{\mathrm{mc}}.
+\]
+Then for every same-label pair $(x,y),(x',y)$,
+\[
+\|\nabla_\theta\ell(\theta;(x,y))-\nabla_\theta\ell(\theta;(x',y))\|_2
+\le L_z^{\mathrm{mc}}\|x-x'\|_2.
+\]
+Consequently, for the label-preserving metric, Assumption~\ref{ass:step-lz} holds with $L_t=L_z^{\mathrm{mc}}$ whenever $\|W_t\|_{2\to2}\le\Lambda$ and $\|M_t\|_F\le A$.
+\end{theorem}
+
+The proofs of Theorems~\ref{thm:binary-tanh-op} and~\ref{thm:multiclass-tanh-op} are in Appendix~\ref{app:tanh-proofs}. They are written block by block because the constants are useful for implementation audits.
+
+\section{Kernel Preliminaries for Transcript Bounds}
+\label{sec:kernels}
+
+The direct transcript bound is a testing argument. This section collects the probability-kernel tools used in the proof.
+
+\subsection{Probability kernels as randomized post-processing}
+
+\begin{definition}[Probability kernel]
+Let $(E,\mathcal E)$ and $(F,\mathcal F)$ be measurable spaces. A probability kernel from $E$ to $F$, written
+\[
+K:E\rightsquigarrow F,
+\]
+is a map $K:E\times\mathcal F\to[0,1]$ such that:
+\begin{enumerate}[leftmargin=1.4em]
+    \item for each $x\in E$, $A\mapsto K(x,A)$ is a probability measure on $(F,\mathcal F)$;
+    \item for each $A\in\mathcal F$, $x\mapsto K(x,A)$ is $\mathcal E$-measurable.
+\end{enumerate}
+\end{definition}
+
+If $P$ is a probability law on $E$, the post-processed law $PK$ on $F$ is
+\[
+(PK)(A):=\int_E K(x,A)\,P(dx),
+\qquad A\in\mathcal F.
+\]
+Thus a kernel is exactly a randomized post-processing rule.
+
+\begin{definition}[Composition of kernels]
+If $K:E\rightsquigarrow F$ and $L:F\rightsquigarrow G$, their composition $KL:E\rightsquigarrow G$ is
+\[
+(KL)(x,C):=\int_F L(y,C)\,K(x,dy).
+\]
+Then $(PK)L=P(KL)$.
+\end{definition}
+
+\subsection{Recursive transcript construction}
+
+A transcript law is built recursively. Given a previous history $h_{t-1}\in\Omega_{1:t-1}$, a one-step kernel $K_t(h_{t-1},\cdot)$ gives a distribution over the next release in $\Omega_t$. The Ionescu--Tulcea extension theorem says that an initial law and such a sequence of kernels define a unique law on the full path space $\Omega_{1:T}$. For finite $T$, this can be read simply as the iterated integral
+\[
+\Pr[X_{1:T}\in A]
+=\int \cdots \int \ind{(x_1,\ldots,x_T)\in A}
+K_T(x_{1:T-1},dx_T)\cdots K_1(dx_1).
+\]
+This is the formal device that lets us glue one-step post-processing kernels into one global transcript post-processing kernel.
+
+\subsection{Trade-off functions and blow-up functions}
+
+We use the following testing convention. A randomized test is a measurable function $\phi:\Omega\to[0,1]$, where $\phi(\omega)$ is the probability of declaring the alternative law $P$ rather than the null law $Q$.
+
+\begin{definition}[ROC/blow-up function]
+For probability laws $P,Q$ on a common measurable space, define
+\[
+B_\kappa^{\mathrm{test}}(P,Q)
+:=
+\sup\left\{\int \phi\,dP:
+0\le\phi\le 1,
+\int \phi\,dQ\le \kappa
+\right\}.
+\]
+This is the maximum achievable power under $P$ among tests whose false-positive probability under $Q$ is at most $\kappa$.
+\end{definition}
+
+\begin{definition}[Trade-off function]
+The corresponding trade-off function is
+\[
+T(P,Q)(\kappa):=1-B_\kappa^{\mathrm{test}}(P,Q).
+\]
+Thus $T(P,Q)(\kappa)$ is the smallest type-II error at type-I budget $\kappa$ under this convention.
+\end{definition}
+
+\begin{lemma}[Kernel data processing]
+\label{lem:kernel-dp}
+Let $K:E\rightsquigarrow F$ be a probability kernel. Then for all $\kappa\in[0,1]$,
+\[
+B_\kappa^{\mathrm{test}}(PK,QK)\le B_\kappa^{\mathrm{test}}(P,Q),
+\]
+or equivalently,
+\[
+T(PK,QK)(\kappa)\ge T(P,Q)(\kappa).
+\]
+\end{lemma}
+
+\begin{proof}
+Let $\phi:F\to[0,1]$ be any test with $\int\phi\,d(QK)\le\kappa$. Define the pulled-back test
+\[
+(K\phi)(x):=\int_F \phi(y)K(x,dy).
+\]
+Then $0\le K\phi\le1$ and
+\[
+\int K\phi\,dQ=\int\phi\,d(QK)\le\kappa.
+\]
+Also
+\[
+\int\phi\,d(PK)=\int K\phi\,dP.
+\]
+Therefore every feasible test after post-processing corresponds to a feasible test before post-processing with the same power. Taking the supremum gives
+\[
+B_\kappa^{\mathrm{test}}(PK,QK)\le B_\kappa^{\mathrm{test}}(P,Q).
+\]
+The trade-off statement follows from $T=1-B^{\mathrm{test}}$.
+\end{proof}
+
+\begin{remark}[Why the direction matters]
+Post-processing cannot make two distributions easier to distinguish. Since the blow-up function measures best achievable power, it can only decrease under post-processing. This is the key inequality used later: if the true transcript experiment is a kernel image of a simpler reference experiment, the true transcript blow-up is bounded by the reference blow-up.
+\end{remark}
+
+\section{Direct Ball-ReRo for Transcript Releases}
+\label{sec:direct-rero}
+
+We now prove the main reconstruction bound. The proof proceeds in three stages:
+\begin{enumerate}[leftmargin=1.4em]
+    \item define the candidate transcript experiments $P_z$ and the reference experiment $Q_u$;
+    \item construct a product Bernoulli--Gaussian reference pair $(\mu_r^\star,\nu^\star)$;
+    \item show that every true candidate experiment $(P_z,Q_u)$ is a kernel post-processing of $(\mu_r^\star,\nu^\star)$.
+\end{enumerate}
+
+\subsection{Ball-local priors and reconstruction success}
+
+Let $D^-$ denote the training set with one target record removed. The adversary knows $D^-$, the training algorithm, hyperparameters, architecture, and the full released transcript. The unknown target record $Z$ is drawn from a Ball-local prior
+\[
+Z\sim\pi_{u,r},
+\qquad
+\supp(\pi_{u,r})\subseteq\cB_d(u,r):=\{z:d(z,u)\le r\}.
+\]
+For a reconstruction loss $\rho:\cZ\times\cZ\to[0,\infty)$ and threshold $\eta>0$, define the anti-concentration quantity
+\[
+\kappa_{\pi_{u,r},\rho}(\eta)
+:=
+\sup_{z_0\in\cZ}
+\Pr_{Z\sim\pi_{u,r}}[\rho(Z,z_0)\le\eta].
+\]
+This is the success probability of the best oblivious reconstructor that ignores the transcript and always outputs one fixed record.
+
+For each candidate $z\in\supp(\pi_{u,r})$, define
+\[
+D_z:=D^-\cup\{z\},
+\qquad
+D_u:=D^-\cup\{u\},
+\]
+and transcript laws
+\[
+P_z:=\Law(\cT_T(D_z)),
+\qquad
+Q_u:=\Law(\cT_T(D_u)).
+\]
+Because $z\in\cB_d(u,r)$, the datasets $D_z$ and $D_u$ are r-adjacent.
+
+\subsection{The product reference experiment}
+
+Let
+\[
+c_t(r):=\frac{\Delta_t(r)}{\nu_t}.
+\]
+For each step $t$, define a scalar reference space
+\[
+\bar\Omega_t:=\{0,1\}\times\R.
+\]
+Let $I_t\sim\mathrm{Bernoulli}(\gamma_t)$ and $G_t\sim\N(0,1)$ be independent. Define two one-step laws on $\bar\Omega_t$:
+\[
+\nu_t^\star:=\Law(I_t,G_t),
+\qquad
+\mu_{t,r}^\star:=\Law(I_t,I_t c_t(r)+G_t).
+\]
+The null law $\nu_t^\star$ has no mean shift. The alternative law $\mu_{t,r}^\star$ has a mean shift of size $c_t(r)$ only when the target inclusion bit $I_t=1$.
+
+The global product reference pair is
+\[
+\nu^\star:=\bigotimes_{t=1}^T\nu_t^\star,
+\qquad
+\mu_r^\star:=\bigotimes_{t=1}^T\mu_{t,r}^\star.
+\]
+This product law is simple and nonadaptive. All adaptivity of the true transcript will be absorbed into a post-processing kernel.
+
+\subsection{Kernel domination of the adaptive transcript law}
+
+\begin{lemma}[One-step kernel domination]
+\label{lem:one-step-kernel-domination}
+Fix a step $t$, a candidate $z\in\supp(\pi_{u,r})$, and a realized history $h_{t-1}$. Let
+\[
+\bar g_t^h(x):=\clip_{C_t}\bigl(\nabla_\theta\ell(\theta_t(h_{t-1});x)\bigr),
+\]
+and define the candidate gradient gap
+\[
+\delta_t^h(z,u):=\bar g_t^h(z)-\bar g_t^h(u).
+\]
+There exists a probability kernel
+\[
+K_t^{h,z}:\bar\Omega_t\rightsquigarrow\R^p
+\]
+such that
+\[
+\mu_{t,r}^\star K_t^{h,z}=\Law(\widetilde S_t(D_z)\mid h_{t-1}),
+\qquad
+\nu_t^\star K_t^{h,z}=\Law(\widetilde S_t(D_u)\mid h_{t-1}).
+\]
+\end{lemma}
+
+\begin{proof}
+The proof is constructive. Let
+\[
+a_t^{h,z}:=
+\begin{cases}
+\dfrac{\|\delta_t^h(z,u)\|_2}{\Delta_t(r)}, & \Delta_t(r)>0,\\[1.0ex]
+0, & \Delta_t(r)=0.
+\end{cases}
+\]
+By Lemma~\ref{lem:clipped-sensitivity}, $a_t^{h,z}\in[0,1]$.
+
+Given a reference point $(i,x)\in\{0,1\}\times\R$, draw an independent $G'\sim\N(0,1)$ and set
+\[
+R:=a_t^{h,z}x+\sqrt{1-(a_t^{h,z})^2}\,G'.
+\]
+Under $\nu_t^\star$, conditional on $I_t=i$, the scalar $x$ is $\N(0,1)$, so $R\sim\N(0,1)$. Under $\mu_{t,r}^\star$, conditional on $I_t=i$, the scalar $x$ is $\N(i c_t(r),1)$, so
+\[
+R\sim\N\left(i\,a_t^{h,z}c_t(r),1\right)
+=\N\left(i\frac{\|\delta_t^h(z,u)\|_2}{\nu_t},1\right).
+\]
+If $\delta_t^h(z,u)\ne0$, let
+\[
+v_t^{h,z}:=\frac{\delta_t^h(z,u)}{\|\delta_t^h(z,u)\|_2}.
+\]
+If $\delta_t^h(z,u)=0$, choose any unit vector $v_t^{h,z}$. Let $U_t^{h,z}:\R^{p-1}\to (v_t^{h,z})^\perp$ be a fixed linear isometry, and draw $G^\perp\sim\N(0,I_{p-1})$ independently.
+
+Finally, inside the kernel draw the common non-target contribution
+\[
+C_t^h:=\sum_{k\in B_t^-}\bar g_t^h(z_k^-),
+\]
+where $B_t^-$ is the Poisson sample of the non-target indices in $D^-$. Output
+\[
+Y:=C_t^h+i\bar g_t^h(u)+\nu_t\bigl(Rv_t^{h,z}+U_t^{h,z}G^\perp\bigr).
+\]
+Under $\nu_t^\star$, the Gaussian term has law $\N(0,\nu_t^2 I_p)$, so $Y$ has the conditional one-step law of $\widetilde S_t(D_u)$. Under $\mu_{t,r}^\star$, the scalar direction has mean $i\|\delta_t^h(z,u)\|_2/\nu_t$, so the Gaussian vector has mean $i\delta_t^h(z,u)$ and covariance $\nu_t^2 I_p$. Thus $Y$ has the conditional one-step law of $\widetilde S_t(D_z)$.
+\end{proof}
+
+\begin{lemma}[Global kernel domination]
+\label{lem:global-kernel-domination}
+For every fixed candidate $z\in\supp(\pi_{u,r})$, there exists a probability kernel
+\[
+K_z^\star:\prod_{t=1}^T\bar\Omega_t\rightsquigarrow(\R^p)^T
+\]
+such that
+\[
+\mu_r^\star K_z^\star=P_z,
+\qquad
+\nu^\star K_z^\star=Q_u.
+\]
+\end{lemma}
+
+\begin{proof}
+Given a reference path $\bar\omega=((i_1,x_1),\ldots,(i_T,x_T))$, generate an actual transcript recursively. At step $1$, apply $K_1^{\varnothing,z}$ to $(i_1,x_1)$ and obtain $\widetilde S_1$. Having generated $h_{t-1}=(\widetilde S_1,\ldots,\widetilde S_{t-1})$, apply the one-step kernel $K_t^{h_{t-1},z}$ to $(i_t,x_t)$ and obtain $\widetilde S_t$.
+
+This recursion is a sequence of measurable kernels. By the Ionescu--Tulcea extension theorem, it defines a unique probability kernel from the reference path space to the transcript path space. Call it $K_z^\star$.
+
+Lemma~\ref{lem:one-step-kernel-domination} gives the correct conditional law at every step under the product reference alternative $\mu_r^\star$ and under the product reference null $\nu^\star$. Induction over $t$ then shows that the generated transcript law is $P_z$ under $\mu_r^\star$ and $Q_u$ under $\nu^\star$.
+\end{proof}
+
+\subsection{Main direct transcript reconstruction theorem}
+
+\begin{theorem}[Direct Ball-ReRo for full transcript releases]
+\label{thm:direct-transcript-rero}
+Assume $\nu_t>0$ for every step $t$. Let $\nu^\star$ and $\mu_r^\star$ be the product reference laws defined above. Then for every Ball-local prior $\pi_{u,r}$, every reconstruction loss $\rho$, every threshold $\eta>0$, and every measurable reconstructor $R:(\R^p)^T\times\cZ^{n-1}\to\cZ$,
+\[
+\Pr_{Z\sim\pi_{u,r},\ \tau\sim P_Z}
+\bigl[\rho(Z,R(\tau,D^-))\le\eta\bigr]
+\le
+B_{\kappa_{\pi_{u,r},\rho}(\eta)}^{\mathrm{test}}(\mu_r^\star,\nu^\star).
+\]
+The same bound holds for any final model or other release obtained by post-processing the transcript.
+\end{theorem}
+
+\begin{proof}
+For each candidate $z$, define the success event
+\[
+E_z:=\{\tau\in(\R^p)^T:\rho(z,R(\tau,D^-))\le\eta\}.
+\]
+The success probability is
+\[
+p_{\mathrm{succ}}=\mathbb E_{Z\sim\pi_{u,r}}[P_Z(E_Z)].
+\]
+By Lemma~\ref{lem:global-kernel-domination}, for every fixed $z$,
+\[
+P_z=\mu_r^\star K_z^\star,
+\qquad
+Q_u=\nu^\star K_z^\star.
+\]
+Therefore Lemma~\ref{lem:kernel-dp} gives
+\[
+B_\kappa^{\mathrm{test}}(P_z,Q_u)
+\le
+B_\kappa^{\mathrm{test}}(\mu_r^\star,\nu^\star)
+\qquad\forall\kappa\in[0,1].
+\]
+Since $\ind{E_z}$ is a valid test,
+\[
+P_z(E_z)
+\le
+B_{Q_u(E_z)}^{\mathrm{test}}(P_z,Q_u)
+\le
+B_{Q_u(E_z)}^{\mathrm{test}}(\mu_r^\star,\nu^\star).
+\]
+Averaging over $Z$ gives
+\[
+p_{\mathrm{succ}}
+\le
+\mathbb E_Z\left[B_{Q_u(E_Z)}^{\mathrm{test}}(\mu_r^\star,\nu^\star)\right].
+\]
+For a fixed pair of laws, $\kappa\mapsto B_\kappa^{\mathrm{test}}$ is nondecreasing and concave because randomized tests convexify the ROC curve. Hence Jensen's inequality yields
+\[
+p_{\mathrm{succ}}
+\le
+B_{\mathbb E_Z[Q_u(E_Z)]}^{\mathrm{test}}(\mu_r^\star,\nu^\star).
+\]
+It remains to bound the average null success probability. By Tonelli's theorem,
+\[
+\mathbb E_Z[Q_u(E_Z)]
+=
+\mathbb E_{\tau\sim Q_u}
+\Pr_{Z\sim\pi_{u,r}}[\rho(Z,R(\tau,D^-))\le\eta].
+\]
+For each fixed transcript $\tau$, the inner probability is at most
+\[
+\sup_{z_0\in\cZ}\Pr_{Z\sim\pi_{u,r}}[\rho(Z,z_0)\le\eta]
+=\kappa_{\pi_{u,r},\rho}(\eta).
+\]
+Therefore
+\[
+\mathbb E_Z[Q_u(E_Z)]\le\kappa_{\pi_{u,r},\rho}(\eta).
+\]
+Using monotonicity of $B^{\mathrm{test}}$ proves the claimed bound. A final model is a measurable function of the transcript, hence the final-model statement follows by another application of kernel data processing.
+\end{proof}
+
+\begin{corollary}[Uniform finite prior and exact identification]
+\label{cor:finite-prior}
+Let $S=\{z_1,\ldots,z_m\}\subseteq\cB_d(u,r)$ and let $\pi_S$ be the uniform prior on $S$. For exact identification, use
+\[
+\rho_{0/1}(z,z')=\ind{z\ne z'}
+\]
+and any threshold $\eta<1$. Then every transcript reconstructor satisfies
+\[
+\Pr[\widehat Z=Z]
+\le
+B_{1/m}^{\mathrm{test}}(\mu_r^\star,\nu^\star).
+\]
+\end{corollary}
+
+\begin{proof}
+For $\eta<1$, the event $\rho_{0/1}(Z,\widehat Z)\le\eta$ is exactly $\widehat Z=Z$. For the uniform prior on $m$ candidates,
+\[
+\kappa_{\pi_S,\rho_{0/1}}(\eta)=1/m.
+\]
+Apply Theorem~\ref{thm:direct-transcript-rero}.
+\end{proof}
+
+\subsection{Evaluating the reference bound}
+
+The one-step likelihood ratio of $\mu_{t,r}^\star$ with respect to $\nu_t^\star$ is
+\[
+\frac{d\mu_{t,r}^\star}{d\nu_t^\star}(i,x)
+=
+\begin{cases}
+1, & i=0,\\[0.5ex]
+\exp\bigl(c_t(r)x-c_t(r)^2/2\bigr), & i=1.
+\end{cases}
+\]
+Therefore the product log-likelihood ratio is
+\[
+\log\frac{d\mu_r^\star}{d\nu^\star}
+=
+\sum_{t=1}^T I_t\left(c_t(r)X_t-\frac{c_t(r)^2}{2}\right).
+\]
+By the Neyman--Pearson lemma, the optimal test thresholds this statistic, with possible randomization at the threshold. Thus $B_\kappa^{\mathrm{test}}(\mu_r^\star,\nu^\star)$ can be evaluated by numerical integration, Monte Carlo with confidence intervals, or convolution/FFT methods for the sum of independent one-step log-likelihood ratios.
+
+\begin{remark}[Why this is sharper than a per-step concave composition]
+One could upper-bound the product reference ROC by composing one-step ROC curves. The product theorem is at least as sharp because it evaluates the optimal global likelihood-ratio test for the whole product experiment. The price is numerical evaluation of the product log-likelihood distribution, which is straightforward in one dimension per step.
+\end{remark}
+
+\section{Theorem-Aligned Transcript Attacks}
+\label{sec:attacks}
+
+The direct theorem bounds every measurable reconstructor. This section describes attacks that are aligned with the likelihood model used in the theorem. The goal is not to claim that these are the only possible attacks, but to make the empirical protocol exactly comparable to the Ball-ReRo guarantee.
+
+\subsection{Residualized transcript likelihood}
+
+Assume the attacker knows $D^-$ and the pre-step iterate $\theta_t(h_{t-1})$ for each retained transcript step. This can be obtained either by replaying the public update rule on the observed transcript or by logging pre-step model snapshots.
+
+Let
+\[
+S_t^-(h_{t-1})
+:=
+\sum_{i\in B_t^-}\bar g_t(z_i^-;h_{t-1})
+\]
+denote the contribution of known non-target records. The residualized transcript is
+\[
+R_t:=\widetilde S_t-S_t^-(h_{t-1}).
+\]
+For a candidate target $z$, the target contribution is
+\[
+\bar g_t(z;h_{t-1})=
+\clip_{C_t}(\nabla_\theta\ell(\theta_t(h_{t-1});z)).
+\]
+
+\subsection{Known-inclusion oracle MAP}
+
+If the target inclusion indicators $I_t$ are revealed, the conditional likelihood is Gaussian:
+\[
+R_t\mid z,I_t,h_{t-1}
+\sim
+\N(I_t\bar g_t(z;h_{t-1}),\nu_t^2 I_p).
+\]
+A MAP attack under prior $\pi_{u,r}$ solves
+\[
+\widehat z_{\mathrm K}
+\in
+\arg\min_{z\in\cB_d(u,r)}
+\left\{
+\sum_{t=1}^T
+\frac{\|R_t-I_t\bar g_t(z;h_{t-1})\|_2^2}{2\nu_t^2}
+-
+\log\pi_{u,r}(z)
+\right\}.
+\]
+This is an oracle stress test because revealing $I_t$ gives the attacker more information than the standard transcript release.
+
+\subsection{Unknown-inclusion MAP}
+
+Under Poisson subsampling, the natural attack marginalizes the latent inclusion variable:
+\[
+I_t\sim\mathrm{Bernoulli}(\gamma_t).
+\]
+The one-step mixture density is
+\[
+p(R_t\mid z,h_{t-1})
+=(1-\gamma_t)\varphi_{\nu_t}(R_t)
++\gamma_t\varphi_{\nu_t}(R_t-\bar g_t(z;h_{t-1})),
+\]
+where
+\[
+\varphi_\nu(v):=(2\pi\nu^2)^{-p/2}\exp\left(-\frac{\|v\|_2^2}{2\nu^2}\right).
+\]
+The MAP attack is
+\[
+\widehat z_{\mathrm U}
+\in
+\arg\min_{z\in\cB_d(u,r)}
+\left\{
+-
+\sum_{t=1}^T
+\log\left[(1-\gamma_t)\varphi_{\nu_t}(R_t)+\gamma_t\varphi_{\nu_t}(R_t-\bar g_t(z;h_{t-1}))\right]
+-
+\log\pi_{u,r}(z)
+\right\}.
+\]
+For numerical stability, the implementation should use log-sum-exp after dropping constants independent of $z$.
+
+\subsection{Finite-prior exact Bayesian scoring}
+
+If the adversary prior is finite,
+\[
+S=\{z_1,\ldots,z_m\}\subseteq\cB_d(u,r),
+\qquad
+\Pr[Z=z_i]=\pi_i,
+\]
+then no continuous optimization is needed. Known-inclusion candidate scores are
+\[
+\mathcal L_i^{\mathrm K}
+=
+\log\pi_i
+-
+\sum_{t=1}^T
+\frac{\|R_t-I_t\bar g_t(z_i;h_{t-1})\|_2^2}{2\nu_t^2}.
+\]
+Unknown-inclusion candidate scores are
+\[
+\mathcal L_i^{\mathrm U}
+=
+\log\pi_i
++
+\sum_{t=1}^T
+\log\left[(1-\gamma_t)\varphi_{\nu_t}(R_t)+\gamma_t\varphi_{\nu_t}(R_t-\bar g_t(z_i;h_{t-1}))\right].
+\]
+The exact Bayes classifier returns
+\[
+\widehat z=\arg\max_{z_i\in S}\mathcal L_i.
+\]
+This finite-prior setting is the cleanest empirical match to Corollary~\ref{cor:finite-prior}.
+
+\subsection{Continuous Ball-constrained attacks}
+
+For continuous priors, we optimize over the feasible set
+\[
+\cC:=\cB_d(u,r)\cap\cZ_{\mathrm{pub}},
+\]
+where $\cZ_{\mathrm{pub}}$ includes public constraints such as box constraints or embedding-normalization constraints. Projected first-order optimization uses
+\[
+z^{(s+1)}=\Pi_{\cC}\left(z^{(s)}-\eta_s\nabla_z\mathcal J(z^{(s)})\right),
+\]
+where $\mathcal J$ is the known- or unknown-inclusion negative log-posterior. For unknown labels, run the optimization separately for each candidate label and return the label--record pair with the best posterior score.
+
+\section{Experimental Plan and Placeholders}
+\label{sec:experiments}
+
+This section is intentionally written as a fill-in template. It fixes the quantities that should be reported once the transcript experiments have been run.
+
+\subsection{Datasets and embeddings}
+
+Use the same embedding datasets and preprocessing conventions as Paper 1. All attacks and radii should be computed in the label-preserving Euclidean metric.
+
+\begin{table}[t]
+\centering
+\caption{Dataset and transcript configuration placeholders.}
+\label{tab:dataset-placeholders}
+\begin{tabular}{lrrrrr}
+\toprule
+Dataset & $n$ & dim & classes & steps $T$ & batch rate $\gamma$\\
+\midrule
+\todoresult & \todoresult & \todoresult & \todoresult & \todoresult & \todoresult\\
+\todoresult & \todoresult & \todoresult & \todoresult & \todoresult & \todoresult\\
+\todoresult & \todoresult & \todoresult & \todoresult & \todoresult & \todoresult\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Bound evaluation}
+
+For each run, report
+\[
+c_t(r)=\frac{\Delta_t(r)}{\nu_t},
+\qquad
+\Delta_t(r)=\min\{L_t r,2C_t\},
+\]
+and evaluate
+\[
+B_{1/m}^{\mathrm{test}}(\mu_r^\star,\nu^\star)
+\]
+for finite-prior exact identification. The reference bound can be evaluated by simulating the product log-likelihood ratio under $\mu_r^\star$ and $\nu^\star$, or by deterministic convolution.
+
+\begin{figure}[t]
+\centering
+\maybeincludegraphics[width=0.95\linewidth]{figures/paper2_reference_roc_placeholder.pdf}
+\caption{Placeholder: ROC/blow-up curve of the product Bernoulli--Gaussian reference experiment for several policy radii.}
+\label{fig:reference-roc-placeholder}
+\end{figure}
+
+\begin{table}[t]
+\centering
+\caption{Finite-prior exact-identification bound placeholders.}
+\label{tab:bound-placeholders}
+\begin{tabular}{lrrrr}
+\toprule
+Dataset & radius & $m$ & oblivious $1/m$ & bound $B_{1/m}$\\
+\midrule
+\todoresult & \todoresult & \todoresult & \todoresult & \todoresult\\
+\todoresult & \todoresult & \todoresult & \todoresult & \todoresult\\
+\todoresult & \todoresult & \todoresult & \todoresult & \todoresult\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Attack evaluation}
+
+For finite-prior attacks, report exact-identification success:
+\[
+\widehat p_{\mathrm{succ}}
+=\frac1N\sum_{j=1}^N\ind{\widehat Z_j=Z_j}.
+\]
+For continuous attacks, report success curves
+\[
+\widehat p_{\mathrm{succ}}(\eta)
+=\frac1N\sum_{j=1}^N\ind{\rho(\widehat Z_j,Z_j)\le\eta},
+\]
+preferably as a function of $\eta/r$.
+
+\begin{figure}[t]
+\centering
+\maybeincludegraphics[width=0.95\linewidth]{figures/paper2_attack_success_placeholder.pdf}
+\caption{Placeholder: transcript MAP attack success versus theorem-backed direct Ball-ReRo bound.}
+\label{fig:attack-success-placeholder}
+\end{figure}
+
+\begin{table}[t]
+\centering
+\caption{Transcript attack placeholders. KI denotes known-inclusion oracle; UI denotes unknown-inclusion.}
+\label{tab:attack-placeholders}
+\begin{tabular}{lrrrrr}
+\toprule
+Dataset & radius & attack & success & bound & median error\\
+\midrule
+\todoresult & \todoresult & KI & \todoresult & \todoresult & \todoresult\\
+\todoresult & \todoresult & UI & \todoresult & \todoresult & \todoresult\\
+\todoresult & \todoresult & KI & \todoresult & \todoresult & \todoresult\\
+\todoresult & \todoresult & UI & \todoresult & \todoresult & \todoresult\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Discussion}
+
+The transcript theorem is intentionally stated in terms of the full noisy gradient trace. This is the strongest release surface considered in this paper: any final model, checkpoint, prediction API, or audit statistic computed from the trace is post-processing. The kernel proof also clarifies the role of subsampling. The product reference experiment explicitly reveals the target-inclusion bit $I_t$, even when the real transcript does not. This makes the reference experiment more informative than the true one, which is why its ROC curve is a valid upper bound.
+
+The bound is local in the policy radius through $c_t(r)=\Delta_t(r)/\nu_t$. If $L_t r<2C_t$, the reference shift is smaller than the standard clipping-only shift. This simultaneously reduces the privacy accountant and flattens the posterior landscape available to reconstruction attacks. If $L_t r\ge 2C_t$, the local analysis collapses to the standard clipping bound.
+
+\section{Ethics Considerations}
+
+This work studies privacy guarantees and reconstruction attacks. The attack algorithms are included to evaluate whether a release leaks information about a protected target record and to make empirical evaluation theorem-aligned. The intended use is defensive: selecting privacy radii, noise scales, clipping norms, and release surfaces that reduce reconstruction risk. Experiments should use datasets for which such privacy evaluation is permitted, and any qualitative reconstructions should be handled as sensitive artifacts.
+
+\section{LLM Usage Considerations}
+
+LLM tools may have been used to help draft and organize the manuscript text. All mathematical statements, proofs, experiments, and claims should be independently checked by the authors before submission.
+
+\appendices
+
+\section{Proofs for the Tanh Operator-Norm Certificates}
+\label{app:tanh-proofs}
+
+\subsection{Binary logistic tanh network}
+
+\begin{proof}[Proof of Theorem~\ref{thm:binary-tanh-op}]
+Fix $\theta=(W,b,a)$ with $\|W\|_{2\to2}\le\Lambda$ and $\|a\|_2\le A$. Fix a label $y\in\{-1,+1\}$ and inputs $x,x'$ with $\|x\|_2,\|x'\|_2\le B$. Write
+\[
+\delta:=\|x-x'\|_2,
+\qquad
+u:=Wx+b,
+\qquad
+u':=Wx'+b,
+\]
+\[
+h:=\tanh(\nu),
+\qquad
+h':=\tanh(\nu'),
+\qquad
+q:=\tanh'(\nu),
+\qquad
+q':=\tanh'(\nu').
+\]
+Because $\tanh$ is $1$-Lipschitz,
+\[
+\|h-h'\|_2\le\|\nu-\nu'\|_2=\|W(x-x')\|_2\le\Lambda\delta.
+\]
+Also $\tanh'$ is $K_{\tanh}$-Lipschitz, where $K_{\tanh}=4/(3\sqrt3)$, so
+\[
+\|q-q'\|_2\le K_{\tanh}\|\nu-\nu'\|_2\le K_{\tanh}\Lambda\delta.
+\]
+The score difference satisfies
+\[
+|f_\theta(x)-f_\theta(x')|
+=\frac1{\sqrt H}|a^\top(h-h')|
+\le\frac{A\Lambda}{\sqrt H}\delta.
+\]
+Let $\sigma(s)=(1+e^{-s})^{-1}$ and
+\[
+\beta(x,y):=\sigma(-y f_\theta(x)).
+\]
+Since $|\sigma'(s)|\le1/4$,
+\[
+|\beta(x,y)-\beta(x',y)|
+\le\frac14|f_\theta(x)-f_\theta(x')|
+\le\frac{A\Lambda}{4\sqrt H}\delta.
+\]
+The loss gradient is
+\[
+\nabla_\theta\ell(\theta;(x,y))=-y\beta(x,y)\nabla_\theta f_\theta(x).
+\]
+The score-gradient blocks are
+\[
+\nabla_a f_\theta(x)=\frac1{\sqrt H}h,
+\qquad
+\nabla_b f_\theta(x)=\frac1{\sqrt H}(a\odot q),
+\qquad
+\nabla_W f_\theta(x)=\frac1{\sqrt H}(a\odot q)x^\top.
+\]
+Using $\|h\|_2\le\sqrt H$, $\|a\odot q\|_2\le A$, and $\|x\|_2\le B$ gives
+\[
+\|\nabla_\theta f_\theta(x)\|_2
+\le
+\sqrt{1+\frac{A^2(1+B^2)}{H}}
+=G_f^{\mathrm{bin}}.
+\]
+Next, the three score-gradient blocks obey
+\[
+\|\nabla_a f_\theta(x)-\nabla_a f_\theta(x')\|_2
+\le\frac{\Lambda}{\sqrt H}\delta,
+\]
+\[
+\|\nabla_b f_\theta(x)-\nabla_b f_\theta(x')\|_2
+\le\frac{AK_{\tanh}\Lambda}{\sqrt H}\delta,
+\]
+and
+\[
+\begin{aligned}
+\|\nabla_W f_\theta(x)-\nabla_W f_\theta(x')\|_F
+&\le\frac1{\sqrt H}\left(
+\|a\odot(q-q')\|_2\|x\|_2+
+\|a\odot q'\|_2\|x-x'\|_2
+\right)\\
+&\le\frac{A(K_{\tanh}\Lambda B+1)}{\sqrt H}\delta.
+\end{aligned}
+\]
+Combining the blocks gives
+\[
+\|\nabla_\theta f_\theta(x)-\nabla_\theta f_\theta(x')\|_2
+\le L_f^{\mathrm{bin}}\delta.
+\]
+Finally,
+\[
+\begin{aligned}
+&\|\nabla_\theta\ell(\theta;(x,y))-\nabla_\theta\ell(\theta;(x',y))\|_2\\
+&\quad\le
+|\beta(x,y)-\beta(x',y)|\,\|\nabla_\theta f_\theta(x)\|_2
++\beta(x',y)\,\|\nabla_\theta f_\theta(x)-\nabla_\theta f_\theta(x')\|_2\\
+&\quad\le
+\frac{A\Lambda}{4\sqrt H}G_f^{\mathrm{bin}}\delta+L_f^{\mathrm{bin}}\delta
+=L_z^{\mathrm{bin}}\delta.
+\end{aligned}
+\]
+This proves the theorem.
+\end{proof}
+
+\subsection{Multiclass softmax tanh network}
+
+\begin{proof}[Proof of Theorem~\ref{thm:multiclass-tanh-op}]
+The proof follows the same structure. Fix $\theta=(W,b,M)$ with $\|W\|_{2\to2}\le\Lambda$ and $\|M\|_F\le A$. Define $h,h',q,q'$ as in the binary proof. Then
+\[
+\|h-h'\|_2\le\Lambda\delta,
+\qquad
+\|q-q'\|_2\le K_{\tanh}\Lambda\delta.
+\]
+The score map is
+\[
+f_\theta(x)=\frac1{\sqrt H}M^\top h\in\R^K.
+\]
+Thus
+\[
+\|f_\theta(x)-f_\theta(x')\|_2
+\le\frac{\|M\|_{2\to2}}{\sqrt H}\|h-h'\|_2
+\le\frac{A\Lambda}{\sqrt H}\delta.
+\]
+Let
+\[
+\pi(x):=\softmax(f_\theta(x)),
+\qquad
+r(x,y):=\pi(x)-e_y.
+\]
+The softmax Jacobian is $\diag(\pi)-\pi\pi^\top$ and has spectral norm at most $1/2$. Hence
+\[
+\|r(x,y)-r(x',y)\|_2
+=\|\pi(x)-\pi(x')\|_2
+\le\frac12\|f_\theta(x)-f_\theta(x')\|_2
+\le\frac{A\Lambda}{2\sqrt H}\delta.
+\]
+Also $\|r(x,y)\|_2\le\sqrt2$.
+
+Let $J_f(x)$ be the Jacobian of $f_\theta(x)$ with respect to the parameter vector. Its block operator norms are bounded by
+\[
+\|D_M f_\theta(x)\|_{\mathrm{op}}\le1,
+\qquad
+\|D_b f_\theta(x)\|_{\mathrm{op}}\le\frac{A}{\sqrt H},
+\qquad
+\|D_W f_\theta(x)\|_{\mathrm{op}}\le\frac{AB}{\sqrt H}.
+\]
+Therefore
+\[
+\|J_f(x)\|_{\mathrm{op}}
+\le
+\sqrt{1+\frac{A^2(1+B^2)}{H}}
+=G_f^{\mathrm{mc}}.
+\]
+The block Lipschitz bounds are
+\[
+\|D_M f_\theta(x)-D_M f_\theta(x')\|_{\mathrm{op}}
+\le\frac{\Lambda}{\sqrt H}\delta,
+\]
+\[
+\|D_b f_\theta(x)-D_b f_\theta(x')\|_{\mathrm{op}}
+\le\frac{AK_{\tanh}\Lambda}{\sqrt H}\delta,
+\]
+and
+\[
+\|D_W f_\theta(x)-D_W f_\theta(x')\|_{\mathrm{op}}
+\le\frac{A(K_{\tanh}\Lambda B+1)}{\sqrt H}\delta.
+\]
+Combining the blocks gives
+\[
+\|J_f(x)-J_f(x')\|_{\mathrm{op}}\le L_f^{\mathrm{mc}}\delta.
+\]
+Since
+\[
+\nabla_\theta\ell(\theta;(x,y))=J_f(x)^*r(x,y),
+\]
+we obtain
+\[
+\begin{aligned}
+&\|\nabla_\theta\ell(\theta;(x,y))-\nabla_\theta\ell(\theta;(x',y))\|_2\\
+&\quad\le
+\|J_f(x)\|_{\mathrm{op}}\|r(x,y)-r(x',y)\|_2
++\|J_f(x)-J_f(x')\|_{\mathrm{op}}\|r(x',y)\|_2\\
+&\quad\le
+G_f^{\mathrm{mc}}\frac{A\Lambda}{2\sqrt H}\delta+
+L_f^{\mathrm{mc}}\sqrt2\delta
+=L_z^{\mathrm{mc}}\delta.
+\end{aligned}
+\]
+This proves the theorem.
+\end{proof}
+
+\section{Optional RDP Accountant for r-Adjacent Transcripts}
+\label{app:rdp-accountant}
+
+Although the main reconstruction theorem is direct and uses hypothesis testing, it is useful to record the standard RDP accountant for comparison. For a fixed batch and fixed history, the Gaussian mechanism with sensitivity $\Delta_t(r)$ satisfies
+\[
+\eps_{t,j}^{\mathrm G}(r):=\frac{j\Delta_t(r)^2}{2\nu_t^2}
+\]
+at integer order $j$. Under Poisson subsampling with rate $\gamma_t$, for every integer $\alpha\ge2$ one valid subsampled Gaussian RDP bound is
+\[
+\begin{aligned}
+\eps_t^{\mathrm{ball}}(\alpha;r)
+\le
+\frac1{\alpha-1}
+\log\Bigg(
+1
+&+
+\gamma_t^2\binom{\alpha}{2}
+\min\left\{
+4\left(e^{\eps_{t,2}^{\mathrm G}(r)}-1\right),
+2e^{\eps_{t,2}^{\mathrm G}(r)}
+\right\}\\
+&+
+\sum_{j=3}^{\alpha}
+\gamma_t^j\binom{\alpha}{j}
+2e^{(j-1)\eps_{t,j}^{\mathrm G}(r)}
+\Bigg).
+\end{aligned}
+\]
+Adaptive composition gives
+\[
+D_\alpha(\cT_T(D)\|\cT_T(D'))
+\le
+\sum_{t=1}^T\eps_t^{\mathrm{ball}}(\alpha;r)
+\qquad\forall D\sim_r D'.
+\]
+This accountant is not needed for Theorem~\ref{thm:direct-transcript-rero}; it is included to connect the transcript mechanism to standard DP-SGD accounting.
+
+\begin{thebibliography}{10}
+
+\bibitem{balle2022informed}
+B.~Balle, G.~Cherubin, and J.~Hayes.
+\newblock Reconstructing training data with informed adversaries.
+\newblock In \emph{IEEE Symposium on Security and Privacy}, 2022.
+
+\bibitem{dong2022gdp}
+J.~Dong, A.~Roth, and W.~J. Su.
+\newblock Gaussian differential privacy.
+\newblock \emph{Journal of the Royal Statistical Society: Series B}, 84(1):3--37, 2022.
+
+\bibitem{hayes2023bounding}
+J.~Hayes, B.~Balle, and S.~Meiser.
+\newblock Bounding training data reconstruction in private learning.
+\newblock 2023.
+
+\bibitem{mironov2017renyi}
+I.~Mironov.
+\newblock R\'enyi differential privacy.
+\newblock In \emph{IEEE Computer Security Foundations Symposium}, 2017.
+
+\end{thebibliography}
+
+\end{document}
