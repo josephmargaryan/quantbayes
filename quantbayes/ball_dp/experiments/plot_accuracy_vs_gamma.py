@@ -17,31 +17,15 @@ if __package__ is None or __package__ == "":
         sys.path.insert(0, str(repo_root))
 
 from quantbayes.ball_dp.serialization import save_dataframe
+from quantbayes.ball_dp.experiments.run_attack_experiment import (
+    DEFAULT_FIXED_M,
+    canonicalize_model,
+)
 
-BALL_COLOR = "#1f77b4"
-STANDARD_COLOR = "#d62728"
-MODEL_ALIASES = {
-    "ridge_prototype": "ridge_prototype",
-    "ridge-prototype": "ridge_prototype",
-    "softmax_logistic": "softmax_logistic",
-    "softmax-logistic": "softmax_logistic",
-    "binary_logistic": "binary_logistic",
-    "binary-logistic": "binary_logistic",
-    "sqr_hinge_svm": "squared_hinge",
-    "squared_hinge": "squared_hinge",
-    "squared-hinge": "squared_hinge",
-    "svm": "squared_hinge",
-}
+BALL_COLOR = "#0072B2"
+STANDARD_COLOR = "#D55E00"
 
-
-def canonicalize_model(name: str) -> str:
-    key = str(name).strip().lower().replace(" ", "_")
-    if key not in MODEL_ALIASES:
-        supported = ", ".join(sorted(set(MODEL_ALIASES.values())))
-        raise ValueError(
-            f"Unsupported model {name!r}. Supported model directories: {supported}"
-        )
-    return MODEL_ALIASES[key]
+DEFAULT_RADIUS_TAG = "q80"
 
 
 def configure_matplotlib() -> None:
@@ -80,6 +64,7 @@ def savefig_stem(fig: plt.Figure, stem: str | Path) -> None:
 def resolve_dataset_dir(model_dir: Path, dataset_query: str) -> Path:
     query = str(dataset_query).strip().lower().replace(" ", "_")
     candidates: list[tuple[Path, set[str]]] = []
+
     for dataset_dir in sorted(
         p for p in model_dir.iterdir() if p.is_dir() and p.name != "_aggregate"
     ):
@@ -88,6 +73,7 @@ def resolve_dataset_dir(model_dir: Path, dataset_query: str) -> Path:
             dataset_dir.name.lower().replace(" ", "_"),
             dataset_dir.name.lower().replace("-", "_").replace(" ", "_"),
         }
+
         if summary_path.exists():
             summary = pd.read_csv(summary_path, nrows=1)
             if not summary.empty:
@@ -100,16 +86,21 @@ def resolve_dataset_dir(model_dir: Path, dataset_query: str) -> Path:
                 keys.add(dataset_tag)
                 keys.add(dataset_name)
                 keys.add(dataset_name.replace("-", "_"))
+
         candidates.append((dataset_dir, keys))
 
     matches = [path for path, keys in candidates if query in keys]
+
     if len(matches) == 1:
         return matches[0]
+
     if not matches:
         supported = ", ".join(sorted(path.name for path, _ in candidates))
         raise FileNotFoundError(
-            f"Could not find dataset {dataset_query!r} under {model_dir}. Available dataset directories: {supported}"
+            f"Could not find dataset {dataset_query!r} under {model_dir}. "
+            f"Available dataset directories: {supported}"
         )
+
     names = ", ".join(str(p.name) for p in matches)
     raise RuntimeError(f"Ambiguous dataset query {dataset_query!r}. Matches: {names}")
 
@@ -130,11 +121,19 @@ def build_plot_dataframe(
         summary["m"].astype(float), float(m)
     )
     plot_df = summary.loc[mask].copy()
+
     if plot_df.empty:
-        raise RuntimeError(
-            f"No rows matched radius_tag={radius_tag!r} and m={m}. Available radius tags: "
-            f"{sorted(summary['radius_tag'].astype(str).unique())}; available m values: {sorted(summary['m'].astype(int).unique())}"
+        available = (
+            summary[["radius_tag", "epsilon", "m"]]
+            .drop_duplicates()
+            .sort_values(["radius_tag", "epsilon", "m"])
         )
+        raise RuntimeError(
+            f"No rows matched radius_tag={radius_tag!r} and m={m}. "
+            "Available configurations:\n"
+            f"{available.to_string(index=False)}"
+        )
+
     plot_df = plot_df.sort_values("epsilon").reset_index(drop=True)
     return plot_df
 
@@ -195,7 +194,7 @@ def plot_accuracy_vs_gamma(
         fmt="o-",
         color=BALL_COLOR,
         capsize=3,
-        label="Ball-DP (matched privacy)",
+        label="Ball-DP matched privacy",
     )
     ax.errorbar(
         x_std,
@@ -213,7 +212,7 @@ def plot_accuracy_vs_gamma(
         fmt="s-",
         color=STANDARD_COLOR,
         capsize=3,
-        label="Standard DP (matched privacy)",
+        label="Standard DP matched privacy",
     )
 
     for row in frontier_df.itertuples(index=False):
@@ -230,32 +229,37 @@ def plot_accuracy_vs_gamma(
     ax.set_xlabel(r"Direct exact-ID upper bound $\gamma$")
     ax.set_ylabel("Accuracy")
     ax.set_title(
-        f"Accuracy vs direct exact-ID upper bound\n{dataset_name} · {model_family}, radius={radius_tag}, m={m}"
+        f"Accuracy vs direct exact-ID upper bound\n"
+        f"{dataset_name} · {model_family}, radius={radius_tag}, m={m}"
     )
     ax.legend(loc="best")
+
     fig.subplots_adjust(bottom=0.22)
     fig.text(
         0.5,
         -0.04,
-        "Each point uses the same mechanism on both axes: matched-privacy direct Gaussian γ on x, matched-privacy accuracy on y. Same-noise comparators are intentionally excluded.",
+        "Each point uses the same mechanism on both axes: matched-privacy direct Gaussian γ on x, "
+        "matched-privacy accuracy on y. Same-noise comparators are intentionally excluded.",
         ha="center",
         va="top",
         fontsize=9,
     )
+
     savefig_stem(fig, out_stem)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Plot a matched-privacy accuracy-vs-gamma frontier for one dataset/model using the per-dataset ERM summary."
+            "Plot a matched-privacy accuracy-vs-gamma frontier for one dataset/model "
+            "using the per-dataset ERM summary."
         )
     )
     parser.add_argument("--results-root", type=str, default="results")
     parser.add_argument("--model", required=True, type=str)
     parser.add_argument("--dataset", required=True, type=str)
-    parser.add_argument("--radius", type=str, default="q80")
-    parser.add_argument("--m", type=int, default=16)
+    parser.add_argument("--radius", type=str, default=DEFAULT_RADIUS_TAG)
+    parser.add_argument("--m", type=int, default=int(DEFAULT_FIXED_M))
     parser.add_argument("--output-dir", type=str, default=None)
     return parser.parse_args()
 
@@ -267,11 +271,13 @@ def main() -> None:
     model_family = canonicalize_model(args.model)
     results_root = Path(args.results_root)
     model_dir = results_root / "erm" / model_family
+
     if not model_dir.exists():
         raise FileNotFoundError(f"Model results directory not found: {model_dir}")
 
     dataset_dir = resolve_dataset_dir(model_dir, args.dataset)
     summary_path = dataset_dir / "erm_summary.csv"
+
     if not summary_path.exists():
         raise FileNotFoundError(f"ERM summary not found: {summary_path}")
 
@@ -280,26 +286,25 @@ def main() -> None:
     frontier_df = make_frontier_points(plot_df)
 
     dataset_name = str(plot_df.iloc[0]["dataset_name"])
+    dataset_tag = str(plot_df.iloc[0]["dataset_tag"])
+
     output_dir = (
         ensure_dir(args.output_dir)
         if args.output_dir is not None
         else ensure_dir(dataset_dir / "figures")
     )
-    stem = (
-        output_dir
-        / f"fig_accuracy_vs_gamma_{str(plot_df.iloc[0]['dataset_tag'])}_{model_family}"
-    )
+    stem = output_dir / f"fig_accuracy_vs_gamma_{dataset_tag}_{model_family}"
 
     save_dataframe(
         frontier_df,
-        output_dir
-        / f"accuracy_vs_gamma_points_{str(plot_df.iloc[0]['dataset_tag'])}_{model_family}.csv",
+        output_dir / f"accuracy_vs_gamma_points_{dataset_tag}_{model_family}.csv",
         save_parquet_if_possible=False,
     )
+
     metadata: dict[str, Any] = {
         "dataset_dir": str(dataset_dir),
         "dataset_name": dataset_name,
-        "dataset_tag": str(plot_df.iloc[0]["dataset_tag"]),
+        "dataset_tag": dataset_tag,
         "model_family": model_family,
         "radius_tag": str(args.radius),
         "m": int(args.m),
@@ -309,10 +314,11 @@ def main() -> None:
         "source_summary": str(summary_path),
         "output_figure_stem": str(stem),
     }
+
     (
-        output_dir
-        / f"accuracy_vs_gamma_metadata_{str(plot_df.iloc[0]['dataset_tag'])}_{model_family}.json"
+        output_dir / f"accuracy_vs_gamma_metadata_{dataset_tag}_{model_family}.json"
     ).write_text(json.dumps(metadata, indent=2, sort_keys=True))
+
     plot_accuracy_vs_gamma(
         frontier_df,
         dataset_name=dataset_name,
@@ -321,6 +327,7 @@ def main() -> None:
         m=int(args.m),
         out_stem=stem,
     )
+
     print(json.dumps(metadata, indent=2, sort_keys=True))
 
 

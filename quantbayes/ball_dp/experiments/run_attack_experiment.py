@@ -451,28 +451,12 @@ def standard_radius_value_from_report(
 def make_run_id(args: argparse.Namespace, spec: DatasetSpec, model_family: str) -> str:
     payload = {
         "dataset": spec.tag,
+        "dataset_spec": asdict(spec),
         "model": model_family,
-        "radius": args.radius,
-        "support_source": args.support_source,
-        "support_selection": args.support_selection,
-        "anchor_selection": args.anchor_selection,
-        "standard_radius_source": args.standard_radius_source,
-        "ridge_sensitivity_mode": args.ridge_sensitivity_mode,
-        "lam": float(args.lam),
-        "delta": float(args.delta),
-        "eps_grid": as_float_list(args.epsilon_grid),
-        "m_grid": as_int_list(args.m_grid),
-        "fixed_epsilon": float(args.fixed_epsilon),
-        "fixed_m": int(args.fixed_m),
-        "release_seeds": as_int_list(args.release_seeds),
-        "num_supports": int(args.num_supports),
-        "support_draws": int(args.support_draws),
-        "anchor_seed": int(args.anchor_seed),
-        "solver": str(args.solver),
-        "max_iter": int(args.max_iter),
+        "args": vars(args),
     }
     digest = hashlib.sha1(
-        json.dumps(payload, sort_keys=True).encode("utf-8")
+        json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
     ).hexdigest()[:12]
     return digest
 
@@ -1494,7 +1478,7 @@ def main() -> None:
     release_cache: dict[tuple[int, str, float, str, int], Any] = {}
     release_key_cache: dict[tuple[int, str, float, str, int, int], str] = {}
     bound_cache: dict[tuple[int, str, float, str, int, int], dict[str, float]] = {}
-    diagnostics_cache: dict[tuple[int, str, float, str, int, int], dict[str, Any]] = {}
+    diagnostics_cache: dict[tuple[Any, ...], dict[str, Any]] = {}
 
     for epsilon, m in config_pairs:
         for bank in feasible_banks:
@@ -1658,6 +1642,7 @@ def main() -> None:
                             diagnostics_key = (
                                 int(bank.anchor_index),
                                 str(support_hash),
+                                str(target_sid),
                                 float(epsilon),
                                 str(mechanism),
                                 int(release_seed),

@@ -68,7 +68,7 @@ For strongly convex empirical risk minimization (ERM), we show that r-adjacency 
 
 For Gaussian releases we derive both Rényi-style and direct reconstruction-robustness guarantees. In particular, for a finite prior over $m$ candidate records inside the policy ball, the exact-identification success probability is upper bounded in closed form by a Gaussian testing expression depending only on $\Delta_2(r)/\sigma$. We also show that the corresponding finite-prior MAP attack is the exact Bayes-optimal attack for the Gaussian release, so the empirical attack protocol is directly aligned with the theory.
 
-On nine embedding benchmarks, matched-privacy experiments with the ridge-prototype model show that r-adjacency privacy can materially reduce the Gaussian noise scale, tighten reconstruction bounds, and often improve predictive accuracy relative to a standard global-replacement comparator. At a representative $q80$ radius and $\varepsilon=1$, the Ball mechanism reduces the noise scale by $1.42\times$ to $3.11\times$ and lowers the direct exact-identification upper bound against a same-noise standard comparator by $15.8\%$ to $54.2\%$ across the completed runs.
+On seven completed embedding benchmarks, matched-privacy experiments with the ridge-prototype model show that r-adjacency privacy can materially reduce the Gaussian noise scale and often improve predictive accuracy relative to a standard global-replacement comparator. At a representative $q80$ radius and $\varepsilon=1$, the Ball mechanism reduces the noise scale by $1.42\times$ to $3.11\times$, improves accuracy by $0.0013$ to $0.1284$ absolute accuracy, and lowers the direct exact-identification upper bound against a same-noise standard comparator by $26.8\%$ to $59.3\%$ across the completed runs.
 \end{abstract}
 
 \section{Introduction}
@@ -86,7 +86,7 @@ The paper makes the following contributions.
     \item For strongly convex ERM, we prove a generic sensitivity theorem under a Lipschitz-in-data gradient condition. This gives Gaussian output perturbation directly once $L_z$ is controlled.
     \item For the ridge-prototype model, we prove three exact identities: $L_z=2$, $\Delta_{\mathrm{proto}}(r)=2r/(2+\lambda n)$, and exact informed-adversary reconstruction from a noiseless release.
     \item For Gaussian output perturbation, we derive r-adjacency Rényi-DP guarantees and direct Ball-ReRo bounds. In the finite-prior exact-identification setting, the direct Gaussian bound has a closed form and the corresponding MAP attack is exact.
-    \item We evaluate the framework on nine embedding benchmarks. Across the completed ridge-prototype runs, the local mechanism consistently reduces Gaussian noise and tightens reconstruction bounds relative to a standard global comparator, and frequently improves classification accuracy at the same $(\varepsilon,\delta)$.
+    \item We evaluate the framework on seven completed embedding benchmarks. Across the completed ridge-prototype runs, the local mechanism consistently reduces Gaussian noise relative to a standard global comparator and frequently improves classification accuracy at the same $(\varepsilon,\delta)$. The same-noise reconstruction comparison isolates the geometric benefit of local sensitivity.
 \end{itemize}
 
 The paper is deliberately scoped to the convex, Gaussian-release setting. Nonconvex models, private SGD transcripts, and transcript-level reconstruction bounds are deferred to a companion paper.
@@ -645,7 +645,7 @@ The empirical evaluation asks four questions.
     \item \textbf{Empirical exact identification:} when the release is Gaussian and the adversary is restricted to a finite candidate set, how much better is the exact MAP attack than the oblivious baseline $1/m$?
 \end{enumerate}
 
-The completed experiments currently cover the ridge-prototype model on nine embedding datasets. All mechanisms in the reported comparisons use the same common $\delta$ within each experimental sweep, while $\varepsilon$, the policy radius, and the candidate-set size are ablated as described below. The LaTeX below also includes figure hooks and table placeholders for the finite-prior attack study and for a secondary softmax-logistic baseline, so the manuscript can be populated as soon as those runs finish.
+The completed experiments currently cover the ridge-prototype model on seven embedding datasets. All mechanisms in the reported comparisons use the same common $\delta$ within each experimental sweep, while $\varepsilon$, the policy radius, and the candidate-set size are ablated as described below. The LaTeX below also includes figure hooks and table placeholders for the finite-prior attack study and for a secondary softmax-logistic baseline, so the manuscript can be populated as soon as those runs finish.
 
 \subsection{Datasets, metric, and policy radii}
 Each example is embedded in a fixed Euclidean representation space, and all privacy calculations use the label-preserving metric from Remark~\ref{rem:label-preserving-metric}. For a class $c$, let
@@ -720,28 +720,37 @@ Table~\ref{tab:aggregate-summary} summarizes the completed ridge-prototype runs.
 
 \begin{table*}[t]
 \centering
-\caption{Aggregate ridge-prototype comparison across datasets at the representative $q80$, $\varepsilon=1$ setting. The Ball mechanism consistently lowers the Gaussian noise scale at matched privacy. The bound columns report the direct exact-identification upper bound for Ball and for the same-noise standard comparator, i.e., the standard sensitivity evaluated at $\sigma_{\mathrm{Ball}}$. This same-noise comparison isolates the geometric effect of local sensitivity and is not a matched-privacy comparison. Under matched Gaussian calibration, the Ball and standard direct bounds are identical and are therefore not shown as separate bound columns.}
+\caption{Aggregate ridge-prototype comparison across the seven completed datasets at the representative $q80$, $\varepsilon=1$ setting. The standard comparator is calibrated at the same target $(\varepsilon,\delta)$ in the accuracy and noise columns. The matched direct Gaussian exact-identification bound is common to Ball and standard mechanisms under homogeneous Gaussian calibration, so it is shown once. The ``Std @ $\sigma_{\mathrm{Ball}}$'' column evaluates the standard global sensitivity at the Ball mechanism's noise scale; this is a same-noise geometry comparison, not a matched-privacy comparison.}
 \label{tab:aggregate-summary}
 \scriptsize
-\setlength{\tabcolsep}{4pt}
+\setlength{\tabcolsep}{3.5pt}
 \begin{tabular}{lrrrrrrrrr}
 \toprule
-Dataset & Acc (Ball) & Acc (Std) & Acc gain & Bound (Ball) & Bound (Std @ $\sigma_{\mathrm{Ball}}$) & Bound red. \% & $\sigma$ (Ball) & $\sigma$ (Std) & $\sigma$ ratio \\
+Dataset
+& Acc (Ball)
+& Acc (Std)
+& Acc gain
+& Direct bound
+& Std @ $\sigma_{\mathrm{Ball}}$
+& Bound red. \%
+& $\sigma_{\mathrm{Ball}}$
+& $\sigma_{\mathrm{Std}}$
+& $\sigma_{\mathrm{Std}}/\sigma_{\mathrm{Ball}}$ \\
 \midrule
-AG News-embeddings            & 0.8345 & 0.8186 & 0.0159 & 0.0972 & 0.1155 & 15.78 & 0.0099 & 0.0141 & 1.4201 \\
-BANKING77-embeddings          & 0.1234 & 0.0328 & 0.0906 & 0.0972 & 0.1241 & 21.61 & 0.1034 & 0.1656 & 1.6019 \\
-CIFAR-10-embeddings           & 0.6977 & 0.4572 & 0.2405 & 0.0972 & 0.1673 & 41.87 & 0.0140 & 0.0337 & 2.4048 \\
-DBpedia-14-embeddings         & 0.9353 & 0.9347 & 0.0007 & 0.0972 & 0.1164 & 16.47 & 0.0021 & 0.0030 & 1.4407 \\
-Emotion-embeddings            & 0.2145 & 0.2075 & 0.0070 & 0.0972 & 0.1180 & 17.56 & 0.0708 & 0.1043 & 1.4740 \\
-IMDb-embeddings               & 0.5668 & 0.5316 & 0.0351 & 0.0972 & 0.1225 & 20.65 & 0.0427 & 0.0671 & 1.5706 \\
-MNIST-embeddings              & 0.8150 & 0.5490 & 0.2660 & 0.0972 & 0.2121 & 54.15 & 0.0090 & 0.0281 & 3.1051 \\
-TREC-6-embeddings             & 0.1000 & 0.0700 & 0.0300 & 0.0972 & 0.1158 & 16.00 & 0.2096 & 0.2990 & 1.4267 \\
-Yelp Review Full-embeddings   & 0.4293 & 0.4284 & 0.0008 & 0.0972 & 0.1204 & 19.21 & 0.0017 & 0.0026 & 1.5251 \\
+AG News-embeddings          & 0.8587 & 0.8574 & 0.0013 & 0.3773 & 0.5157 & 26.84 & 0.0028 & 0.0040 & 1.4201 \\
+BANKING77-embeddings        & 0.7792 & 0.6507 & 0.1284 & 0.3773 & 0.5761 & 34.50 & 0.0292 & 0.0468 & 1.6019 \\
+CIFAR-10-embeddings         & 0.7469 & 0.7272 & 0.0196 & 0.3773 & 0.8064 & 53.21 & 0.0040 & 0.0095 & 2.4048 \\
+Emotion-embeddings          & 0.3932 & 0.3359 & 0.0573 & 0.3773 & 0.5337 & 29.30 & 0.0200 & 0.0295 & 1.4740 \\
+IMDb-embeddings             & 0.6929 & 0.6470 & 0.0458 & 0.3773 & 0.5658 & 33.30 & 0.0121 & 0.0189 & 1.5706 \\
+MNIST-embeddings            & 0.8432 & 0.8276 & 0.0155 & 0.3773 & 0.9267 & 59.28 & 0.0026 & 0.0079 & 3.1051 \\
+TREC-6-embeddings           & 0.3684 & 0.2892 & 0.0792 & 0.3773 & 0.5180 & 27.15 & 0.0592 & 0.0845 & 1.4267 \\
 \bottomrule
 \end{tabular}
 \end{table*}
 
-Two patterns stand out. First, the exact ridge sensitivity formula translates almost linearly into lower released noise at matched $(\varepsilon,\delta)$, which in turn often improves accuracy by a visible margin. The effect is largest on datasets where the global same-label diameter is much larger than the chosen local policy radius. Second, the matched-privacy direct Gaussian bound is identical for the Ball and standard mechanisms, as expected from the ratio $\Delta_2/\sigma$ under Gaussian calibration. The reconstruction-geometry advantage appears in the same-noise comparison: when the standard global sensitivity is evaluated at $\sigma_{\mathrm{Ball}}$, its direct exact-identification bound is consistently worse than the Ball bound.
+Two patterns stand out. First, the exact ridge sensitivity formula translates directly into lower released noise at matched $(\varepsilon,\delta)$. At $q80$ and $\varepsilon=1$, the standard-to-Ball noise ratio ranges from $1.42\times$ to $3.11\times$. The accuracy effect is positive on every completed run, ranging from $0.0013$ to $0.1284$ absolute accuracy.
+
+Second, the matched-privacy direct Gaussian exact-identification bound is identical for the Ball and standard mechanisms, as expected: under homogeneous Gaussian calibration the ratio $\Delta_2/\sigma$ is fixed by the target privacy parameters. The reconstruction-geometry advantage is therefore shown by the same-noise comparison. Evaluating the standard global sensitivity at $\sigma_{\mathrm{Ball}}$ increases the direct exact-identification bound from $0.3773$ to between $0.5157$ and $0.9267$, corresponding to a relative reduction of $26.8\%$ to $59.3\%$ for the Ball sensitivity.
 
 \begin{figure*}[t]
 \centering
@@ -775,27 +784,34 @@ The empirical reconstruction study uses the exact Gaussian finite-prior MAP atta
 
 This setup is especially appropriate in embedding space. We are not asking a generative model to decode an image or sentence from a latent vector. Instead, we ask the theorem-aligned question that the finite-prior Ball-ReRo bound directly addresses: given a short list of plausible candidates, how often does the release identify the right one? The baseline $1/m$ is therefore not a straw man; it is the exact oblivious optimum from Definition~\ref{def:kappa}.
 
-\begin{table}[t]
+\begin{table*}[t]
 \centering
-\caption{Placeholder for the aggregate finite-prior exact-identification attack results. Replace the \textbf{TBD} entries after running the Gaussian MAP attack sweep.}
+\caption{Aggregate finite-prior exact-identification attack results for the Gaussian ridge-prototype release. The prior is uniform over $m=8$ candidates, so the oblivious baseline is $1/m=0.125$. Candidate supports are public-only same-label farthest-point supports inside the policy ball. The advantage columns subtract the uniform-prior baseline from empirical exact-identification success.}
 \label{tab:attack-aggregate}
-\footnotesize
-\begin{tabular}{lccc}
+\scriptsize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lrrrrrrr}
 \toprule
-Dataset & Empirical $\bar p_{\mathrm{exact}}$ & Oblivious baseline $1/m$ & Advantage \\
+Dataset
+& Exact-ID (Ball)
+& Exact-ID (Std)
+& Baseline
+& Adv. (Ball)
+& Adv. (Std)
+& Trials (Ball)
+& Trials (Std) \\
 \midrule
-AG News-embeddings          & \todoresult & \todoresult & \todoresult \\
-BANKING77-embeddings        & \todoresult & \todoresult & \todoresult \\
-CIFAR-10-embeddings         & \todoresult & \todoresult & \todoresult \\
-DBpedia-14-embeddings       & \todoresult & \todoresult & \todoresult \\
-Emotion-embeddings          & \todoresult & \todoresult & \todoresult \\
-IMDb-embeddings             & \todoresult & \todoresult & \todoresult \\
-MNIST-embeddings            & \todoresult & \todoresult & \todoresult \\
-TREC-6-embeddings           & \todoresult & \todoresult & \todoresult \\
-Yelp Review Full-embeddings & \todoresult & \todoresult & \todoresult \\
+AG News-embeddings          & 0.4219 & 0.3984 & 0.1250 & 0.2969 & 0.2734 & 128 & 128 \\
+BANKING77-embeddings        & 0.4922 & 0.3750 & 0.1250 & 0.3672 & 0.2500 & 128 & 128 \\
+CIFAR-10-embeddings         & 0.3984 & 0.3281 & 0.1250 & 0.2734 & 0.2031 & 128 & 128 \\
+Emotion-embeddings          & 0.3214 & 0.2679 & 0.1250 & 0.1964 & 0.1429 & 112 & 112 \\
+IMDb-embeddings             & 0.4062 & 0.3438 & 0.1250 & 0.2812 & 0.2188 & 128 & 128 \\
+MNIST-embeddings            & 0.4297 & 0.3281 & 0.1250 & 0.3047 & 0.2031 & 128 & 128 \\
+TREC-6-embeddings           & 0.4375 & 0.4375 & 0.1250 & 0.3125 & 0.3125 & 128 & 128 \\
 \bottomrule
 \end{tabular}
-\end{table}
+\end{table*}
+The empirical MAP attack is substantially above the oblivious $1/m=0.125$ baseline on every completed dataset, confirming that the Gaussian release still contains finite-prior identification signal at this privacy level. The Ball and standard columns should not be interpreted as a theorem-level dominance comparison: the standard mechanism uses its own matched Gaussian calibration and therefore larger noise. The key point is methodological: the attack is the exact MAP rule for the finite Gaussian prior, so empirical success aligns with the likelihood model used in the theory.
 
 \begin{figure}[t]
 \centering
