@@ -52,11 +52,10 @@ from quantbayes.ball_dp.experiments.run_attack_experiment import (
 RADIUS_ORDER = ("q50", "q80", "q95")
 RADIUS_POSITION = {tag: i for i, tag in enumerate(RADIUS_ORDER)}
 
-# Colorblind-friendlier Okabe-Ito-style palette.
-BALL_COLOR = "#0072B2"  # blue
-STANDARD_COLOR = "#D55E00"  # vermillion
-BASELINE_COLOR = "#4D4D4D"  # dark gray
-RDP_COLOR = "#009E73"  # bluish green
+BALL_COLOR = "#0072B2"
+STANDARD_COLOR = "#D55E00"
+BASELINE_COLOR = "#4D4D4D"
+RDP_COLOR = "#009E73"
 
 LABEL_BALL_DP = "Ball-DP"
 LABEL_STANDARD_DP = "Standard DP"
@@ -774,6 +773,15 @@ def main() -> None:
         "fixed_epsilon": float(args.fixed_epsilon),
         "fixed_m": int(args.fixed_m),
         "fixed_radius": str(args.fixed_radius),
+        "sweep": str(args.sweep),
+        "used_configs": [
+            {
+                "radius_tag": str(radius_tag),
+                "epsilon": float(epsilon),
+                "m": int(m),
+            }
+            for radius_tag, epsilon, m in used_configs
+        ],
         "release_seeds": [int(v) for v in args.release_seeds],
         "solver": str(args.solver),
         "max_iter": int(args.max_iter),
@@ -791,6 +799,14 @@ def main() -> None:
             "dataset_tag": spec.tag,
             "model_family": model_family,
             "radius_values": radius_values,
+            "used_configs": [
+                {
+                    "radius_tag": str(radius_tag),
+                    "epsilon": float(epsilon),
+                    "m": int(m),
+                }
+                for radius_tag, epsilon, m in used_configs
+            ],
         },
     )
     write_json(run_dir / "radius_report.json", radius_report)
@@ -810,6 +826,7 @@ def main() -> None:
 
     ball_releases: dict[tuple[str, float, int], Any] = {}
     standard_releases: dict[tuple[float, int], Any] = {}
+
     for epsilon in used_epsilons:
         for release_seed in [int(v) for v in args.release_seeds]:
             standard_releases[(float(epsilon), int(release_seed))] = fit_release(
@@ -828,6 +845,7 @@ def main() -> None:
                 solver=str(args.solver),
                 seed=int(release_seed),
             )
+
     for radius_tag in used_radius_tags:
         for epsilon in used_epsilons:
             for release_seed in [int(v) for v in args.release_seeds]:
@@ -854,6 +872,7 @@ def main() -> None:
     for radius_tag, epsilon, m in used_configs:
         finite_prior = make_finite_prior_for_m(int(m), int(data.feature_dim))
         radius_value = float(radius_values[str(radius_tag)])
+
         for release_seed in [int(v) for v in args.release_seeds]:
             ball_release = ball_releases[
                 (str(radius_tag), float(epsilon), int(release_seed))
@@ -916,6 +935,7 @@ def main() -> None:
             row_key = hashlib.sha1(
                 json.dumps(row_key_payload, sort_keys=True).encode("utf-8")
             ).hexdigest()[:20]
+
             rows.append(
                 {
                     "row_key": row_key,
@@ -994,6 +1014,11 @@ def main() -> None:
                 "run_dir": str(run_dir),
                 "num_seed_rows": int(len(rows_df)),
                 "used_configs": len(used_configs),
+                "representative_config": {
+                    "radius_tag": str(args.fixed_radius),
+                    "epsilon": float(args.fixed_epsilon),
+                    "m": int(args.fixed_m),
+                },
                 "radius_values": {k: float(v) for k, v in radius_values.items()},
             },
             indent=2,

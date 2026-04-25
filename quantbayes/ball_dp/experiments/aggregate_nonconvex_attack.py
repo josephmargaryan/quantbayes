@@ -10,61 +10,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-"""
-%%bash
-set -euo pipefail
-
-RESULTS=/content/quantbayes/results_paper2_nonconvex_attack_official
-SUPPORT_SOURCE=public_only
-
-DATASETS=(
-  "AG News-embeddings"
-  "BANKING77-embeddings"
-  "CIFAR-10-embeddings"
-  "DBpedia-14-embeddings"
-  "Emotion-embeddings"
-  "IMDb-embeddings"
-  "MNIST-embeddings"
-  "TREC-6-embeddings"
-  "Yelp Review Full-embeddings"
-)
-
-for DS in "${DATASETS[@]}"; do
-  echo "=== Paper 2 transcript attacks: $DS ==="
-
-  python quantbayes/ball_dp/experiments/run_nonconvex_transcript_attack_experiment.py \
-    --results-root "$RESULTS" \
-    --dataset "$DS" \
-    --radius q80 \
-    --hidden-dim 128 \
-    --A 4.0 \
-    --Lambda 4.0 \
-    --epsilon-grid 8 \
-    --fixed-m 8 \
-    --release-seeds 0 1 \
-    --num-steps 400 \
-    --batch-size 128 \
-    --clip-norm 1.0 \
-    --learning-rate 1e-3 \
-    --mechanisms both \
-    --support-source "$SUPPORT_SOURCE" \
-    --support-selection farthest \
-    --anchor-selection rare_class \
-    --num-supports 4 \
-    --support-draws 2 \
-    --targets-per-support 1 \
-    --max-feasible-search 5000 \
-    --strict-feasible-supports \
-    --attack-modes known_inclusion unknown_inclusion \
-    --known-step-mode all \
-    --trace-capture-every 1
-done
-
-python quantbayes/ball_dp/experiments/aggregate_nonconvex_attack.py \
-  --results-root "$RESULTS"
-"""
-
-
 ATTACK_FILENAME = "nonconvex_transcript_attack_rows.csv"
 
 

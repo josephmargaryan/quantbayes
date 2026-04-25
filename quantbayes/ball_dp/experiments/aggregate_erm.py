@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
+from collections import Counter
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -10,15 +12,25 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-# Match the per-dataset plotting palette.
-BALL_COLOR = "#0072B2"  # blue
-STANDARD_COLOR = "#D55E00"  # vermillion
-BASELINE_COLOR = "#4D4D4D"  # dark gray
-RDP_COLOR = "#009E73"  # bluish green
+if __package__ is None or __package__ == "":
+    repo_root = Path(__file__).resolve().parents[3]
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+
+from quantbayes.ball_dp.experiments.run_attack_experiment import (
+    DEFAULT_FIXED_EPSILON,
+    DEFAULT_FIXED_M,
+    canonicalize_model,
+)
+
+BALL_COLOR = "#0072B2"
+STANDARD_COLOR = "#D55E00"
+BASELINE_COLOR = "#4D4D4D"
+RDP_COLOR = "#009E73"
 
 DEFAULT_RADIUS_TAG = "q80"
-DEFAULT_EPSILON = 1.0
-DEFAULT_M = 16
+DEFAULT_EPSILON = float(DEFAULT_FIXED_EPSILON)
+DEFAULT_M = int(DEFAULT_FIXED_M)
 
 PAPER_DATASET_ORDER = [
     "AG News-embeddings",
@@ -32,6 +44,8 @@ PAPER_DATASET_ORDER = [
     "Yelp Review Full-embeddings",
 ]
 DATASET_ORDER_INDEX = {name: i for i, name in enumerate(PAPER_DATASET_ORDER)}
+
+Config = tuple[str, float, int]
 
 
 def configure_matplotlib() -> None:
@@ -95,7 +109,10 @@ def dataset_sort_key(name: str) -> tuple[int, str]:
 
 
 def close_enough(a: pd.Series, target: float, tol: float = 1e-9) -> pd.Series:
-    return np.isclose(a.astype(float).to_numpy(), float(target), atol=tol, rtol=0.0)
+    return pd.Series(
+        np.isclose(a.astype(float).to_numpy(), float(target), atol=tol, rtol=0.0),
+        index=a.index,
+    )
 
 
 def discover_models(
@@ -103,10 +120,193 @@ def discover_models(
 ) -> list[str]:
     erm_root = results_root / "erm"
     if requested_models:
-        models = [str(m) for m in requested_models]
-    else:
-        models = [p.name for p in sorted(erm_root.iterdir()) if p.is_dir()]
-    return models
+        return [canonicalize_model(str(m)) for m in requested_models]
+    return [p.name for p in sorted(erm_root.iterdir()) if p.is_dir()]
+
+
+def config_from_run_config(path: Path) -> Config | None:
+    try:
+        payload = json.loads(path.read_text())
+    except Exception:
+        return None
+
+    if (
+        "fixed_radius" not in payload
+        or "fixed_epsilon" not in payload
+        or "fixed_m" not in payload
+    ):
+        return None
+
+    return (
+        str(payload["fixed_radius"]),
+        float(payload["fixed_epsilon"]),
+        int(payload["fixed_m"]),
+    )
+
+
+def summary_configs(summary: pd.DataFrame) -> set[Config]:
+    required = {"radius_tag", "epsilon", "m"}
+    if not required.issubset(summary.columns):
+        return set()
+
+    out: set[Config] = set()
+    for row in (
+        summary[["radius_tag", "epsilon", "m"]]
+        .drop_duplicates()
+        .itertuples(index=False)
+    ):
+        out.add((str(row.radius_tag), float(row.epsilon), int(row.m)))
+    return out
+
+
+def config_mask(summary: pd.DataFrame, cfg: Config) -> pd.Series:
+    radius_tag, epsilon, m = cfg
+    return (
+        (summary["radius_tag"].astype(str) == str(radius_tag))
+        & close_enough(summary["epsilon"], float(epsilon))
+        & (summary["m"].astype(int) == int(m))
+    )
+
+
+def apply_overrides(
+    cfg: Config,
+    *,
+    requested_radius: str | None,
+    requested_epsilon: float | None,
+    requested_m: int | None,
+) -> Config:
+    radius, epsilon, m = cfg
+    if requested_radius is not None:
+        radius = str(requested_radius)
+    if requested_epsilon is not None:
+        epsilon = float(requested_epsilon)
+    if requested_m is not None:
+        m = int(requested_m)
+    return str(radius), float(epsilon), int(m)
+
+
+def resolve_representative_config(
+    model_dir: Path,
+    *,
+    requested_radius: str | None,
+    requested_epsilon: float | None,
+    requested_m: int | None,
+) -> tuple[Config, dict[str, Any]]:
+    dataset_dirs = sorted(
+        p for p in model_dir.iterdir() if p.is_dir() and p.name != "_aggregate"
+    )
+
+    summaries: dict[str, pd.DataFrame] = {}
+    all_summary_configs: Counter[Config] = Counter()
+    run_config_counts: Counter[Config] = Counter()
+
+    for dataset_dir in dataset_dirs:
+        summary_path = dataset_dir / "erm_summary.csv"
+        if summary_path.exists():
+            summary = pd.read_csv(summary_path)
+            summaries[dataset_dir.name] = summary
+            all_summary_configs.update(summary_configs(summary))
+
+        for run_config_path in sorted((dataset_dir / "runs").glob("*/run_config.json")):
+            cfg = config_from_run_config(run_config_path)
+            if cfg is not None:
+                run_config_counts[cfg] += 1
+
+    default_cfg: Config = (DEFAULT_RADIUS_TAG, DEFAULT_EPSILON, DEFAULT_M)
+
+    candidate_set: set[Config] = set()
+    candidate_set.update(run_config_counts.keys())
+    candidate_set.update(all_summary_configs.keys())
+    candidate_set.add(default_cfg)
+
+    if not candidate_set:
+        raise RuntimeError(f"No candidate configs found under {model_dir}")
+
+    scored: list[tuple[tuple[Any, ...], Config, dict[str, Any]]] = []
+
+    for raw_cfg in candidate_set:
+        cfg = apply_overrides(
+            raw_cfg,
+            requested_radius=requested_radius,
+            requested_epsilon=requested_epsilon,
+            requested_m=requested_m,
+        )
+
+        coverage = 0
+        covered_datasets: list[str] = []
+        for dataset_name, summary in summaries.items():
+            if config_mask(summary, cfg).any():
+                coverage += 1
+                covered_datasets.append(dataset_name)
+
+        source_count = run_config_counts.get(raw_cfg, 0)
+        exact_default = int(cfg == default_cfg)
+        q80_bonus = int(cfg[0] == DEFAULT_RADIUS_TAG)
+        epsilon_distance = abs(float(cfg[1]) - DEFAULT_EPSILON)
+        m_distance = abs(int(cfg[2]) - DEFAULT_M)
+
+        score = (
+            coverage,
+            source_count,
+            exact_default,
+            q80_bonus,
+            -epsilon_distance,
+            -m_distance,
+        )
+
+        scored.append(
+            (
+                score,
+                cfg,
+                {
+                    "coverage": coverage,
+                    "covered_datasets": covered_datasets,
+                    "source_count": int(source_count),
+                    "raw_candidate": {
+                        "radius_tag": raw_cfg[0],
+                        "epsilon": raw_cfg[1],
+                        "m": raw_cfg[2],
+                    },
+                },
+            )
+        )
+
+    scored.sort(key=lambda item: item[0], reverse=True)
+    best_score, best_cfg, best_meta = scored[0]
+
+    if best_meta["coverage"] == 0:
+        available_by_dataset: dict[str, list[dict[str, Any]]] = {}
+        for dataset_name, summary in summaries.items():
+            available_by_dataset[dataset_name] = [
+                {"radius_tag": r, "epsilon": e, "m": m}
+                for r, e, m in sorted(summary_configs(summary))
+            ]
+
+        raise RuntimeError(
+            "Could not infer a representative config that appears in any summary. "
+            f"Best attempted config was radius={best_cfg[0]!r}, "
+            f"epsilon={best_cfg[1]}, m={best_cfg[2]}. "
+            f"Available configs by dataset: {json.dumps(available_by_dataset, indent=2)}"
+        )
+
+    diagnostics = {
+        "selected_config": {
+            "radius_tag": best_cfg[0],
+            "epsilon": float(best_cfg[1]),
+            "m": int(best_cfg[2]),
+        },
+        "selected_score": list(best_score),
+        "selected_meta": best_meta,
+        "num_dataset_summaries": len(summaries),
+        "num_candidate_configs": len(candidate_set),
+        "requested_overrides": {
+            "radius": requested_radius,
+            "epsilon": requested_epsilon,
+            "m": requested_m,
+        },
+    }
+
+    return best_cfg, diagnostics
 
 
 def load_model_rows(
@@ -124,34 +324,60 @@ def load_model_rows(
         p for p in model_dir.iterdir() if p.is_dir() and p.name != "_aggregate"
     ):
         summary_path = dataset_dir / "erm_summary.csv"
+
         if not summary_path.exists():
-            issues.append(
-                {"dataset_dir": dataset_dir.name, "reason": "missing erm_summary.csv"}
-            )
+            issue = {
+                "dataset_dir": dataset_dir.name,
+                "reason": "missing erm_summary.csv",
+            }
+            issues.append(issue)
+            if strict:
+                raise FileNotFoundError(f"{summary_path} does not exist.")
             continue
 
         summary = pd.read_csv(summary_path)
-        mask = (
-            (summary["radius_tag"] == str(radius_tag))
-            & close_enough(summary["epsilon"], float(epsilon))
-            & (summary["m"].astype(int) == int(m))
-        )
-        sub = summary[mask].copy()
+        cfg = (str(radius_tag), float(epsilon), int(m))
+        sub = summary[config_mask(summary, cfg)].copy()
+
         if sub.empty:
+            available_configs = [
+                {"radius_tag": r, "epsilon": e, "m": mm}
+                for r, e, mm in sorted(summary_configs(summary))
+            ]
+            issue = {
+                "dataset_dir": dataset_dir.name,
+                "reason": "missing representative config",
+                "required": {
+                    "radius_tag": str(radius_tag),
+                    "epsilon": float(epsilon),
+                    "m": int(m),
+                },
+                "available_configs": available_configs,
+            }
+            issues.append(issue)
+            if strict:
+                raise RuntimeError(
+                    f"{summary_path} has no row for radius={radius_tag!r}, "
+                    f"epsilon={float(epsilon)}, m={int(m)}."
+                )
+            continue
+
+        if len(sub) > 1:
             issues.append(
                 {
                     "dataset_dir": dataset_dir.name,
-                    "reason": "missing representative config",
+                    "reason": "multiple representative rows; using first",
+                    "num_rows": int(len(sub)),
                     "required": {
-                        "radius_tag": radius_tag,
+                        "radius_tag": str(radius_tag),
                         "epsilon": float(epsilon),
                         "m": int(m),
                     },
                 }
             )
-            continue
 
         row = sub.iloc[0]
+
         rows.append(
             {
                 "model_family": str(row["model_family"]),
@@ -221,16 +447,19 @@ def load_model_rows(
         )
 
     agg = pd.DataFrame(rows)
+
     if agg.empty:
         if strict:
             raise RuntimeError(
-                f"No ERM summaries for model {model_dir.name!r} matched radius={radius_tag}, epsilon={epsilon}, m={m}."
+                f"No ERM summaries for model {model_dir.name!r} matched "
+                f"radius={radius_tag}, epsilon={epsilon}, m={m}."
             )
         return agg, issues
 
     agg = agg.sort_values(
         by="dataset_name", key=lambda s: s.map(dataset_sort_key)
     ).reset_index(drop=True)
+
     return agg, issues
 
 
@@ -263,10 +492,12 @@ def grouped_bar_figure(
 
     left_yerr = None
     right_yerr = None
+
     if left_ci_low is not None and left_ci_high is not None:
         left_yerr = np.vstack(
             [df[left_mean] - df[left_ci_low], df[left_ci_high] - df[left_mean]]
         )
+
     if right_ci_low is not None and right_ci_high is not None:
         right_yerr = np.vstack(
             [df[right_mean] - df[right_ci_low], df[right_ci_high] - df[right_mean]]
@@ -323,6 +554,7 @@ def build_matched_privacy_table(df: pd.DataFrame) -> pd.DataFrame:
         df["bound_ball_direct"].to_numpy(dtype=float)
         - df["bound_standard_direct"].to_numpy(dtype=float)
     )
+
     return pd.DataFrame(
         {
             "Dataset": df["dataset_name"],
@@ -360,6 +592,7 @@ def build_extended_table(df: pd.DataFrame) -> pd.DataFrame:
         df["bound_ball_direct"].to_numpy(dtype=float)
         - df["bound_standard_direct"].to_numpy(dtype=float)
     )
+
     return pd.DataFrame(
         {
             "Dataset": df["dataset_name"],
@@ -396,63 +629,125 @@ def build_matched_direct_identity_table(df: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-def main() -> None:
-    configure_matplotlib()
-
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Aggregate per-dataset convex ERM results into model-specific publication tables and figures."
+            "Aggregate per-dataset convex ERM results into model-specific "
+            "publication tables and figures."
         )
     )
     parser.add_argument("--results-root", type=str, default="results")
     parser.add_argument("--model", nargs="*", type=str, default=None)
-    parser.add_argument("--radius", type=str, default=DEFAULT_RADIUS_TAG)
-    parser.add_argument("--epsilon", type=float, default=DEFAULT_EPSILON)
-    parser.add_argument("--m", type=int, default=DEFAULT_M)
+
+    parser.add_argument(
+        "--radius",
+        type=str,
+        default=None,
+        help=(
+            "Representative radius tag. If omitted, inferred from per-dataset run_config.json files."
+        ),
+    )
+    parser.add_argument(
+        "--epsilon",
+        type=float,
+        default=None,
+        help=(
+            "Representative epsilon. If omitted, inferred from per-dataset run_config.json files."
+        ),
+    )
+    parser.add_argument(
+        "--m",
+        type=int,
+        default=None,
+        help=(
+            "Representative prior size m. If omitted, inferred from per-dataset run_config.json files."
+        ),
+    )
     parser.add_argument("--strict", action="store_true")
-    args = parser.parse_args()
+    return parser.parse_args()
+
+
+def main() -> None:
+    configure_matplotlib()
+    args = parse_args()
 
     results_root = Path(args.results_root)
     erm_root = results_root / "erm"
+
     if not erm_root.exists():
         raise FileNotFoundError(f"ERM results root not found: {erm_root}")
 
     summary_manifest: dict[str, Any] = {
         "results_root": str(results_root),
-        "radius": str(args.radius),
-        "epsilon": float(args.epsilon),
-        "m": int(args.m),
+        "requested_radius": args.radius,
+        "requested_epsilon": args.epsilon,
+        "requested_m": args.m,
         "models": {},
     }
 
     models = discover_models(results_root, args.model)
+
     if not models:
         raise RuntimeError(f"No ERM model directories found under {erm_root}")
 
+    any_success = False
+
     for model_family in models:
         model_dir = erm_root / model_family
+
         if not model_dir.exists() or not model_dir.is_dir():
+            issue = {
+                "status": "missing_model_dir",
+                "model_dir": str(model_dir),
+                "issues": [
+                    {
+                        "reason": "missing ERM model directory",
+                        "model_dir": str(model_dir),
+                    }
+                ],
+            }
+            summary_manifest["models"][model_family] = issue
+
             if args.strict:
                 raise FileNotFoundError(f"Missing ERM model directory: {model_dir}")
+
             continue
+
+        selected_cfg, config_diagnostics = resolve_representative_config(
+            model_dir,
+            requested_radius=args.radius,
+            requested_epsilon=args.epsilon,
+            requested_m=args.m,
+        )
+        radius_tag, epsilon, m = selected_cfg
 
         agg_df, issues = load_model_rows(
             model_dir,
-            radius_tag=str(args.radius),
-            epsilon=float(args.epsilon),
-            m=int(args.m),
+            radius_tag=radius_tag,
+            epsilon=epsilon,
+            m=m,
             strict=bool(args.strict),
         )
+
         if agg_df.empty:
             summary_manifest["models"][model_family] = {
                 "included_datasets": [],
                 "issues": issues,
                 "status": "empty",
+                "representative_config": {
+                    "radius_tag": radius_tag,
+                    "epsilon": float(epsilon),
+                    "m": int(m),
+                },
+                "config_diagnostics": config_diagnostics,
             }
             continue
 
+        any_success = True
+
         out_dir = ensure_dir(model_dir / "_aggregate")
         save_dataframe(agg_df, out_dir / "aggregate_summary.csv")
+
         save_table(
             build_matched_privacy_table(agg_df),
             out_dir / "aggregate_matched_privacy_table",
@@ -461,7 +756,10 @@ def main() -> None:
             build_same_noise_geometry_table(agg_df),
             out_dir / "aggregate_same_noise_geometry_table",
         )
-        save_table(build_extended_table(agg_df), out_dir / "aggregate_extended_table")
+        save_table(
+            build_extended_table(agg_df),
+            out_dir / "aggregate_extended_table",
+        )
         save_table(
             build_matched_direct_identity_table(agg_df),
             out_dir / "aggregate_matched_direct_identity_check",
@@ -507,7 +805,10 @@ def main() -> None:
             left_color=BALL_COLOR,
             right_color=BASELINE_COLOR,
             y_label=r"Exact-ID upper bound $\gamma$",
-            title=r"Direct exact-ID upper bound at Ball noise scale (same $\sigma$; privacy not matched)",
+            title=(
+                r"Direct exact-ID upper bound at Ball noise scale "
+                r"(same $\sigma$; privacy not matched)"
+            ),
             out_stem=out_dir / "fig_agg_bound_same_noise_grouped_bar",
             left_ci_low="bound_ball_direct_ci_low",
             left_ci_high="bound_ball_direct_ci_high",
@@ -551,6 +852,12 @@ def main() -> None:
 
         summary_manifest["models"][model_family] = {
             "status": "ok",
+            "representative_config": {
+                "radius_tag": radius_tag,
+                "epsilon": float(epsilon),
+                "m": int(m),
+            },
+            "config_diagnostics": config_diagnostics,
             "included_datasets": agg_df["dataset_name"].tolist(),
             "num_datasets": int(len(agg_df)),
             "issues": issues,
@@ -582,6 +889,13 @@ def main() -> None:
 
     manifest_path = erm_root / "aggregate_erm_manifest.json"
     manifest_path.write_text(json.dumps(summary_manifest, indent=2, sort_keys=True))
+
+    if not any_success:
+        raise RuntimeError(
+            "No aggregate outputs were produced. "
+            f"See diagnostic manifest: {manifest_path}"
+        )
+
     print(json.dumps(summary_manifest, indent=2, sort_keys=True))
 
 
