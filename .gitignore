@@ -1,0 +1,133 @@
+# Compiled source code
+*.class
+*.pyc
+*.pyo
+*.o
+*.out
+*.so
+
+checkpoints/
+reconstruct.ipynb
+AI_STATS_CIFAR_PLOTS.py
+AI_STATS_MNIST_PLOTS.py
+
+# Virtual environments
+venv/
+.env/
+.venv/
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+*.swp
+*.swo
+*.bak
+*.orig
+
+# Secrets and sensitive files
+*.env
+*.key
+*.pem
+*.crt
+*.secret
+*.token
+# Ignore all JSON artifacts
+*.json
+
+# Data files
+*.csv
+*.tsv
+*.dat
+*.db
+*.sqlite
+*.sqlite3
+*.npz            # ignore all NumPy archive files
+
+# Package manager files
+node_modules/
+package-lock.json
+yarn.lock
+npm-debug.log
+
+# IDE and editor settings
+.vscode/
+.idea/
+*.iml
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Coverage reports
+coverage/
+*.lcov
+.nyc_output/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+*.whl
+
+# Temporary files and cache
+__pycache__/
+*.cache
+*.stackdump
+*.pid
+*.seed
+*.h5
+*.hdf5
+
+# Backup files
+*.bak
+*.old
+*.swp
+*.swo
+*.tmp
+
+# Python packaging
+*.egg
+*.egg-info/
+.eggs/
+
+# Compressed files
+*.zip
+*.tar.gz
+*.rar
+*.7z
+
+# Git-specific files
+.git/
+!.gitignore
+
+# ignore any directory named MNIST (at any depth)
+**/MNIST/
+
+# ignore the raw MNIST idx files by extension
+**/*.idx3-ubyte
+**/*.idx3-ubyte.gz
+**/*.idx1-ubyte
+**/*.idx1-ubyte.gz
+
+catboost_info/
+MLB*/
+
+# Trainer output dirs
+outputs/
+torch_outputs/
+
+# PyTorch checkpoint files
+*.pt
+*.pth
+
+
+DMiAI/
+kaggle/
+test/ 
+

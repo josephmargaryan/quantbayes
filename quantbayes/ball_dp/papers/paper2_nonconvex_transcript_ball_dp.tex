@@ -1,0 +1,571 @@
+\documentclass[conference,compsoc]{IEEEtran}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{cite}
+\usepackage{graphicx}
+\usepackage[caption=false,font=footnotesize]{subfig}
+\usepackage{amsmath,amssymb,amsfonts,amsthm,mathtools,bm}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage[hidelinks]{hyperref}
+\usepackage{microtype}
+
+\interdisplaylinepenalty=2500
+
+\newtheorem{definition}{Definition}
+\newtheorem{assumption}{Assumption}
+\newtheorem{theorem}{Theorem}
+\newtheorem{lemma}{Lemma}
+\newtheorem{proposition}{Proposition}
+\newtheorem{corollary}{Corollary}
+\newtheorem{remark}{Remark}
+
+\DeclareMathOperator{\Law}{Law}
+\DeclareMathOperator{\clip}{clip}
+\DeclareMathOperator{\supp}{supp}
+\DeclareMathOperator{\Ber}{Bernoulli}
+\DeclareMathOperator{\Bin}{Binomial}
+\DeclareMathOperator{\argmax}{arg\,max}
+\DeclareMathOperator{\argmin}{arg\,min}
+
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\N}{\mathcal{N}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\Prb}{\mathbb{P}}
+\newcommand{\Ball}{\mathcal{B}}
+\newcommand{\cZ}{\mathcal{Z}}
+\newcommand{\cY}{\mathcal{Y}}
+\newcommand{\cT}{\mathcal{T}}
+\newcommand{\TV}{\mathrm{TV}}
+\newcommand{\dd}{\,\mathrm d}
+\newcommand{\norm}[1]{\left\lVert #1\right\rVert}
+\newcommand{\inner}[2]{\left\langle #1,#2\right\rangle}
+
+\title{Ball-Local Reconstruction Bounds for Nonconvex DP-SGD Transcripts}
+
+\author{
+Joseph Margaryan
+}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We study reconstruction of one training record from a nonconvex DP-SGD
+transcript under a local Ball prior on the hidden record.  The central
+technical distinction is whether the adversary observes the Poisson inclusion
+bits of the target record.  For the stronger known-inclusion transcript model,
+we prove a Ball-local ReRo bound by dominating the adaptive transcript by a
+product of revealed Bernoulli--Gaussian experiments.  For homogeneous training
+schedules this product blow-up function is evaluated exactly as a finite
+Binomial--Gaussian mixture.  For the weaker unknown-inclusion model, we define
+the corresponding hidden-mixture f-DP/ReRo object and evaluate it by privacy
+loss distribution convolution.  We keep this hidden f-DP curve distinct from
+RDP-to-ReRo conversion bounds, which are certified but generally coarser and
+apply to a different observation model than the revealed transcript.  Finally,
+we give finite-prior exact-identification attacks whose likelihoods match the
+known- and unknown-inclusion models.
+\end{abstract}
+
+\section{Setup}
+
+Let
+\[
+D_z = D^- \cup \{z\},
+\qquad
+D_u = D^- \cup \{u\},
+\]
+where $D^-\in\cZ^{n-1}$ is fixed and $z$ is the hidden record drawn from a
+prior $\pi_{u,r}$ supported on a radius-$r$ ball $\Ball(u,r)$.  A transcript
+mechanism produces
+\[
+\tau = \cT_T(D)=(\tilde S_1,\ldots,\tilde S_T),
+\]
+where $\tilde S_t$ is the sanitized DP-SGD update at step $t$.  A reconstructor
+is a measurable map
+\[
+R:\Theta\times \cZ^{n-1}\to \cZ.
+\]
+For a loss $\rho$ and tolerance $\eta$, the reconstruction success probability is
+\[
+p_{\rm succ}(\eta)
+=
+\Pr_{Z\sim\pi_{u,r},\,\tau\sim \Law(\cT_T(D_Z))}
+\left[
+\rho(Z,R(\tau,D^-))\le \eta
+\right].
+\]
+
+\begin{definition}[Prior anti-concentration]
+For a prior $\pi$ and loss $\rho$, define
+\[
+\kappa_{\pi,\rho}(\eta)
+:=
+\sup_{z_0\in\cZ}
+\Pr_{Z\sim\pi}\left[\rho(Z,z_0)\le \eta\right].
+\]
+For a uniform prior on a Euclidean $d$-ball of radius $r$ and Euclidean loss,
+ignoring boundary effects at the maximizing center,
+\[
+\kappa(\eta)=
+\begin{cases}
+(\eta/r)^d, & 0\le \eta<r,\\
+1, & \eta\ge r.
+\end{cases}
+\]
+\end{definition}
+
+\section{Hypothesis-testing notation}
+
+\begin{definition}[Blow-up function]
+For probability laws $P,Q$ on a common measurable space,
+\[
+B_\kappa(P\|Q)
+:=
+\sup_{A:\,Q(A)\le \kappa} P(A),
+\qquad
+\kappa\in[0,1].
+\]
+Equivalently, if $T_{Q,P}$ is the tradeoff function with type-I error measured
+under $Q$ and power under $P$, then
+\[
+B_\kappa(P\|Q)=1-T_{Q,P}(\kappa).
+\]
+\end{definition}
+
+The order matters.  Throughout this paper, $Q$ is the reference/null law and
+$P$ is the candidate/alternative law.  Thus a reconstruction event whose
+reference probability is at most $\kappa$ has candidate probability at most
+$B_\kappa(P\|Q)$.
+
+\begin{lemma}[Post-processing]
+If $K$ is a probability kernel, then
+\[
+B_\kappa(PK\|QK)\le B_\kappa(P\|Q),
+\qquad
+\kappa\in[0,1].
+\]
+\end{lemma}
+
+\begin{proof}
+Every event $A$ in the output space induces the randomized test
+$x\mapsto K(x,A)$ in the input space.  If $(QK)(A)\le \kappa$, then this test
+has $Q$-mass at most $\kappa$, and its $P$-mass is $(PK)(A)$.  Taking the
+supremum over output events gives the claim.
+\end{proof}
+
+\section{A local Ball-ReRo theorem}
+
+For each $z\in\supp(\pi_{u,r})$ write
+\[
+P_z := \Law(\cT_T(D_z)),
+\qquad
+Q_u := \Law(\cT_T(D_u)).
+\]
+
+\begin{theorem}[Local Ball-ReRo]
+Let $\pi=\pi_{u,r}$ and suppose there is a pair $(P^\star,Q^\star)$ such that
+for all $z\in\supp(\pi)$ and all $\kappa\in[0,1]$,
+\[
+B_\kappa(P_z\|Q_u)
+\le
+g(\kappa)
+:=
+B_\kappa(P^\star\|Q^\star),
+\]
+where $g$ is nondecreasing and concave.  Then every measurable reconstructor
+satisfies
+\[
+p_{\rm succ}(\eta)
+\le
+g\!\left(\kappa_{\pi,\rho}(\eta)\right).
+\]
+\end{theorem}
+
+\begin{proof}
+For fixed $z$, define
+\[
+E_z := \{\tau:\rho(z,R(\tau,D^-))\le\eta\}
+\]
+and
+\[
+\kappa_z:=Q_u(E_z).
+\]
+Then
+\[
+P_z(E_z)
+\le
+B_{\kappa_z}(P_z\|Q_u)
+\le
+g(\kappa_z).
+\]
+Averaging over $Z\sim\pi$ gives
+\[
+p_{\rm succ}(\eta)
+\le
+\E_{Z\sim\pi}g(\kappa_Z).
+\]
+By concavity,
+\[
+\E g(\kappa_Z)
+\le
+g(\E\kappa_Z).
+\]
+It remains to bound $\E\kappa_Z$.  Let
+\[
+A=\{(z,\tau):\rho(z,R(\tau,D^-))\le\eta\}.
+\]
+By Tonelli's theorem,
+\[
+\E_Z\kappa_Z
+=
+\int Q_u(E_z)\,\pi(\dd z)
+=
+\int
+\Pr_{Z\sim\pi}\!\left[\rho(Z,R(\tau,D^-))\le\eta\right]
+Q_u(\dd\tau).
+\]
+For fixed $\tau$, $R(\tau,D^-)$ is a deterministic point of $\cZ$, so the inner
+probability is at most $\kappa_{\pi,\rho}(\eta)$.  Hence
+\[
+\E_Z\kappa_Z \le \kappa_{\pi,\rho}(\eta).
+\]
+Since $g$ is nondecreasing,
+\[
+p_{\rm succ}(\eta)
+\le
+g(\kappa_{\pi,\rho}(\eta)).
+\]
+\end{proof}
+
+\section{Ball-SGD transcript domination}
+
+At step $t$, conditional on the past history $h$, the sanitized update can be
+written as
+\[
+\tilde S_t(D_u)
+=
+C_t^h + I_t \bar g_t^h(u) + \xi_t,
+\]
+\[
+\tilde S_t(D_z)
+=
+C_t^h + I_t \bar g_t^h(z) + \xi_t,
+\]
+where $I_t\sim\Ber(q_t)$ is the Poisson inclusion bit and
+$\xi_t\sim\N(0,\sigma_t^2 I_p)$.  Define the clipped gradient gap
+\[
+\delta_t^h(z,u)
+:=
+\bar g_t^h(z)-\bar g_t^h(u),
+\]
+and the normalized Ball sensitivity
+\[
+c_t
+:=
+\frac{\Delta_t(r)}{\sigma_t},
+\qquad
+\Delta_t(r)
+\ge
+\sup_{z\in\supp(\pi_{u,r}),h}
+\norm{\delta_t^h(z,u)}_2.
+\]
+The Ball-specific improvement is that $\Delta_t(r)$ may be much smaller than
+the standard clipping-only sensitivity $2C_t$.
+
+\subsection{Known inclusion: revealed transcript bound}
+
+The known-inclusion adversary observes the target inclusion bits or an
+equivalent residualized transcript from which the selected target steps are
+known.  The one-step revealed reference pair is
+\[
+Q_t^{\rm rev}
+=
+\Law(I_t,G_t),
+\qquad
+P_t^{\rm rev}
+=
+\Law(I_t,I_t c_t+G_t),
+\]
+where $G_t\sim\N(0,1)$ and $I_t\sim\Ber(q_t)$ are independent.  Define
+\[
+Q_{1:T}^{\rm rev}:=\bigotimes_{t=1}^T Q_t^{\rm rev},
+\qquad
+P_{1:T}^{\rm rev}:=\bigotimes_{t=1}^T P_t^{\rm rev}.
+\]
+
+\begin{theorem}[Known-inclusion Ball-ReRo]
+For the revealed-inclusion transcript model,
+\[
+p_{\rm succ}(\eta)
+\le
+B_{\kappa_{\pi,\rho}(\eta)}
+\!\left(P_{1:T}^{\rm rev}\middle\|Q_{1:T}^{\rm rev}\right).
+\]
+\end{theorem}
+
+\begin{proof}
+For fixed $z$ and history $h$, center by the common non-target contribution and
+project onto the direction of $\delta_t^h(z,u)$.  Conditional on $I_t=i$, the
+two laws differ by a one-dimensional Gaussian shift of magnitude
+$i\|\delta_t^h(z,u)\|_2/\sigma_t\le i c_t$.  A Gaussian contraction kernel maps
+the worst-case shift $i c_t$ to the actual shift.  Adding the common center and
+orthogonal Gaussian coordinates is another kernel.  These one-step kernels glue
+adaptively over $t$, giving a global kernel $K_z$ such that
+\[
+P_{1:T}^{\rm rev}K_z=P_z,
+\qquad
+Q_{1:T}^{\rm rev}K_z=Q_u.
+\]
+By post-processing,
+\[
+B_\kappa(P_z\|Q_u)
+\le
+B_\kappa(P_{1:T}^{\rm rev}\|Q_{1:T}^{\rm rev}).
+\]
+The local Ball-ReRo theorem then gives the result.
+\end{proof}
+
+\subsection{Exact homogeneous evaluator}
+
+When $q_t=q$ and $c_t=c$ for all $t$, the privacy loss
+\[
+L=\log\frac{\dd P_{1:T}^{\rm rev}}{\dd Q_{1:T}^{\rm rev}}
+\]
+has a finite Binomial--Gaussian mixture form.  Let
+\[
+K:=\sum_{t=1}^T I_t\sim\Bin(T,q).
+\]
+Conditional on $K=k$,
+\[
+L\mid K=k,Q
+\sim
+\N\!\left(-\frac12 k c^2,\,k c^2\right),
+\]
+and
+\[
+L\mid K=k,P
+\sim
+\N\!\left(+\frac12 k c^2,\,k c^2\right),
+\]
+with an atom at $L=0$ when $k=0$.  The Neyman--Pearson event is an upper level
+set of $L$.  Therefore
+\[
+B_\kappa(P_{1:T}^{\rm rev}\|Q_{1:T}^{\rm rev})
+=
+P[L>\tau_\kappa]+\theta P[L=\tau_\kappa],
+\]
+where $\tau_\kappa$ and $\theta\in[0,1]$ are chosen so that
+\[
+Q[L>\tau_\kappa]+\theta Q[L=\tau_\kappa]=\kappa.
+\]
+This is the exact evaluator used for the known-inclusion curve in the
+experiments.
+
+\subsection{Unknown inclusion: hidden-mixture f-DP bound}
+
+If the transcript does not reveal target inclusion bits, the one-step hidden
+reference pair is
+\[
+Q_t^{\rm hid}=\N(0,1),
+\qquad
+P_t^{\rm hid}=(1-q_t)\N(0,1)+q_t\N(c_t,1).
+\]
+The product hidden f-DP object is
+\[
+B_\kappa(P_{1:T}^{\rm hid}\|Q_{1:T}^{\rm hid}),
+\qquad
+P_{1:T}^{\rm hid}=\bigotimes_t P_t^{\rm hid},
+\quad
+Q_{1:T}^{\rm hid}=\bigotimes_t Q_t^{\rm hid}.
+\]
+For one step, the privacy loss under $Q_t^{\rm hid}$ is
+\[
+\ell_t(x)
+=
+\log\left((1-q_t)+q_t\exp(c_t x-c_t^2/2)\right),
+\qquad
+x\sim\N(0,1).
+\]
+The product privacy loss is $\sum_t \ell_t(X_t)$.  We evaluate its distribution
+by Gauss--Hermite quadrature and convolution.  This gives a deterministic
+hypothesis-testing approximation to the hidden-inclusion f-DP curve.  It is not
+mixed with the revealed-inclusion bound: the observation models differ.
+
+\section{RDP-to-ReRo conversion}
+
+If a mechanism satisfies an RDP bound
+\[
+D_\alpha(P\|Q)\le \varepsilon_\alpha,
+\qquad \alpha>1,
+\]
+then H\"older's inequality gives
+\[
+B_\kappa(P\|Q)
+\le
+\min\left\{
+1,\,
+\exp\left(
+\frac{\alpha-1}{\alpha}
+\left[\log\kappa+\varepsilon_\alpha\right]
+\right)
+\right\}.
+\]
+Optimizing over orders,
+\[
+\Gamma_{\rm RDP}(\kappa)
+=
+\inf_{\alpha>1}
+\min\left\{
+1,\,
+\exp\left(
+\frac{\alpha-1}{\alpha}
+\left[\log\kappa+\varepsilon_\alpha\right]
+\right)
+\right\}.
+\]
+This conversion is a certified bound for the law pair accounted for by the RDP
+accountant.  In our experiments it is reported as a hidden-subsampling/final
+release certificate.  It should not be interpreted as a bound on the stronger
+revealed-inclusion transcript unless the RDP accountant explicitly includes the
+released inclusion bits.
+
+\section{Finite-prior exact-identification attacks}
+
+Let $\{z_1,\ldots,z_m\}$ be a public candidate support with prior weights
+$\pi_i$.  The exact-identification baseline is
+\[
+\kappa_{\rm id}=\max_i \pi_i,
+\]
+and for a uniform finite prior, $\kappa_{\rm id}=1/m$.
+
+After residualizing the known non-target batch contribution, a known-inclusion
+Gaussian transcript has observations
+\[
+r_t = g_t(z_i)+\xi_t
+\]
+on selected target-present steps.  The exact finite-prior Bayes score is
+\[
+S_i^{\rm known}
+=
+\log \pi_i
+-
+\frac12
+\sum_{t\in\mathcal I}
+\frac{\norm{r_t-g_t(z_i)}_2^2}{\sigma_t^2},
+\]
+with the obvious least-squares limit when $\sigma_t=0$.
+
+For unknown inclusion,
+\[
+r_t =
+\begin{cases}
+\xi_t, & I_t=0,\\
+g_t(z_i)+\xi_t, & I_t=1,
+\end{cases}
+\]
+so the exact score is
+\[
+S_i^{\rm unknown}
+=
+\log\pi_i
++
+\sum_t
+\log\left[
+(1-q_t)\exp\left(-\frac{\norm{r_t}_2^2}{2\sigma_t^2}\right)
++
+q_t\exp\left(-\frac{\norm{r_t-g_t(z_i)}_2^2}{2\sigma_t^2}\right)
+\right],
+\]
+up to candidate-independent constants.  The attack returns
+\[
+\hat i=\argmax_i S_i.
+\]
+The known-inclusion attack should be compared against the revealed f-DP curve;
+the unknown-inclusion attack should be compared against the hidden f-DP/RDP
+curves.
+
+\section{Relationship to prior ReRo work}
+
+Hayes, Mahloujifar, and Balle formulate reconstruction risk through the blow-up
+function and estimate DP-SGD reconstruction bounds by sampling or otherwise
+approximating the relevant likelihood-ratio distribution.  Our known-inclusion
+contribution specializes this philosophy to a Ball-local transcript pair and
+gives an exact homogeneous evaluator for the revealed Bernoulli--Gaussian
+product reference experiment.
+
+Kaissis, Hayes, Ziller, and Rueckert emphasize the hypothesis-testing
+interpretation of reconstruction bounds and the distinction between analytic
+mechanism curves and numerical approximations.  Our implementation follows this
+separation: the exact homogeneous revealed curve is a theorem-backed numerical
+evaluation, the hidden f-DP curve is a deterministic PLD approximation of a
+different hypothesis-testing object, and the RDP conversion is a separate
+certified conversion bound.
+
+\section{Experimental protocol}
+
+The synthetic experiment trains three models on linearly separable binary data:
+nonprivate ERM, Ball-DP, and standard DP calibrated to the same target privacy
+level.  The main figures are:
+\begin{enumerate}[leftmargin=*]
+\item utility over training and final utility;
+\item known-inclusion revealed f-DP curves for Ball-DP and standard DP;
+\item unknown-inclusion hidden f-DP and RDP conversion curves;
+\item a monotone prefix privacy--utility trajectory for the known-inclusion
+      transcript bound;
+\item finite-prior exact-identification bars for known- and unknown-inclusion
+      attacks.
+\end{enumerate}
+The direct stepwise composition bound is valid but vacuous in the default
+high-$T$ experiment, so it is kept as a diagnostic rather than a main figure.
+
+\section{Conclusion}
+
+The main methodological lesson is that reconstruction certificates must be
+indexed by the observation model.  A revealed-inclusion transcript bound, a
+hidden-inclusion f-DP curve, and an RDP conversion bound are all useful, but they
+are not interchangeable.  Ball-local sensitivity gives meaningful
+reconstruction certificates in the revealed transcript model where standard
+clipping-based sensitivity is nearly vacuous, and it also supports exact
+finite-prior attacks whose likelihoods match the corresponding threat model.
+
+\bibliographystyle{IEEEtran}
+\begin{thebibliography}{9}
+
+\bibitem{abadi2016}
+M.~Abadi et al.,
+``Deep Learning with Differential Privacy,''
+in \emph{Proc. ACM CCS}, 2016.
+
+\bibitem{mironov2017}
+I.~Mironov,
+``R\'enyi Differential Privacy,''
+in \emph{Proc. IEEE CSF}, 2017.
+
+\bibitem{dong2022}
+J.~Dong, A.~Roth, and W.~Su,
+``Gaussian Differential Privacy,''
+\emph{Journal of the Royal Statistical Society: Series B}, 2022.
+
+\bibitem{balle2022}
+B.~Balle, G.~Cherubin, and J.~Hayes,
+``Reconstructing Training Data with Informed Adversaries,''
+in \emph{Proc. IEEE S\&P}, 2022.
+
+\bibitem{hayes2023}
+J.~Hayes, S.~Mahloujifar, and B.~Balle,
+``Bounding Training Data Reconstruction in DP-SGD,''
+in \emph{Advances in Neural Information Processing Systems}, 2023.
+
+\bibitem{kaissis2023}
+G.~Kaissis, J.~Hayes, A.~Ziller, and D.~Rueckert,
+``Bounding Data Reconstruction Attacks with the Hypothesis Testing
+Interpretation of Differential Privacy,''
+arXiv:2307.03928, 2023.
+
+\end{thebibliography}
+
+\end{document}
