@@ -348,7 +348,9 @@ class FinitePriorTrial:
         if not np.allclose(X_full[target_index], x_target, atol=1e-7, rtol=0.0):
             raise ValueError("X_full[target_index] does not equal support target.")
         if int(y_full[target_index]) != y_target:
-            raise ValueError("y_full[target_index] does not equal support target label.")
+            raise ValueError(
+                "y_full[target_index] does not equal support target label."
+            )
 
         expected_sid = self.support.source_ids[target_pos]
         if str(self.target_source_id) != str(expected_sid):
@@ -378,7 +380,9 @@ def build_same_label_ball_bank(
 ) -> CandidateBank:
     center = np.asarray(center_x, dtype=np.float32)
     label = int(center_y)
-    exclude = set() if exclude_source_ids is None else {str(s) for s in exclude_source_ids}
+    exclude = (
+        set() if exclude_source_ids is None else {str(s) for s in exclude_source_ids}
+    )
 
     if radius is not None and float(radius) < 0.0:
         raise ValueError("radius must be nonnegative or None.")
@@ -386,7 +390,9 @@ def build_same_label_ball_bank(
     best: dict[tuple[int, bytes], tuple[float, str, np.ndarray, int]] = {}
 
     for source in sources:
-        src = source if isinstance(source, CandidateSource) else CandidateSource(**source)
+        src = (
+            source if isinstance(source, CandidateSource) else CandidateSource(**source)
+        )
         same = np.flatnonzero(np.asarray(src.y, dtype=np.int32) == label)
 
         for pos in same.tolist():
@@ -501,7 +507,9 @@ def select_support_from_bank(
     if mode == "random":
         positions = rng.choice(available, size=m, replace=False)
     elif mode == "nearest":
-        positions = np.argsort(np.asarray(bank.distances_to_center, dtype=np.float64))[:m]
+        positions = np.argsort(np.asarray(bank.distances_to_center, dtype=np.float64))[
+            :m
+        ]
     elif mode == "farthest":
         positions = _greedy_farthest_positions(
             bank.X,

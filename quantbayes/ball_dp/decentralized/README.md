@@ -165,6 +165,8 @@ covariance_time = gossip_observer_noise_covariance(
 )
 ```
 
+This is the process-noise-through-gossip covariance. The Paper 3 observer scripts also use the simpler independent observer-noise model `covariance_time = sigma**2 * I`, which is the experimental protocol described in the paper. Both are valid instances of the same linear-Gaussian observer theorem; report which covariance model is used.
+
 ---
 
 ## 5. Observer-specific accounting
@@ -332,12 +334,33 @@ Useful figures:
 
 ---
 
-## 10. Tutorial
+## 10. Tutorial and experiments
 
-See:
+Recommended demo notebook in this repo:
 
 ```text
-examples/ball_dp/decentralized_synthetic_ball_dp_end_to_end_demo.ipynb
+quantbayes/ball_dp/examples/decentralized_demo.ipynb
 ```
 
-It uses synthetic data and the shared finite-prior setup. For real decentralized experiments, replace the data-loading and `sensitive_blocks_fn` cells.
+If using the thesis/demo split, the lightweight demo notebook is:
+
+```text
+quantbayes/ball_dp/examples/decentralized_single_workflow_demo.ipynb
+```
+
+The existing Paper 3 scripts are:
+
+```text
+quantbayes/ball_dp/experiments/run_decentralized_observer_experiment.py
+quantbayes/ball_dp/experiments/run_decentralized_map_attack_experiment.py
+quantbayes/ball_dp/experiments/run_decentralized_prototype_utility_experiment.py
+quantbayes/ball_dp/experiments/aggregate_decentralized_paper3.py
+```
+
+If using the shared finite-prior thesis runner, place it at:
+
+```text
+quantbayes/ball_dp/experiments/decentralized/run_thesis_experiment.py
+```
+
+The demo notebooks use synthetic data and the shared finite-prior setup. For real decentralized experiments, replace the data-loading and `sensitive_blocks_fn` cells.

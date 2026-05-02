@@ -1045,6 +1045,7 @@ def summarize_attack_trials(
         oblivious_kappa=oblivious_kappa,
     )
 
+
 def attack_convex_finite_prior_trial(
     release: ReleaseArtifact,
     trial: FinitePriorTrial,
@@ -1107,6 +1108,7 @@ def attack_nonconvex_finite_prior_trial(
         eta_grid=tuple(float(v) for v in eta_grid),
     )
     return enrich_attack_result_with_trial(attack, trial)
+
 
 def attack_convex_ball_output_finite_prior(
     release: ReleaseArtifact,

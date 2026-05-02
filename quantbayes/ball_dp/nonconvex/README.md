@@ -277,19 +277,33 @@ $$
 
 Good demo defaults:
 
-- `capture_every = 5` to `20`;
+- `capture_every = 5` to `20` for lightweight pedagogical notebooks;
+- `capture_every = 1` for paper-aligned full-transcript attack experiments;
 - `m = 6` to `16`;
 - `num_steps = 100` to `500` for notebooks;
-- `target_policy="sample"` for expensive runs.
+- `target_policy="sample"` for expensive runs and `target_policy="all"` for final aggregate audits when runtime allows.
 
 ---
 
-## 8. Tutorial
+## 8. Tutorial and experiments
 
-See:
+Recommended demo notebook in this repo:
 
 ```text
-examples/ball_dp/nonconvex_synthetic_transcript_ball_dp_end_to_end_demo.ipynb
+quantbayes/ball_dp/examples/nonconvex_demo.ipynb
 ```
 
-Replace only the synthetic data-loading cell for real experiments.
+If using the thesis/demo split, the lightweight single-workflow notebook and aggregated thesis notebook are:
+
+```text
+quantbayes/ball_dp/examples/nonconvex_single_workflow_demo.ipynb
+quantbayes/ball_dp/examples/nonconvex_demo_final.ipynb
+```
+
+Paper-scale full-transcript aggregate runs should use:
+
+```text
+quantbayes/ball_dp/experiments/nonconvex/run_thesis_experiment.py
+```
+
+Replace only the synthetic data-loading cell or loader arguments for real experiments.

@@ -234,12 +234,25 @@ row = {
 
 ---
 
-## 7. Tutorial
+## 7. Tutorial and experiments
 
-See:
+Recommended demo notebook in this repo:
 
 ```text
-examples/ball_dp/convex_synthetic_ball_dp_end_to_end_demo.ipynb
+quantbayes/ball_dp/examples/convex_demo.ipynb
 ```
 
-It is the recommended convex entry point. Replace the synthetic data cell with real embeddings for paper-scale runs.
+If using the thesis/demo split, the lightweight demo notebook is:
+
+```text
+quantbayes/ball_dp/examples/convex_single_workflow_demo.ipynb
+```
+
+Paper-scale finite-prior runs should use the experiment scripts rather than the demo notebook, for example:
+
+```text
+quantbayes/ball_dp/experiments/convex/run_attack_experiment.py
+quantbayes/ball_dp/experiments/convex/run_thesis_experiment.py
+```
+
+Replace the synthetic data cell or loader arguments with real embeddings for paper-scale runs.
