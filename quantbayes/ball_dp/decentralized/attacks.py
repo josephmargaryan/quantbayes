@@ -1,3 +1,5 @@
+# quantbayes/ball_dp/decentralized/attacks.py
+
 from __future__ import annotations
 
 import dataclasses as dc
@@ -8,7 +10,6 @@ import jax.numpy as jnp
 import numpy as np
 
 import optax
-
 
 from ..attacks.ball_priors import BallAttackPrior
 from ..metrics import reconstruction_metrics
@@ -37,15 +38,11 @@ class GaussianQuadraticForm:
     quadratic_np: Callable[[np.ndarray], float]
     quadratic_jax: Callable[[jnp.ndarray], jnp.ndarray]
     metadata: dict[str, Any]
+    batch_quadratic_np: Optional[Callable[[np.ndarray], np.ndarray]] = None
+    batch_quadratic_jax: Optional[Callable[[jnp.ndarray], jnp.ndarray]] = None
 
 
 def _make_optimizer(name: str, learning_rate: float):
-    if optax is None:
-        raise ImportError(
-            "The continuous projected MAP attack requires optax. "
-            "Install optax, or use run_linear_gaussian_finite_prior_attack, "
-            "which does exact finite-prior MAP scoring without optax."
-        )
     key = str(name).lower()
     if key == "adam":
         return optax.adam(float(learning_rate))
@@ -88,7 +85,10 @@ def _restart_points(
 
 
 def _records_close_for_finite_prior(
-    a: Record, b: Record, *, atol: float = 1e-7
+    a: Record,
+    b: Record,
+    *,
+    atol: float = 1e-7,
 ) -> bool:
     xa = np.asarray(a.features, dtype=np.float32).reshape(-1)
     xb = np.asarray(b.features, dtype=np.float32).reshape(-1)
@@ -128,14 +128,14 @@ def apply_linear_gaussian_view(
     s = jnp.asarray(sensitive_blocks, dtype=jnp.float32)
     if s.ndim == 1:
         q = int(H.shape[1])
-        if s.size % q != 0:
+        if int(s.size) % q != 0:
             raise ValueError(
                 "Flat sensitive_blocks length must be divisible by transfer_matrix.shape[1]."
             )
         p = int(s.size // q)
         s = s.reshape((q, p))
     elif s.ndim == 2:
-        if s.shape[0] != H.shape[1]:
+        if int(s.shape[0]) != int(H.shape[1]):
             raise ValueError(
                 "sensitive_blocks.shape[0] must match transfer_matrix.shape[1]."
             )
@@ -143,15 +143,21 @@ def apply_linear_gaussian_view(
         raise ValueError("sensitive_blocks must be 1D or 2D.")
 
     mean = H @ s
+
     if base_offset is not None:
         c = jnp.asarray(base_offset, dtype=mean.dtype)
         if c.ndim == 1:
+            if int(c.size) != int(mean.size):
+                raise ValueError(
+                    "Flat base_offset length must equal d_A * p for the inferred view shape."
+                )
             c = c.reshape(mean.shape)
         elif c.shape != mean.shape:
             raise ValueError(
                 "base_offset must be flat with length d_A * p or have shape (d_A, p)."
             )
         mean = mean + c
+
     return mean.reshape(-1)
 
 
@@ -163,9 +169,9 @@ def make_linear_gaussian_mean_fn(
 ) -> MeanFn:
     """Build a candidate mean-view function from the theorem decomposition.
 
-    The returned callable is suitable for both the continuous MAP optimizer and the
-    exact finite-prior scorer, provided `sensitive_blocks_fn` itself is deterministic
-    and JAX-compatible when used inside the continuous attack.
+    The returned callable is suitable for both the continuous MAP optimizer and
+    finite-prior scorer. Finite-prior scoring will use grouped vmap over x for
+    each fixed label when the supplied sensitive_blocks_fn is JAX-compatible.
     """
 
     def mean_fn(x: ArrayLike, y: int) -> jnp.ndarray:
@@ -187,21 +193,31 @@ def make_gaussian_quadratic_form(
 ) -> GaussianQuadraticForm:
     """Prepare the exact Gaussian negative log-likelihood quadratic form.
 
-    If `covariance` has shape (d_A, d_A), it is interpreted as the time/network
-    covariance in the Kronecker form Sigma_A = covariance ⊗ I_p, where p is inferred
-    from `observed_view.size / d_A`.
+    Uses Cholesky solves rather than explicitly forming Sigma^{-1}.
 
-    If `covariance` has shape (D, D) with D = observed_view.size, it is interpreted as
-    the full covariance on the flattened observer view.
+    If covariance has shape (d_A, d_A), it is interpreted as the time/network
+    covariance in the Kronecker form Sigma_A = covariance ⊗ I_p, where p is
+    inferred from observed_view.size / d_A.
+
+    If covariance has shape (D, D) with D = observed_view.size, it is interpreted
+    as the full covariance on the flattened observer view.
     """
     y = np.asarray(observed_view, dtype=np.float64).reshape(-1)
+    if y.size == 0:
+        raise ValueError("observed_view must be non-empty.")
+    if np.any(~np.isfinite(y)):
+        raise ValueError("observed_view must contain only finite values.")
+
     Sigma = np.asarray(covariance, dtype=np.float64)
     if Sigma.ndim != 2 or Sigma.shape[0] != Sigma.shape[1]:
         raise ValueError("covariance must be square.")
+    if np.any(~np.isfinite(Sigma)):
+        raise ValueError("covariance must contain only finite values.")
     if not np.allclose(Sigma, Sigma.T, atol=1e-10, rtol=0.0):
         raise ValueError("covariance must be symmetric.")
+
     try:
-        np.linalg.cholesky(Sigma)
+        chol = np.linalg.cholesky(Sigma)
     except np.linalg.LinAlgError as exc:
         raise ValueError("covariance must be positive definite.") from exc
 
@@ -229,57 +245,170 @@ def make_gaussian_quadratic_form(
             raise ValueError(
                 "For covariance_mode='kron_eye', len(observed_view) must be divisible by covariance.shape[0]."
             )
+
         p = int(y.size // d_A)
-        precision_t = np.linalg.inv(Sigma)
-        precision_t_jax = jnp.asarray(precision_t, dtype=jnp.float32)
+
+        chol_t_np = chol
+        chol_t_jax = jnp.asarray(chol_t_np, dtype=jnp.float32)
+
         y_mat_np = y.reshape((d_A, p))
         y_mat_jax = jnp.asarray(y_mat_np, dtype=jnp.float32)
 
         def quadratic_np(mean_vec: np.ndarray) -> float:
             mean_mat = np.asarray(mean_vec, dtype=np.float64).reshape((d_A, p))
             resid = y_mat_np - mean_mat
-            return float(0.5 * np.sum((precision_t @ resid) * resid))
+            whitened = np.linalg.solve(chol_t_np, resid)
+            return float(0.5 * np.sum(whitened * whitened))
 
         def quadratic_jax(mean_vec: jnp.ndarray) -> jnp.ndarray:
             mean_mat = jnp.asarray(mean_vec, dtype=jnp.float32).reshape((d_A, p))
             resid = y_mat_jax - mean_mat
-            return 0.5 * jnp.sum((precision_t_jax @ resid) * resid)
+            whitened = jnp.linalg.solve(chol_t_jax, resid)
+            return 0.5 * jnp.sum(whitened * whitened)
+
+        def batch_quadratic_np(mean_vecs: np.ndarray) -> np.ndarray:
+            means = np.asarray(mean_vecs, dtype=np.float64).reshape((-1, d_A, p))
+            resid = y_mat_np[None, :, :] - means
+            whitened = np.stack(
+                [np.linalg.solve(chol_t_np, resid_i) for resid_i in resid],
+                axis=0,
+            )
+            return 0.5 * np.sum(whitened * whitened, axis=(1, 2))
+
+        def batch_quadratic_jax(mean_vecs: jnp.ndarray) -> jnp.ndarray:
+            means = jnp.asarray(mean_vecs, dtype=jnp.float32).reshape((-1, d_A, p))
+            resid = y_mat_jax[None, :, :] - means
+
+            def solve_one(r: jnp.ndarray) -> jnp.ndarray:
+                return jnp.linalg.solve(chol_t_jax, r)
+
+            whitened = jax.vmap(solve_one)(resid)
+            return 0.5 * jnp.sum(whitened * whitened, axis=(1, 2))
 
         return GaussianQuadraticForm(
             mode="kron_eye",
             quadratic_np=quadratic_np,
             quadratic_jax=quadratic_jax,
+            batch_quadratic_np=batch_quadratic_np,
+            batch_quadratic_jax=batch_quadratic_jax,
             metadata={
                 "view_block_dim": int(d_A),
                 "parameter_dim": int(p),
+                "covariance_cholesky_used": True,
             },
         )
 
     if Sigma.shape != (y.size, y.size):
         raise ValueError(
-            "For covariance_mode='full', covariance must have shape (len(observed_view), len(observed_view))."
+            "For covariance_mode='full', covariance must have shape "
+            "(len(observed_view), len(observed_view))."
         )
 
-    precision = np.linalg.inv(Sigma)
-    precision_jax = jnp.asarray(precision, dtype=jnp.float32)
+    chol_np = chol
+    chol_jax = jnp.asarray(chol_np, dtype=jnp.float32)
     y_jax = jnp.asarray(y, dtype=jnp.float32)
 
     def quadratic_np(mean_vec: np.ndarray) -> float:
         resid = y - np.asarray(mean_vec, dtype=np.float64).reshape(-1)
-        return float(0.5 * resid @ precision @ resid)
+        whitened = np.linalg.solve(chol_np, resid)
+        return float(0.5 * np.dot(whitened, whitened))
 
     def quadratic_jax(mean_vec: jnp.ndarray) -> jnp.ndarray:
         resid = y_jax - jnp.asarray(mean_vec, dtype=jnp.float32).reshape(-1)
-        return 0.5 * resid @ precision_jax @ resid
+        whitened = jnp.linalg.solve(chol_jax, resid)
+        return 0.5 * jnp.dot(whitened, whitened)
+
+    def batch_quadratic_np(mean_vecs: np.ndarray) -> np.ndarray:
+        means = np.asarray(mean_vecs, dtype=np.float64).reshape((-1, y.size))
+        resid = y[None, :] - means
+        whitened_t = np.linalg.solve(chol_np, resid.T)
+        whitened = whitened_t.T
+        return 0.5 * np.sum(whitened * whitened, axis=1)
+
+    def batch_quadratic_jax(mean_vecs: jnp.ndarray) -> jnp.ndarray:
+        means = jnp.asarray(mean_vecs, dtype=jnp.float32).reshape((-1, y.size))
+        resid = y_jax[None, :] - means
+
+        def solve_one(r: jnp.ndarray) -> jnp.ndarray:
+            return jnp.linalg.solve(chol_jax, r)
+
+        whitened = jax.vmap(solve_one)(resid)
+        return 0.5 * jnp.sum(whitened * whitened, axis=1)
 
     return GaussianQuadraticForm(
         mode="full",
         quadratic_np=quadratic_np,
         quadratic_jax=quadratic_jax,
+        batch_quadratic_np=batch_quadratic_np,
+        batch_quadratic_jax=batch_quadratic_jax,
         metadata={
             "view_dim": int(y.size),
+            "covariance_cholesky_used": True,
         },
     )
+
+
+def _candidate_means_grouped_by_label(
+    *,
+    X: np.ndarray,
+    y: np.ndarray,
+    mean_fn: MeanFn,
+) -> tuple[np.ndarray, bool, list[int]]:
+    """Evaluate candidate means, using grouped vmap over x when possible.
+
+    Grouping by label avoids passing a traced label into mean_fn, which is
+    important because make_linear_gaussian_mean_fn intentionally casts labels to
+    Python ints.
+    """
+    X = np.asarray(X, dtype=np.float32)
+    y = np.asarray(y, dtype=np.int64)
+
+    m = int(X.shape[0])
+    mean_rows: list[Optional[np.ndarray]] = [None for _ in range(m)]
+
+    used_vectorized_for_all_labels = True
+    vmap_failed_labels: list[int] = []
+
+    for label in sorted(np.unique(y).astype(np.int64).tolist()):
+        idx = np.where(y == int(label))[0]
+        X_label = jnp.asarray(X[idx], dtype=jnp.float32)
+
+        def one_mean(x_i: jnp.ndarray) -> jnp.ndarray:
+            return jnp.asarray(mean_fn(x_i, int(label)), dtype=jnp.float32).reshape(-1)
+
+        try:
+            batch = jax.vmap(one_mean)(X_label)
+            batch_np = np.asarray(batch, dtype=np.float32)
+        except Exception:
+            used_vectorized_for_all_labels = False
+            vmap_failed_labels.append(int(label))
+            batch_np = np.stack(
+                [
+                    np.asarray(
+                        mean_fn(np.asarray(X[int(i)], dtype=np.float32), int(label)),
+                        dtype=np.float32,
+                    ).reshape(-1)
+                    for i in idx
+                ],
+                axis=0,
+            )
+
+        if batch_np.ndim != 2 or batch_np.shape[0] != int(idx.size):
+            raise ValueError(
+                "mean_fn must return a fixed-size vector for every candidate."
+            )
+
+        for local_j, global_i in enumerate(idx.tolist()):
+            mean_rows[int(global_i)] = np.asarray(batch_np[local_j], dtype=np.float32)
+
+    if any(row is None for row in mean_rows):
+        raise RuntimeError("Failed to evaluate every candidate mean.")
+
+    means = np.stack(
+        [np.asarray(row, dtype=np.float32) for row in mean_rows],
+        axis=0,
+    )
+    return means, used_vectorized_for_all_labels, vmap_failed_labels
 
 
 def run_linear_gaussian_ball_map_attack(
@@ -298,9 +427,11 @@ def run_linear_gaussian_ball_map_attack(
     """Projected Ball-constrained MAP attack for an exact Gaussian observer view.
 
     This optimizes the exact negative log-posterior up to an additive constant:
+
         0.5 * ||Sigma^{-1/2}(y - mean_fn(z, y_label))||_2^2 - log pi(z).
     """
     cfg = LinearGaussianMapAttackConfig() if cfg is None else cfg
+
     labels = _resolve_label_space(known_label=known_label, label_space=label_space)
     quadratic = make_gaussian_quadratic_form(
         observed_view,
@@ -311,6 +442,7 @@ def run_linear_gaussian_ball_map_attack(
     optimizer = _make_optimizer(cfg.optimizer, cfg.learning_rate)
     rng = np.random.default_rng(int(cfg.seed))
     starts = _restart_points(prior, num_restarts=cfg.num_restarts, rng=rng)
+    center_shape = np.asarray(prior.center).shape
 
     best_obj = float("inf")
     best_x = None
@@ -318,39 +450,50 @@ def run_linear_gaussian_ball_map_attack(
     candidate_rows: list[tuple[float, int, np.ndarray]] = []
 
     for label in labels:
+        label_int = int(label)
 
         def objective(x_var: jnp.ndarray) -> jnp.ndarray:
-            mean_vec = mean_fn(x_var, int(label))
+            mean_vec = mean_fn(x_var, label_int)
             return quadratic.quadratic_jax(mean_vec) + prior.negative_log_density(x_var)
 
         loss_and_grad = jax.value_and_grad(objective)
 
         for x0 in starts:
             x = jnp.asarray(
-                np.asarray(x0, dtype=np.float32).reshape(prior.center.shape)
+                np.asarray(x0, dtype=np.float32).reshape(center_shape),
+                dtype=jnp.float32,
             )
             x = prior.project(x)
             opt_state = optimizer.init(x)
-            last_value = float("inf")
-            for _ in range(int(cfg.num_steps)):
-                value, grad = loss_and_grad(x)
+
+            best_restart_obj = float(objective(x))
+            best_restart_x = x
+
+            for _ in range(max(0, int(cfg.num_steps))):
+                _, grad = loss_and_grad(x)
                 updates, opt_state = optimizer.update(grad, opt_state, x)
                 x = optax.apply_updates(x, updates)
                 x = prior.project(x)
-                last_value = float(value)
 
-            x_np = np.asarray(x, dtype=np.float32)
+                curr = float(objective(x))
+                if curr < best_restart_obj:
+                    best_restart_obj = curr
+                    best_restart_x = x
+
+            x_np = np.asarray(best_restart_x, dtype=np.float32)
+
             obj_np = float(
                 quadratic.quadratic_np(
-                    np.asarray(mean_fn(x, int(label)), dtype=np.float32)
+                    np.asarray(mean_fn(best_restart_x, label_int), dtype=np.float32)
                 )
                 + prior.negative_log_density_np(x_np)
             )
-            candidate_rows.append((obj_np, int(label), x_np.copy()))
+
+            candidate_rows.append((obj_np, label_int, x_np.copy()))
             if obj_np < best_obj:
                 best_obj = obj_np
                 best_x = x_np.copy()
-                best_label = int(label)
+                best_label = label_int
 
     if best_x is None or best_label is None:
         raise RuntimeError("MAP optimization failed to produce a candidate.")
@@ -364,24 +507,26 @@ def run_linear_gaussian_ball_map_attack(
             eta_grid=tuple(float(v) for v in eta_grid),
         )
     )
+
+    true_obj = None
     if true_record is not None:
+        true_x = np.asarray(true_record.features, dtype=np.float32).reshape(
+            center_shape
+        )
+        true_label = int(true_record.label)
         true_obj = float(
             quadratic.quadratic_np(
                 np.asarray(
-                    mean_fn(
-                        np.asarray(true_record.features, dtype=np.float32),
-                        int(true_record.label),
-                    ),
+                    mean_fn(true_x, true_label),
                     dtype=np.float32,
                 )
             )
-            + prior.negative_log_density_np(
-                np.asarray(true_record.features, dtype=np.float32)
-            )
+            + prior.negative_log_density_np(true_x)
         )
         metrics["objective_gap_to_truth"] = float(best_obj - true_obj)
+
         feat_pred = np.asarray(best_x, dtype=np.float32).reshape(-1)
-        feat_true = np.asarray(true_record.features, dtype=np.float32).reshape(-1)
+        feat_true = np.asarray(true_x, dtype=np.float32).reshape(-1)
         metrics["mse"] = float(np.mean((feat_pred - feat_true) ** 2))
 
     top_rows = sorted(candidate_rows, key=lambda row: row[0])[
@@ -393,6 +538,7 @@ def run_linear_gaussian_ball_map_attack(
         "algorithm": "linear_gaussian_ball_map",
         "objective": "exact_gaussian_negative_log_posterior_up_to_constants",
         "best_objective": float(best_obj),
+        "objective_at_truth": true_obj,
         "num_labels_searched": int(len(labels)),
         "num_restarts": int(cfg.num_restarts),
         "num_steps": int(cfg.num_steps),
@@ -425,10 +571,16 @@ def run_linear_gaussian_finite_prior_attack(
     eta_grid: Sequence[float] = (0.1, 0.2, 0.5, 1.0),
     covariance_mode: Literal["auto", "kron_eye", "full"] = "auto",
 ) -> AttackResult:
-    """Exact finite-prior Bayes classifier for a Gaussian observer view."""
+    """Exact finite-prior Bayes classifier for a Gaussian observer view.
+
+    Candidate means are evaluated by grouped vmap over features for each fixed
+    label when mean_fn is JAX-compatible. If a label group is not vmap-compatible,
+    that group falls back to serial candidate evaluation.
+    """
     X = np.asarray(candidate_features, dtype=np.float32)
     if X.ndim < 2:
         raise ValueError("candidate_features must have shape (m, ...).")
+
     y = np.asarray(tuple(int(v) for v in candidate_labels), dtype=np.int64)
     if X.shape[0] != y.shape[0]:
         raise ValueError(
@@ -455,22 +607,55 @@ def run_linear_gaussian_finite_prior_attack(
         covariance_mode=covariance_mode,
     )
 
+    mean_matrix, means_all_vectorized, vmap_failed_labels = (
+        _candidate_means_grouped_by_label(
+            X=X,
+            y=y,
+            mean_fn=mean_fn,
+        )
+    )
+
+    if quadratic.batch_quadratic_np is None:
+        quadratics = np.asarray(
+            [quadratic.quadratic_np(mean_matrix[i]) for i in range(X.shape[0])],
+            dtype=np.float64,
+        )
+        quadratic_scoring_mode = "serial_quadratic"
+    else:
+        quadratics = np.asarray(
+            quadratic.batch_quadratic_np(mean_matrix), dtype=np.float64
+        )
+        quadratic_scoring_mode = "batched_quadratic"
+
+    if quadratics.shape != (X.shape[0],):
+        raise ValueError(
+            f"Batch quadratic scorer returned shape {quadratics.shape}; expected {(X.shape[0],)}."
+        )
+
+    log_scores_arr = np.log(probs) - quadratics
+    best_idx = int(np.argmax(log_scores_arr))
+
     records = [
         Record(features=np.asarray(X[i], dtype=np.float32), label=int(y[i]))
         for i in range(X.shape[0])
     ]
-    log_scores = []
-    for rec, prob in zip(records, probs):
-        mean_vec = np.asarray(
-            mean_fn(np.asarray(rec.features, dtype=np.float32), int(rec.label)),
-            dtype=np.float32,
-        )
-        score = -float(quadratic.quadratic_np(mean_vec)) + float(np.log(prob))
-        log_scores.append(score)
-
-    log_scores_arr = np.asarray(log_scores, dtype=np.float64)
-    best_idx = int(np.argmax(log_scores_arr))
     best_record = records[best_idx]
+
+    shifted = log_scores_arr - float(np.max(log_scores_arr))
+    posterior = np.exp(shifted)
+    posterior = posterior / float(np.sum(posterior))
+
+    posterior_entropy = float(
+        -np.sum(posterior * np.log(np.maximum(posterior, 1e-300)))
+    )
+    posterior_effective_candidates = float(np.exp(posterior_entropy))
+
+    sorted_scores = np.sort(log_scores_arr)[::-1]
+    top2_gap = (
+        float(sorted_scores[0] - sorted_scores[1])
+        if sorted_scores.size >= 2
+        else float("inf")
+    )
 
     metrics = (
         {}
@@ -482,6 +667,10 @@ def run_linear_gaussian_finite_prior_attack(
         )
     )
     metrics["oblivious_kappa"] = float(np.max(probs))
+    metrics["posterior_top1_probability"] = float(posterior[best_idx])
+    metrics["posterior_entropy"] = posterior_entropy
+    metrics["posterior_effective_candidates"] = posterior_effective_candidates
+    metrics["log_score_gap_top2"] = top2_gap
 
     true_prior_index = None
     if true_record is not None:
@@ -493,17 +682,23 @@ def run_linear_gaussian_finite_prior_attack(
             ),
             None,
         )
+
         feat_pred = np.asarray(best_record.features, dtype=np.float32).reshape(-1)
         feat_true = np.asarray(true_record.features, dtype=np.float32).reshape(-1)
         metrics["mse"] = float(np.mean((feat_pred - feat_true) ** 2))
         metrics["exact_identification_success"] = float(
             _records_close_for_finite_prior(best_record, true_record)
         )
+
         if true_prior_index is not None:
             order = np.argsort(-log_scores_arr)
             rank = int(np.where(order == true_prior_index)[0][0]) + 1
             metrics["prior_exact_hit"] = float(best_idx == true_prior_index)
             metrics["prior_rank"] = float(rank)
+            metrics["posterior_true_probability"] = float(posterior[true_prior_index])
+            metrics["log_score_gap_truth_to_top"] = float(
+                log_scores_arr[true_prior_index] - log_scores_arr[best_idx]
+            )
             for kk in (1, 5, 10):
                 metrics[f"prior_hit@{kk}"] = float(rank <= kk)
 
@@ -522,11 +717,25 @@ def run_linear_gaussian_finite_prior_attack(
         "prior_weights": probs.astype(float).tolist(),
         "oblivious_kappa": float(np.max(probs)),
         "candidate_log_scores": log_scores_arr.astype(float).tolist(),
+        "candidate_log_posteriors": np.log(np.maximum(posterior, 1e-300))
+        .astype(float)
+        .tolist(),
+        "candidate_posterior_probs": posterior.astype(float).tolist(),
         "candidate_objectives": (-log_scores_arr).astype(float).tolist(),
+        "posterior_entropy": posterior_entropy,
+        "posterior_effective_candidates": posterior_effective_candidates,
+        "log_score_gap_top2": top2_gap,
         "predicted_prior_index": int(best_idx),
         "true_prior_index": true_prior_index,
         "true_record_in_prior": bool(true_prior_index is not None),
         "covariance_mode": str(quadratic.mode),
+        "candidate_mean_scoring_mode": (
+            "grouped_vmap_all_labels"
+            if means_all_vectorized
+            else "grouped_vmap_with_serial_fallback"
+        ),
+        "vmap_failed_labels": [int(v) for v in vmap_failed_labels],
+        "quadratic_scoring_mode": quadratic_scoring_mode,
     }
     diagnostics.update(dict(quadratic.metadata))
 

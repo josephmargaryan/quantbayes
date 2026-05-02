@@ -47,7 +47,7 @@ from sklearn.decomposition import PCA
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 
-REPO_ROOT = Path.cwd()
+REPO_ROOT = Path(__file__).resolve().parents[4]
 if (REPO_ROOT / "quantbayes").exists() and str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 

@@ -27,11 +27,15 @@ from .releases import _solve_nonprivate_erm
 class BallOutputMapAttackConfig:
     """Ball-constrained MAP attack on Gaussian output perturbation.
 
-    For ridge_prototype the objective is optimized by projected gradient descent.
+    ridge_prototype:
+        The continuous MAP objective is optimized by projected gradient descent.
+        The finite-prior Bayes attack is analytic and vectorized over candidates.
 
-    For the other convex heads, the objective is still exact *given the stored
-    release solver snapshot*, but the outer search is derivative-free because
-    each objective evaluation solves a candidate ERM.
+    binary_logistic / softmax_logistic / squared_hinge:
+        The objective is exact given the stored release solver snapshot, but each
+        candidate/proposal requires solving a deterministic convex ERM. That path
+        remains serial unless _solve_nonprivate_erm itself is rewritten as a
+        batched JAX-pure solver.
     """
 
     optimizer: Literal["adam", "sgd"] = "adam"
@@ -71,6 +75,12 @@ def _release_sigma(release: ReleaseArtifact) -> float:
 
 
 def _payload_vector(obj: Any) -> np.ndarray:
+    """Flatten floating-point leaves from a release payload.
+
+    This is intentionally generic for non-ridge convex heads. For ridge_prototype
+    finite-prior scoring below, we avoid this helper and use payload.prototypes
+    directly, because the analytic sufficient-statistic formula is safer.
+    """
     leaves: list[np.ndarray] = []
 
     def visit(x: Any) -> None:
@@ -152,6 +162,69 @@ def _candidate_dataset(
         axis=0,
     )
     return ArrayDataset(X, y, name=f"{d_minus.name}_plus_candidate")
+
+
+def _check_d_minus_size_matches_release(
+    release: ReleaseArtifact,
+    d_minus: ArrayDataset,
+) -> int:
+    n_total = int(release.dataset_metadata["n_total"])
+    if int(len(d_minus) + 1) != n_total:
+        raise ValueError(
+            f"d_minus size mismatch: expected n_total-1 = {n_total - 1}, "
+            f"got len(d_minus)={len(d_minus)}."
+        )
+    return n_total
+
+
+def _ridge_minus_sufficient_statistics(
+    d_minus: ArrayDataset,
+    *,
+    num_classes: int,
+    dim: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return class counts and class sums for the known d_minus records."""
+    X_minus = np.asarray(d_minus.X, dtype=np.float32)
+    y_minus = np.asarray(d_minus.y, dtype=np.int64)
+
+    if X_minus.ndim != 2:
+        raise ValueError(
+            "ridge_prototype expects d_minus.X to have shape (n_minus, dim)."
+        )
+    if X_minus.shape[1] != int(dim):
+        raise ValueError(
+            "ridge_prototype feature dimension mismatch: "
+            f"d_minus.X.shape[1]={X_minus.shape[1]}, prototype dim={dim}."
+        )
+    if y_minus.shape[0] != X_minus.shape[0]:
+        raise ValueError("d_minus.X and d_minus.y have inconsistent leading sizes.")
+
+    if y_minus.size > 0:
+        if np.any(y_minus < 0) or np.any(y_minus >= int(num_classes)):
+            raise ValueError(
+                f"d_minus contains labels outside [0, {int(num_classes) - 1}]."
+            )
+
+    counts = np.bincount(y_minus, minlength=int(num_classes))[: int(num_classes)]
+    counts = counts.astype(np.int64, copy=False)
+
+    sums = np.zeros((int(num_classes), int(dim)), dtype=np.float32)
+    if y_minus.size > 0:
+        np.add.at(sums, y_minus, X_minus)
+
+    return counts, sums
+
+
+def _ridge_mu_from_sufficient_statistics(
+    counts: np.ndarray,
+    sums: np.ndarray,
+    *,
+    lam: float,
+    n_total: int,
+) -> np.ndarray:
+    counts_f = counts.astype(np.float32, copy=False)
+    denom = 2.0 * counts_f[:, None] + float(lam) * float(n_total)
+    return np.where(denom > 0.0, 2.0 * sums / denom, 0.0).astype(np.float32, copy=False)
 
 
 def _initial_points(
@@ -319,12 +392,7 @@ def _run_ridge_output_map_attack(
 ) -> AttackResult:
     sigma = _release_sigma(release)
     lam = float(release.training_config["lam"])
-    n_total = int(release.dataset_metadata["n_total"])
-
-    if int(len(d_minus) + 1) != n_total:
-        raise ValueError(
-            f"d_minus size mismatch: expected n_total-1 = {n_total - 1}, got len(d_minus)={len(d_minus)}."
-        )
+    n_total = _check_d_minus_size_matches_release(release, d_minus)
 
     if not hasattr(release.payload, "prototypes"):
         raise TypeError(
@@ -335,7 +403,7 @@ def _run_ridge_output_map_attack(
     if mus_rel.ndim != 2:
         raise ValueError("Expected prototype matrix with shape (num_classes, dim).")
 
-    k, _ = mus_rel.shape
+    k, dim = mus_rel.shape
     labels = _resolve_label_space(
         release,
         d_minus,
@@ -344,18 +412,17 @@ def _run_ridge_output_map_attack(
         true_record=true_record,
     )
 
-    counts_minus = np.bincount(np.asarray(d_minus.y, dtype=np.int64), minlength=k)
-    S_minus = np.zeros_like(mus_rel, dtype=np.float32)
-    for c in range(k):
-        idx = np.where(np.asarray(d_minus.y, dtype=np.int64) == c)[0]
-        if idx.size > 0:
-            S_minus[c] = np.asarray(d_minus.X, dtype=np.float32)[idx].sum(axis=0)
-
-    mu_minus = np.zeros_like(mus_rel, dtype=np.float32)
-    for c in range(k):
-        denom = 2.0 * float(counts_minus[c]) + float(lam) * float(n_total)
-        if denom > 0.0:
-            mu_minus[c] = 2.0 * S_minus[c] / denom
+    counts_minus, S_minus = _ridge_minus_sufficient_statistics(
+        d_minus,
+        num_classes=k,
+        dim=dim,
+    )
+    mu_minus = _ridge_mu_from_sufficient_statistics(
+        counts_minus,
+        S_minus,
+        lam=lam,
+        n_total=n_total,
+    )
 
     baseline_sq = np.sum((mus_rel - mu_minus) ** 2, axis=1).astype(np.float32)
 
@@ -403,6 +470,8 @@ def _run_ridge_output_map_attack(
         label_best = float("inf")
         label_best_x = None
 
+        value_and_grad = jax.value_and_grad(objective_fn)
+
         for x0_np in _initial_points(
             prior,
             num_restarts=int(cfg.num_restarts),
@@ -414,7 +483,6 @@ def _run_ridge_output_map_attack(
 
             best_restart_obj = float(objective_fn(x))
             best_restart_x = x
-            value_and_grad = jax.value_and_grad(objective_fn)
 
             for _ in range(max(1, int(cfg.num_steps))):
                 _, grad_x = value_and_grad(x)
@@ -545,11 +613,7 @@ def _run_generic_output_map_attack(
     eta_grid: Sequence[float],
 ) -> AttackResult:
     sigma = _release_sigma(release)
-    n_total = int(release.dataset_metadata["n_total"])
-    if int(len(d_minus) + 1) != n_total:
-        raise ValueError(
-            f"d_minus size mismatch: expected n_total-1 = {n_total - 1}, got len(d_minus)={len(d_minus)}."
-        )
+    _check_d_minus_size_matches_release(release, d_minus)
 
     release_cfg = _convex_cfg_from_release(release)
     noisy_vec = _payload_vector(release.payload)
@@ -673,7 +737,7 @@ def run_convex_ball_output_map_attack(
         exact Gaussian posterior objective + projected GD
 
     binary_logistic / softmax_logistic / squared_hinge:
-        exact Gaussian likelihood *given the stored deterministic solver snapshot*,
+        exact Gaussian likelihood given the stored deterministic solver snapshot,
         optimized by projected random search because each candidate requires solving
         a convex ERM.
     """
@@ -767,76 +831,38 @@ def _normalize_finite_prior_records(
     return kept_records, probs.astype(np.float64, copy=False)
 
 
-def run_convex_ball_output_finite_prior_attack(
-    release: ReleaseArtifact,
-    d_minus: ArrayDataset,
+def _finite_prior_result_from_log_scores(
     *,
-    prior_records: Sequence[Record],
-    prior_weights: Optional[Sequence[float]] = None,
-    known_label: Optional[int] = None,
-    true_record: Optional[Record] = None,
-    eta_grid: Sequence[float] = (0.1, 0.2, 0.5, 1.0),
+    filtered_records: Sequence[Record],
+    probs: np.ndarray,
+    log_scores_arr: np.ndarray,
+    known_label: Optional[int],
+    true_record: Optional[Record],
+    eta_grid: Sequence[float],
+    diagnostics_extra: Dict[str, Any],
 ) -> AttackResult:
-    """Exact finite-prior Bayes attack for Gaussian output perturbation.
+    if len(filtered_records) == 0:
+        raise ValueError("filtered_records must be non-empty.")
 
-    This routine evaluates the exact Gaussian posterior score on every candidate
-    in the supplied finite support and returns the MAP candidate. No outer
-    continuous optimization is performed.
-    """
-    sigma = _release_sigma(release)
-    release_cfg = _convex_cfg_from_release(release)
-    noisy_vec = _payload_vector(release.payload)
-    if noisy_vec.size == 0:
+    log_scores_arr = np.asarray(log_scores_arr, dtype=np.float64)
+    if log_scores_arr.shape != (len(filtered_records),):
         raise ValueError(
-            "Could not extract a floating-point parameter vector from release.payload."
+            "log_scores_arr must have shape (len(filtered_records),), got "
+            f"{log_scores_arr.shape} for {len(filtered_records)} records."
         )
 
-    filtered_records, probs = _normalize_finite_prior_records(
-        prior_records,
-        prior_weights,
-        known_label=known_label,
-    )
-
-    log_scores: list[float] = []
-    candidate_vectors: list[np.ndarray] = []
-    for rec, prob in zip(filtered_records, probs):
-        candidate_ds = _candidate_dataset(
-            d_minus,
-            np.asarray(rec.features, dtype=np.float32),
-            int(rec.label),
-        )
-        candidate_payload, _, _ = _solve_nonprivate_erm(
-            candidate_ds,
-            release_cfg,
-            jr.PRNGKey(int(release_cfg.seed)),
-        )
-        cand_vec = _payload_vector(candidate_payload)
-        if cand_vec.shape != noisy_vec.shape:
-            raise ValueError(
-                "Candidate parameter vector shape mismatch: "
-                f"release shape={noisy_vec.shape}, candidate shape={cand_vec.shape}."
-            )
-        diff = noisy_vec - cand_vec
-        log_score = float(
-            np.log(prob) - 0.5 * float(np.dot(diff, diff)) / (sigma * sigma)
-        )
-        log_scores.append(log_score)
-        candidate_vectors.append(cand_vec)
-
-    log_scores_arr = np.asarray(log_scores, dtype=np.float64)
     best_idx = int(np.argmax(log_scores_arr))
     best_record = filtered_records[best_idx]
 
-    # Posterior diagnostics. These do not change the MAP decision, but they make
-    # near-chance regimes easier to diagnose: a correct but flat posterior is very
-    # different from a confident top-1 error.
     shifted = log_scores_arr - float(np.max(log_scores_arr))
     posterior = np.exp(shifted)
     posterior = posterior / float(np.sum(posterior))
+
     posterior_entropy = float(
         -np.sum(posterior * np.log(np.maximum(posterior, 1e-300)))
     )
     posterior_effective_candidates = float(np.exp(posterior_entropy))
+
     sorted_scores = np.sort(log_scores_arr)[::-1]
     top2_gap = (
         float(sorted_scores[0] - sorted_scores[1])
@@ -897,9 +923,6 @@ def run_convex_ball_output_finite_prior_attack(
     ]
 
     diagnostics = {
-        "algorithm": "finite_prior_exact_bayes",
-        "exact_posterior_over_finite_support": True,
-        "exact_posterior_up_to_additive_constant": True,
         "prior_size": int(len(filtered_records)),
         "prior_weights": probs.astype(float).tolist(),
         "oblivious_kappa": float(np.max(probs)),
@@ -915,9 +938,7 @@ def run_convex_ball_output_finite_prior_attack(
         "predicted_prior_index": int(best_idx),
         "true_prior_index": true_prior_index,
         "true_record_in_prior": bool(true_prior_index is not None),
-        "sigma": float(sigma),
-        "release_solver_snapshot": dc.asdict(release_cfg.optimization),
-        "release_gaussian_snapshot": dc.asdict(release_cfg.gaussian),
+        **dict(diagnostics_extra),
     }
 
     return AttackResult(
@@ -928,4 +949,270 @@ def run_convex_ball_output_finite_prior_attack(
         diagnostics=diagnostics,
         metrics=metrics,
         candidates=candidates,
+    )
+
+
+def _ridge_finite_prior_log_scores_vectorized(
+    release: ReleaseArtifact,
+    d_minus: ArrayDataset,
+    filtered_records: Sequence[Record],
+    probs: np.ndarray,
+    *,
+    sigma: float,
+    lam: float,
+    n_total: int,
+) -> np.ndarray:
+    """Vectorized finite-prior log posterior scores for ridge_prototype.
+
+    For each finite-prior candidate (x_i, y_i), this evaluates
+
+        log p_i - ||theta_noisy - theta_nonprivate(d_minus U {(x_i,y_i)})||^2
+                  / (2 sigma^2)
+
+    using the closed-form ridge prototype sufficient statistics. No candidate ERM
+    solve is performed.
+    """
+    if not hasattr(release.payload, "prototypes"):
+        raise TypeError(
+            "ridge_prototype finite-prior attack expects release.payload.prototypes."
+        )
+
+    mus_rel = np.asarray(release.payload.prototypes, dtype=np.float32)
+    if mus_rel.ndim != 2:
+        raise ValueError("Expected prototype matrix with shape (num_classes, dim).")
+
+    k, dim = mus_rel.shape
+    counts_minus, S_minus = _ridge_minus_sufficient_statistics(
+        d_minus,
+        num_classes=k,
+        dim=dim,
+    )
+    mu_minus = _ridge_mu_from_sufficient_statistics(
+        counts_minus,
+        S_minus,
+        lam=lam,
+        n_total=n_total,
+    )
+
+    X = np.stack(
+        [
+            np.asarray(rec.features, dtype=np.float32).reshape(-1)
+            for rec in filtered_records
+        ],
+        axis=0,
+    ).astype(np.float32, copy=False)
+    y = np.asarray([int(rec.label) for rec in filtered_records], dtype=np.int64)
+
+    if X.ndim != 2 or X.shape[1] != dim:
+        raise ValueError(
+            "Finite-prior candidate feature dimension mismatch for ridge_prototype: "
+            f"candidate feature dim={X.shape[1] if X.ndim == 2 else None}, "
+            f"prototype dim={dim}."
+        )
+    if np.any(y < 0) or np.any(y >= k):
+        raise ValueError(
+            f"Finite-prior candidate labels must lie in [0, {k - 1}] for ridge_prototype."
+        )
+
+    mus_rel_j = jnp.asarray(mus_rel, dtype=jnp.float32)
+    mu_minus_j = jnp.asarray(mu_minus, dtype=jnp.float32)
+    S_minus_j = jnp.asarray(S_minus, dtype=jnp.float32)
+    counts_minus_j = jnp.asarray(counts_minus, dtype=jnp.float32)
+
+    X_j = jnp.asarray(X, dtype=jnp.float32)
+    y_j = jnp.asarray(y, dtype=jnp.int32)
+    probs_j = jnp.asarray(probs, dtype=jnp.float32)
+
+    baseline_sq_by_class = jnp.sum((mus_rel_j - mu_minus_j) ** 2, axis=1)
+    baseline_total_sq = jnp.sum(baseline_sq_by_class)
+
+    S_y = S_minus_j[y_j]
+    counts_y = counts_minus_j[y_j]
+
+    alpha_y = 2.0 * (counts_y + 1.0) + float(lam) * float(n_total)
+    mu_y = 2.0 * (S_y + X_j) / alpha_y[:, None]
+
+    row_sq = jnp.sum((mus_rel_j[y_j] - mu_y) ** 2, axis=1)
+    total_sq = baseline_total_sq - baseline_sq_by_class[y_j] + row_sq
+
+    log_scores = jnp.log(probs_j) - total_sq / (2.0 * float(sigma) * float(sigma))
+    return np.asarray(log_scores, dtype=np.float64)
+
+
+def _run_ridge_output_finite_prior_attack(
+    release: ReleaseArtifact,
+    d_minus: ArrayDataset,
+    *,
+    prior_records: Sequence[Record],
+    prior_weights: Optional[Sequence[float]],
+    known_label: Optional[int],
+    true_record: Optional[Record],
+    eta_grid: Sequence[float],
+) -> AttackResult:
+    sigma = _release_sigma(release)
+    n_total = _check_d_minus_size_matches_release(release, d_minus)
+    lam = float(release.training_config["lam"])
+
+    filtered_records, probs = _normalize_finite_prior_records(
+        prior_records,
+        prior_weights,
+        known_label=known_label,
+    )
+
+    log_scores_arr = _ridge_finite_prior_log_scores_vectorized(
+        release,
+        d_minus,
+        filtered_records,
+        probs,
+        sigma=sigma,
+        lam=lam,
+        n_total=n_total,
+    )
+
+    return _finite_prior_result_from_log_scores(
+        filtered_records=filtered_records,
+        probs=probs,
+        log_scores_arr=log_scores_arr,
+        known_label=known_label,
+        true_record=true_record,
+        eta_grid=eta_grid,
+        diagnostics_extra={
+            "algorithm": "finite_prior_exact_bayes_ridge_analytic_vectorized",
+            "model_family": "ridge_prototype",
+            "exact_posterior_over_finite_support": True,
+            "exact_posterior_up_to_additive_constant": True,
+            "finite_prior_scoring_is_vectorized": True,
+            "candidate_axis_size": int(len(filtered_records)),
+            "sigma": float(sigma),
+            "lam": float(lam),
+            "n_total": int(n_total),
+        },
+    )
+
+
+def _run_generic_output_finite_prior_attack(
+    release: ReleaseArtifact,
+    d_minus: ArrayDataset,
+    *,
+    prior_records: Sequence[Record],
+    prior_weights: Optional[Sequence[float]],
+    known_label: Optional[int],
+    true_record: Optional[Record],
+    eta_grid: Sequence[float],
+) -> AttackResult:
+    sigma = _release_sigma(release)
+    _check_d_minus_size_matches_release(release, d_minus)
+
+    release_cfg = _convex_cfg_from_release(release)
+    noisy_vec = _payload_vector(release.payload)
+    if noisy_vec.size == 0:
+        raise ValueError(
+            "Could not extract a floating-point parameter vector from release.payload."
+        )
+
+    filtered_records, probs = _normalize_finite_prior_records(
+        prior_records,
+        prior_weights,
+        known_label=known_label,
+    )
+
+    log_scores: list[float] = []
+    for rec, prob in zip(filtered_records, probs):
+        candidate_ds = _candidate_dataset(
+            d_minus,
+            np.asarray(rec.features, dtype=np.float32),
+            int(rec.label),
+        )
+        candidate_payload, _, _ = _solve_nonprivate_erm(
+            candidate_ds,
+            release_cfg,
+            jr.PRNGKey(int(release_cfg.seed)),
+        )
+        cand_vec = _payload_vector(candidate_payload)
+        if cand_vec.shape != noisy_vec.shape:
+            raise ValueError(
+                "Candidate parameter vector shape mismatch: "
+                f"release shape={noisy_vec.shape}, candidate shape={cand_vec.shape}."
+            )
+        diff = noisy_vec - cand_vec
+        log_score = float(
+            np.log(prob) - 0.5 * float(np.dot(diff, diff)) / (sigma * sigma)
+        )
+        log_scores.append(log_score)
+
+    log_scores_arr = np.asarray(log_scores, dtype=np.float64)
+
+    return _finite_prior_result_from_log_scores(
+        filtered_records=filtered_records,
+        probs=probs,
+        log_scores_arr=log_scores_arr,
+        known_label=known_label,
+        true_record=true_record,
+        eta_grid=eta_grid,
+        diagnostics_extra={
+            "algorithm": "finite_prior_exact_bayes_serial_erm_solves",
+            "model_family": str(release.model_family),
+            "exact_posterior_over_finite_support": True,
+            "exact_posterior_up_to_additive_constant": True,
+            "exact_posterior_given_release_solver_snapshot": True,
+            "finite_prior_scoring_is_vectorized": False,
+            "candidate_axis_size": int(len(filtered_records)),
+            "sigma": float(sigma),
+            "release_solver_snapshot": dc.asdict(release_cfg.optimization),
+            "release_gaussian_snapshot": dc.asdict(release_cfg.gaussian),
+        },
+    )
+
+
+def run_convex_ball_output_finite_prior_attack(
+    release: ReleaseArtifact,
+    d_minus: ArrayDataset,
+    *,
+    prior_records: Sequence[Record],
+    prior_weights: Optional[Sequence[float]] = None,
+    known_label: Optional[int] = None,
+    true_record: Optional[Record] = None,
+    eta_grid: Sequence[float] = (0.1, 0.2, 0.5, 1.0),
+) -> AttackResult:
+    """Finite-prior Bayes attack for Gaussian output perturbation.
+
+    ridge_prototype:
+        exact finite-prior posterior score, evaluated analytically and vectorized
+        over all candidate records.
+
+    binary_logistic / softmax_logistic / squared_hinge:
+        exact finite-prior posterior score given the stored deterministic solver
+        snapshot, evaluated by one ERM solve per candidate. This remains serial
+        unless the convex ERM solver itself is rewritten as a batched JAX solver.
+    """
+    fam = str(release.model_family)
+    if fam not in {
+        "ridge_prototype",
+        "binary_logistic",
+        "softmax_logistic",
+        "squared_hinge",
+    }:
+        raise ValueError(
+            "run_convex_ball_output_finite_prior_attack supports the convex families only."
+        )
+
+    if fam == "ridge_prototype":
+        return _run_ridge_output_finite_prior_attack(
+            release,
+            d_minus,
+            prior_records=prior_records,
+            prior_weights=prior_weights,
+            known_label=known_label,
+            true_record=true_record,
+            eta_grid=eta_grid,
+        )
+
+    return _run_generic_output_finite_prior_attack(
+        release,
+        d_minus,
+        prior_records=prior_records,
+        prior_weights=prior_weights,
+        known_label=known_label,
+        true_record=true_record,
+        eta_grid=eta_grid,
     )

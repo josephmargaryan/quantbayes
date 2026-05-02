@@ -1,4 +1,5 @@
 # quantbayes/ball_dp/convex/solvers.py
+
 from __future__ import annotations
 
 import dataclasses as dc
@@ -20,8 +21,21 @@ class SolverResult:
     cert: OptimizationCertificate
 
 
+def _validate_solver_lam(lam: float) -> None:
+    lam_f = float(lam)
+    if not bool(jnp.isfinite(jnp.asarray(lam_f))) or lam_f <= 0.0:
+        raise ValueError(
+            "Convex solvers require lam > 0 for the strong-convexity-based "
+            "optimization certificates used downstream."
+        )
+
+
 def _fullbatch_objective(
-    loss_fn: Callable, lam: float, x: jnp.ndarray, y: jnp.ndarray, key: jr.PRNGKey
+    loss_fn: Callable,
+    lam: float,
+    x: jnp.ndarray,
+    y: jnp.ndarray,
+    key: jr.PRNGKey,
 ) -> Callable[[Any], jnp.ndarray]:
     def obj(model: Any) -> jnp.ndarray:
         loss, _ = loss_fn(model, None, x, y, key, lam=lam)
@@ -41,15 +55,19 @@ def _tree_l2_norm(tree: Any) -> float:
 def _tree_diff_l2_norm(tree_a: Any, tree_b: Any) -> float:
     leaves_a = jax.tree_util.tree_leaves(tree_a)
     leaves_b = jax.tree_util.tree_leaves(tree_b)
+
     if len(leaves_a) != len(leaves_b):
         raise ValueError("Pytrees do not have the same number of leaves.")
+
     sq_terms = []
     for a, b in zip(leaves_a, leaves_b):
         if a is None or b is None:
             continue
         sq_terms.append(jnp.sum(jnp.square(jnp.asarray(a) - jnp.asarray(b))))
+
     if not sq_terms:
         return 0.0
+
     return float(jnp.sqrt(sum(sq_terms)))
 
 
@@ -63,6 +81,7 @@ def _should_stop(
 ) -> tuple[bool, str]:
     if not bool(cfg.early_stop):
         return False, ""
+
     if int(it) < int(cfg.min_iter):
         return False, ""
 
@@ -77,7 +96,7 @@ def _should_stop(
     if rule == "grad_only":
         if cfg.grad_tol is None:
             raise ValueError("stop_rule='grad_only' requires grad_tol to be set.")
-        return (grad_hit, "grad_tol" if grad_hit else "")
+        return grad_hit, "grad_tol" if grad_hit else ""
 
     active = []
     if cfg.grad_tol is not None:
@@ -98,7 +117,7 @@ def _should_stop(
 
     if rule == "all":
         hit = all(flag for _, flag in active)
-        return (hit, "all_active_tolerances" if hit else "")
+        return hit, "all_active_tolerances" if hit else ""
 
     raise ValueError("cfg.stop_rule must be one of {'any', 'all', 'grad_only'}.")
 
@@ -113,6 +132,8 @@ def solve_lbfgs_fullbatch(
     key: jr.PRNGKey,
     cfg: ConvexOptimizationConfig,
 ) -> SolverResult:
+    _validate_solver_lam(lam)
+
     params, static = eqx.partition(model, eqx.is_inexact_array)
     objective = _fullbatch_objective(loss_fn, lam, x, y, key)
 
@@ -141,20 +162,27 @@ def solve_lbfgs_fullbatch(
 
     for it in range(1, int(cfg.max_iter) + 1):
         value, grad = value_and_grad(params, state=opt_state)
-        grad_norm = _tree_l2_norm(grad)
 
         updates, opt_state = solver.update(
-            grad, opt_state, params, value=value, grad=grad, value_fn=flat_obj
+            grad,
+            opt_state,
+            params,
+            value=value,
+            grad=grad,
+            value_fn=flat_obj,
         )
         params_next = optax.apply_updates(params, updates)
-        curr_obj = float(flat_obj(params_next))
 
-        delta_obj = abs(curr_obj - prev_obj)
+        curr_obj, curr_grad = jax.value_and_grad(flat_obj)(params_next)
+        curr_obj_f = float(curr_obj)
+
+        grad_norm = _tree_l2_norm(curr_grad)
+        delta_obj = abs(curr_obj_f - prev_obj)
         delta_param = _tree_diff_l2_norm(params_next, prev_params)
 
         params = params_next
         prev_params = params
-        prev_obj = curr_obj
+        prev_obj = curr_obj_f
         n_iter = it
 
         stop, reason = _should_stop(
@@ -169,16 +197,15 @@ def solve_lbfgs_fullbatch(
             termination_reason = reason
             break
 
-    # Recompute objective and gradient at the returned parameters.
     final_obj, final_grad = jax.value_and_grad(flat_obj)(params)
-    prev_obj = float(final_obj)
+    final_obj_f = float(final_obj)
     grad_norm = _tree_l2_norm(final_grad)
 
     if (
         bool(cfg.certify_approximation)
         and cfg.approximation_mode == "optimality_residual"
     ):
-        param_error_bound = float(grad_norm / lam)
+        param_error_bound = float(grad_norm / float(lam))
         sensitivity_addon = float(2.0 * param_error_bound)
     else:
         param_error_bound = 0.0
@@ -189,7 +216,7 @@ def solve_lbfgs_fullbatch(
         exact_solution=False,
         converged=converged,
         n_iter=int(n_iter),
-        objective_value=float(prev_obj),
+        objective_value=float(final_obj_f),
         grad_norm=float(grad_norm),
         parameter_error_bound=float(param_error_bound),
         sensitivity_addon=float(sensitivity_addon),
@@ -203,6 +230,7 @@ def solve_lbfgs_fullbatch(
             f"Stopping configuration: early_stop={bool(cfg.early_stop)}, stop_rule={str(cfg.stop_rule)}, min_iter={int(cfg.min_iter)}, grad_tol={cfg.grad_tol}, param_tol={cfg.param_tol}, objective_tol={cfg.objective_tol}.",
         ],
     )
+
     return SolverResult(model=eqx.combine(params, static), cert=cert)
 
 
@@ -216,6 +244,8 @@ def solve_gd_fullbatch(
     key: jr.PRNGKey,
     cfg: ConvexOptimizationConfig,
 ) -> SolverResult:
+    _validate_solver_lam(lam)
+
     objective = _fullbatch_objective(loss_fn, lam, x, y, key)
 
     params, static = eqx.partition(model, eqx.is_inexact_array)
@@ -225,6 +255,7 @@ def solve_gd_fullbatch(
         return objective(mdl)
 
     value_and_grad = eqx.filter_value_and_grad(objective)
+
     opt = optax.sgd(float(cfg.learning_rate))
     opt_state = opt.init(params)
 
@@ -240,21 +271,25 @@ def solve_gd_fullbatch(
 
     for it in range(1, int(cfg.max_iter) + 1):
         mdl = eqx.combine(params, static)
-        value, grads = value_and_grad(mdl)
-        grad_norm = _tree_l2_norm(grads)
+        _, grads = value_and_grad(mdl)
 
         updates, opt_state = opt.update(
-            eqx.filter(grads, eqx.is_inexact_array), opt_state, params
+            eqx.filter(grads, eqx.is_inexact_array),
+            opt_state,
+            params,
         )
         params_next = eqx.apply_updates(params, updates)
-        curr_obj = float(objective(eqx.combine(params_next, static)))
 
-        delta_obj = abs(curr_obj - prev_obj)
+        curr_obj, curr_grad = jax.value_and_grad(flat_obj)(params_next)
+        curr_obj_f = float(curr_obj)
+
+        grad_norm = _tree_l2_norm(curr_grad)
+        delta_obj = abs(curr_obj_f - prev_obj)
         delta_param = _tree_diff_l2_norm(params_next, prev_params)
 
         params = params_next
         prev_params = params
-        prev_obj = curr_obj
+        prev_obj = curr_obj_f
         n_iter = it
 
         stop, reason = _should_stop(
@@ -269,16 +304,15 @@ def solve_gd_fullbatch(
             termination_reason = reason
             break
 
-    # Recompute objective and gradient at the returned parameters.
     final_obj, final_grad = jax.value_and_grad(flat_obj)(params)
-    prev_obj = float(final_obj)
+    final_obj_f = float(final_obj)
     grad_norm = _tree_l2_norm(final_grad)
 
     if (
         bool(cfg.certify_approximation)
         and cfg.approximation_mode == "optimality_residual"
     ):
-        param_error_bound = float(grad_norm / lam)
+        param_error_bound = float(grad_norm / float(lam))
         sensitivity_addon = float(2.0 * param_error_bound)
     else:
         param_error_bound = 0.0
@@ -289,7 +323,7 @@ def solve_gd_fullbatch(
         exact_solution=False,
         converged=converged,
         n_iter=int(n_iter),
-        objective_value=float(prev_obj),
+        objective_value=float(final_obj_f),
         grad_norm=float(grad_norm),
         parameter_error_bound=float(param_error_bound),
         sensitivity_addon=float(sensitivity_addon),
@@ -303,6 +337,7 @@ def solve_gd_fullbatch(
             f"Stopping configuration: early_stop={bool(cfg.early_stop)}, stop_rule={str(cfg.stop_rule)}, min_iter={int(cfg.min_iter)}, grad_tol={cfg.grad_tol}, param_tol={cfg.param_tol}, objective_tol={cfg.objective_tol}.",
         ],
     )
+
     return SolverResult(model=eqx.combine(params, static), cert=cert)
 
 
@@ -316,19 +351,36 @@ def solve_convex_model(
     key: jr.PRNGKey,
     cfg: ConvexOptimizationConfig,
 ) -> SolverResult:
+    _validate_solver_lam(lam)
+
     if cfg.solver == "lbfgs_fullbatch":
         return solve_lbfgs_fullbatch(
-            model, loss_fn=loss_fn, x=x, y=y, lam=lam, key=key, cfg=cfg
+            model,
+            loss_fn=loss_fn,
+            x=x,
+            y=y,
+            lam=lam,
+            key=key,
+            cfg=cfg,
         )
+
     if cfg.solver == "gd_fullbatch":
         return solve_gd_fullbatch(
-            model, loss_fn=loss_fn, x=x, y=y, lam=lam, key=key, cfg=cfg
+            model,
+            loss_fn=loss_fn,
+            x=x,
+            y=y,
+            lam=lam,
+            key=key,
+            cfg=cfg,
         )
+
     if cfg.theorem_backed_only:
         raise ValueError(
             f"Solver '{cfg.solver}' delegates to existing trainers and is not treated as theorem-backed by default. "
             "Set theorem_backed_only=False if you want the convenience adapter."
         )
+
     if cfg.solver == "stochax_lbfgs":
         from quantbayes.stochax.trainer.quasi_newton import train_lbfgs
 
@@ -346,6 +398,7 @@ def solve_convex_model(
             loss_fn=lambda m, s, xb, yb, k: loss_fn(m, s, xb, yb, k, lam=lam),
             deterministic_objective=True,
         )
+
         cert = OptimizationCertificate(
             solver="stochax_lbfgs",
             exact_solution=False,
@@ -364,5 +417,7 @@ def solve_convex_model(
                 "Convenience adapter to an external trainer. This path is not theorem-backed and does not provide a global optimality or privacy certificate."
             ],
         )
+
         return SolverResult(model=solved, cert=cert)
+
     raise ValueError(cfg.solver)

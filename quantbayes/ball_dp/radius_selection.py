@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
-import matplotlib.pyplot as plt
 import numpy as np
 
 
@@ -388,6 +387,8 @@ def plot_within_label_ecdfs(
         )
         plt.show()
     """
+    import matplotlib.pyplot as plt
+
     X = np.asarray(X, dtype=np.float32)
     if X.ndim < 2:
         raise ValueError("X must have shape [N, d] or [N, ...].")
@@ -538,6 +539,8 @@ def plot_ball_radius_ablation_ecdf(
 
     print(radii)
     """
+    import matplotlib.pyplot as plt
+
     X = np.asarray(X, dtype=np.float32)
     if X.ndim < 2:
         raise ValueError("X must have shape [N, d] or [N, ...].")

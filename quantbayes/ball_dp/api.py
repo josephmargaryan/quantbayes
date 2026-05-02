@@ -91,7 +91,6 @@ from .convex.finite_prior_diagnostics import (
     compute_convex_finite_prior_diagnostics,
 )
 
-from .plots import plot_attack_result
 from .radius_selection import (
     summarize_embedding_ball_radii as _summarize_embedding_ball_radii,
     select_ball_radius as _select_ball_radius,
@@ -100,28 +99,39 @@ from .radius_selection import (
 __all__ = [
     "fit_convex",
     "attack_convex",
-    "make_uniform_ball_prior",
-    "make_finite_identification_prior",
-    "summarize_embedding_ball_radii",
-    "select_ball_radius",
+    "attack_convex_ball_output",
+    "attack_convex_ball_output_finite_prior",
+    "attack_convex_finite_prior_trial",
+    "diagnose_convex_ball_output_finite_prior",
     "ball_rero",
     "fit_ball_sgd",
+    "attack_nonconvex_ball_trace_finite_prior",
+    "attack_nonconvex_finite_prior_trial",
+    "account_ball_sgd_noise_multiplier",
+    "calibrate_ball_sgd_noise_multiplier",
+    "extract_privacy_epsilon",
+    "calibrate_privacy_parameter",
+    "evaluate_release_classifier",
     "make_trace_metadata_from_release",
     "summarize_attack_trials",
+    "make_uniform_ball_prior",
+    "make_uniform_ball_attack_prior",
+    "make_truncated_gaussian_ball_attack_prior",
+    "make_finite_identification_prior",
+    "make_empirical_ball_prior",
+    "summarize_embedding_ball_radii",
+    "select_ball_radius",
+    "get_public_curve_history",
+    "get_operator_norm_history",
+    "get_release_step_table",
     "InformedAttackData",
     "prepare_informed_attack_data",
     "train_released_model",
     "build_attack_corpus",
     "train_reconstructor",
     "run_model_based_attack",
-    "make_uniform_ball_attack_prior",
-    "make_truncated_gaussian_ball_attack_prior",
-    "attack_convex_ball_output",
-    "attack_convex_ball_output_finite_prior",
-    "attack_nonconvex_ball_trace_finite_prior",
     "BallTraceMapAttackConfig",
     "BallOutputMapAttackConfig",
-    "diagnose_convex_ball_output_finite_prior",
 ]
 
 ConvexModelFamily = str
@@ -337,6 +347,8 @@ def attack_convex_ball_output(
     attack.diagnostics["target_index"] = int(target_index)
 
     if out_path is not None and attack.z_hat is not None:
+        from .plots import plot_attack_result
+
         plot_attack_result(
             attack,
             target,
@@ -1147,6 +1159,8 @@ def attack_convex_ball_output_finite_prior(
     attack.diagnostics["target_index"] = int(target_index)
 
     if out_path is not None and attack.z_hat is not None:
+        from .plots import plot_attack_result
+
         plot_attack_result(
             attack,
             target,

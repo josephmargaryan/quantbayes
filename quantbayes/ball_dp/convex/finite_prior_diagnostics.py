@@ -14,10 +14,13 @@ from ..evaluation.rero import (
 from ..types import ArrayDataset, Record, ReleaseArtifact
 from .ball_output_attacks import (
     _candidate_dataset,
+    _check_d_minus_size_matches_release,
     _convex_cfg_from_release,
     _normalize_finite_prior_records,
     _payload_vector,
     _release_sigma,
+    _ridge_minus_sufficient_statistics,
+    _ridge_mu_from_sufficient_statistics,
 )
 from .models.ridge_prototype import (
     prototype_exact_ball_sensitivity,
@@ -71,8 +74,18 @@ def _solve_payload_vector_for_record(
     release: ReleaseArtifact,
     d_minus: ArrayDataset,
     rec: Record,
+    *,
+    release_cfg: Any | None = None,
 ) -> np.ndarray:
-    release_cfg = _convex_cfg_from_release(release)
+    """Solve the candidate nonprivate ERM and flatten its payload.
+
+    This is the generic fallback path for non-ridge convex heads. For
+    ridge_prototype diagnostics, use _ridge_candidate_payload_vectors_vectorized
+    instead.
+    """
+    if release_cfg is None:
+        release_cfg = _convex_cfg_from_release(release)
+
     candidate_ds = _candidate_dataset(
         d_minus,
         np.asarray(rec.features, dtype=np.float32),
@@ -84,6 +97,83 @@ def _solve_payload_vector_for_record(
         jr.PRNGKey(int(release_cfg.seed)),
     )
     return _payload_vector(payload).astype(np.float64, copy=False)
+
+
+def _ridge_candidate_payload_vectors_vectorized(
+    release: ReleaseArtifact,
+    d_minus: ArrayDataset,
+    records: Sequence[Record],
+) -> np.ndarray:
+    """Vectorized candidate prototype vectors for ridge_prototype diagnostics.
+
+    Returns shape (num_candidates, num_classes * dim), matching the flattened
+    model-space representation used by the generic diagnostics path.
+
+    For each candidate (x_i, y_i), only class y_i changes relative to the
+    d_minus-only prototype release.
+    """
+    if not records:
+        raise ValueError("records must be non-empty.")
+
+    if not hasattr(release.payload, "prototypes"):
+        raise TypeError(
+            "ridge_prototype diagnostics expect release.payload.prototypes."
+        )
+
+    mus_rel = np.asarray(release.payload.prototypes, dtype=np.float32)
+    if mus_rel.ndim != 2:
+        raise ValueError("Expected prototype matrix with shape (num_classes, dim).")
+
+    k, dim = mus_rel.shape
+    n_total = _check_d_minus_size_matches_release(release, d_minus)
+    lam = float(release.training_config["lam"])
+
+    counts_minus, S_minus = _ridge_minus_sufficient_statistics(
+        d_minus,
+        num_classes=k,
+        dim=dim,
+    )
+    mu_minus = _ridge_mu_from_sufficient_statistics(
+        counts_minus,
+        S_minus,
+        lam=lam,
+        n_total=n_total,
+    )
+
+    X = np.stack(
+        [np.asarray(rec.features, dtype=np.float32).reshape(-1) for rec in records],
+        axis=0,
+    )
+    y = np.asarray([int(rec.label) for rec in records], dtype=np.int64)
+
+    if X.ndim != 2 or X.shape[1] != dim:
+        raise ValueError(
+            "Finite-prior candidate feature dimension mismatch for ridge_prototype: "
+            f"candidate feature dim={X.shape[1] if X.ndim == 2 else None}, "
+            f"prototype dim={dim}."
+        )
+
+    if np.any(y < 0) or np.any(y >= k):
+        raise ValueError(
+            f"Finite-prior candidate labels must lie in [0, {k - 1}] for ridge_prototype."
+        )
+
+    mu_minus_arr = np.asarray(mu_minus, dtype=np.float32)
+    S_minus_arr = np.asarray(S_minus, dtype=np.float32)
+    counts_minus_arr = np.asarray(counts_minus, dtype=np.float32)
+
+    m = int(len(records))
+    candidate_mus = np.broadcast_to(
+        mu_minus_arr[None, :, :],
+        (m, k, dim),
+    ).copy()
+
+    alpha_y = 2.0 * (counts_minus_arr[y] + 1.0) + float(lam) * float(n_total)
+    mu_y = 2.0 * (S_minus_arr[y] + X) / alpha_y[:, None]
+
+    candidate_mus[np.arange(m), y, :] = mu_y
+
+    return candidate_mus.reshape(m, k * dim).astype(np.float64, copy=False)
 
 
 def compute_convex_finite_prior_diagnostics(
@@ -101,11 +191,21 @@ def compute_convex_finite_prior_diagnostics(
     This helper explains the difficulty of that support by computing actual
     model-space candidate separations and direct finite-Gaussian upper bounds.
 
+    For ridge_prototype, model-space candidate vectors are computed analytically
+    and vectorized over the finite-prior support.
+
+    For the other convex heads, candidate means are computed by solving the
+    deterministic convex ERM once per support point, matching the attack semantics.
+
     The returned direct finite bound is theorem-backed for the concrete Gaussian
     hypothesis testing problem: it uses the exact candidate means
     f(D^- union {z_i}) and a reference Gaussian with the same covariance.
     """
     sigma = _release_sigma(release)
+    fam = str(release.model_family)
+
+    _check_d_minus_size_matches_release(release, d_minus)
+
     filtered_records, probs = _normalize_finite_prior_records(
         prior_records,
         prior_weights,
@@ -126,16 +226,44 @@ def compute_convex_finite_prior_diagnostics(
         [int(rec.label) for rec in filtered_records], dtype=np.int64
     )
 
-    candidate_vecs = np.stack(
-        [
-            _solve_payload_vector_for_record(release, d_minus, rec)
-            for rec in filtered_records
-        ],
-        axis=0,
-    )
+    release_cfg = None
+    if fam == "ridge_prototype":
+        candidate_vecs = _ridge_candidate_payload_vectors_vectorized(
+            release,
+            d_minus,
+            filtered_records,
+        )
+    else:
+        release_cfg = _convex_cfg_from_release(release)
+        candidate_vecs = np.stack(
+            [
+                _solve_payload_vector_for_record(
+                    release,
+                    d_minus,
+                    rec,
+                    release_cfg=release_cfg,
+                )
+                for rec in filtered_records
+            ],
+            axis=0,
+        )
 
     if center_record is not None:
-        ref_vec = _solve_payload_vector_for_record(release, d_minus, center_record)
+        if fam == "ridge_prototype":
+            ref_vec = _ridge_candidate_payload_vectors_vectorized(
+                release,
+                d_minus,
+                [center_record],
+            )[0]
+        else:
+            if release_cfg is None:
+                release_cfg = _convex_cfg_from_release(release)
+            ref_vec = _solve_payload_vector_for_record(
+                release,
+                d_minus,
+                center_record,
+                release_cfg=release_cfg,
+            )
         reference_kind = "center_record"
         center_feature = np.asarray(center_record.features, dtype=np.float64).reshape(
             -1
@@ -150,6 +278,7 @@ def compute_convex_finite_prior_diagnostics(
     model_center_dists = np.linalg.norm(candidate_vecs - ref_vec[None, :], axis=1)
     model_pairwise = _pairwise_distances(candidate_vecs)
     model_nn = _nearest_neighbor_distances(candidate_vecs)
+
     feature_center_dists = np.linalg.norm(
         candidate_features - center_feature[None, :], axis=1
     )
@@ -158,6 +287,7 @@ def compute_convex_finite_prior_diagnostics(
 
     kappa = float(np.max(probs))
     max_model_radius = float(np.max(model_center_dists)) if m else 0.0
+
     direct_center_max = gaussian_direct_ball_rero_bound(
         kappa=kappa,
         sensitivity=max_model_radius,
@@ -171,10 +301,11 @@ def compute_convex_finite_prior_diagnostics(
     out: dict[str, float | int | str | bool | None] = {
         "diagnostic_kind": "convex_finite_prior_gaussian",
         "diagnostic_reference": reference_kind,
-        "diagnostic_model_family": str(release.model_family),
+        "diagnostic_model_family": fam,
         "prior_size": int(m),
         "prior_kappa": float(kappa),
         "diagnostic_sigma": float(sigma),
+        "ridge_diagnostics_vectorized": bool(fam == "ridge_prototype"),
         "bound_direct_instance_center_max": float(direct_center_max),
         "bound_direct_instance_finite_opt": float(direct_finite_opt),
         "model_center_radius_max": max_model_radius,
@@ -185,24 +316,34 @@ def compute_convex_finite_prior_diagnostics(
         ),
         "candidate_label_unique_count": int(len(np.unique(candidate_labels))),
     }
+
     out.update(_summary_stats("model_pairwise_distance", model_pairwise))
     out.update(_summary_stats("model_pairwise_snr", model_pairwise / float(sigma)))
     out.update(_summary_stats("model_nn_distance", model_nn))
     out.update(_summary_stats("model_nn_snr", model_nn / float(sigma)))
+
     out.update(_summary_stats("feature_center_distance", feature_center_dists))
     out.update(_summary_stats("feature_pairwise_distance", feature_pairwise))
     out.update(_summary_stats("feature_nn_distance", feature_nn))
 
-    if str(release.model_family) == "ridge_prototype" and known_label is not None:
+    if fam == "ridge_prototype" and known_label is not None:
         label = int(known_label)
         y_minus = np.asarray(d_minus.y, dtype=np.int64)
+
+        if y_minus.size > 0 and (label < 0 or label > int(np.max(y_minus)) + 1):
+            # This is not a hard validity condition when some class is absent, so
+            # leave the exact range check to the prototype helper paths.
+            pass
+
         n_label_minus = int(np.sum(y_minus == label))
         n_total = int(release.dataset_metadata.get("n_total", len(d_minus) + 1))
         lam = float(release.training_config["lam"])
         radius = float(
             release.training_config.get("radius", release.privacy.ball.radius)
         )
+
         alpha_y = 2.0 * (float(n_label_minus) + 1.0) + lam * float(n_total)
+
         tau_y = prototype_known_label_inverse_noise_scale(
             sigma=float(sigma),
             lam=lam,
@@ -220,6 +361,7 @@ def compute_convex_finite_prior_diagnostics(
             n_total=n_total,
             class_count=n_label_minus + 1,
         )
+
         out.update(
             {
                 "ridge_known_label": True,
@@ -241,12 +383,19 @@ def compute_convex_finite_prior_diagnostics(
                 ),
             }
         )
+
         out.update(
             _summary_stats(
-                "ridge_feature_pairwise_snr", feature_pairwise / float(tau_y)
+                "ridge_feature_pairwise_snr",
+                feature_pairwise / float(tau_y),
             )
         )
-        out.update(_summary_stats("ridge_feature_nn_snr", feature_nn / float(tau_y)))
+        out.update(
+            _summary_stats(
+                "ridge_feature_nn_snr",
+                feature_nn / float(tau_y),
+            )
+        )
     else:
         out.update(
             {
