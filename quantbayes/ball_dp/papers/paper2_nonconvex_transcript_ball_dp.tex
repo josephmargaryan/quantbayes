@@ -28,8 +28,10 @@
 \DeclareMathOperator{\supp}{supp}
 \DeclareMathOperator{\Ber}{Bernoulli}
 \DeclareMathOperator{\Bin}{Binomial}
-\DeclareMathOperator{\argmax}{arg\,max}
-\DeclareMathOperator{\argmin}{arg\,min}
+\DeclareMathOperator{\softmax}{softmax}
+\DeclareMathOperator{\Diag}{Diag}
+\DeclareMathOperator*{\argmax}{arg\,max}
+\DeclareMathOperator*{\argmin}{arg\,min}
 
 \newcommand{\R}{\mathbb{R}}
 \newcommand{\N}{\mathcal{N}}
@@ -39,10 +41,14 @@
 \newcommand{\cZ}{\mathcal{Z}}
 \newcommand{\cY}{\mathcal{Y}}
 \newcommand{\cT}{\mathcal{T}}
+\newcommand{\cH}{\mathcal{H}}
 \newcommand{\TV}{\mathrm{TV}}
 \newcommand{\dd}{\,\mathrm d}
+\newcommand{\op}{\mathrm{op}}
+\newcommand{\id}{\mathrm{id}}
 \newcommand{\norm}[1]{\left\lVert #1\right\rVert}
 \newcommand{\inner}[2]{\left\langle #1,#2\right\rangle}
+\newcommand{\ind}[1]{\mathbf{1}\!\left\{#1\right\}}
 
 \title{Ball-Local Reconstruction Bounds for Nonconvex DP-SGD Transcripts}
 
@@ -55,93 +61,179 @@ Joseph Margaryan
 
 \begin{abstract}
 We study reconstruction of one training record from a nonconvex DP-SGD
-transcript under a local Ball prior on the hidden record.  The central
+transcript under a Ball-local prior on the hidden record.  The privacy and
+reconstruction guarantees are indexed by a policy radius in a record metric,
+so the relevant sensitivity is the change in the target contribution over a
+metric ball rather than the worst-case clipped-gradient diameter.  The central
 technical distinction is whether the adversary observes the Poisson inclusion
 bits of the target record.  For the stronger known-inclusion transcript model,
-we prove a Ball-local ReRo bound by dominating the adaptive transcript by a
-product of revealed Bernoulli--Gaussian experiments.  For homogeneous training
-schedules this product blow-up function is evaluated exactly as a finite
-Binomial--Gaussian mixture.  For the weaker unknown-inclusion model, we define
-the corresponding hidden-mixture f-DP/ReRo object and evaluate it by privacy
-loss distribution convolution.  We keep this hidden f-DP curve distinct from
-RDP-to-ReRo conversion bounds, which are certified but generally coarser and
-apply to a different observation model than the revealed transcript.  Finally,
-we give finite-prior exact-identification attacks whose likelihoods match the
-known- and unknown-inclusion models.
+we prove a Ball-local reconstruction-robustness bound by dominating the
+adaptive transcript by a product of revealed Bernoulli--Gaussian experiments.
+For homogeneous training schedules this product blow-up function is evaluated
+exactly as a finite Binomial--Gaussian mixture.  The same revealed-inclusion
+curve is a conservative certificate for hidden-inclusion adversaries, because
+suppressing inclusion bits is post-processing.  We also record the hidden
+Gaussian-mixture law pair, but treat its common scalar one-shift evaluator as a
+special-case diagnostic rather than as the general Ball-substitution
+certificate.  Finally, to align the transcript theory with concrete nonconvex
+models, we prove explicit operator-2-norm tanh-gradient sensitivity bounds for
+both binary and multiclass one-hidden-layer networks.
 \end{abstract}
 
-\section{Setup}
+\section{Introduction}
+\label{sec:introduction}
 
-Let
+Differential privacy bounds reconstruction risk through a hypothesis-testing
+statement about neighboring datasets.  In DP-SGD, however, the usual global
+clipping sensitivity $2C$ can be much larger than the actual change in a
+clipped per-example gradient when the hidden record is known to lie in a local
+metric ball.  This paper develops the transcript-level analogue of Ball-local
+Gaussian release bounds: the adjacency relation is local in the record metric,
+and the reconstruction certificate depends on the Ball sensitivity
 \[
-D_z = D^- \cup \{z\},
+\Delta_t(r)
+:=
+\sup_{d(z,u)\le r}
+\norm{\bar g_t(z)-\bar g_t(u)}_2
+\]
+at each step rather than only on the clipping diameter.
+
+The setting is deliberately separated into observation models.  If the
+adversary observes the target inclusion indicators, the transcript is more
+informative than the usual hidden-subsampling view.  We therefore certify the
+known-inclusion model by a revealed Bernoulli--Gaussian product experiment.  If
+the inclusion indicators are hidden, the hidden transcript is a post-processing
+of the revealed transcript; hence the revealed curve is a valid conservative
+certificate for hidden-inclusion adversaries as well.  One can additionally
+study hidden-mixture f-DP curves, but the general Ball-substitution hidden law
+is mixture-versus-mixture and is not, without extra assumptions, the familiar
+one-shift subsampled Gaussian mixture.
+
+The final ingredient is a model-level route to non-vacuous Ball sensitivities.
+For projected tanh networks, if the hidden-layer weight matrix is controlled in
+operator 2 norm and the output layer is controlled in operator 2 norm, the
+record-gradient map is Lipschitz in the input with an explicit constant.  For
+same-label substitutions in a label-preserving metric, this gives
+\[
+\Delta_t(r)\le \min\{L_z r,2C_t\},
+\]
+which is the quantity used in the transcript bounds.
+
+\paragraph{Contributions}
+The paper makes four contributions.
+\begin{itemize}[leftmargin=1.5em]
+    \item We formulate Ball-local reconstruction robustness for adaptive
+    DP-SGD transcripts and prove a generic reduction from transcript law
+    domination to reconstruction bounds.
+    \item For known target inclusion bits, we dominate the adaptive transcript
+    by a product of revealed Bernoulli--Gaussian experiments and give an exact
+    homogeneous evaluator via a Binomial--Gaussian privacy-loss mixture.
+    \item For hidden target inclusion bits, we show that the revealed curve is
+    a conservative certificate by post-processing, and we separate this
+    certificate from optional hidden-mixture diagnostics.
+    \item We prove explicit binary and multiclass tanh-network $L_z$ bounds
+    under operator-2-norm constraints on the weight matrices.  These theorems
+    supply the model-aligned Ball sensitivities used by the transcript theory.
+\end{itemize}
+
+\section{Ball-local setup}
+\label{sec:setup}
+
+Let records live in a measurable space $\cZ$ equipped with a possibly extended
+metric
+\[
+d:\cZ\times\cZ\to[0,\infty].
+\]
+A common supervised-learning specialization writes records as $(x,y)$ with
+$x\in\R^d$ and $y$ in a finite label set.  The label-preserving Euclidean metric
+is
+\begin{equation}
+\label{eq:label-preserving-metric}
+d\big((x,y),(x',y')\big)
+=
+\begin{cases}
+\norm{x-x'}_2, & y=y',\\
+\infty, & y\ne y'.
+\end{cases}
+\end{equation}
+Finite-radius adjacency under~\eqref{eq:label-preserving-metric} protects
+changes to the feature vector conditional on the label; it does not protect
+label changes.
+
+Fix a public dataset fragment $D^-\in\cZ^{n-1}$ and write
+\[
+D_z=D^-\cup\{z\},
 \qquad
-D_u = D^- \cup \{u\},
+D_u=D^-\cup\{u\}.
 \]
-where $D^-\in\cZ^{n-1}$ is fixed and $z$ is the hidden record drawn from a
-prior $\pi_{u,r}$ supported on a radius-$r$ ball $\Ball(u,r)$.  A transcript
-mechanism produces
+The hidden record $Z$ is drawn from a Ball-local prior $\pi_{u,r}$ supported on
 \[
-\tau = \cT_T(D)=(\tilde S_1,\ldots,\tilde S_T),
+\Ball(u,r):=\{z\in\cZ:d(z,u)\le r\}.
 \]
-where $\tilde S_t$ is the sanitized DP-SGD update at step $t$.  A reconstructor
-is a measurable map
+A transcript mechanism produces
 \[
-R:\Theta\times \cZ^{n-1}\to \cZ.
+\tau=\cT_T(D)=(\tilde S_1,\ldots,\tilde S_T),
 \]
-For a loss $\rho$ and tolerance $\eta$, the reconstruction success probability is
+where $\tilde S_t$ is the sanitized update released at step $t$.  A
+reconstructor is a measurable map from transcripts and side information to
+records,
 \[
+R:\mathsf T\times\cZ^{n-1}\to\cZ.
+\]
+For reconstruction loss $\rho$ and tolerance $\eta$, the success probability is
+\begin{equation}
+\label{eq:success-probability}
 p_{\rm succ}(\eta)
 =
-\Pr_{Z\sim\pi_{u,r},\,\tau\sim \Law(\cT_T(D_Z))}
-\left[
-\rho(Z,R(\tau,D^-))\le \eta
-\right].
-\]
+\Pr_{Z\sim\pi_{u,r},\,\tau\sim\Law(\cT_T(D_Z))}
+\left[\rho\bigl(Z,R(\tau,D^-)\bigr)\le\eta\right].
+\end{equation}
 
 \begin{definition}[Prior anti-concentration]
-For a prior $\pi$ and loss $\rho$, define
+For a prior $\pi$ and reconstruction loss $\rho$, define
 \[
 \kappa_{\pi,\rho}(\eta)
 :=
 \sup_{z_0\in\cZ}
-\Pr_{Z\sim\pi}\left[\rho(Z,z_0)\le \eta\right].
+\Pr_{Z\sim\pi}\left[\rho(Z,z_0)\le\eta\right].
 \]
-For a uniform prior on a Euclidean $d$-ball of radius $r$ and Euclidean loss,
-ignoring boundary effects at the maximizing center,
-\[
-\kappa(\eta)=
-\begin{cases}
-(\eta/r)^d, & 0\le \eta<r,\\
-1, & \eta\ge r.
-\end{cases}
-\]
+For exact identification on a finite support with prior weights
+$\pi_1,\ldots,\pi_m$, this is $\max_i\pi_i$.  For a uniform finite prior it is
+$1/m$.
 \end{definition}
 
 \section{Hypothesis-testing notation}
+\label{sec:hypothesis-testing}
 
-\begin{definition}[Blow-up function]
-For probability laws $P,Q$ on a common measurable space,
+\begin{definition}[Blow-up function / randomized testing value]
+For probability laws $P,Q$ on a common measurable space, define
 \[
 B_\kappa(P\|Q)
 :=
-\sup_{A:\,Q(A)\le \kappa} P(A),
+\sup_{\phi:\,0\le \phi\le1,\; \E_Q\phi\le \kappa}
+\E_P\phi,
 \qquad
-\kappa\in[0,1].
+\kappa\in[0,1],
 \]
-Equivalently, if $T_{Q,P}$ is the tradeoff function with type-I error measured
-under $Q$ and power under $P$, then
+where the supremum is over measurable randomized tests
+$\phi:\mathsf X\to[0,1]$.  Equivalently, if $T_{Q,P}$ is the tradeoff function
+with type-I error measured under $Q$ and power measured under $P$, then
 \[
 B_\kappa(P\|Q)=1-T_{Q,P}(\kappa).
 \]
 \end{definition}
 
-The order matters.  Throughout this paper, $Q$ is the reference/null law and
-$P$ is the candidate/alternative law.  Thus a reconstruction event whose
+The randomized-test formulation is important when the privacy-loss distribution
+has atoms: the Neyman--Pearson optimum may randomize on a likelihood-ratio
+level set.  It also makes $\kappa\mapsto B_\kappa(P\|Q)$ nondecreasing and
+concave, because mixtures of feasible tests are feasible.  Throughout the
+paper, $Q$ is the reference/null law and $P$ is the candidate/alternative law.
+Thus any reconstruction event, or randomized reconstruction test, whose
 reference probability is at most $\kappa$ has candidate probability at most
 $B_\kappa(P\|Q)$.
 
 \begin{lemma}[Post-processing]
+\label{lem:post-processing}
 If $K$ is a probability kernel, then
 \[
 B_\kappa(PK\|QK)\le B_\kappa(P\|Q),
@@ -150,29 +242,24 @@ B_\kappa(PK\|QK)\le B_\kappa(P\|Q),
 \]
 \end{lemma}
 
-\begin{proof}
-Every event $A$ in the output space induces the randomized test
-$x\mapsto K(x,A)$ in the input space.  If $(QK)(A)\le \kappa$, then this test
-has $Q$-mass at most $\kappa$, and its $P$-mass is $(PK)(A)$.  Taking the
-supremum over output events gives the claim.
-\end{proof}
-
 \section{A local Ball-ReRo theorem}
+\label{sec:local-rero}
 
-For each $z\in\supp(\pi_{u,r})$ write
+For each $z\in\supp(\pi_{u,r})$, write
 \[
-P_z := \Law(\cT_T(D_z)),
+P_z:=\Law(\cT_T(D_z)),
 \qquad
-Q_u := \Law(\cT_T(D_u)).
+Q_u:=\Law(\cT_T(D_u)).
 \]
 
 \begin{theorem}[Local Ball-ReRo]
-Let $\pi=\pi_{u,r}$ and suppose there is a pair $(P^\star,Q^\star)$ such that
-for all $z\in\supp(\pi)$ and all $\kappa\in[0,1]$,
+\label{thm:local-ball-rero}
+Let $\pi=\pi_{u,r}$.  Suppose there is a law pair $(P^\star,Q^\star)$ such that
+for every $z\in\supp(\pi)$ and every $\kappa\in[0,1]$,
 \[
 B_\kappa(P_z\|Q_u)
 \le
-g(\kappa)
+ g(\kappa)
 :=
 B_\kappa(P^\star\|Q^\star),
 \]
@@ -185,110 +272,238 @@ g\!\left(\kappa_{\pi,\rho}(\eta)\right).
 \]
 \end{theorem}
 
-\begin{proof}
-For fixed $z$, define
+Theorem~\ref{thm:local-ball-rero} is the paper's basic reconstruction
+reduction.  The remaining task is to find a dominating pair $(P^\star,Q^\star)$
+for the transcript observation model of interest.
+
+\section{Model-local gradient sensitivity}
+\label{sec:model-local-sensitivity}
+
+At step $t$, let $\theta_t$ be the current model parameter, possibly chosen
+adaptively from the previous sanitized transcript.  Let
 \[
-E_z := \{\tau:\rho(z,R(\tau,D^-))\le\eta\}
+g_t^h(z)=\nabla_\theta\ell(\theta_t^h;z)
+\]
+be the target per-example gradient at history $h$, and let
+\[
+\bar g_t^h(z):=\clip_{C_t}(g_t^h(z))
+\]
+be Euclidean clipping to the closed radius-$C_t$ ball.  Explicitly,
+\[
+\clip_C(v)=
+\begin{cases}
+v, & \norm{v}_2\le C,\\
+C v/\norm{v}_2, & \norm{v}_2>C,
+\end{cases}
+\]
+with $\clip_C(0)=0$.
+
+\begin{assumption}[Gradient Lipschitzness in the record]
+\label{assump:lz}
+There is a parameter set $\Theta$ containing all iterates of interest and a
+constant $L_z\ge0$ such that, for every $\theta\in\Theta$ and every same-label
+pair under~\eqref{eq:label-preserving-metric},
+\[
+\norm{\nabla_\theta\ell(\theta;(x,y))
+-
+\nabla_\theta\ell(\theta;(x',y))}_2
+\le
+L_z\norm{x-x'}_2.
+\]
+Different-label pairs have infinite metric distance and impose no finite
+constraint.
+\end{assumption}
+
+\begin{proposition}[From $L_z$ to stepwise Ball sensitivity]
+\label{prop:lz-to-delta}
+If Assumption~\ref{assump:lz} holds at step $t$, then
+\[
+\Delta_t(r)
+:=
+\sup_{h}\sup_{d(z,u)\le r}
+\norm{\bar g_t^h(z)-\bar g_t^h(u)}_2
+\le
+\min\{L_z r,2C_t\}.
+\]
+\end{proposition}
+
+The next two theorems provide explicit $L_z$ values for the binary and
+multiclass tanh models used in the nonconvex transcript analysis.  The matrix
+constraint is an operator-2-norm constraint,
+\[
+\norm{M}_{\op}:=\sup_{\norm{v}_2=1}\norm{Mv}_2.
+\]
+The parameter norm used for gradient clipping and transcript sensitivity is the
+usual Euclidean/Frobenius product norm.
+
+\begin{theorem}[Binary tanh MLP: operator-2-norm $L_z$ bound]
+\label{thm:binary-tanh-op-lz}
+Fix $H\in\mathbb N$ and $A,S,B>0$.  Consider
+\[
+f_\theta(x)=\frac1{\sqrt H}a^\top \tanh(Wx+b),
+\qquad
+\theta=(W,b,a),
+\]
+where
+\[
+W\in\R^{H\times d},
+\qquad
+b\in\R^H,
+\qquad
+a\in\R^H.
+\]
+For $y\in\{-1,+1\}$, let
+\[
+\ell(\theta;(x,y))
+=
+\log\bigl(1+\exp(-y f_\theta(x))\bigr).
+\]
+Assume $\norm{x}_2\le B$ and
+\[
+\Theta_{A,S}^{\rm bin}
+:=
+\{(W,b,a):\norm{W}_{\op}\le S,\ \norm{a}_2\le A\}.
+\]
+Equip parameter space with
+\[
+\norm{(\Delta W,\Delta b,\Delta a)}_2^2
+=
+\norm{\Delta W}_F^2+\norm{\Delta b}_2^2+\norm{\Delta a}_2^2.
+\]
+Let
+\[
+K_{\tanh}:=\
+\sup_{u\in\R}|\tanh''(u)|=\frac{4}{3\sqrt3},
+\]
+\[
+L_{\rm J}
+:=
+\frac1{\sqrt H}
+\sqrt{
+S^2+A^2K_{\tanh}^2S^2+A^2(K_{\tanh}SB+1)^2
+},
+\]
+\[
+G_{\rm J}
+:=
+\sqrt{1+\frac{A^2(1+B^2)}{H}},
 \]
 and
 \[
-\kappa_z:=Q_u(E_z).
+L_z^{\rm bin}
+:=
+L_{\rm J}+\frac{AS}{4\sqrt H}G_{\rm J}.
 \]
-Then
+Then, for every $\theta\in\Theta_{A,S}^{\rm bin}$ and every same-label pair
+$(x,y),(x',y)$,
 \[
-P_z(E_z)
+\norm{\nabla_\theta\ell(\theta;(x,y))
+-
+\nabla_\theta\ell(\theta;(x',y))}_2
 \le
-B_{\kappa_z}(P_z\|Q_u)
-\le
-g(\kappa_z).
+L_z^{\rm bin}\norm{x-x'}_2.
 \]
-Averaging over $Z\sim\pi$ gives
+Consequently, under the label-preserving metric, Assumption~\ref{assump:lz}
+holds for this model with $L_z=L_z^{\rm bin}$.
+\end{theorem}
+
+\begin{theorem}[Multiclass tanh MLP: operator-2-norm $L_z$ bound]
+\label{thm:multiclass-tanh-op-lz}
+Fix $H\in\mathbb N$, a number of classes $K\ge2$, and $A,S,B>0$.  Consider the
+logit map
 \[
-p_{\rm succ}(\eta)
-\le
-\E_{Z\sim\pi}g(\kappa_Z).
+F_\theta(x)=\frac1{\sqrt H}V\tanh(Wx+b)\in\R^K,
+\qquad
+\theta=(W,b,V),
 \]
-By concavity,
+where
 \[
-\E g(\kappa_Z)
-\le
-g(\E\kappa_Z).
+W\in\R^{H\times d},
+\qquad
+b\in\R^H,
+\qquad
+V\in\R^{K\times H}.
 \]
-It remains to bound $\E\kappa_Z$.  Let
+For $y\in\{1,\ldots,K\}$, let
 \[
-A=\{(z,\tau):\rho(z,R(\tau,D^-))\le\eta\}.
-\]
-By Tonelli's theorem,
-\[
-\E_Z\kappa_Z
+\ell(\theta;(x,y))
 =
-\int Q_u(E_z)\,\pi(\dd z)
+-F_{\theta,y}(x)+\log\!\left(\sum_{c=1}^K e^{F_{\theta,c}(x)}\right).
+\]
+Assume $\norm{x}_2\le B$ and
+\[
+\Theta_{A,S}^{\rm mc}
+:=
+\{(W,b,V):\norm{W}_{\op}\le S,\ \norm{V}_{\op}\le A\}.
+\]
+Equip parameter space with
+\[
+\norm{(\Delta W,\Delta b,\Delta V)}_2^2
 =
-\int
-\Pr_{Z\sim\pi}\!\left[\rho(Z,R(\tau,D^-))\le\eta\right]
-Q_u(\dd\tau).
+\norm{\Delta W}_F^2+\norm{\Delta b}_2^2+\norm{\Delta V}_F^2.
 \]
-For fixed $\tau$, $R(\tau,D^-)$ is a deterministic point of $\cZ$, so the inner
-probability is at most $\kappa_{\pi,\rho}(\eta)$.  Hence
+Using the same $K_{\tanh}$, $L_{\rm J}$, and $G_{\rm J}$ as in
+Theorem~\ref{thm:binary-tanh-op-lz}, define
 \[
-\E_Z\kappa_Z \le \kappa_{\pi,\rho}(\eta).
+L_z^{\rm mc}
+:=
+\sqrt2\,L_{\rm J}+\frac{AS}{2\sqrt H}G_{\rm J}.
 \]
-Since $g$ is nondecreasing,
+Then, for every $\theta\in\Theta_{A,S}^{\rm mc}$ and every same-label pair
+$(x,y),(x',y)$,
 \[
-p_{\rm succ}(\eta)
+\norm{\nabla_\theta\ell(\theta;(x,y))
+-
+\nabla_\theta\ell(\theta;(x',y))}_2
 \le
-g(\kappa_{\pi,\rho}(\eta)).
+L_z^{\rm mc}\norm{x-x'}_2.
 \]
-\end{proof}
+Consequently, under the label-preserving metric, Assumption~\ref{assump:lz}
+holds for this model with $L_z=L_z^{\rm mc}$.
+\end{theorem}
 
 \section{Ball-SGD transcript domination}
+\label{sec:transcript-domination}
 
-At step $t$, conditional on the past history $h$, the sanitized update can be
-written as
+At step $t$, conditional on a past history $h$, write the sanitized update as
+\begin{align*}
+\tilde S_t(D_u)&=C_t^h+I_t\bar g_t^h(u)+\xi_t,\\
+\tilde S_t(D_z)&=C_t^h+I_t\bar g_t^h(z)+\xi_t,
+\end{align*}
+where $C_t^h$ contains all non-target contributions and deterministic
+normalizations, $I_t\sim\Ber(q_t)$ is the Poisson inclusion bit for the target
+record, and $\xi_t\sim\N(0,\sigma_t^2I_p)$.  Define the clipped gradient gap
 \[
-\tilde S_t(D_u)
-=
-C_t^h + I_t \bar g_t^h(u) + \xi_t,
+\delta_t^h(z,u):=\bar g_t^h(z)-\bar g_t^h(u),
 \]
+and choose deterministic Ball sensitivities satisfying
 \[
-\tilde S_t(D_z)
-=
-C_t^h + I_t \bar g_t^h(z) + \xi_t,
-\]
-where $I_t\sim\Ber(q_t)$ is the Poisson inclusion bit and
-$\xi_t\sim\N(0,\sigma_t^2 I_p)$.  Define the clipped gradient gap
-\[
-\delta_t^h(z,u)
-:=
-\bar g_t^h(z)-\bar g_t^h(u),
-\]
-and the normalized Ball sensitivity
-\[
-c_t
-:=
-\frac{\Delta_t(r)}{\sigma_t},
-\qquad
 \Delta_t(r)
 \ge
-\sup_{z\in\supp(\pi_{u,r}),h}
+\sup_{z\in\supp(\pi_{u,r})}\sup_h
 \norm{\delta_t^h(z,u)}_2.
 \]
-The Ball-specific improvement is that $\Delta_t(r)$ may be much smaller than
-the standard clipping-only sensitivity $2C_t$.
+The normalized sensitivity is
+\[
+c_t:=\frac{\Delta_t(r)}{\sigma_t}.
+\]
+For projected tanh models satisfying Theorem~\ref{thm:binary-tanh-op-lz} or
+Theorem~\ref{thm:multiclass-tanh-op-lz}, Proposition~\ref{prop:lz-to-delta}
+gives the concrete choice
+\[
+\Delta_t(r)=\min\{L_z r,2C_t\}.
+\]
 
 \subsection{Known inclusion: revealed transcript bound}
+\label{sec:known-inclusion}
 
-The known-inclusion adversary observes the target inclusion bits or an
-equivalent residualized transcript from which the selected target steps are
+The known-inclusion adversary observes the target inclusion bits, or an
+equivalent residualized transcript from which the target-present steps are
 known.  The one-step revealed reference pair is
 \[
-Q_t^{\rm rev}
-=
-\Law(I_t,G_t),
+Q_t^{\rm rev}=\Law(I_t,G_t),
 \qquad
-P_t^{\rm rev}
-=
-\Law(I_t,I_t c_t+G_t),
+P_t^{\rm rev}=\Law(I_t,I_tc_t+G_t),
 \]
 where $G_t\sim\N(0,1)$ and $I_t\sim\Ber(q_t)$ are independent.  Define
 \[
@@ -298,6 +513,7 @@ P_{1:T}^{\rm rev}:=\bigotimes_{t=1}^T P_t^{\rm rev}.
 \]
 
 \begin{theorem}[Known-inclusion Ball-ReRo]
+\label{thm:known-inclusion-rero}
 For the revealed-inclusion transcript model,
 \[
 p_{\rm succ}(\eta)
@@ -307,29 +523,24 @@ B_{\kappa_{\pi,\rho}(\eta)}
 \]
 \end{theorem}
 
-\begin{proof}
-For fixed $z$ and history $h$, center by the common non-target contribution and
-project onto the direction of $\delta_t^h(z,u)$.  Conditional on $I_t=i$, the
-two laws differ by a one-dimensional Gaussian shift of magnitude
-$i\|\delta_t^h(z,u)\|_2/\sigma_t\le i c_t$.  A Gaussian contraction kernel maps
-the worst-case shift $i c_t$ to the actual shift.  Adding the common center and
-orthogonal Gaussian coordinates is another kernel.  These one-step kernels glue
-adaptively over $t$, giving a global kernel $K_z$ such that
+\begin{corollary}[Safe hidden-inclusion certificate]
+\label{cor:hidden-safe-by-revealed}
+Suppose the hidden-inclusion transcript is obtained from the corresponding
+revealed-inclusion transcript by suppressing the target inclusion bits and then
+applying any further measurable post-processing.  Then the same bound holds for
+hidden-inclusion adversaries:
 \[
-P_{1:T}^{\rm rev}K_z=P_z,
-\qquad
-Q_{1:T}^{\rm rev}K_z=Q_u.
-\]
-By post-processing,
-\[
-B_\kappa(P_z\|Q_u)
+p_{\rm succ}^{\rm hid}(\eta)
 \le
-B_\kappa(P_{1:T}^{\rm rev}\|Q_{1:T}^{\rm rev}).
+B_{\kappa_{\pi,\rho}(\eta)}
+\!\left(P_{1:T}^{\rm rev}\middle\|Q_{1:T}^{\rm rev}\right).
 \]
-The local Ball-ReRo theorem then gives the result.
-\end{proof}
+Thus the revealed curve is conservative for the weaker hidden-inclusion
+observation model.
+\end{corollary}
 
-\subsection{Exact homogeneous evaluator}
+\subsection{Exact homogeneous revealed evaluator}
+\label{sec:homogeneous-evaluator}
 
 When $q_t=q$ and $c_t=c$ for all $t$, the privacy loss
 \[
@@ -337,19 +548,19 @@ L=\log\frac{\dd P_{1:T}^{\rm rev}}{\dd Q_{1:T}^{\rm rev}}
 \]
 has a finite Binomial--Gaussian mixture form.  Let
 \[
-K:=\sum_{t=1}^T I_t\sim\Bin(T,q).
+K_T:=\sum_{t=1}^T I_t\sim\Bin(T,q).
 \]
-Conditional on $K=k$,
+Conditional on $K_T=k$,
 \[
-L\mid K=k,Q
+L\mid K_T=k,Q
 \sim
-\N\!\left(-\frac12 k c^2,\,k c^2\right),
+\N\!\left(-\frac12kc^2,kc^2\right),
 \]
 and
 \[
-L\mid K=k,P
+L\mid K_T=k,P
 \sim
-\N\!\left(+\frac12 k c^2,\,k c^2\right),
+\N\!\left(+\frac12kc^2,kc^2\right),
 \]
 with an atom at $L=0$ when $k=0$.  The Neyman--Pearson event is an upper level
 set of $L$.  Therefore
@@ -362,178 +573,200 @@ where $\tau_\kappa$ and $\theta\in[0,1]$ are chosen so that
 \[
 Q[L>\tau_\kappa]+\theta Q[L=\tau_\kappa]=\kappa.
 \]
-This is the exact evaluator used for the known-inclusion curve in the
-experiments.
+This gives an exact finite-mixture evaluator for the known-inclusion curve.
 
-\subsection{Unknown inclusion: hidden-mixture f-DP bound}
+\subsection{Unknown inclusion: hidden mixtures and safe certification}
+\label{sec:hidden-inclusion}
 
-If the transcript does not reveal target inclusion bits, the one-step hidden
-reference pair is
+If the transcript does not reveal target inclusion bits, the hidden transcript
+contains less information than the revealed transcript.  Therefore
+Corollary~\ref{cor:hidden-safe-by-revealed} gives the certified bound we use by
+default.  This avoids a common pitfall: the hidden-subsampling law for an
+add/remove target model is not the same as the hidden law for a Ball-local
+substitution model.
+
+To see the distinction, fix a step and a history after residualizing known
+non-target contributions and normalizing by $\sigma_t$.  In a general
+Ball-substitution comparison $D_z$ versus $D_u$, the hidden one-step laws are
+mixture-versus-mixture:
+\begin{align*}
+Q_{t,u}^{\rm hid}
+&=(1-q_t)\N(0,I_p)+q_t\N(\mu_{t,u},I_p),\\
+P_{t,z}^{\rm hid}
+&=(1-q_t)\N(0,I_p)+q_t\N(\mu_{t,z},I_p),
+\end{align*}
+where
 \[
-Q_t^{\rm hid}=\N(0,1),
+\mu_{t,u}=\frac{\bar g_t^h(u)}{\sigma_t},
 \qquad
-P_t^{\rm hid}=(1-q_t)\N(0,1)+q_t\N(c_t,1).
-\]
-The product hidden f-DP object is
-\[
-B_\kappa(P_{1:T}^{\rm hid}\|Q_{1:T}^{\rm hid}),
+\mu_{t,z}=\frac{\bar g_t^h(z)}{\sigma_t},
 \qquad
-P_{1:T}^{\rm hid}=\bigotimes_t P_t^{\rm hid},
-\quad
-Q_{1:T}^{\rm hid}=\bigotimes_t Q_t^{\rm hid}.
+\norm{\mu_{t,z}-\mu_{t,u}}_2\le c_t.
 \]
-For one step, the privacy loss under $Q_t^{\rm hid}$ is
+The scalar hidden pair
 \[
+Q_t^{\rm add}=\N(0,1),
+\qquad
+P_t^{\rm add}=(1-q_t)\N(0,1)+q_t\N(c_t,1)
+\]
+is therefore an add/remove or zero-center special case, not the general
+Ball-substitution certificate.  In that special case, the one-step privacy loss
+under $Q_t^{\rm add}$ is
+\begin{align*}
 \ell_t(x)
-=
-\log\left((1-q_t)+q_t\exp(c_t x-c_t^2/2)\right),
-\qquad
-x\sim\N(0,1).
-\]
-The product privacy loss is $\sum_t \ell_t(X_t)$.  We evaluate its distribution
-by Gauss--Hermite quadrature and convolution.  This gives a deterministic
-hypothesis-testing approximation to the hidden-inclusion f-DP curve.  It is not
-mixed with the revealed-inclusion bound: the observation models differ.
+&=
+\log\left((1-q_t)+q_t\exp(c_tx-c_t^2/2)\right),\\
+&\hspace{25mm} x\sim\N(0,1).
+\end{align*}
+The product privacy loss is $\sum_t\ell_t(X_t)$, and its distribution can be
+computed by Gauss--Hermite quadrature and convolution.  We treat this as a
+deterministic diagnostic/evaluator for the stated special-case hidden law.  For
+the general Ball-substitution transcript, the safe certificate is the revealed
+curve from Corollary~\ref{cor:hidden-safe-by-revealed}, unless one explicitly
+computes or upper-bounds the full mixture-versus-mixture law pair above.
 
 \section{RDP-to-ReRo conversion}
+\label{sec:rdp-conversion}
 
 If a mechanism satisfies an RDP bound
 \[
-D_\alpha(P\|Q)\le \varepsilon_\alpha,
+D_\alpha(P\|Q)\le\varepsilon_\alpha,
 \qquad \alpha>1,
 \]
 then H\"older's inequality gives
 \[
 B_\kappa(P\|Q)
 \le
-\min\left\{
-1,\,
+\min\left\{1,
 \exp\left(
 \frac{\alpha-1}{\alpha}
 \left[\log\kappa+\varepsilon_\alpha\right]
-\right)
-\right\}.
+\right)\right\}.
 \]
-Optimizing over orders,
+Optimizing over orders gives
 \[
 \Gamma_{\rm RDP}(\kappa)
 =
 \inf_{\alpha>1}
-\min\left\{
-1,\,
+\min\left\{1,
 \exp\left(
 \frac{\alpha-1}{\alpha}
 \left[\log\kappa+\varepsilon_\alpha\right]
-\right)
-\right\}.
+\right)\right\}.
 \]
-This conversion is a certified bound for the law pair accounted for by the RDP
-accountant.  In our experiments it is reported as a hidden-subsampling/final
-release certificate.  It should not be interpreted as a bound on the stronger
-revealed-inclusion transcript unless the RDP accountant explicitly includes the
-released inclusion bits.
+This is a certified reconstruction bound for the law pair accounted for by the
+RDP accountant.  It should not be interpreted as a bound on the stronger
+revealed-inclusion transcript unless the accountant explicitly includes the
+released inclusion bits.  Conversely, the revealed curve remains a conservative
+bound for hidden-inclusion adversaries because hiding bits is post-processing.
 
 \section{Finite-prior exact-identification attacks}
+\label{sec:finite-prior-attacks}
 
-Let $\{z_1,\ldots,z_m\}$ be a public candidate support with prior weights
+Let $S=\{z_1,\ldots,z_m\}$ be a public candidate support with prior weights
 $\pi_i$.  The exact-identification baseline is
 \[
-\kappa_{\rm id}=\max_i \pi_i,
+\kappa_{\rm id}=\max_i\pi_i,
 \]
 and for a uniform finite prior, $\kappa_{\rm id}=1/m$.
 
 After residualizing the known non-target batch contribution, a known-inclusion
 Gaussian transcript has observations
 \[
-r_t = g_t(z_i)+\xi_t
+r_t=g_t(z_i)+\xi_t
 \]
-on selected target-present steps.  The exact finite-prior Bayes score is
+on target-present steps.  The exact finite-prior Bayes score is
 \[
 S_i^{\rm known}
 =
-\log \pi_i
+\log\pi_i
 -
 \frac12
 \sum_{t\in\mathcal I}
 \frac{\norm{r_t-g_t(z_i)}_2^2}{\sigma_t^2},
 \]
-with the obvious least-squares limit when $\sigma_t=0$.
+with the least-squares limit when all $\sigma_t$ are equal and the prior is
+uniform.
 
-For unknown inclusion,
+For an add/remove or zero-center hidden-inclusion likelihood in which the
+residualized target contribution is either absent or equal to $g_t(z_i)$,
 \[
-r_t =
+r_t=
 \begin{cases}
 \xi_t, & I_t=0,\\
 g_t(z_i)+\xi_t, & I_t=1,
 \end{cases}
 \]
-so the exact score is
-\[
+so the exact score for that observation model is
+\begin{align*}
 S_i^{\rm unknown}
-=
+&=
 \log\pi_i
 +
 \sum_t
-\log\left[
-(1-q_t)\exp\left(-\frac{\norm{r_t}_2^2}{2\sigma_t^2}\right)
-+
-q_t\exp\left(-\frac{\norm{r_t-g_t(z_i)}_2^2}{2\sigma_t^2}\right)
-\right],
-\]
-up to candidate-independent constants.  The attack returns
+\log\Bigg[
+(1-q_t)\exp\left(-\tfrac{\norm{r_t}_2^2}{2\sigma_t^2}\right)\\
+&\qquad\qquad+
+q_t\exp\left(-\tfrac{\norm{r_t-g_t(z_i)}_2^2}{2\sigma_t^2}\right)
+\Bigg],
+\end{align*}
+up to candidate-independent constants.  The Bayes-optimal exact-identification
+attack returns
 \[
-\hat i=\argmax_i S_i.
+\widehat i=\argmax_i S_i.
 \]
-The known-inclusion attack should be compared against the revealed f-DP curve;
-the unknown-inclusion attack should be compared against the hidden f-DP/RDP
-curves.
+The known-inclusion attack should be compared with the revealed f-DP curve.  A
+hidden-inclusion attack should be compared with a hidden-mixture curve only when
+that curve matches the stated observation model; otherwise the revealed curve is
+the conservative certified comparator.
 
 \section{Relationship to prior ReRo work}
+\label{sec:related}
 
-Hayes, Mahloujifar, and Balle formulate reconstruction risk through the blow-up
-function and estimate DP-SGD reconstruction bounds by sampling or otherwise
-approximating the relevant likelihood-ratio distribution.  Our known-inclusion
-contribution specializes this philosophy to a Ball-local transcript pair and
-gives an exact homogeneous evaluator for the revealed Bernoulli--Gaussian
-product reference experiment.
+Balle, Cherubin, and Hayes formalized reconstruction with informed adversaries
+and showed that model releases can leak training data in regimes where the
+adversary knows all but one record~\cite{balle2022}.  Hayes, Mahloujifar, and
+Balle express reconstruction risk through the blow-up function and estimate
+DP-SGD reconstruction bounds by approximating the relevant likelihood-ratio
+distribution~\cite{hayes2023}.  Kaissis, Hayes, Ziller, and Rueckert emphasize
+the hypothesis-testing interpretation of reconstruction bounds and the need to
+separate analytic mechanism curves from numerical approximations~\cite{kaissis2023}.
+Their Poisson-subsampled Gaussian mechanism is an add/remove hidden-subsampling
+law: one side is a base Gaussian and the other is a mixture of a base Gaussian
+and a shifted Gaussian.  This is exactly the scalar hidden law recorded in
+Section~\ref{sec:hidden-inclusion}, but it is not the general Ball-substitution
+law when the reference record $u$ also contributes if sampled.  This paper
+specializes the same hypothesis-testing perspective to Ball-local DP-SGD
+transcripts, uses randomized tests throughout the f-DP workflow, and separates
+certified revealed-inclusion bounds from special-case hidden-mixture diagnostics.
 
-Kaissis, Hayes, Ziller, and Rueckert emphasize the hypothesis-testing
-interpretation of reconstruction bounds and the distinction between analytic
-mechanism curves and numerical approximations.  Our implementation follows this
-separation: the exact homogeneous revealed curve is a theorem-backed numerical
-evaluation, the hidden f-DP curve is a deterministic PLD approximation of a
-different hypothesis-testing object, and the RDP conversion is a separate
-certified conversion bound.
-
-\section{Experimental protocol}
-
-The synthetic experiment trains three models on linearly separable binary data:
-nonprivate ERM, Ball-DP, and standard DP calibrated to the same target privacy
-level.  The main figures are:
-\begin{enumerate}[leftmargin=*]
-\item utility over training and final utility;
-\item known-inclusion revealed f-DP curves for Ball-DP and standard DP;
-\item unknown-inclusion hidden f-DP and RDP conversion curves;
-\item a monotone prefix privacy--utility trajectory for the known-inclusion
-      transcript bound;
-\item finite-prior exact-identification bars for known- and unknown-inclusion
-      attacks.
-\end{enumerate}
-The direct stepwise composition bound is valid but vacuous in the default
-high-$T$ experiment, so it is kept as a diagnostic rather than a main figure.
+The metric-local privacy viewpoint is complementary to standard DP: it keeps
+the usual privacy semantics but changes the adjacency graph to protect
+single-record substitutions only inside a chosen metric radius.  In the present
+nonconvex transcript setting, this radius enters through $L_zr$ and hence
+through the normalized shifts $c_t=\Delta_t(r)/\sigma_t$.
 
 \section{Conclusion}
+\label{sec:conclusion}
 
-The main methodological lesson is that reconstruction certificates must be
-indexed by the observation model.  A revealed-inclusion transcript bound, a
-hidden-inclusion f-DP curve, and an RDP conversion bound are all useful, but they
-are not interchangeable.  Ball-local sensitivity gives meaningful
-reconstruction certificates in the revealed transcript model where standard
-clipping-based sensitivity is nearly vacuous, and it also supports exact
-finite-prior attacks whose likelihoods match the corresponding threat model.
+Ball-local transcript certificates require two separate ingredients.  The first
+is an observation-model-specific hypothesis-testing curve.  The revealed curve
+certifies known inclusion and conservatively certifies hidden inclusion by
+post-processing, while optional hidden-mixture curves must match their exact law
+pair.  The second is a model-specific Ball sensitivity.  The operator-2-norm
+tanh theorems in this paper provide explicit $L_z$ constants
+for projected binary and multiclass networks, yielding
+$\Delta_t(r)\le\min\{L_zr,2C_t\}$ at each step.  Together, these results give a
+complete theory pipeline from local metric adjacency to transcript-level
+reconstruction certificates for nonconvex DP-SGD.
 
 \bibliographystyle{IEEEtran}
 \begin{thebibliography}{9}
+
+\bibitem{dwork2014}
+C.~Dwork and A.~Roth,
+\newblock \emph{The Algorithmic Foundations of Differential Privacy}.
+\newblock Foundations and Trends in Theoretical Computer Science, 2014.
 
 \bibitem{abadi2016}
 M.~Abadi et al.,
@@ -567,5 +800,818 @@ Interpretation of Differential Privacy,''
 arXiv:2307.03928, 2023.
 
 \end{thebibliography}
+
+\appendices
+
+\section{Proofs for the hypothesis-testing reductions}
+\label{app:hypothesis-testing-proofs}
+
+\subsection{Proof of Lemma~\ref{lem:post-processing}}
+
+\begin{proof}
+Let the input space be $(\mathsf X,\mathcal X)$ and the output space be
+$(\mathsf Y,\mathcal Y)$.  Let $\psi:\mathsf Y\to[0,1]$ be any randomized output
+test satisfying
+\[
+\E_{QK}\psi\le \kappa.
+\]
+Define the pulled-back input test
+\[
+(K\psi)(x):=\int \psi(y)K(x,\dd y).
+\]
+Then $0\le K\psi\le1$ and
+\[
+\E_Q[K\psi]=\E_{QK}\psi\le\kappa.
+\]
+By the definition of $B_\kappa(P\|Q)$,
+\[
+\E_{PK}\psi=
+\E_P[K\psi]
+\le
+B_\kappa(P\|Q).
+\]
+Taking the supremum over all randomized output tests $\psi$ feasible for
+$B_\kappa(PK\|QK)$ gives
+\[
+B_\kappa(PK\|QK)\le B_\kappa(P\|Q).
+\]
+\end{proof}
+
+\subsection{Proof of Theorem~\ref{thm:local-ball-rero}}
+
+\begin{proof}
+For each record $z$, define the success event
+\[
+E_z:=\{\tau:\rho(z,R(\tau,D^-))\le\eta\}.
+\]
+Let
+\[
+\kappa_z:=Q_u(E_z).
+\]
+By the definition of $B_\kappa$,
+\[
+P_z(E_z)\le B_{\kappa_z}(P_z\|Q_u).
+\]
+By the assumed domination,
+\[
+B_{\kappa_z}(P_z\|Q_u)
+\le
+ g(\kappa_z).
+\]
+Averaging over $Z\sim\pi$ yields
+\[
+p_{\rm succ}(\eta)
+=
+\int P_z(E_z)\,\pi(\dd z)
+\le
+\int g(\kappa_z)\,\pi(\dd z).
+\]
+Since $g$ is concave,
+\[
+\int g(\kappa_z)\,\pi(\dd z)
+\le
+ g\!\left(\int \kappa_z\,\pi(\dd z)\right).
+\]
+It remains to bound the average reference mass.  By Tonelli's theorem,
+\begin{align*}
+\int \kappa_z\,\pi(\dd z)
+&=
+\int Q_u(E_z)\,\pi(\dd z)\\
+&=
+\int
+\Pr_{Z\sim\pi}\!\left[\rho\bigl(Z,R(\tau,D^-)\bigr)\le\eta\right]
+Q_u(\dd\tau).
+\end{align*}
+For a fixed transcript $\tau$, the reconstruction $R(\tau,D^-)$ is a single
+point in $\cZ$.  Therefore the inner probability is at most
+\[
+\sup_{z_0\in\cZ}
+\Pr_{Z\sim\pi}\left[\rho(Z,z_0)\le\eta\right]
+=
+\kappa_{\pi,\rho}(\eta).
+\]
+Thus
+\[
+\int \kappa_z\,\pi(\dd z)\le\kappa_{\pi,\rho}(\eta).
+\]
+Using that $g$ is nondecreasing gives
+\[
+p_{\rm succ}(\eta)
+\le
+ g\!\left(\kappa_{\pi,\rho}(\eta)\right).
+\]
+\end{proof}
+
+\section{Proof of the \texorpdfstring{$L_z$}{Lz}-to-sensitivity step}
+\label{app:lz-to-delta-proof}
+
+\begin{proof}[Proof of Proposition~\ref{prop:lz-to-delta}]
+Fix a history $h$ and two records $z,u$ with $d(z,u)\le r$.  Since the distance
+is finite under the label-preserving metric, the labels agree.  By
+Assumption~\ref{assump:lz},
+\[
+\norm{g_t^h(z)-g_t^h(u)}_2
+\le
+L_z d(z,u)
+\le
+L_z r.
+\]
+Euclidean clipping is the metric projection onto the closed Euclidean ball
+$\{v:\norm{v}_2\le C_t\}$.  Metric projections onto closed convex sets in a
+Hilbert space are nonexpansive, hence
+\begin{align*}
+\norm{\bar g_t^h(z)-\bar g_t^h(u)}_2
+&=
+\norm{\clip_{C_t}(g_t^h(z))-\clip_{C_t}(g_t^h(u))}_2\\
+&\le
+\norm{g_t^h(z)-g_t^h(u)}_2
+\le
+L_zr.
+\end{align*}
+Also, both clipped gradients have norm at most $C_t$, so the triangle
+inequality gives
+\[
+\norm{\bar g_t^h(z)-\bar g_t^h(u)}_2
+\le
+\norm{\bar g_t^h(z)}_2+
+\norm{\bar g_t^h(u)}_2
+\le
+2C_t.
+\]
+Both inequalities hold for every admissible history and every pair with
+$d(z,u)\le r$.  Taking the supremum gives
+\[
+\Delta_t(r)\le\min\{L_zr,2C_t\}.
+\]
+\end{proof}
+
+\section{Operator-norm tanh preliminaries}
+\label{app:tanh-preliminaries}
+
+Throughout Appendices~\ref{app:binary-tanh-proof} and
+\ref{app:multiclass-tanh-proof}, write
+\[
+u:=Wx+b,
+\qquad
+h:=\tanh(u),
+\qquad
+q:=\tanh'(u),
+\]
+and similarly define $u',h',q'$ for $x'$.  Let
+\[
+\delta:=\norm{x-x'}_2.
+\]
+The operator-norm constraint gives
+\[
+\norm{u-u'}_2
+=
+\norm{W(x-x')}_2
+\le
+\norm{W}_{\op}\norm{x-x'}_2
+\le
+S\delta.
+\]
+Because $\tanh$ is $1$-Lipschitz,
+\begin{equation}
+\label{eq:tanh-h-diff}
+\norm{h-h'}_2\le S\delta.
+\end{equation}
+Next,
+\[
+\tanh''(t)=-2\tanh(t)(1-\tanh^2(t)).
+\]
+If $s=|\tanh(t)|\in[0,1)$, then
+\[
+|\tanh''(t)|=2s(1-s^2).
+\]
+The derivative of $2s(1-s^2)$ is $2-6s^2$, so the maximum over $s\in[0,1]$ is
+attained at $s=1/\sqrt3$.  Therefore
+\[
+K_{\tanh}=
+\sup_{t\in\R}|\tanh''(t)|
+=
+2\frac1{\sqrt3}\left(1-\frac13\right)
+=
+\frac4{3\sqrt3}.
+\]
+Thus $\tanh'$ is $K_{\tanh}$-Lipschitz, and
+\begin{equation}
+\label{eq:tanh-q-diff}
+\norm{q-q'}_2
+\le
+K_{\tanh}\norm{u-u'}_2
+\le
+K_{\tanh}S\delta.
+\end{equation}
+Finally,
+\[
+\norm{h}_2\le\sqrt H,
+\qquad
+\norm{q}_\infty\le1,
+\qquad
+\norm{x}_2\le B.
+\]
+
+\section{Proof of Theorem~\ref{thm:binary-tanh-op-lz}}
+\label{app:binary-tanh-proof}
+
+\begin{proof}
+Fix $\theta=(W,b,a)\in\Theta_{A,S}^{\rm bin}$ and a same-label pair
+$(x,y),(x',y)$.  Define
+\[
+f(x)=\frac1{\sqrt H}a^\top h,
+\qquad
+f(x')=\frac1{\sqrt H}a^\top h'.
+\]
+By~\eqref{eq:tanh-h-diff},
+\begin{equation}
+\label{eq:binary-score-diff}
+|f(x)-f(x')|
+\le
+\frac1{\sqrt H}\norm{a}_2\norm{h-h'}_2
+\le
+\frac{AS}{\sqrt H}\delta.
+\end{equation}
+
+Let
+\[
+\rho(s):=(1+e^{-s})^{-1},
+\qquad
+\beta(x,y):=\rho(-yf(x)).
+\]
+The derivative of $\rho$ satisfies $|\rho'(s)|\le1/4$.  Therefore, by
+\eqref{eq:binary-score-diff},
+\begin{equation}
+\label{eq:binary-beta-diff}
+|\beta(x,y)-\beta(x',y)|
+\le
+\frac14|f(x)-f(x')|
+\le
+\frac{AS}{4\sqrt H}\delta.
+\end{equation}
+The logistic-loss gradient is
+\begin{equation}
+\label{eq:binary-loss-gradient-factorization}
+\nabla_\theta\ell(\theta;(x,y))
+=
+-y\,\beta(x,y)\,\nabla_\theta f(x).
+\end{equation}
+
+We now bound the size and input-Lipschitz constant of $\nabla_\theta f(x)$.
+The score-gradient blocks are
+\begin{align*}
+\nabla_a f(x)&=\frac1{\sqrt H}h,\\
+\nabla_b f(x)&=\frac1{\sqrt H}(a\odot q),\\
+\nabla_W f(x)&=\frac1{\sqrt H}(a\odot q)x^\top.
+\end{align*}
+Hence
+\begin{align*}
+\norm{\nabla_\theta f(x)}_2^2
+&=
+\frac1H\left(
+\norm{h}_2^2+
+\norm{a\odot q}_2^2+
+\norm{(a\odot q)x^\top}_F^2
+\right)\\
+&\le
+\frac1H\left(H+A^2+A^2B^2\right)
+=
+1+\frac{A^2(1+B^2)}H.
+\end{align*}
+Thus
+\begin{equation}
+\label{eq:binary-GJ-bound}
+\norm{\nabla_\theta f(x)}_2\le G_{\rm J}.
+\end{equation}
+
+For the $a$ block,
+\[
+\norm{\nabla_a f(x)-\nabla_a f(x')}_2
+=
+\frac1{\sqrt H}\norm{h-h'}_2
+\le
+\frac{S}{\sqrt H}\delta.
+\]
+For the $b$ block,
+\begin{align*}
+\norm{\nabla_b f(x)-\nabla_b f(x')}_2
+&=
+\frac1{\sqrt H}\norm{a\odot(q-q')}_2\\
+&\le
+\frac{AK_{\tanh}S}{\sqrt H}\delta.
+\end{align*}
+For the $W$ block, add and subtract $(a\odot q')x^\top$:
+\begin{align*}
+&\norm{\nabla_W f(x)-\nabla_W f(x')}_F\\
+&\quad=
+\frac1{\sqrt H}
+\norm{(a\odot q)x^\top-(a\odot q')x'^\top}_F\\
+&\quad\le
+\frac1{\sqrt H}\left(
+\norm{a\odot(q-q')}_2\norm{x}_2
++
+\norm{a\odot q'}_2\norm{x-x'}_2
+\right)\\
+&\quad\le
+\frac{A}{\sqrt H}\bigl(K_{\tanh}SB+1\bigr)\delta.
+\end{align*}
+Combining the three blocks in the product parameter norm gives
+\begin{equation}
+\label{eq:binary-J-lipschitz}
+\norm{\nabla_\theta f(x)-\nabla_\theta f(x')}_2
+\le
+L_{\rm J}\delta.
+\end{equation}
+
+Using~\eqref{eq:binary-loss-gradient-factorization} at $x$ and $x'$ and adding
+and subtracting $-y\beta(x',y)\nabla_\theta f(x)$,
+\begin{align*}
+&\norm{\nabla_\theta\ell(\theta;(x,y))
+-
+\nabla_\theta\ell(\theta;(x',y))}_2\\
+&\quad\le
+|\beta(x,y)-\beta(x',y)|\,\norm{\nabla_\theta f(x)}_2\\
+&\qquad+
+\beta(x',y)\,
+\norm{\nabla_\theta f(x)-\nabla_\theta f(x')}_2.
+\end{align*}
+Since $0\le\beta(x',y)\le1$, substituting
+\eqref{eq:binary-beta-diff}, \eqref{eq:binary-GJ-bound}, and
+\eqref{eq:binary-J-lipschitz} yields
+\[
+\norm{\nabla_\theta\ell(\theta;(x,y))
+-
+\nabla_\theta\ell(\theta;(x',y))}_2
+\le
+\left(L_{\rm J}+\frac{AS}{4\sqrt H}G_{\rm J}\right)\delta.
+\]
+This is the claimed bound with $L_z^{\rm bin}=L_{\rm J}+(AS/(4\sqrt H))G_{\rm J}$.
+\end{proof}
+
+\section{Proof of Theorem~\ref{thm:multiclass-tanh-op-lz}}
+\label{app:multiclass-tanh-proof}
+
+\begin{proof}
+Fix $\theta=(W,b,V)\in\Theta_{A,S}^{\rm mc}$ and a same-label pair
+$(x,y),(x',y)$.  Let
+\[
+F(x)=\frac1{\sqrt H}Vh,
+\qquad
+F(x')=\frac1{\sqrt H}Vh'.
+\]
+From~\eqref{eq:tanh-h-diff},
+\begin{equation}
+\label{eq:mc-logit-diff}
+\norm{F(x)-F(x')}_2
+\le
+\frac1{\sqrt H}\norm{V}_{\op}\norm{h-h'}_2
+\le
+\frac{AS}{\sqrt H}\delta.
+\end{equation}
+
+Let
+\[
+p(x):=\softmax(F(x)),
+\qquad
+\alpha(x,y):=p(x)-e_y,
+\]
+where $e_y$ is the $y$th standard basis vector in $\R^K$.  The multiclass
+cross-entropy gradient factors as
+\begin{equation}
+\label{eq:mc-gradient-factorization}
+\nabla_\theta\ell(\theta;(x,y))
+=
+J_F(x)^\ast\alpha(x,y),
+\end{equation}
+where $J_F(x)$ is the Jacobian of the logit map with respect to the parameters
+and $J_F(x)^\ast$ is its adjoint under the Euclidean/Frobenius parameter norm.
+
+First, bound $\norm{\alpha(x,y)}_2$.  Since $p(x)$ is a probability vector,
+\begin{align*}
+\norm{p(x)-e_y}_2^2
+&=(1-p_y(x))^2+
+\sum_{c\ne y}p_c(x)^2\\
+&\le
+(1-p_y(x))^2+
+\left(\sum_{c\ne y}p_c(x)\right)^2\\
+&=2(1-p_y(x))^2
+\le2.
+\end{align*}
+Thus
+\begin{equation}
+\label{eq:alpha-norm-bound}
+\norm{\alpha(x,y)}_2\le\sqrt2.
+\end{equation}
+
+Second, bound the Lipschitz constant of $\alpha$.  The softmax Jacobian at a
+probability vector $p$ is
+\[
+J_{\softmax}=\Diag(p)-pp^\top.
+\]
+It is symmetric.  For row $i$,
+\[
+\sum_j |(J_{\softmax})_{ij}|
+=p_i(1-p_i)+\sum_{j\ne i}p_ip_j
+=2p_i(1-p_i)
+\le\frac12.
+\]
+Therefore $\norm{J_{\softmax}}_2\le1/2$.  Applying the mean-value theorem to
+$x\mapsto\softmax(x)$ gives
+\[
+\norm{p(x)-p(x')}_2
+\le
+\frac12\norm{F(x)-F(x')}_2.
+\]
+Using~\eqref{eq:mc-logit-diff},
+\begin{equation}
+\label{eq:alpha-lipschitz}
+\norm{\alpha(x,y)-\alpha(x',y)}_2
+\le
+\frac{AS}{2\sqrt H}\delta.
+\end{equation}
+
+We next bound the operator norm of $J_F(x)^\ast$ and the input-Lipschitz
+constant of $J_F(x)^\ast$.  Fix an arbitrary vector $v\in\R^K$ with
+$\norm{v}_2=1$.  The scalar projection $v^\top F(x)$ has gradients
+\[
+\nabla_V(v^\top F(x))=\frac1{\sqrt H}vh^\top,
+\]
+\[
+\nabla_b(v^\top F(x))=\frac1{\sqrt H}\bigl(V^\top v\odot q\bigr),
+\]
+\[
+\nabla_W(v^\top F(x))=
+\frac1{\sqrt H}\bigl(V^\top v\odot q\bigr)x^\top.
+\]
+Thus
+\begin{align*}
+\norm{J_F(x)^\ast v}_2^2
+&=
+\frac1H\Big(
+\norm{vh^\top}_F^2
++
+\norm{V^\top v\odot q}_2^2\\
+&\hspace{15mm}+
+\norm{(V^\top v\odot q)x^\top}_F^2
+\Big)\\
+&\le
+\frac1H\left(H+A^2+A^2B^2\right)
+=
+G_{\rm J}^2.
+\end{align*}
+Taking the supremum over $\norm{v}_2=1$ gives
+\begin{equation}
+\label{eq:mc-J-operator-bound}
+\norm{J_F(x)^\ast}_{\op}\le G_{\rm J}.
+\end{equation}
+
+For the input-Lipschitz bound on the adjoint Jacobian, again fix
+$\norm{v}_2=1$.  The $V$ block satisfies
+\[
+\frac1{\sqrt H}\norm{v(h-h')^\top}_F
+=
+\frac1{\sqrt H}\norm{v}_2\norm{h-h'}_2
+\le
+\frac S{\sqrt H}\delta.
+\]
+The $b$ block satisfies
+\[
+\frac1{\sqrt H}\norm{V^\top v\odot(q-q')}_2
+\le
+\frac{AK_{\tanh}S}{\sqrt H}\delta.
+\]
+For the $W$ block,
+\begin{align*}
+&\frac1{\sqrt H}
+\left\|
+\begin{aligned}
+&(V^\top v\odot q)x^\top\\
+&\quad-(V^\top v\odot q')x'^\top
+\end{aligned}
+\right\|_F\\
+&\quad\le
+\frac1{\sqrt H}\norm{V^\top v\odot(q-q')}_2\norm{x}_2\\
+&\qquad+
+\frac1{\sqrt H}\norm{V^\top v\odot q'}_2\norm{x-x'}_2\\
+&\quad\le
+\frac{A}{\sqrt H}\bigl(K_{\tanh}SB+1\bigr)\delta.
+\end{align*}
+Combining the blocks gives, for every unit $v$,
+\[
+\norm{(J_F(x)^\ast-J_F(x')^\ast)v}_2
+\le
+L_{\rm J}\delta.
+\]
+Taking the supremum over unit $v$ gives
+\begin{equation}
+\label{eq:mc-J-lipschitz}
+\norm{J_F(x)^\ast-J_F(x')^\ast}_{\op}
+\le
+L_{\rm J}\delta.
+\end{equation}
+
+Now subtract the loss gradients using~\eqref{eq:mc-gradient-factorization}:
+\begin{align*}
+&\nabla_\theta\ell(\theta;(x,y))
+-
+\nabla_\theta\ell(\theta;(x',y))\\
+&\quad=
+J_F(x)^\ast\alpha(x,y)-J_F(x')^\ast\alpha(x',y)\\
+&\quad=
+\bigl(J_F(x)^\ast-J_F(x')^\ast\bigr)\alpha(x,y)\\
+&\qquad+
+J_F(x')^\ast\bigl(\alpha(x,y)-\alpha(x',y)\bigr).
+\end{align*}
+Taking norms and applying
+\eqref{eq:alpha-norm-bound}, \eqref{eq:alpha-lipschitz},
+\eqref{eq:mc-J-operator-bound}, and~\eqref{eq:mc-J-lipschitz},
+\begin{align*}
+&\norm{\nabla_\theta\ell(\theta;(x,y))
+-
+\nabla_\theta\ell(\theta;(x',y))}_2\\
+&\quad\le
+\norm{J_F(x)^\ast-J_F(x')^\ast}_{\op}
+\norm{\alpha(x,y)}_2\\
+&\qquad+
+\norm{J_F(x')^\ast}_{\op}
+\norm{\alpha(x,y)-\alpha(x',y)}_2\\
+&\quad\le
+\sqrt2\,L_{\rm J}\delta
++G_{\rm J}\frac{AS}{2\sqrt H}\delta.
+\end{align*}
+This proves the stated bound with
+\[
+L_z^{\rm mc}=\sqrt2\,L_{\rm J}+\frac{AS}{2\sqrt H}G_{\rm J}.
+\]
+\end{proof}
+
+\section{Proofs for transcript domination}
+\label{app:transcript-proofs}
+
+\subsection{Proof of Theorem~\ref{thm:known-inclusion-rero}}
+
+\begin{proof}
+Fix a candidate $z\in\supp(\pi_{u,r})$.  We prove that the actual revealed
+transcript pair $(P_z,Q_u)$ is a post-processing of the product reference pair
+$(P_{1:T}^{\rm rev},Q_{1:T}^{\rm rev})$.  The conclusion then follows from
+Lemma~\ref{lem:post-processing} and Theorem~\ref{thm:local-ball-rero}.
+
+At step $t$, condition on a past history $h$.  Under both datasets the target
+inclusion bit has law $I_t\sim\Ber(q_t)$.  If $I_t=0$, the target record makes
+no contribution and the two conditional laws are identical after adding the
+common center $C_t^h$ and Gaussian noise $\xi_t$.  If $I_t=1$, the conditional
+mean shift between $D_z$ and $D_u$ is
+\[
+\delta_t^h(z,u)=\bar g_t^h(z)-\bar g_t^h(u),
+\]
+with
+\[
+\norm{\delta_t^h(z,u)}_2\le \Delta_t(r)=c_t\sigma_t.
+\]
+If $\delta_t^h(z,u)\ne0$, let
+\[
+e_t^h:=\frac{\delta_t^h(z,u)}{\norm{\delta_t^h(z,u)}_2},
+\qquad
+\lambda_t^h:=\frac{\norm{\delta_t^h(z,u)}_2}{\sigma_t}\le c_t.
+\]
+If $\delta_t^h(z,u)=0$, choose any unit vector $e_t^h$ and set
+$\lambda_t^h=0$.
+
+The scalar reference experiment supplies $(I_t,Y_t)$, where under
+$Q_t^{\rm rev}$,
+\[
+Y_t\mid I_t=i\sim\N(0,1),
+\]
+and under $P_t^{\rm rev}$,
+\[
+Y_t\mid I_t=i\sim\N(ic_t,1).
+\]
+From this worst-case scalar experiment, construct an actual scalar
+\[
+X_t:=
+\begin{cases}
+Y_t, & I_t=0,\\
+\displaystyle \frac{\lambda_t^h}{c_t}Y_t+\sqrt{1-\left(\frac{\lambda_t^h}{c_t}\right)^2}\,Z_t,
+& I_t=1,
+\end{cases}
+\]
+where $Z_t\sim\N(0,1)$ is independent.  When $c_t=0$, define $X_t=Z_t$; then
+also $\lambda_t^h=0$.  Under the reference law $Q_t^{\rm rev}$, $X_t$ is
+standard normal regardless of $I_t$.  Under the candidate law $P_t^{\rm rev}$,
+conditional on $I_t=1$, $X_t\sim\N(\lambda_t^h,1)$, and conditional on
+$I_t=0$, $X_t\sim\N(0,1)$.
+
+Now draw independent orthogonal Gaussian noise
+$\zeta_t\sim\N(0,I_p-e_t^h(e_t^h)^\top)$ and output
+\[
+\tilde S_t=C_t^h+I_t\bar g_t^h(u)+\sigma_t\bigl(X_te_t^h+\zeta_t\bigr).
+\]
+Under the reference law, this is
+\[
+C_t^h+I_t\bar g_t^h(u)+\xi_t.
+\]
+Under the candidate law, when $I_t=1$ the additional mean in the
+$e_t^h$ direction is
+\[
+\sigma_t\lambda_t^h e_t^h=\delta_t^h(z,u),
+\]
+so the output law is
+\[
+C_t^h+I_t\bar g_t^h(z)+\xi_t.
+\]
+Thus the actual one-step conditional transition is a Markov kernel applied to
+the one-step worst-case revealed experiment.
+
+Because $\theta_t^h$, $C_t^h$, and $\delta_t^h(z,u)$ are measurable functions of
+the past transcript, these one-step kernels can be composed adaptively over
+$t=1,\ldots,T$ by the Ionescu--Tulcea construction.  Hence there exists a
+global kernel $K_z$ such that
+\[
+P_{1:T}^{\rm rev}K_z=P_z,
+\qquad
+Q_{1:T}^{\rm rev}K_z=Q_u.
+\]
+By Lemma~\ref{lem:post-processing}, for every $\kappa\in[0,1]$,
+\[
+B_\kappa(P_z\|Q_u)
+\le
+B_\kappa(P_{1:T}^{\rm rev}\|Q_{1:T}^{\rm rev}).
+\]
+The right-hand side is independent of $z$.  Theorem~\ref{thm:local-ball-rero}
+therefore gives
+\[
+p_{\rm succ}(\eta)
+\le
+B_{\kappa_{\pi,\rho}(\eta)}(P_{1:T}^{\rm rev}\|Q_{1:T}^{\rm rev}).
+\]
+\end{proof}
+
+\subsection{Proof of Corollary~\ref{cor:hidden-safe-by-revealed}}
+
+\begin{proof}
+By assumption, the hidden transcript is obtained from the revealed transcript by
+a probability kernel $K$ that deletes the inclusion bits and performs any
+additional allowed post-processing.  If $P_z^{\rm hid},Q_u^{\rm hid}$ denote the
+hidden transcript laws for candidate $z$ and center $u$, then
+\[
+P_z^{\rm hid}=P_z^{\rm rev}K,
+\qquad
+Q_u^{\rm hid}=Q_u^{\rm rev}K.
+\]
+Lemma~\ref{lem:post-processing} gives
+\[
+B_\kappa(P_z^{\rm hid}\|Q_u^{\rm hid})
+\le
+B_\kappa(P_z^{\rm rev}\|Q_u^{\rm rev}).
+\]
+The proof of Theorem~\ref{thm:known-inclusion-rero} bounds the right-hand side
+by
+\[
+B_\kappa(P_{1:T}^{\rm rev}\|Q_{1:T}^{\rm rev}),
+\]
+uniformly over $z\in\supp(\pi_{u,r})$.  Applying
+Theorem~\ref{thm:local-ball-rero} to the hidden transcript laws gives the
+claimed hidden-inclusion reconstruction bound.
+\end{proof}
+
+\subsection{Derivation of the homogeneous revealed evaluator}
+
+\begin{proof}
+For one revealed step with parameters $(q,c)$, the observation is $(I,X)$.  The
+inclusion bit has the same law under $P$ and $Q$, so it contributes no
+likelihood-ratio term.  If $I=0$, both laws have $X\sim\N(0,1)$, so the
+one-step privacy loss is zero.  If $I=1$, then under $Q$, $X\sim\N(0,1)$, and
+under $P$, $X\sim\N(c,1)$.  The density ratio is
+\[
+\frac{\varphi(x-c)}{\varphi(x)}
+=
+\exp\left(cx-\frac12c^2\right),
+\]
+where $\varphi$ is the standard normal density.  Thus
+\[
+\ell(I,X)=I\left(cX-\frac12c^2\right).
+\]
+Under $Q$ and conditional on $I=1$, $cX-c^2/2\sim\N(-c^2/2,c^2)$.  Under $P$
+and conditional on $I=1$, $X\sim\N(c,1)$, so
+$cX-c^2/2\sim\N(c^2/2,c^2)$.
+
+For $T$ independent homogeneous steps, let $K_T=\sum_t I_t$.  Conditional on
+$K_T=k$, the privacy loss is a sum of $k$ independent Gaussian terms.  Therefore
+under $Q$,
+\[
+L\mid K_T=k\sim\N\left(-\frac12kc^2,kc^2\right),
+\]
+and under $P$,
+\[
+L\mid K_T=k\sim\N\left(+\frac12kc^2,kc^2\right).
+\]
+When $k=0$, both are point masses at zero.  Since the inclusion-bit law is the
+same under $P$ and $Q$, $K_T\sim\Bin(T,q)$ under both laws.
+
+The Neyman--Pearson lemma states that, among events with $Q$-probability at
+most $\kappa$, an upper level set of the likelihood ratio maximizes
+$P$-probability.  Since the likelihood ratio is $e^L$, the optimal event is an
+upper level set of $L$, with possible randomization at the threshold when there
+is an atom.  Thus
+\[
+B_\kappa(P_{1:T}^{\rm rev}\|Q_{1:T}^{\rm rev})
+=
+P[L>\tau_\kappa]+\theta P[L=\tau_\kappa],
+\]
+where $\theta\in[0,1]$ is chosen so that
+\[
+Q[L>\tau_\kappa]+\theta Q[L=\tau_\kappa]=\kappa.
+\]
+\end{proof}
+
+\section{Proof of the RDP-to-ReRo conversion}
+\label{app:rdp-proof}
+
+\begin{proof}
+Let $\Lambda=\dd P/\dd Q$ and let $\phi$ be any randomized test with
+$0\le\phi\le1$ and $\E_Q\phi\le\kappa$.  H\"older's inequality with conjugate
+exponents $\alpha$ and $\alpha/(\alpha-1)$ gives
+\begin{align*}
+\E_P\phi
+&=\int \phi\Lambda\,\dd Q\\
+&\le
+\left(\int \Lambda^\alpha\,\dd Q\right)^{1/\alpha}
+\left(\int \phi^{\alpha/(\alpha-1)}\,\dd Q\right)^{(\alpha-1)/\alpha}.
+\end{align*}
+Because $0\le\phi\le1$, we have
+$\phi^{\alpha/(\alpha-1)}\le\phi$, and hence the second factor is at most
+$\kappa^{(\alpha-1)/\alpha}$.  By the definition of R\'enyi divergence,
+\[
+\int \Lambda^\alpha\,\dd Q
+=
+\exp\bigl((\alpha-1)D_\alpha(P\|Q)\bigr)
+\le
+\exp\bigl((\alpha-1)\varepsilon_\alpha\bigr).
+\]
+Therefore
+\begin{align*}
+\E_P\phi
+&\le
+\exp\left(\frac{\alpha-1}{\alpha}\varepsilon_\alpha\right)
+\kappa^{(\alpha-1)/\alpha}\\
+&=
+\exp\left(
+\frac{\alpha-1}{\alpha}
+[\log\kappa+\varepsilon_\alpha]
+\right).
+\end{align*}
+Taking the supremum over all feasible randomized tests $\phi$ gives the stated
+bound on $B_\kappa(P\|Q)$.  Since probabilities are at most one, the minimum
+with one is valid.  Optimizing over $\alpha>1$ gives $\Gamma_{\rm RDP}$.
+\end{proof}
+
+\section{Finite-prior likelihood derivation}
+\label{app:finite-prior-proof}
+
+For the known-inclusion model, conditional on candidate $z_i$ and selected
+steps $\mathcal I$, the residualized observations are independent Gaussians
+\[
+r_t\mid z_i\sim\N(g_t(z_i),\sigma_t^2I).
+\]
+Thus the log-likelihood is
+\[
+\sum_{t\in\mathcal I}
+\left[-\frac{p}{2}\log(2\pi\sigma_t^2)
+-
+\frac{\norm{r_t-g_t(z_i)}_2^2}{2\sigma_t^2}
+\right].
+\]
+Adding $\log\pi_i$ and dropping constants independent of $i$ yields
+$S_i^{\rm known}$.
+
+For the add/remove or zero-center hidden-inclusion model, conditional on
+$z_i$, each residualized observation has mixture density
+\[
+(1-q_t)\varphi_{\sigma_t}(r_t)
++
+q_t\varphi_{\sigma_t}(r_t-g_t(z_i)),
+\]
+where $\varphi_{\sigma_t}$ is the centered Gaussian density with covariance
+$\sigma_t^2I$.  Taking logarithms, adding $\log\pi_i$, and dropping the common
+Gaussian normalization constants gives $S_i^{\rm unknown}$.  Therefore
+maximizing the displayed scores is the Bayes-optimal MAP rule for that stated
+finite-prior observation model.  For a general Ball-substitution hidden model,
+the same MAP principle applies, but the candidate likelihood must use the full
+mixture-versus-mixture/sequential transcript law rather than the scalar
+one-shift special case.
+
+\section{Ethics considerations}
+\label{app:ethics}
+
+This paper studies privacy guarantees and reconstruction attacks for machine
+learning systems trained on potentially sensitive data.  The attack likelihoods
+and reconstruction bounds are intended as audit tools for mechanisms whose
+operators are authorized to evaluate their own privacy risk.  The theory does
+not require recovering raw human-subject data, and any empirical use of these
+methods should be restricted to datasets for which the evaluator has permission
+to run reconstruction audits.  The main defensive recommendation is to report
+reconstruction certificates together with the exact observation model assumed by
+the adversary, because revealed-inclusion and hidden-inclusion transcripts imply
+different risks.
 
 \end{document}
