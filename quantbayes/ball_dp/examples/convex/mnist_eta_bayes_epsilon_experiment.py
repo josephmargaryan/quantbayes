@@ -120,6 +120,7 @@ DECODER_LINESTYLES = {
 # Generic utilities
 # ============================================================
 
+
 def configure_matplotlib(*, use_latex: bool = False) -> None:
     plt.rcParams.update(
         {
@@ -210,6 +211,7 @@ def first_epsilon(ledger: Any) -> float:
 # ============================================================
 # MNIST loading
 # ============================================================
+
 
 def _device_get(x: Any) -> Any:
     try:
@@ -302,6 +304,7 @@ def load_mnist_embeddings(
 # ============================================================
 # Radius estimation
 # ============================================================
+
 
 def sample_same_label_pairwise_distances(
     X: np.ndarray,
@@ -443,6 +446,7 @@ def compute_radius_values(
 # Fast support-bank prefilter
 # ============================================================
 
+
 def select_prefilter_positions(
     *,
     d2_inside: np.ndarray,
@@ -489,8 +493,7 @@ def find_fast_anchor_and_public_subset(
     anchor_order = anchor_order[: min(int(max_anchor_trials), len(anchor_order))]
 
     public_by_label = {
-        int(label): np.where(y_public == int(label))[0]
-        for label in np.unique(y_public)
+        int(label): np.where(y_public == int(label))[0] for label in np.unique(y_public)
     }
 
     r2 = float(radius) ** 2
@@ -587,7 +590,9 @@ def build_fixed_support_and_trials(
     fast_anchor_trials: int,
     max_prefilter_candidates: int,
 ) -> tuple[Any, list[Any], pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    print("Fast prefilter: finding explicit anchor and small public candidate source...")
+    print(
+        "Fast prefilter: finding explicit anchor and small public candidate source..."
+    )
 
     anchor_idx, public_idx, prefilter_df = find_fast_anchor_and_public_subset(
         X_train,
@@ -695,6 +700,7 @@ def build_fixed_support_and_trials(
 # ============================================================
 # Release fitting and attack loop
 # ============================================================
+
 
 def fit_release_for_policy(
     trial: Any,
@@ -890,7 +896,9 @@ def run_epsilon_sweep(
                             "delta_over_sigma": float(sensitivity / sigma),
                             "accuracy": accuracy,
                             "epsilon_ball_view": first_epsilon(release.privacy.ball),
-                            "epsilon_standard_view": first_epsilon(release.privacy.standard),
+                            "epsilon_standard_view": first_epsilon(
+                                release.privacy.standard
+                            ),
                             "oblivious_kappa": float(support.oblivious_kappa),
                             **center_diag,
                         }
@@ -980,8 +988,12 @@ def run_epsilon_sweep(
                                     if row["predicted_prior_index"] is None
                                     else int(row["predicted_prior_index"])
                                 ),
-                                "predicted_subset_mask": int(row["predicted_subset_mask"]),
-                                "predicted_subset_size": int(row["predicted_subset_size"]),
+                                "predicted_subset_mask": int(
+                                    row["predicted_subset_mask"]
+                                ),
+                                "predicted_subset_size": int(
+                                    row["predicted_subset_size"]
+                                ),
                                 "true_index": int(true_idx),
                             }
                         )
@@ -997,6 +1009,7 @@ def run_epsilon_sweep(
 # ============================================================
 # Aggregation
 # ============================================================
+
 
 def per_release_gamma_summary(
     *,
@@ -1070,7 +1083,9 @@ def aggregate_eta_curves(
 
         sigmas = frame["sigma"].to_numpy(dtype=float)
         sensitivities = frame["sensitivity"].to_numpy(dtype=float)
-        center_sensitivities = frame["center_effective_sensitivity"].to_numpy(dtype=float)
+        center_sensitivities = frame["center_effective_sensitivity"].to_numpy(
+            dtype=float
+        )
 
         kappa_row = kappa_lookup[float(eta)]
 
@@ -1189,7 +1204,9 @@ def selected_eta_summary(
 def release_summary_by_epsilon(releases_df: pd.DataFrame) -> pd.DataFrame:
     rows = []
 
-    for (radius_policy, epsilon), frame in releases_df.groupby(["radius_policy", "epsilon"]):
+    for (radius_policy, epsilon), frame in releases_df.groupby(
+        ["radius_policy", "epsilon"]
+    ):
         mu, lo, hi = mean_ci(frame["accuracy"].to_numpy(dtype=float))
 
         rows.append(
@@ -1226,6 +1243,7 @@ def release_summary_by_epsilon(releases_df: pd.DataFrame) -> pd.DataFrame:
 # Figures
 # ============================================================
 
+
 def plot_arbitrary_eta_bayes_by_epsilon(
     curves_df: pd.DataFrame,
     kappa_df: pd.DataFrame,
@@ -1238,8 +1256,7 @@ def plot_arbitrary_eta_bayes_by_epsilon(
 
     cmap = plt.get_cmap("viridis")
     eps_colors = {
-        eps: cmap(i / max(len(eps_values) - 1, 1))
-        for i, eps in enumerate(eps_values)
+        eps: cmap(i / max(len(eps_values) - 1, 1)) for i, eps in enumerate(eps_values)
     }
 
     fig, axes = plt.subplots(2, 2, figsize=(7.8, 5.8), sharex=True, sharey=True)
@@ -1526,7 +1543,9 @@ def plot_success_vs_epsilon_at_tolerances(
         sub_tau = selected[np.isclose(selected["tau"], tau)]
 
         for mech in MECH_ORDER:
-            sub = sub_tau[sub_tau["radius_policy"].astype(str) == mech].sort_values("epsilon")
+            sub = sub_tau[sub_tau["radius_policy"].astype(str) == mech].sort_values(
+                "epsilon"
+            )
             if sub.empty:
                 continue
 
@@ -1577,6 +1596,7 @@ def plot_success_vs_epsilon_at_tolerances(
 # ============================================================
 # CLI
 # ============================================================
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -1690,6 +1710,7 @@ def parse_args() -> argparse.Namespace:
 # Main
 # ============================================================
 
+
 def main() -> None:
     args = parse_args()
     configure_matplotlib(use_latex=bool(args.use_latex))
@@ -1707,7 +1728,9 @@ def main() -> None:
     embedding_bound = (
         float(args.embedding_bound)
         if args.embedding_bound is not None
-        else max(float(data_meta["max_train_norm"]), float(data_meta["max_public_norm"]))
+        else max(
+            float(data_meta["max_train_norm"]), float(data_meta["max_public_norm"])
+        )
     )
     data_meta["embedding_bound_used"] = float(embedding_bound)
     write_json(out_dir / "data_metadata.json", data_meta)
@@ -1749,20 +1772,22 @@ def main() -> None:
     print(radius_df.to_string(index=False))
 
     print("\nBuilding fixed support inside q50...")
-    support, trials, trial_index_df, support_df, prefilter_df = build_fixed_support_and_trials(
-        X_train,
-        y_train,
-        X_public,
-        y_public,
-        support_radius=float(radius_values["q50"]),
-        m=int(args.m_support),
-        support_selection=str(args.support_selection),
-        target_policy=str(args.target_policy),
-        targets_per_support=int(args.targets_per_support),
-        seed=int(args.seed),
-        fast_anchor_policy=args.fast_anchor_policy,
-        fast_anchor_trials=int(args.fast_anchor_trials),
-        max_prefilter_candidates=int(args.max_prefilter_candidates),
+    support, trials, trial_index_df, support_df, prefilter_df = (
+        build_fixed_support_and_trials(
+            X_train,
+            y_train,
+            X_public,
+            y_public,
+            support_radius=float(radius_values["q50"]),
+            m=int(args.m_support),
+            support_selection=str(args.support_selection),
+            target_policy=str(args.target_policy),
+            targets_per_support=int(args.targets_per_support),
+            seed=int(args.seed),
+            fast_anchor_policy=args.fast_anchor_policy,
+            fast_anchor_trials=int(args.fast_anchor_trials),
+            max_prefilter_candidates=int(args.max_prefilter_candidates),
+        )
     )
 
     support_df.to_csv(out_dir / "support.csv", index=False)
@@ -1850,7 +1875,9 @@ def main() -> None:
     selected_df.to_csv(out_dir / "mnist_eta_bayes_selected_tolerances.csv", index=False)
 
     release_summary_df = release_summary_by_epsilon(releases_df)
-    release_summary_df.to_csv(out_dir / "mnist_eta_bayes_release_summary.csv", index=False)
+    release_summary_df.to_csv(
+        out_dir / "mnist_eta_bayes_release_summary.csv", index=False
+    )
 
     print("\nSelected tolerance summary")
     display_cols = [
@@ -1909,7 +1936,9 @@ def main() -> None:
 
     print("\nMain figures:")
     print(f"  {fig_dir / 'eta_bayes_arbitrary_by_epsilon_with_wilson_bands'}.[pdf|png]")
-    print(f"  {fig_dir / f'eta_decoder_comparison_eps_{comparison_epsilon:g}'}.[pdf|png]")
+    print(
+        f"  {fig_dir / f'eta_decoder_comparison_eps_{comparison_epsilon:g}'}.[pdf|png]"
+    )
     print(f"  {fig_dir / 'eta_bayes_lift_over_exact_map_heatmap'}.[pdf|png]")
     print(f"  {fig_dir / 'eta_bayes_success_vs_epsilon_selected_tolerances'}.[pdf|png]")
 

@@ -222,7 +222,9 @@ def _normalize_poisson_static_batch_buckets(
 
     out = sorted({int(v) for v in buckets})
     if not out:
-        raise ValueError("poisson_static_batch_buckets must be non-empty when provided.")
+        raise ValueError(
+            "poisson_static_batch_buckets must be non-empty when provided."
+        )
     if out[0] <= 0:
         raise ValueError("poisson_static_batch_buckets must contain positive integers.")
     if out[-1] > n:
@@ -743,7 +745,9 @@ def _make_release_artifact(
         "fixed_batch_schedule_present": bool(fixed_batch_schedule_num_steps > 0),
         "fixed_batch_schedule_num_steps": int(fixed_batch_schedule_num_steps),
         "poisson_static_batching": bool(poisson_static_batching),
-        "poisson_static_batch_buckets": tuple(int(v) for v in poisson_static_batch_buckets),
+        "poisson_static_batch_buckets": tuple(
+            int(v) for v in poisson_static_batch_buckets
+        ),
         "poisson_static_batching_preserves_sampler": bool(poisson_static_batching),
         "frobenius_reg_strength": float(getattr(cfg, "frobenius_reg_strength", 0.0)),
         "spectral_reg_strength": float(getattr(cfg, "spectral_reg_strength", 0.0)),
@@ -800,7 +804,9 @@ def _make_release_artifact(
         "fixed_batch_schedule_present": bool(fixed_batch_schedule_num_steps > 0),
         "fixed_batch_schedule_num_steps": int(fixed_batch_schedule_num_steps),
         "poisson_static_batching": bool(poisson_static_batching),
-        "poisson_static_batch_buckets": tuple(int(v) for v in poisson_static_batch_buckets),
+        "poisson_static_batch_buckets": tuple(
+            int(v) for v in poisson_static_batch_buckets
+        ),
         "poisson_static_batching_preserves_sampler": bool(poisson_static_batching),
         "theorem_backed_direct_rero_available": bool(direct_ball_rero_available),
         "theorem_backed_standard_direct_rero_available": bool(
@@ -1117,9 +1123,11 @@ def _run_training(
         )
 
         if poisson_static_batching and step_sampler == "poisson":
-            idx_for_step_np, sample_mask_np, jax_batch_size = _pad_indices_to_static_bucket(
-                idx_np,
-                buckets=poisson_static_batch_buckets,
+            idx_for_step_np, sample_mask_np, jax_batch_size = (
+                _pad_indices_to_static_bucket(
+                    idx_np,
+                    buckets=poisson_static_batch_buckets,
+                )
             )
         else:
             idx_for_step_np = np.asarray(idx_np, dtype=np.int64)
@@ -1182,8 +1190,12 @@ def _run_training(
                 "realized_batch_size": int(realized_batch_size),
                 "target_batch_size": int(m_t),
                 "jax_batch_size": int(jax_batch_size),
-                "padded_example_count": int(max(0, int(jax_batch_size) - int(realized_batch_size))),
-                "poisson_static_batching": bool(poisson_static_batching and step_sampler == "poisson"),
+                "padded_example_count": int(
+                    max(0, int(jax_batch_size) - int(realized_batch_size))
+                ),
+                "poisson_static_batching": bool(
+                    poisson_static_batching and step_sampler == "poisson"
+                ),
                 "batch_sampler": str(step_sampler),
                 "reduction": (
                     "sum" if str(cfg.normalize_noisy_sum_by) == "none" else "mean"
@@ -1213,8 +1225,12 @@ def _run_training(
                 "batch_size": int(m_t),
                 "realized_batch_size": int(realized_batch_size),
                 "jax_batch_size": int(jax_batch_size),
-                "padded_example_count": int(max(0, int(jax_batch_size) - int(realized_batch_size))),
-                "poisson_static_batching": bool(poisson_static_batching and step_sampler == "poisson"),
+                "padded_example_count": int(
+                    max(0, int(jax_batch_size) - int(realized_batch_size))
+                ),
+                "poisson_static_batching": bool(
+                    poisson_static_batching and step_sampler == "poisson"
+                ),
                 "batch_sampler": str(step_sampler),
                 "normalization_denominator": (
                     None
@@ -1251,8 +1267,12 @@ def _run_training(
                 "batch_size": int(m_t),
                 "realized_batch_size": int(realized_batch_size),
                 "jax_batch_size": int(jax_batch_size),
-                "padded_example_count": int(max(0, int(jax_batch_size) - int(realized_batch_size))),
-                "poisson_static_batching": bool(poisson_static_batching and step_sampler == "poisson"),
+                "padded_example_count": int(
+                    max(0, int(jax_batch_size) - int(realized_batch_size))
+                ),
+                "poisson_static_batching": bool(
+                    poisson_static_batching and step_sampler == "poisson"
+                ),
                 "batch_sampler": str(step_sampler),
                 "normalization_denominator": (
                     None

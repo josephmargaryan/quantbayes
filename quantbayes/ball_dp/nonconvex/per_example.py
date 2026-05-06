@@ -240,7 +240,8 @@ def clip_and_aggregate_per_example_grads_masked(
     )
     mean_norm = jnp.where(
         has_active,
-        jnp.sum(weighted_norms) / jnp.maximum(active_count, jnp.asarray(1.0, dtype=norms.dtype)),
+        jnp.sum(weighted_norms)
+        / jnp.maximum(active_count, jnp.asarray(1.0, dtype=norms.dtype)),
         jnp.asarray(0.0, dtype=norms.dtype),
     )
     max_norm = jnp.where(
