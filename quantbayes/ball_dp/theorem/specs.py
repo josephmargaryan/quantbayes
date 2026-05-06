@@ -148,6 +148,8 @@ class TrainConfig:
     eval_every: int = 250
     eval_batch_size: int = 1024
     normalize_noisy_sum_by: str = "batch_size"
+    poisson_static_batching: bool = False
+    poisson_static_batch_buckets: Optional[tuple[int, ...]] = None
     seed: int = 0
 
     def as_fit_kwargs(self) -> dict[str, Any]:
@@ -166,5 +168,11 @@ class TrainConfig:
             "eval_every": int(self.eval_every),
             "eval_batch_size": int(self.eval_batch_size),
             "normalize_noisy_sum_by": str(self.normalize_noisy_sum_by),
+            "poisson_static_batching": bool(self.poisson_static_batching),
+            "poisson_static_batch_buckets": (
+                None
+                if self.poisson_static_batch_buckets is None
+                else tuple(int(v) for v in self.poisson_static_batch_buckets)
+            ),
             "seed": int(self.seed),
         }

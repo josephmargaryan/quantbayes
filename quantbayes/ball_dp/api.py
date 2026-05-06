@@ -805,6 +805,8 @@ def fit_ball_sgd(
     predict_fn: Optional[PredictFn] = default_predict_fn,
     parameter_regularizer: Optional[Callable[[Any, Any], jax.Array]] = None,
     normalize_noisy_sum_by: str = "batch_size",
+    poisson_static_batching: bool = False,
+    poisson_static_batch_buckets: Optional[Sequence[int]] = None,
     frobenius_reg_strength: float = 0.0,
     spectral_reg_strength: float = 0.0,
     spectral_reg_kwargs: Optional[dict[str, Any]] = None,
@@ -858,6 +860,12 @@ def fit_ball_sgd(
         delta=None if delta is None else float(delta),
         loss_name=str(loss_name),
         normalize_noisy_sum_by=str(normalize_noisy_sum_by),
+        poisson_static_batching=bool(poisson_static_batching),
+        poisson_static_batch_buckets=(
+            None
+            if poisson_static_batch_buckets is None
+            else tuple(int(v) for v in poisson_static_batch_buckets)
+        ),
         fixed_batch_indices_schedule=(
             None
             if fixed_batch_indices_schedule is None

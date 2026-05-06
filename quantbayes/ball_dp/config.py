@@ -180,6 +180,12 @@ class BallSGDConfig:
           * tuple of indices -> force that exact minibatch at that step
       This is intended for controlled attack experiments, not public release
       metadata.
+    - `poisson_static_batching`, when enabled with `batch_sampler="poisson"`,
+      keeps the Bernoulli/Poisson inclusion set unchanged but pads the selected
+      index buffer to a small static-shape bucket and masks padded rows after
+      per-example clipping. This can reduce JAX recompilation from variable
+      Poisson batch sizes. The largest bucket is forced to `n`, so no sampled
+      example is ever truncated or resampled.
     """
 
     radius: float = 1.0
@@ -208,6 +214,10 @@ class BallSGDConfig:
     ] = "batch_size"
 
     fixed_batch_indices_schedule: Optional[Tuple[Optional[Tuple[int, ...]], ...]] = None
+
+    # Optional exact static-shape representation for Poisson minibatches.
+    poisson_static_batching: bool = False
+    poisson_static_batch_buckets: Optional[Tuple[int, ...]] = None
 
     # Optional built-in parameter-only penalties added *after* DP sanitization.
     frobenius_reg_strength: float = 0.0

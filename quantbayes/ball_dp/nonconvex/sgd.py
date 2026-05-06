@@ -26,7 +26,7 @@ from .per_example import (
     ExampleLossFn,
     PredictFn,
     add_gaussian_noise,
-    clip_and_aggregate_per_example_grads,
+    clip_and_aggregate_per_example_grads_masked,
     combine_model,
     default_predict_fn,
     make_batched_predict_fn,
@@ -172,6 +172,98 @@ def _sample_batch_indices(
         dtype=np.bool_,
     )
     return np.flatnonzero(mask).astype(np.int64, copy=False)
+
+
+def _default_poisson_static_batch_buckets(
+    *,
+    batch_schedule: Sequence[int],
+    dataset_size: int,
+) -> tuple[int, ...]:
+    """Choose exact static-shape buckets for Poisson minibatches.
+
+    The final bucket is always dataset_size, so the true Bernoulli/Poisson sample
+    is never truncated, resampled, or conditioned on a maximum size. Smaller
+    buckets cover typical Binomial(n, m/n) fluctuations and reduce the number of
+    JAX compilations in common cases.
+    """
+    n = int(dataset_size)
+    if n <= 0:
+        raise ValueError("dataset_size must be positive.")
+
+    buckets: set[int] = set()
+    for m_raw in batch_schedule:
+        m = int(m_raw)
+        if m <= 0 or m > n:
+            raise ValueError("batch_schedule values must lie in [1, dataset_size].")
+        if m >= n:
+            buckets.add(n)
+            continue
+        q = float(m) / float(n)
+        sd = math.sqrt(float(n) * q * max(0.0, 1.0 - q))
+        for z in (0.0, 4.0, 8.0):
+            b = int(math.ceil(float(m) + z * sd))
+            buckets.add(min(n, max(1, b)))
+    buckets.add(n)
+    return tuple(sorted(buckets))
+
+
+def _normalize_poisson_static_batch_buckets(
+    buckets: Sequence[int] | None,
+    *,
+    batch_schedule: Sequence[int],
+    dataset_size: int,
+) -> tuple[int, ...]:
+    n = int(dataset_size)
+    if buckets is None:
+        return _default_poisson_static_batch_buckets(
+            batch_schedule=batch_schedule,
+            dataset_size=n,
+        )
+
+    out = sorted({int(v) for v in buckets})
+    if not out:
+        raise ValueError("poisson_static_batch_buckets must be non-empty when provided.")
+    if out[0] <= 0:
+        raise ValueError("poisson_static_batch_buckets must contain positive integers.")
+    if out[-1] > n:
+        raise ValueError(
+            f"poisson_static_batch_buckets cannot exceed dataset size n={n}."
+        )
+    if out[-1] != n:
+        out.append(n)
+    return tuple(out)
+
+
+def _pad_indices_to_static_bucket(
+    idx: np.ndarray,
+    *,
+    buckets: Sequence[int],
+) -> tuple[np.ndarray, np.ndarray, int]:
+    """Pad a true sampled index set to the smallest bucket that fits.
+
+    The returned mask identifies exactly the original selected examples. Padding
+    uses index 0 as a dummy row, but masked clipping makes dummy contributions
+    exactly zero.
+    """
+    idx = np.asarray(idx, dtype=np.int64).reshape(-1)
+    realized = int(idx.size)
+    bucket = None
+    for candidate in buckets:
+        if realized <= int(candidate):
+            bucket = int(candidate)
+            break
+    if bucket is None:
+        raise RuntimeError(
+            "No Poisson static batch bucket could hold the sampled batch. "
+            "This should be impossible because the largest bucket is dataset_size."
+        )
+
+    padded = np.zeros((bucket,), dtype=np.int64)
+    mask = np.zeros((bucket,), dtype=np.float32)
+    if realized > 0:
+        padded[:realized] = idx
+        mask[:realized] = 1.0
+    return padded, mask, bucket
 
 
 def _binary_targets01_np(y: np.ndarray) -> np.ndarray:
@@ -328,6 +420,7 @@ def _make_train_step(
         opt_state: Any,
         xb: jnp.ndarray,
         yb: jnp.ndarray,
+        sample_mask: jnp.ndarray,
         key: jax.Array,
         clip_norm: jax.Array,
         noise_multiplier: jax.Array,
@@ -342,12 +435,17 @@ def _make_train_step(
             max_norm = jnp.asarray(0.0, dtype=jnp.float32)
         else:
             per_example_grads = per_example_grad_fn(params, xb, yb, grad_key)
-            summed_clipped, norms, clip_frac = clip_and_aggregate_per_example_grads(
+            (
+                summed_clipped,
+                _,
+                clip_frac,
+                mean_norm,
+                max_norm,
+            ) = clip_and_aggregate_per_example_grads_masked(
                 per_example_grads,
                 clip_norm,
+                sample_mask=sample_mask,
             )
-            mean_norm = jnp.mean(norms)
-            max_norm = jnp.max(norms)
 
         noise_std = jnp.asarray(
             noise_multiplier,
@@ -553,6 +651,8 @@ def _make_release_artifact(
     resolved_batch_sampler: str,
     resolved_accountant_subsampling: str,
     fixed_batch_schedule_num_steps: int,
+    poisson_static_batching: bool,
+    poisson_static_batch_buckets: Sequence[int],
 ) -> ReleaseArtifact:
     regime = _regime_summary(cfg.lz, clip_schedule, step_delta_ball, step_delta_std)
 
@@ -642,6 +742,9 @@ def _make_release_artifact(
         "normalize_noisy_sum_by": str(cfg.normalize_noisy_sum_by),
         "fixed_batch_schedule_present": bool(fixed_batch_schedule_num_steps > 0),
         "fixed_batch_schedule_num_steps": int(fixed_batch_schedule_num_steps),
+        "poisson_static_batching": bool(poisson_static_batching),
+        "poisson_static_batch_buckets": tuple(int(v) for v in poisson_static_batch_buckets),
+        "poisson_static_batching_preserves_sampler": bool(poisson_static_batching),
         "frobenius_reg_strength": float(getattr(cfg, "frobenius_reg_strength", 0.0)),
         "spectral_reg_strength": float(getattr(cfg, "spectral_reg_strength", 0.0)),
         "spectral_reg_kwargs": dict(getattr(cfg, "spectral_reg_kwargs", {}) or {}),
@@ -696,6 +799,9 @@ def _make_release_artifact(
         "resolved_accountant_subsampling": str(resolved_accountant_subsampling),
         "fixed_batch_schedule_present": bool(fixed_batch_schedule_num_steps > 0),
         "fixed_batch_schedule_num_steps": int(fixed_batch_schedule_num_steps),
+        "poisson_static_batching": bool(poisson_static_batching),
+        "poisson_static_batch_buckets": tuple(int(v) for v in poisson_static_batch_buckets),
+        "poisson_static_batching_preserves_sampler": bool(poisson_static_batching),
         "theorem_backed_direct_rero_available": bool(direct_ball_rero_available),
         "theorem_backed_standard_direct_rero_available": bool(
             direct_standard_rero_available
@@ -857,6 +963,22 @@ def _run_training(
         getattr(cfg, "accountant_subsampling", "auto"),
         batch_sampler=resolved_batch_sampler,
     )
+
+    poisson_static_batching = bool(getattr(cfg, "poisson_static_batching", False))
+    if poisson_static_batching and resolved_batch_sampler != "poisson":
+        raise ValueError(
+            "cfg.poisson_static_batching=True is only valid with batch_sampler='poisson'."
+        )
+    poisson_static_batch_buckets = (
+        _normalize_poisson_static_batch_buckets(
+            getattr(cfg, "poisson_static_batch_buckets", None),
+            batch_schedule=batch_schedule,
+            dataset_size=n_total,
+        )
+        if poisson_static_batching
+        else tuple()
+    )
+
     if (
         not force_noiseless
         and resolved_batch_sampler != "poisson"
@@ -994,7 +1116,18 @@ def _run_training(
             realized_batch_size=realized_batch_size,
         )
 
-        idx = jnp.asarray(idx_np, dtype=jnp.int32)
+        if poisson_static_batching and step_sampler == "poisson":
+            idx_for_step_np, sample_mask_np, jax_batch_size = _pad_indices_to_static_bucket(
+                idx_np,
+                buckets=poisson_static_batch_buckets,
+            )
+        else:
+            idx_for_step_np = np.asarray(idx_np, dtype=np.int64)
+            sample_mask_np = np.ones((int(idx_for_step_np.size),), dtype=np.float32)
+            jax_batch_size = int(idx_for_step_np.size)
+
+        idx = jnp.asarray(idx_for_step_np, dtype=jnp.int32)
+        sample_mask = jnp.asarray(sample_mask_np, dtype=jnp.float32)
         xb = x_train[idx]
         yb = y_train[idx]
 
@@ -1008,6 +1141,7 @@ def _run_training(
                 opt_state,
                 xb,
                 yb,
+                sample_mask,
                 step_key,
                 jnp.asarray(clip_schedule[t], dtype=jnp.float32),
                 jnp.asarray(noise_multiplier_schedule[t], dtype=jnp.float32),
@@ -1047,6 +1181,9 @@ def _run_training(
                 ),
                 "realized_batch_size": int(realized_batch_size),
                 "target_batch_size": int(m_t),
+                "jax_batch_size": int(jax_batch_size),
+                "padded_example_count": int(max(0, int(jax_batch_size) - int(realized_batch_size))),
+                "poisson_static_batching": bool(poisson_static_batching and step_sampler == "poisson"),
                 "batch_sampler": str(step_sampler),
                 "reduction": (
                     "sum" if str(cfg.normalize_noisy_sum_by) == "none" else "mean"
@@ -1075,6 +1212,9 @@ def _run_training(
                 "step": int(t + 1),
                 "batch_size": int(m_t),
                 "realized_batch_size": int(realized_batch_size),
+                "jax_batch_size": int(jax_batch_size),
+                "padded_example_count": int(max(0, int(jax_batch_size) - int(realized_batch_size))),
+                "poisson_static_batching": bool(poisson_static_batching and step_sampler == "poisson"),
                 "batch_sampler": str(step_sampler),
                 "normalization_denominator": (
                     None
@@ -1110,6 +1250,9 @@ def _run_training(
                 "step": int(t + 1),
                 "batch_size": int(m_t),
                 "realized_batch_size": int(realized_batch_size),
+                "jax_batch_size": int(jax_batch_size),
+                "padded_example_count": int(max(0, int(jax_batch_size) - int(realized_batch_size))),
+                "poisson_static_batching": bool(poisson_static_batching and step_sampler == "poisson"),
                 "batch_sampler": str(step_sampler),
                 "normalization_denominator": (
                     None
@@ -1248,6 +1391,8 @@ def _run_training(
         resolved_batch_sampler=resolved_batch_sampler,
         resolved_accountant_subsampling=resolved_accountant_subsampling,
         fixed_batch_schedule_num_steps=fixed_batch_schedule_num_steps,
+        poisson_static_batching=poisson_static_batching,
+        poisson_static_batch_buckets=poisson_static_batch_buckets,
     )
 
     if accounting_view == "standard":

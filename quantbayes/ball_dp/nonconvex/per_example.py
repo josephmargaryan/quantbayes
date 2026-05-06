@@ -133,7 +133,69 @@ def clip_and_aggregate_per_example_grads(
     per_example_grads: Any,
     clip_norm: float | jnp.ndarray,
 ) -> tuple[Any, jnp.ndarray, jnp.ndarray]:
+    summed, norms, clip_frac, _, _ = clip_and_aggregate_per_example_grads_masked(
+        per_example_grads,
+        clip_norm,
+        sample_mask=None,
+    )
+    return summed, norms, clip_frac
+
+
+def clip_and_aggregate_per_example_grads_masked(
+    per_example_grads: Any,
+    clip_norm: float | jnp.ndarray,
+    *,
+    sample_mask: jnp.ndarray | None = None,
+) -> tuple[Any, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    """Clip and aggregate per-example gradients with an optional active-row mask.
+
+    This is useful for exact static-shape Poisson minibatching: the true Poisson
+    sample is represented by a padded index buffer plus a 0/1 mask. Padded rows
+    may still have nonzero dummy gradients, but selecting zero after clipping
+    makes their contribution exactly zero.
+
+    The implementation deliberately avoids expressions like ``0 * dummy_grad`` on
+    inactive rows. Those are mathematically zero but can propagate NaNs in IEEE
+    floating point if a dummy gradient is non-finite.
+
+    Returns
+    -------
+    summed:
+        Sum of clipped, masked gradients over active rows.
+    norms:
+        Raw per-row gradient norms before clipping.
+    clip_frac:
+        Fraction of active rows whose norm exceeded clip_norm. Zero when there
+        are no active rows.
+    mean_norm:
+        Mean norm over active rows. Zero when there are no active rows.
+    max_norm:
+        Maximum norm over active rows. Zero when there are no active rows.
+    """
     norms = _tree_batch_l2_norms(per_example_grads)
+    if norms.shape[0] == 0:
+        summed = jax.tree_util.tree_map(lambda g: jnp.sum(g, axis=0), per_example_grads)
+        zero = jnp.asarray(0.0, dtype=norms.dtype)
+        return summed, norms, zero, zero, zero
+
+    if sample_mask is None:
+        weights = jnp.ones_like(norms, dtype=norms.dtype)
+    else:
+        weights = jnp.asarray(sample_mask, dtype=norms.dtype).reshape(-1)
+        if weights.shape != norms.shape:
+            raise ValueError(
+                "sample_mask must have shape (batch_size,), matching the leading "
+                "dimension of per_example_grads."
+            )
+        weights = jnp.clip(
+            weights,
+            jnp.asarray(0.0, dtype=norms.dtype),
+            jnp.asarray(1.0, dtype=norms.dtype),
+        )
+
+    active = weights > jnp.asarray(0.0, dtype=norms.dtype)
+    active_count = jnp.sum(weights)
+    has_active = active_count > jnp.asarray(0.0, dtype=norms.dtype)
 
     clip = jnp.asarray(clip_norm, dtype=norms.dtype)
     finite_clip = jnp.isfinite(clip)
@@ -145,16 +207,48 @@ def clip_and_aggregate_per_example_grads(
     )
     scales = jnp.where(finite_clip, scales, jnp.ones_like(scales))
 
+    # Use selection, not multiplication by zero alone, so inactive dummy rows
+    # cannot inject NaNs through 0 * NaN.
+    row_weights = scales * weights
+
     def _scale_leaf(g):
         shape = (g.shape[0],) + (1,) * (g.ndim - 1)
-        return g * scales.reshape(shape).astype(g.dtype)
+        active_shape = active.reshape(shape)
+        scaled = g * row_weights.reshape(shape).astype(g.dtype)
+        return jnp.where(active_shape, scaled, jnp.zeros_like(g))
 
     clipped = jax.tree_util.tree_map(_scale_leaf, per_example_grads)
     summed = jax.tree_util.tree_map(lambda g: jnp.sum(g, axis=0), clipped)
+
+    clipped_flags = (norms > clip).astype(norms.dtype)
     clip_frac = jnp.where(
-        finite_clip, jnp.mean(norms > clip), jnp.asarray(0.0, dtype=norms.dtype)
+        finite_clip & has_active,
+        jnp.sum(weights * clipped_flags)
+        / jnp.maximum(active_count, jnp.asarray(1.0, dtype=norms.dtype)),
+        jnp.asarray(0.0, dtype=norms.dtype),
     )
-    return summed, norms, clip_frac
+
+    active_norms = jnp.where(
+        active,
+        norms,
+        jnp.asarray(0.0, dtype=norms.dtype),
+    )
+    weighted_norms = jnp.where(
+        active,
+        weights * norms,
+        jnp.asarray(0.0, dtype=norms.dtype),
+    )
+    mean_norm = jnp.where(
+        has_active,
+        jnp.sum(weighted_norms) / jnp.maximum(active_count, jnp.asarray(1.0, dtype=norms.dtype)),
+        jnp.asarray(0.0, dtype=norms.dtype),
+    )
+    max_norm = jnp.where(
+        has_active,
+        jnp.max(active_norms),
+        jnp.asarray(0.0, dtype=norms.dtype),
+    )
+    return summed, norms, clip_frac, mean_norm, max_norm
 
 
 def add_gaussian_noise(
